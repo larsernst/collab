@@ -104,6 +104,33 @@ pub struct PdfHighlight {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
+pub struct PdfTextAnnotation {
+    pub id: String,
+    pub page: u32,
+    pub text: String,
+    pub left: f32,
+    pub top: f32,
+    pub width: f32,
+    pub height: f32,
+    pub color: Option<String>,
+    pub background_color: Option<String>,
+    pub text_color: Option<String>,
+    pub created_at: u64,
+    pub updated_at: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct PdfPageComment {
+    pub id: String,
+    pub page: u32,
+    pub content: String,
+    pub created_at: u64,
+    pub updated_at: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
 pub struct PdfViewerState {
     pub last_page: Option<u32>,
     pub last_zoom_mode: Option<String>,
@@ -114,9 +141,12 @@ pub struct PdfViewerState {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 #[serde(rename_all = "camelCase")]
+#[serde(default)]
 pub struct PdfSidecarState {
     pub bookmarks: Vec<PdfBookmark>,
     pub highlights: Vec<PdfHighlight>,
+    pub text_annotations: Vec<PdfTextAnnotation>,
+    pub page_comments: Vec<PdfPageComment>,
     pub viewer_state: Option<PdfViewerState>,
 }
 

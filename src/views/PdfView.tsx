@@ -13,6 +13,7 @@ import {
   ImagePlus,
   Loader2,
   Maximize2,
+  MessageSquare,
   MessageSquareQuote,
   Minus,
   PanelRightClose,
@@ -41,7 +42,14 @@ import {
 } from '../components/layout/DocumentTopBar';
 import type { NoteFile } from '../types/vault';
 import type { CanvasData } from '../types/canvas';
-import type { PdfBookmark, PdfHighlight, PdfHighlightRect, PdfSidecarState } from '../types/pdf';
+import type {
+  PdfBookmark,
+  PdfHighlight,
+  PdfHighlightRect,
+  PdfPageComment,
+  PdfSidecarState,
+  PdfTextAnnotation,
+} from '../types/pdf';
 import {
   appendMarkdownBlock,
   appendPdfQuoteTextNode,
@@ -62,10 +70,29 @@ const WORKSPACE_PADDING = 40;
 const PAGE_GAP = 20;
 const PDF_CSS_SCALE = PixelsPerInch.PDF_TO_CSS_UNITS;
 const DEFAULT_HIGHLIGHT_COLOR = '#facc15';
+const PDF_TEXT_ANNOTATION_STYLES = [
+  { id: 'sun', label: 'Sun', backgroundColor: '#fef3c7', textColor: '#713f12', borderColor: '#f59e0b' },
+  { id: 'sky', label: 'Sky', backgroundColor: '#dbeafe', textColor: '#1e3a8a', borderColor: '#3b82f6' },
+  { id: 'rose', label: 'Rose', backgroundColor: '#ffe4e6', textColor: '#881337', borderColor: '#f43f5e' },
+  { id: 'mint', label: 'Mint', backgroundColor: '#dcfce7', textColor: '#14532d', borderColor: '#22c55e' },
+  { id: 'slate', label: 'Slate', backgroundColor: '#1e293b', textColor: '#f8fafc', borderColor: '#475569' },
+] as const;
+
+function getPdfTextAnnotationPalette(annotation: PdfTextAnnotation) {
+  const backgroundColor = annotation.backgroundColor ?? annotation.color ?? '#fef3c7';
+  const preset = PDF_TEXT_ANNOTATION_STYLES.find((entry) => entry.backgroundColor === backgroundColor);
+  return {
+    backgroundColor,
+    textColor: annotation.textColor ?? preset?.textColor ?? '#111827',
+    borderColor: preset?.borderColor ?? annotation.color ?? '#f59e0b',
+  };
+}
 
 const EMPTY_PDF_STATE: PdfSidecarState = {
   bookmarks: [],
   highlights: [],
+  textAnnotations: [],
+  pageComments: [],
   viewerState: null,
 };
 
@@ -83,10 +110,23 @@ interface SelectionActionState {
 
 interface RegionSelectionState {
   page: number;
+  mode: 'snapshot' | 'annotation';
   startX: number;
   startY: number;
   currentX: number;
   currentY: number;
+}
+
+interface AnnotationManipulationState {
+  annotationId: string;
+  page: number;
+  mode: 'move' | 'resize';
+  startClientX: number;
+  startClientY: number;
+  originLeft: number;
+  originTop: number;
+  originWidth: number;
+  originHeight: number;
 }
 
 type PendingSendAction =
@@ -173,10 +213,18 @@ interface PdfPageCanvasProps {
   onMeasured: (pageNumber: number, width: number, height: number) => void;
   registerSurface: (pageNumber: number, container: HTMLDivElement | null, canvas: HTMLCanvasElement | null) => void;
   highlights: PdfHighlight[];
+  textAnnotations: PdfTextAnnotation[];
   selectedHighlightId: string | null;
+  selectedTextAnnotationId: string | null;
   onHighlightClick: (highlight: PdfHighlight) => void;
+  onTextAnnotationClick: (annotation: PdfTextAnnotation) => void;
+  onTextAnnotationPointerDown: (
+    annotation: PdfTextAnnotation,
+    event: React.PointerEvent<HTMLElement>,
+    mode: 'move' | 'resize',
+  ) => void;
   regionSelection: RegionSelectionState | null;
-  snapshotMode: boolean;
+  interactionMode: 'none' | 'snapshot' | 'annotation';
 }
 
 function PdfPageCanvas({
@@ -191,10 +239,14 @@ function PdfPageCanvas({
   onMeasured,
   registerSurface,
   highlights,
+  textAnnotations,
   selectedHighlightId,
+  selectedTextAnnotationId,
   onHighlightClick,
+  onTextAnnotationClick,
+  onTextAnnotationPointerDown,
   regionSelection,
-  snapshotMode,
+  interactionMode,
 }: PdfPageCanvasProps) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
@@ -375,7 +427,7 @@ function PdfPageCanvas({
       className={cn(
         'relative overflow-hidden rounded-2xl border bg-card shadow-2xl shadow-black/20 transition-[transform,border-color,box-shadow] app-motion-fast',
         active ? 'border-primary/35 shadow-primary/10' : 'border-border/60',
-        snapshotMode && 'cursor-crosshair',
+        interactionMode !== 'none' && 'cursor-crosshair',
       )}
       data-pdf-page={pageNumber}
       style={{
@@ -418,6 +470,42 @@ function PdfPageCanvas({
             />
           )),
         )}
+        {textAnnotations.map((annotation) => (
+          (() => {
+            const palette = getPdfTextAnnotationPalette(annotation);
+            return (
+          <button
+            key={annotation.id}
+            type="button"
+            className={cn(
+              'pointer-events-auto absolute overflow-hidden rounded-md border px-2 py-1 text-left shadow-sm transition-colors',
+              selectedTextAnnotationId === annotation.id
+                ? 'ring-2 ring-white/35'
+                : '',
+            )}
+            style={{
+              left: `${annotation.left * 100}%`,
+              top: `${annotation.top * 100}%`,
+              width: `${annotation.width * 100}%`,
+              height: `${annotation.height * 100}%`,
+              backgroundColor: palette.backgroundColor,
+              color: palette.textColor,
+              borderColor: palette.borderColor,
+            }}
+            onPointerDown={(event) => onTextAnnotationPointerDown(annotation, event, 'move')}
+            onClick={() => onTextAnnotationClick(annotation)}
+          >
+            <div className="line-clamp-6 text-[11px] leading-snug">
+              {annotation.text || 'Text box'}
+            </div>
+            <span
+              className="absolute bottom-0.5 right-0.5 h-3.5 w-3.5 cursor-se-resize rounded-sm border border-black/10 bg-black/10"
+              onPointerDown={(event) => onTextAnnotationPointerDown(annotation, event, 'resize')}
+            />
+          </button>
+            );
+          })()
+        ))}
         {activeRegionRect && (
           <div
             className="absolute border-2 border-primary bg-primary/15"
@@ -493,9 +581,12 @@ export default function PdfView({ relativePath }: Props) {
   const [sidecarLoaded, setSidecarLoaded] = useState(false);
   const [selectionAction, setSelectionAction] = useState<SelectionActionState | null>(null);
   const [selectedHighlightId, setSelectedHighlightId] = useState<string | null>(null);
+  const [selectedTextAnnotationId, setSelectedTextAnnotationId] = useState<string | null>(null);
+  const [selectedPageCommentId, setSelectedPageCommentId] = useState<string | null>(null);
+  const [annotationManipulation, setAnnotationManipulation] = useState<AnnotationManipulationState | null>(null);
   const [bookmarksOpen, setBookmarksOpen] = useState(true);
   const [regionSelection, setRegionSelection] = useState<RegionSelectionState | null>(null);
-  const [snapshotMode, setSnapshotMode] = useState(false);
+  const [interactionMode, setInteractionMode] = useState<'none' | 'snapshot' | 'annotation'>('none');
   const [pendingSendAction, setPendingSendAction] = useState<PendingSendAction | null>(null);
 
   const allFiles = useMemo(() => flattenFiles(fileTree).filter((node) => !node.isFolder), [fileTree]);
@@ -534,8 +625,11 @@ export default function PdfView({ relativePath }: Props) {
     setSidecarLoaded(false);
     setSelectionAction(null);
     setSelectedHighlightId(null);
+    setSelectedTextAnnotationId(null);
+    setSelectedPageCommentId(null);
+    setAnnotationManipulation(null);
     setRegionSelection(null);
-    setSnapshotMode(false);
+    setInteractionMode('none');
 
     void Promise.all([
       tauriCommands.readNoteAssetDataUrl(vault.path, relativePath),
@@ -556,7 +650,12 @@ export default function PdfView({ relativePath }: Props) {
         const initialPage = Math.min(Math.max(sidecar.viewerState?.lastPage ?? 1, 1), pdf.numPages);
 
         setPageSizes({ 1: { width: initialViewport.width, height: initialViewport.height } });
-        setPdfState(sidecar);
+        setPdfState({
+          ...EMPTY_PDF_STATE,
+          ...sidecar,
+          textAnnotations: sidecar.textAnnotations ?? [],
+          pageComments: sidecar.pageComments ?? [],
+        });
         setSidecarLoaded(true);
         setDocumentProxy(pdf);
         setPageCount(pdf.numPages);
@@ -678,7 +777,10 @@ export default function PdfView({ relativePath }: Props) {
     () => pdfState.highlights.find((highlight) => highlight.id === selectedHighlightId) ?? null,
     [pdfState.highlights, selectedHighlightId],
   );
-
+  const selectedTextAnnotation = useMemo(
+    () => pdfState.textAnnotations.find((annotation) => annotation.id === selectedTextAnnotationId) ?? null,
+    [pdfState.textAnnotations, selectedTextAnnotationId],
+  );
   const setCustomZoom = (nextZoom: number) => {
     setZoomMode('custom');
     setZoom(clampZoom(Math.round(nextZoom * 100) / 100));
@@ -804,6 +906,153 @@ export default function PdfView({ relativePath }: Props) {
       setSelectedHighlightId(null);
     }
   }, [selectedHighlightId, updatePdfState]);
+
+  const createTextAnnotation = useCallback((selection: RegionSelectionState) => {
+    const rect = selectionToRegionRect(selection);
+    const surface = pageRefs.current[selection.page];
+    if (!rect || !surface) return;
+    const bounds = surface.getBoundingClientRect();
+    if (!bounds.width || !bounds.height || rect.width < 16 || rect.height < 16) return;
+    const timestamp = getTimestamp();
+    const annotation: PdfTextAnnotation = {
+      id: crypto.randomUUID(),
+      page: selection.page,
+      text: '',
+      left: rect.left / bounds.width,
+      top: rect.top / bounds.height,
+      width: rect.width / bounds.width,
+      height: rect.height / bounds.height,
+      color: PDF_TEXT_ANNOTATION_STYLES[0].borderColor,
+      backgroundColor: PDF_TEXT_ANNOTATION_STYLES[0].backgroundColor,
+      textColor: PDF_TEXT_ANNOTATION_STYLES[0].textColor,
+      createdAt: timestamp,
+      updatedAt: timestamp,
+    };
+    updatePdfState((current) => ({
+      ...current,
+      textAnnotations: [...current.textAnnotations, annotation],
+    }));
+    setSelectedTextAnnotationId(annotation.id);
+  }, [updatePdfState]);
+
+  const updateTextAnnotation = useCallback((annotationId: string, text: string) => {
+    updatePdfState((current) => ({
+      ...current,
+      textAnnotations: current.textAnnotations.map((annotation) => (
+        annotation.id === annotationId
+          ? { ...annotation, text, updatedAt: getTimestamp() }
+          : annotation
+      )),
+    }));
+  }, [updatePdfState]);
+
+  const updateTextAnnotationPalette = useCallback((
+    annotationId: string,
+    palette: { backgroundColor: string; textColor: string; borderColor: string },
+  ) => {
+    updatePdfState((current) => ({
+      ...current,
+      textAnnotations: current.textAnnotations.map((annotation) => (
+        annotation.id === annotationId
+          ? {
+              ...annotation,
+              color: palette.borderColor,
+              backgroundColor: palette.backgroundColor,
+              textColor: palette.textColor,
+              updatedAt: getTimestamp(),
+            }
+          : annotation
+      )),
+    }));
+  }, [updatePdfState]);
+
+  const removeTextAnnotation = useCallback((annotationId: string) => {
+    updatePdfState((current) => ({
+      ...current,
+      textAnnotations: current.textAnnotations.filter((annotation) => annotation.id !== annotationId),
+    }));
+    if (selectedTextAnnotationId === annotationId) {
+      setSelectedTextAnnotationId(null);
+    }
+  }, [selectedTextAnnotationId, updatePdfState]);
+
+  const updateTextAnnotationFrame = useCallback((
+    annotationId: string,
+    frame: Pick<PdfTextAnnotation, 'left' | 'top' | 'width' | 'height'>,
+  ) => {
+    updatePdfState((current) => ({
+      ...current,
+      textAnnotations: current.textAnnotations.map((annotation) => (
+        annotation.id === annotationId
+          ? {
+              ...annotation,
+              ...frame,
+              updatedAt: getTimestamp(),
+            }
+          : annotation
+      )),
+    }));
+  }, [updatePdfState]);
+
+  const handleTextAnnotationPointerDown = useCallback((
+    annotation: PdfTextAnnotation,
+    event: React.PointerEvent<HTMLElement>,
+    mode: 'move' | 'resize',
+  ) => {
+    if (interactionMode !== 'none') return;
+    event.preventDefault();
+    event.stopPropagation();
+    setSelectedTextAnnotationId(annotation.id);
+    setAnnotationManipulation({
+      annotationId: annotation.id,
+      page: annotation.page,
+      mode,
+      startClientX: event.clientX,
+      startClientY: event.clientY,
+      originLeft: annotation.left,
+      originTop: annotation.top,
+      originWidth: annotation.width,
+      originHeight: annotation.height,
+    });
+  }, [interactionMode]);
+
+  const addPageCommentForCurrentPage = useCallback(() => {
+    const timestamp = getTimestamp();
+    const comment: PdfPageComment = {
+      id: crypto.randomUUID(),
+      page: pageNumber,
+      content: '',
+      createdAt: timestamp,
+      updatedAt: timestamp,
+    };
+    updatePdfState((current) => ({
+      ...current,
+      pageComments: [...current.pageComments, comment].sort((left, right) => left.page - right.page),
+    }));
+    setBookmarksOpen(true);
+    setSelectedPageCommentId(comment.id);
+  }, [pageNumber, updatePdfState]);
+
+  const updatePageComment = useCallback((commentId: string, content: string) => {
+    updatePdfState((current) => ({
+      ...current,
+      pageComments: current.pageComments.map((comment) => (
+        comment.id === commentId
+          ? { ...comment, content, updatedAt: getTimestamp() }
+          : comment
+      )),
+    }));
+  }, [updatePdfState]);
+
+  const removePageComment = useCallback((commentId: string) => {
+    updatePdfState((current) => ({
+      ...current,
+      pageComments: current.pageComments.filter((comment) => comment.id !== commentId),
+    }));
+    if (selectedPageCommentId === commentId) {
+      setSelectedPageCommentId(null);
+    }
+  }, [selectedPageCommentId, updatePdfState]);
 
   const appendToNote = useCallback(async (targetPath: string, block: string) => {
     if (!vault) return;
@@ -1122,7 +1371,7 @@ export default function PdfView({ relativePath }: Props) {
 
   useEffect(() => {
     const handleMouseUp = () => {
-      if (snapshotMode || regionSelection) return;
+      if (interactionMode !== 'none' || regionSelection) return;
       window.setTimeout(() => {
         const selection = window.getSelection();
         if (!selection || selection.rangeCount === 0 || selection.isCollapsed) {
@@ -1181,7 +1430,7 @@ export default function PdfView({ relativePath }: Props) {
 
     document.addEventListener('mouseup', handleMouseUp, true);
     return () => document.removeEventListener('mouseup', handleMouseUp, true);
-  }, [regionSelection, snapshotMode]);
+  }, [interactionMode, regionSelection]);
 
   useEffect(() => {
     if (!regionSelection) return;
@@ -1200,10 +1449,14 @@ export default function PdfView({ relativePath }: Props) {
     const handlePointerUp = () => {
       const regionRect = selectionToRegionRect(regionSelection);
       if (regionRect && regionRect.width >= 12 && regionRect.height >= 12) {
-        captureRegionSnapshot(regionSelection.page, regionRect);
+        if (regionSelection.mode === 'snapshot') {
+          captureRegionSnapshot(regionSelection.page, regionRect);
+        } else {
+          createTextAnnotation(regionSelection);
+        }
       }
       setRegionSelection(null);
-      setSnapshotMode(false);
+      setInteractionMode('none');
     };
 
     window.addEventListener('pointermove', handlePointerMove);
@@ -1213,23 +1466,79 @@ export default function PdfView({ relativePath }: Props) {
       window.removeEventListener('pointermove', handlePointerMove);
       window.removeEventListener('pointerup', handlePointerUp);
     };
-  }, [captureRegionSnapshot, regionSelection]);
+  }, [captureRegionSnapshot, createTextAnnotation, regionSelection]);
 
-  const handleSnapshotPointerDown = useCallback((event: React.PointerEvent<HTMLDivElement>) => {
-    if (!snapshotMode) return;
+  useEffect(() => {
+    if (!annotationManipulation) return;
+
+    const handlePointerMove = (event: PointerEvent) => {
+      const surface = pageRefs.current[annotationManipulation.page];
+      if (!surface) return;
+      const bounds = surface.getBoundingClientRect();
+      if (!bounds.width || !bounds.height) return;
+
+      const deltaX = (event.clientX - annotationManipulation.startClientX) / bounds.width;
+      const deltaY = (event.clientY - annotationManipulation.startClientY) / bounds.height;
+      const minWidth = Math.min(0.5, 48 / bounds.width);
+      const minHeight = Math.min(0.5, 32 / bounds.height);
+
+      if (annotationManipulation.mode === 'move') {
+        const nextLeft = Math.min(Math.max(0, annotationManipulation.originLeft + deltaX), Math.max(0, 1 - annotationManipulation.originWidth));
+        const nextTop = Math.min(Math.max(0, annotationManipulation.originTop + deltaY), Math.max(0, 1 - annotationManipulation.originHeight));
+        updateTextAnnotationFrame(annotationManipulation.annotationId, {
+          left: nextLeft,
+          top: nextTop,
+          width: annotationManipulation.originWidth,
+          height: annotationManipulation.originHeight,
+        });
+        return;
+      }
+
+      const nextWidth = Math.min(
+        Math.max(minWidth, annotationManipulation.originWidth + deltaX),
+        Math.max(minWidth, 1 - annotationManipulation.originLeft),
+      );
+      const nextHeight = Math.min(
+        Math.max(minHeight, annotationManipulation.originHeight + deltaY),
+        Math.max(minHeight, 1 - annotationManipulation.originTop),
+      );
+      updateTextAnnotationFrame(annotationManipulation.annotationId, {
+        left: annotationManipulation.originLeft,
+        top: annotationManipulation.originTop,
+        width: nextWidth,
+        height: nextHeight,
+      });
+    };
+
+    const handlePointerUp = () => {
+      setAnnotationManipulation(null);
+    };
+
+    window.addEventListener('pointermove', handlePointerMove);
+    window.addEventListener('pointerup', handlePointerUp, { once: true });
+
+    return () => {
+      window.removeEventListener('pointermove', handlePointerMove);
+      window.removeEventListener('pointerup', handlePointerUp);
+    };
+  }, [annotationManipulation, updateTextAnnotationFrame]);
+
+  const handleWorkspacePointerDown = useCallback((event: React.PointerEvent<HTMLDivElement>) => {
+    if (interactionMode === 'none') return;
     const target = event.target instanceof Element ? event.target.closest<HTMLElement>('[data-pdf-page]') : null;
     if (!target) return;
     const page = Number.parseInt(target.dataset.pdfPage ?? '1', 10) || 1;
     const rect = target.getBoundingClientRect();
     setRegionSelection({
       page,
+      mode: interactionMode,
       startX: Math.min(Math.max(event.clientX - rect.left, 0), rect.width),
       startY: Math.min(Math.max(event.clientY - rect.top, 0), rect.height),
       currentX: Math.min(Math.max(event.clientX - rect.left, 0), rect.width),
       currentY: Math.min(Math.max(event.clientY - rect.top, 0), rect.height),
     });
     event.preventDefault();
-  }, [snapshotMode]);
+  }, [interactionMode]);
 
   if (loading) {
     return (
@@ -1435,18 +1744,34 @@ export default function PdfView({ relativePath }: Props) {
               <Button
                 size="sm"
                 variant="ghost"
-                className={cn('h-8 gap-1.5 px-2.5 text-xs', snapshotMode && 'bg-accent text-accent-foreground')}
+                className={cn('h-8 gap-1.5 px-2.5 text-xs', interactionMode === 'snapshot' && 'bg-accent text-accent-foreground')}
                 onClick={() => {
-                  setSnapshotMode((current) => !current);
+                  setInteractionMode((current) => current === 'snapshot' ? 'none' : 'snapshot');
                   setRegionSelection(null);
                 }}
               >
                 <Crop size={14} />
                 Region snapshot
               </Button>
+              <Button
+                size="sm"
+                variant="ghost"
+                className={cn('h-8 gap-1.5 px-2.5 text-xs', interactionMode === 'annotation' && 'bg-accent text-accent-foreground')}
+                onClick={() => {
+                  setInteractionMode((current) => current === 'annotation' ? 'none' : 'annotation');
+                  setRegionSelection(null);
+                }}
+              >
+                <MessageSquare size={14} />
+                Text box
+              </Button>
               <Button size="sm" variant="ghost" className="h-8 gap-1.5 px-2.5 text-xs" onClick={() => captureFullPageSnapshot(pageNumber)}>
                 <ImagePlus size={14} />
                 Snapshot page
+              </Button>
+              <Button size="sm" variant="ghost" className="h-8 gap-1.5 px-2.5 text-xs" onClick={addPageCommentForCurrentPage}>
+                <MessageSquare size={14} />
+                Page comment
               </Button>
               <Button
                 size="sm"
@@ -1553,6 +1878,59 @@ export default function PdfView({ relativePath }: Props) {
               </div>
             </div>
           )}
+
+          {selectedTextAnnotation && (
+            <div className="pointer-events-auto w-80 rounded-2xl border border-border/60 bg-popover/95 p-3 shadow-2xl shadow-black/25">
+              <div className="mb-2 flex items-start justify-between gap-3">
+                <div>
+                  <div className="text-sm font-medium">Text annotation</div>
+                  <div className="text-xs text-muted-foreground">Page {selectedTextAnnotation.page}</div>
+                </div>
+                <Button size="icon" variant="ghost" className="size-8" onClick={() => setSelectedTextAnnotationId(null)}>
+                  <PanelRightClose size={14} />
+                </Button>
+              </div>
+              <Textarea
+                value={selectedTextAnnotation.text}
+                onChange={(event) => updateTextAnnotation(selectedTextAnnotation.id, event.target.value)}
+                placeholder="Write inside this PDF text box…"
+                className="min-h-[140px]"
+              />
+              <div className="mt-3">
+                <div className="mb-2 text-xs font-medium text-muted-foreground">Style</div>
+                <div className="flex flex-wrap gap-2">
+                  {PDF_TEXT_ANNOTATION_STYLES.map((style) => {
+                    const palette = getPdfTextAnnotationPalette(selectedTextAnnotation);
+                    const isActive = palette.backgroundColor === style.backgroundColor && palette.textColor === style.textColor;
+                    return (
+                      <button
+                        key={style.id}
+                        type="button"
+                        onClick={() => updateTextAnnotationPalette(selectedTextAnnotation.id, style)}
+                        className={cn(
+                          'rounded-md border px-2.5 py-1.5 text-xs transition-colors',
+                          isActive && 'ring-2 ring-primary/35',
+                        )}
+                        style={{
+                          backgroundColor: style.backgroundColor,
+                          color: style.textColor,
+                          borderColor: style.borderColor,
+                        }}
+                      >
+                        {style.label}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+              <div className="mt-3 flex justify-end">
+                <Button size="sm" variant="ghost" className="gap-1.5 text-destructive hover:text-destructive" onClick={() => removeTextAnnotation(selectedTextAnnotation.id)}>
+                  <Trash2 size={14} />
+                  Remove text box
+                </Button>
+              </div>
+            </div>
+          )}
         </div>
 
         {bookmarksOpen && (
@@ -1600,12 +1978,64 @@ export default function PdfView({ relativePath }: Props) {
                 ))
               )}
             </div>
+
+            <div className="mt-4 border-t border-border/40 pt-4">
+              <div className="mb-3 flex items-center justify-between gap-3">
+                <div>
+                  <div className="text-sm font-medium">Page comments</div>
+                  <div className="text-xs text-muted-foreground">{pdfState.pageComments.length} saved</div>
+                </div>
+                <Button size="sm" variant="ghost" className="h-7 gap-1 text-xs" onClick={addPageCommentForCurrentPage}>
+                  <MessageSquare size={12} />
+                  Add
+                </Button>
+              </div>
+              <div className="max-h-[36vh] space-y-2 overflow-auto pr-1">
+                {pdfState.pageComments.length === 0 ? (
+                  <div className="rounded-xl border border-dashed border-border/60 px-3 py-5 text-center text-xs text-muted-foreground">
+                    No page comments yet.
+                  </div>
+                ) : (
+                  pdfState.pageComments.map((comment) => (
+                    <div key={comment.id} className="rounded-xl border border-border/50 bg-muted/20 p-2.5">
+                      <button
+                        type="button"
+                        className="mb-2 flex w-full items-center justify-between gap-3 text-left"
+                        onClick={() => {
+                          goToPage(comment.page);
+                          setSelectedPageCommentId(comment.id);
+                        }}
+                      >
+                        <div className="flex items-center gap-2 text-sm font-medium">
+                          <MessageSquare size={14} className="text-primary" />
+                          Page {comment.page}
+                        </div>
+                      </button>
+                      <Textarea
+                        value={comment.content}
+                        onChange={(event) => updatePageComment(comment.id, event.target.value)}
+                        placeholder={`Comment for page ${comment.page}`}
+                        className={cn('min-h-[96px] text-xs', selectedPageCommentId === comment.id && 'ring-1 ring-primary/30')}
+                      />
+                      <div className="mt-2 flex justify-end">
+                        <Button size="sm" variant="ghost" className="h-7 gap-1 text-xs text-destructive hover:text-destructive" onClick={() => removePageComment(comment.id)}>
+                          <Trash2 size={12} />
+                          Remove
+                        </Button>
+                      </div>
+                    </div>
+                  ))
+                )}
+              </div>
+            </div>
           </aside>
         )}
 
-        {snapshotMode && !regionSelection && (
+        {interactionMode !== 'none' && !regionSelection && (
           <div className="absolute left-1/2 top-5 z-10 -translate-x-1/2 rounded-full border border-border/60 bg-popover/92 px-4 py-2 text-xs text-muted-foreground shadow-lg">
-            Drag across a page to capture a region snapshot.
+            {interactionMode === 'snapshot'
+              ? 'Drag across a page to capture a region snapshot.'
+              : 'Drag across a page to place a text annotation box.'}
           </div>
         )}
 
@@ -1614,7 +2044,7 @@ export default function PdfView({ relativePath }: Props) {
           tabIndex={0}
           className="relative min-h-0 h-full overflow-auto bg-[radial-gradient(circle_at_top,oklch(0.24_0.04_230_/_0.08),transparent_42%),linear-gradient(to_bottom,color-mix(in_oklch,var(--background)_92%,black_8%),var(--background))]"
           onPointerDown={() => viewportRef.current?.focus()}
-          onPointerDownCapture={handleSnapshotPointerDown}
+          onPointerDownCapture={handleWorkspacePointerDown}
         >
           <div
             className="flex min-h-full min-w-full items-start justify-center"
@@ -1649,10 +2079,14 @@ export default function PdfView({ relativePath }: Props) {
                   onMeasured={handleMeasured}
                   registerSurface={registerSurface}
                   highlights={pdfState.highlights.filter((highlight) => highlight.page === renderedPage)}
+                  textAnnotations={pdfState.textAnnotations.filter((annotation) => annotation.page === renderedPage)}
                   selectedHighlightId={selectedHighlightId}
+                  selectedTextAnnotationId={selectedTextAnnotationId}
                   onHighlightClick={(highlight) => setSelectedHighlightId(highlight.id)}
+                  onTextAnnotationClick={(annotation) => setSelectedTextAnnotationId(annotation.id)}
+                  onTextAnnotationPointerDown={handleTextAnnotationPointerDown}
                   regionSelection={regionSelection}
-                  snapshotMode={snapshotMode}
+                  interactionMode={interactionMode}
                 />
               ))}
             </div>

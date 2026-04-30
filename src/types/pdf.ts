@@ -24,6 +24,29 @@ export interface PdfHighlight {
   updatedAt: number;
 }
 
+export interface PdfTextAnnotation {
+  id: string;
+  page: number;
+  text: string;
+  left: number;
+  top: number;
+  width: number;
+  height: number;
+  color?: string | null;
+  backgroundColor?: string | null;
+  textColor?: string | null;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface PdfPageComment {
+  id: string;
+  page: number;
+  content: string;
+  createdAt: number;
+  updatedAt: number;
+}
+
 export interface PdfViewerState {
   lastPage?: number | null;
   lastZoomMode?: 'custom' | 'fit-width' | 'fit-height' | 'fit-page' | null;
@@ -35,5 +58,7 @@ export interface PdfViewerState {
 export interface PdfSidecarState {
   bookmarks: PdfBookmark[];
   highlights: PdfHighlight[];
+  textAnnotations: PdfTextAnnotation[];
+  pageComments: PdfPageComment[];
   viewerState?: PdfViewerState | null;
 }

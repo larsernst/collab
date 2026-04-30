@@ -59,7 +59,7 @@ function isManagedPicturesFolder(node: Pick<NoteFile, 'isFolder' | 'relativePath
 
 export default function FileTree() {
   const { vault, fileTree, refreshFileTree } = useVaultStore();
-  const { openTab, closeTab, renameTab } = useEditorStore();
+  const { openTab, closeTab, renameTab, activeTabPath } = useEditorStore();
   const {
     setActiveView,
     confirmDelete: confirmDeleteEnabled,
@@ -321,6 +321,14 @@ export default function FileTree() {
 
     return () => { cancelled = true; };
   }, [vault?.path, fileTree]);
+
+  useEffect(() => {
+    if (mode !== 'files') return;
+    if (!activeTabPath) return;
+    const existing = flatten(fileTree).find((entry) => entry.relativePath === activeTabPath);
+    if (!existing) return;
+    setSelectedRelativePath((current) => (current === activeTabPath ? current : activeTabPath));
+  }, [activeTabPath, fileTree, mode]);
 
   useEffect(() => {
     if (!vault || !selectedRelativePath || mode !== 'files' || !selectedNode || selectedNode.isFolder) {
