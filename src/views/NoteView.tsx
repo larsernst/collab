@@ -1,7 +1,8 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { listen } from '@tauri-apps/api/event';
 import { useVaultStore } from '../store/vaultStore';
 import { useEditorStore } from '../store/editorStore';
+import type { NoteEditorViewState } from '../store/editorStore';
 import { useCollabStore } from '../store/collabStore';
 import { tauriCommands } from '../lib/tauri';
 import { MarkdownEditor, type MarkdownEditorHandle } from '../components/editor/MarkdownEditor';
@@ -37,16 +38,15 @@ function sanitizeFilename(name: string): string {
 
 export default function NoteView({ relativePath }: { relativePath: string }) {
   const { vault, refreshFileTree } = useVaultStore();
-  const {
-    markDirty,
-    markSaved,
-    setSavedHash,
-    renameTab,
-    forceReloadPath,
-    setForceReloadPath,
-    revealEditorPath,
-    setRevealEditorPath,
-  } = useEditorStore();
+  const markDirty = useEditorStore((state) => state.markDirty);
+  const markSaved = useEditorStore((state) => state.markSaved);
+  const setSavedHash = useEditorStore((state) => state.setSavedHash);
+  const renameTab = useEditorStore((state) => state.renameTab);
+  const forceReloadPath = useEditorStore((state) => state.forceReloadPath);
+  const setForceReloadPath = useEditorStore((state) => state.setForceReloadPath);
+  const revealEditorPath = useEditorStore((state) => state.revealEditorPath);
+  const setRevealEditorPath = useEditorStore((state) => state.setRevealEditorPath);
+  const setNoteViewState = useEditorStore((state) => state.setNoteViewState);
   const { addConflict, myUserId, myUserName } = useCollabStore();
   const [content, setContent] = useState<string | null>(null);
   const {
@@ -57,6 +57,10 @@ export default function NoteView({ relativePath }: { relativePath: string }) {
   const loadSnippets = useNoteSnippetStore((state) => state.loadSnippets);
   const editorRef = useRef<MarkdownEditorHandle | null>(null);
   const { hashRef, markLoaded, shouldSkipAutosave, markWriteStarted, shouldCreateSnapshot } = useDocumentSessionState();
+  const initialViewState = useMemo<NoteEditorViewState | null>(
+    () => useEditorStore.getState().noteViewStates[relativePath] ?? null,
+    [relativePath],
+  );
 
   const loadNote = () => {
     if (!vault || !relativePath) return;
@@ -251,6 +255,8 @@ export default function NoteView({ relativePath }: { relativePath: string }) {
           onChange={handleChange}
           onSave={(c) => handleSave(c, true)}
           relativePath={relativePath}
+          initialViewState={revealEditorPath === relativePath ? null : initialViewState}
+          onViewStateChange={(viewState) => setNoteViewState(relativePath, viewState)}
         />
       </div>
     </div>

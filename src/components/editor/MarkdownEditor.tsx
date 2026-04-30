@@ -30,6 +30,8 @@ import { createSlashCommandSource } from './slashCommands';
 import { buildMarkdownEditorTheme, buildMarkdownHighlightStyle } from './markdownEditorTheme';
 import { handleEditorDocumentLinkMouseDown, useMarkdownEditorIntegrations } from './useMarkdownEditorIntegrations';
 import { useMarkdownEditorHandle } from './useMarkdownEditorHandle';
+import type { MarkdownEditorViewState } from './useMarkdownEditorHandle';
+import { captureEditorViewState, restoreEditorViewState } from './useMarkdownEditorHandle';
 import { MarkdownEditorContextMenu } from './MarkdownEditorContextMenu';
 
 export interface MarkdownEditorHandle {
@@ -43,6 +45,8 @@ export interface MarkdownEditorHandle {
   focus: () => void;
   replaceRange: (from: number, to: number, text: string) => void;
   moveCursorToEnd: () => void;
+  getViewState: () => MarkdownEditorViewState | null;
+  restoreViewState: (editorViewState: MarkdownEditorViewState) => void;
   getTableAtCursor: () => { from: number; to: number; text: string } | null;
   getMathBlockAtCursor: () => { from: number; to: number; text: string } | null;
   getCodeBlockAtCursor: () => ParsedCodeBlockAtCursor | null;
@@ -53,6 +57,8 @@ interface MarkdownEditorProps {
   onChange: (value: string) => void;
   onSave: (value: string) => Promise<void>;
   relativePath: string;
+  initialViewState?: MarkdownEditorViewState | null;
+  onViewStateChange?: (editorViewState: MarkdownEditorViewState) => void;
 }
 
 const IMAGE_DROP_EXTENSIONS = new Set(['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg', 'bmp', 'ico', 'avif']);
@@ -250,7 +256,7 @@ function openToolbarAction(action: 'icon' | 'table' | 'link' | 'image' | 'taskLi
 // ─── Component ───────────────────────────────────────────────────────────────
 
 export const MarkdownEditor = forwardRef<MarkdownEditorHandle, MarkdownEditorProps>(
-  function MarkdownEditor({ content, onChange, onSave, relativePath }, ref) {
+  function MarkdownEditor({ content, onChange, onSave, relativePath, initialViewState = null, onViewStateChange }, ref) {
     const containerRef = useRef<HTMLDivElement>(null);
     const viewRef = useRef<EditorView | null>(null);
     const [editorView, setEditorView] = useState<EditorView | null>(null);
@@ -260,6 +266,7 @@ export const MarkdownEditor = forwardRef<MarkdownEditorHandle, MarkdownEditorPro
     const contentRef = useRef(content);
     const onChangeRef = useRef(onChange);
     const onSaveRef = useRef(onSave);
+    const onViewStateChangeRef = useRef(onViewStateChange);
     const compartmentsRef = useRef(createMarkdownEditorCompartments());
     const {
       theme,
@@ -280,6 +287,7 @@ export const MarkdownEditor = forwardRef<MarkdownEditorHandle, MarkdownEditorPro
 
     onChangeRef.current = onChange;
     onSaveRef.current = onSave;
+    onViewStateChangeRef.current = onViewStateChange;
 
     useMarkdownEditorIntegrations({
       view: editorView,
@@ -412,6 +420,9 @@ export const MarkdownEditor = forwardRef<MarkdownEditorHandle, MarkdownEditorPro
           contentRef.current = val;
           onChangeRef.current(val);
         }
+        if ((update.selectionSet || update.docChanged) && onViewStateChangeRef.current) {
+          onViewStateChangeRef.current(captureEditorViewState(update.view));
+        }
       });
 
       const uiState = useUiStore.getState();
@@ -459,7 +470,36 @@ export const MarkdownEditor = forwardRef<MarkdownEditorHandle, MarkdownEditorPro
       setEditorView(view);
       view.focus();
 
+      let frame: number | null = null;
+      const emitViewState = () => {
+        if (!onViewStateChangeRef.current) return;
+        if (frame !== null) window.cancelAnimationFrame(frame);
+        frame = window.requestAnimationFrame(() => {
+          frame = null;
+          if (!viewRef.current) return;
+          onViewStateChangeRef.current?.(captureEditorViewState(viewRef.current));
+        });
+      };
+
+      const handleScroll = () => {
+        emitViewState();
+      };
+
+      view.scrollDOM.addEventListener('scroll', handleScroll, { passive: true });
+
+      if (initialViewState) {
+        window.requestAnimationFrame(() => {
+          if (!viewRef.current) return;
+          restoreEditorViewState(viewRef.current, initialViewState);
+          emitViewState();
+        });
+      } else {
+        emitViewState();
+      }
+
       return () => {
+        view.scrollDOM.removeEventListener('scroll', handleScroll);
+        if (frame !== null) window.cancelAnimationFrame(frame);
         view.destroy();
         viewRef.current = null;
         setEditorView(null);

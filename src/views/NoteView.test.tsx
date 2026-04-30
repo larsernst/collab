@@ -96,6 +96,8 @@ describe('NoteView external reload behavior', () => {
       openTabs: [{ relativePath: 'Notes/a.md', title: 'a', isDirty: false, savedHash: null, type: 'note' }],
       activeTabPath: 'Notes/a.md',
       forceReloadPath: null,
+      revealEditorPath: null,
+      noteViewStates: {},
     });
 
     useUiStore.setState({

@@ -9,12 +9,19 @@ export interface OpenTab {
   type: 'note' | 'canvas' | 'kanban' | 'graph' | 'settings' | 'image' | 'pdf';
 }
 
+export interface NoteEditorViewState {
+  scrollTop: number;
+  selectionAnchor: number;
+  selectionHead: number;
+}
+
 interface EditorState {
   sessionVaultPath: string | null;
   openTabs: OpenTab[];
   activeTabPath: string | null;
   forceReloadPath: string | null;
   revealEditorPath: string | null;
+  noteViewStates: Record<string, NoteEditorViewState>;
   setSessionVaultPath: (vaultPath: string | null) => void;
   resetSession: (vaultPath?: string | null) => void;
   openTab: (relativePath: string, title: string, type?: 'note' | 'canvas' | 'kanban' | 'graph' | 'settings' | 'image' | 'pdf') => void;
@@ -28,6 +35,24 @@ interface EditorState {
   reorderTabs: (fromPath: string, toPath: string, before: boolean) => void;
   setForceReloadPath: (path: string | null) => void;
   setRevealEditorPath: (path: string | null) => void;
+  setNoteViewState: (relativePath: string, viewState: NoteEditorViewState) => void;
+}
+
+function remapNoteViewStates(
+  viewStates: Record<string, NoteEditorViewState>,
+  oldPath: string,
+  newPath: string,
+) {
+  return Object.fromEntries(
+    Object.entries(viewStates).map(([path, viewState]) => [
+      path === oldPath
+        ? newPath
+        : path.startsWith(`${oldPath}/`)
+        ? `${newPath}${path.slice(oldPath.length)}`
+        : path,
+      viewState,
+    ]),
+  );
 }
 
 export const useEditorStore = create<EditorState>()(
@@ -38,6 +63,7 @@ export const useEditorStore = create<EditorState>()(
   activeTabPath: null,
   forceReloadPath: null,
   revealEditorPath: null,
+  noteViewStates: {},
 
   setSessionVaultPath: (sessionVaultPath) => set({ sessionVaultPath }),
 
@@ -47,6 +73,7 @@ export const useEditorStore = create<EditorState>()(
     activeTabPath: null,
     forceReloadPath: null,
     revealEditorPath: null,
+    noteViewStates: {},
   }),
 
   openTab: (relativePath, title, type = 'note') => {
@@ -120,6 +147,7 @@ export const useEditorStore = create<EditorState>()(
           : state.activeTabPath?.startsWith(`${oldPath}/`)
           ? `${newPath}${state.activeTabPath.slice(oldPath.length)}`
           : state.activeTabPath,
+      noteViewStates: remapNoteViewStates(state.noteViewStates, oldPath, newPath),
     }));
   },
 
@@ -139,6 +167,12 @@ export const useEditorStore = create<EditorState>()(
 
   setForceReloadPath: (forceReloadPath) => set({ forceReloadPath }),
   setRevealEditorPath: (revealEditorPath) => set({ revealEditorPath }),
+  setNoteViewState: (relativePath, viewState) => set((state) => ({
+    noteViewStates: {
+      ...state.noteViewStates,
+      [relativePath]: viewState,
+    },
+  })),
 }),
     {
       name: 'editor-storage',
@@ -146,6 +180,7 @@ export const useEditorStore = create<EditorState>()(
         sessionVaultPath: state.sessionVaultPath,
         openTabs: state.openTabs,
         activeTabPath: state.activeTabPath,
+        noteViewStates: state.noteViewStates,
       }),
     }
   )

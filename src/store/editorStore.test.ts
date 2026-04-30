@@ -9,6 +9,8 @@ describe('editorStore renameTab', () => {
       openTabs: [],
       activeTabPath: null,
       forceReloadPath: null,
+      revealEditorPath: null,
+      noteViewStates: {},
     });
   });
 
@@ -36,6 +38,24 @@ describe('editorStore renameTab', () => {
     ]);
   });
 
+  it('moves persisted note editor view state when a note path changes', () => {
+    useEditorStore.getState().setNoteViewState('Notes/a.md', {
+      scrollTop: 240,
+      selectionAnchor: 18,
+      selectionHead: 22,
+    });
+
+    useEditorStore.getState().renameTab('Notes/a.md', 'Archive/a.md', 'a');
+
+    const next = useEditorStore.getState();
+    expect(next.noteViewStates['Notes/a.md']).toBeUndefined();
+    expect(next.noteViewStates['Archive/a.md']).toEqual({
+      scrollTop: 240,
+      selectionAnchor: 18,
+      selectionHead: 22,
+    });
+  });
+
   it('updates descendant tabs when a folder path changes', () => {
     const state = useEditorStore.getState();
     state.openTab('Projects/alpha/spec.md', 'spec', 'note');
@@ -50,5 +70,23 @@ describe('editorStore renameTab', () => {
       'Archive/alpha/spec.md',
       'Archive/alpha/board.kanban',
     ]);
+  });
+
+  it('moves descendant note editor view state when a folder path changes', () => {
+    useEditorStore.getState().setNoteViewState('Projects/alpha/spec.md', {
+      scrollTop: 96,
+      selectionAnchor: 11,
+      selectionHead: 13,
+    });
+
+    useEditorStore.getState().renameTab('Projects/alpha', 'Archive/alpha', 'alpha');
+
+    const next = useEditorStore.getState();
+    expect(next.noteViewStates['Projects/alpha/spec.md']).toBeUndefined();
+    expect(next.noteViewStates['Archive/alpha/spec.md']).toEqual({
+      scrollTop: 96,
+      selectionAnchor: 11,
+      selectionHead: 13,
+    });
   });
 });

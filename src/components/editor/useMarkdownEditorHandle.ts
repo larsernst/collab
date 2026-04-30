@@ -8,6 +8,12 @@ import { insertSnippetTemplate } from './snippetEngine';
 
 type SelectionRange = { from: number; to: number };
 
+export type MarkdownEditorViewState = {
+  scrollTop: number;
+  selectionAnchor: number;
+  selectionHead: number;
+};
+
 export function insertAroundSelection(
   view: EditorView,
   before: string,
@@ -58,6 +64,25 @@ export function replaceEditorRange(view: EditorView, range: SelectionRange, text
   view.focus();
 }
 
+export function captureEditorViewState(view: EditorView): MarkdownEditorViewState {
+  const selection = view.state.selection.main;
+  return {
+    scrollTop: view.scrollDOM.scrollTop,
+    selectionAnchor: selection.anchor,
+    selectionHead: selection.head,
+  };
+}
+
+export function restoreEditorViewState(view: EditorView, editorViewState: MarkdownEditorViewState) {
+  const docLength = view.state.doc.length;
+  const selectionAnchor = Math.max(0, Math.min(editorViewState.selectionAnchor, docLength));
+  const selectionHead = Math.max(0, Math.min(editorViewState.selectionHead, docLength));
+  view.dispatch({
+    selection: { anchor: selectionAnchor, head: selectionHead },
+  });
+  view.scrollDOM.scrollTop = Math.max(0, editorViewState.scrollTop);
+}
+
 type MarkdownEditorHandleShape = {
   insertAround: (before: string, after: string, placeholder: string) => void;
   insertLine: (prefix: string) => void;
@@ -66,6 +91,8 @@ type MarkdownEditorHandleShape = {
   focus: () => void;
   replaceRange: (from: number, to: number, text: string) => void;
   moveCursorToEnd: () => void;
+  getViewState: () => MarkdownEditorViewState | null;
+  restoreViewState: (editorViewState: MarkdownEditorViewState) => void;
   getTableAtCursor: () => { from: number; to: number; text: string } | null;
   getMathBlockAtCursor: () => { from: number; to: number; text: string } | null;
   getCodeBlockAtCursor: () => ParsedCodeBlockAtCursor | null;
@@ -129,6 +156,18 @@ export function useMarkdownEditorHandle({
         selection: { anchor: end, head: end },
       });
       view.focus();
+    },
+
+    getViewState() {
+      const view = viewRef.current;
+      if (!view) return null;
+      return captureEditorViewState(view);
+    },
+
+    restoreViewState(editorViewState) {
+      const view = viewRef.current;
+      if (!view) return;
+      restoreEditorViewState(view, editorViewState);
     },
 
     getTableAtCursor() {
