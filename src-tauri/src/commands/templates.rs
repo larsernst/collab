@@ -1,6 +1,9 @@
 use crate::crypto;
 use crate::models::note::NoteFile;
-use crate::models::template::{KanbanTemplate, NoteSnippet, NoteSnippetScope, TemplateSource};
+use crate::models::template::{
+    KanbanAutomationPreset, KanbanFilterPreset, KanbanTemplate, NoteSnippet, NoteSnippetScope,
+    TemplateSource,
+};
 use crate::state::AppState;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -28,6 +31,16 @@ struct StoredNoteSnippet {
     description: Option<String>,
     category: Option<String>,
     body: String,
+    updated_at: u64,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct StoredKanbanPreset {
+    version: u32,
+    kind: String,
+    name: String,
+    payload: Value,
     updated_at: u64,
 }
 
@@ -91,6 +104,16 @@ fn scope_templates_dir(vault_path: Option<&str>, source: &TemplateSource) -> Res
     Ok(dir)
 }
 
+fn scope_kanban_preset_dir(
+    vault_path: Option<&str>,
+    source: &TemplateSource,
+    preset_kind: &str,
+) -> Result<PathBuf, String> {
+    let dir = scope_templates_dir(vault_path, source)?.join(preset_kind);
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    Ok(dir)
+}
+
 fn scope_note_snippets_dir(vault_path: Option<&str>, scope: &NoteSnippetScope) -> Result<PathBuf, String> {
     let dir = match scope {
         NoteSnippetScope::Vault => {
@@ -134,6 +157,15 @@ fn template_file_name(name: &str) -> String {
 
 fn template_path(vault_path: Option<&str>, source: &TemplateSource, name: &str) -> Result<PathBuf, String> {
     Ok(scope_templates_dir(vault_path, source)?.join(template_file_name(name)))
+}
+
+fn preset_path(
+    vault_path: Option<&str>,
+    source: &TemplateSource,
+    preset_kind: &str,
+    name: &str,
+) -> Result<PathBuf, String> {
+    Ok(scope_kanban_preset_dir(vault_path, source, preset_kind)?.join(template_file_name(name)))
 }
 
 fn snippet_file_name(id: &str) -> String {
@@ -315,6 +347,114 @@ fn write_note_snippet_to_scope(
         category: stored.category,
         body,
         updated_at: stored.updated_at,
+    })
+}
+
+fn load_filter_preset_from_path(
+    path: &Path,
+    source: TemplateSource,
+    state: &State<AppState>,
+) -> Result<KanbanFilterPreset, String> {
+    let raw = std::fs::read(path).map_err(|e| e.to_string())?;
+    let bytes = match source {
+        TemplateSource::Vault => maybe_decrypt_vault_bytes(raw, state)?,
+        TemplateSource::App | TemplateSource::Builtin => raw,
+    };
+    let stored: StoredKanbanPreset = serde_json::from_slice(&bytes).map_err(|e| e.to_string())?;
+    Ok(KanbanFilterPreset {
+        kind: stored.kind,
+        name: stored.name,
+        source,
+        updated_at: stored.updated_at,
+        spec: stored.payload,
+    })
+}
+
+fn write_filter_preset_to_scope(
+    vault_path: Option<&str>,
+    source: &TemplateSource,
+    name: &str,
+    spec: Value,
+    state: &State<AppState>,
+) -> Result<KanbanFilterPreset, String> {
+    if source == &TemplateSource::Builtin {
+        return Err("Built-in presets cannot be modified".into());
+    }
+    let path = preset_path(vault_path, source, "filters", name)?;
+    let stored = StoredKanbanPreset {
+        version: 1,
+        kind: "kanban-filter".into(),
+        name: name.to_string(),
+        payload: spec.clone(),
+        updated_at: now_ms(),
+    };
+    let serialized = serde_json::to_vec_pretty(&stored).map_err(|e| e.to_string())?;
+    let bytes = match source {
+        TemplateSource::Vault => maybe_encrypt_vault_bytes(&serialized, state)?,
+        TemplateSource::App => serialized,
+        TemplateSource::Builtin => return Err("Built-in presets cannot be modified".into()),
+    };
+    std::fs::write(&path, bytes).map_err(|e| e.to_string())?;
+    Ok(KanbanFilterPreset {
+        kind: "kanban-filter".into(),
+        name: name.to_string(),
+        source: source.clone(),
+        updated_at: stored.updated_at,
+        spec,
+    })
+}
+
+fn load_automation_preset_from_path(
+    path: &Path,
+    source: TemplateSource,
+    state: &State<AppState>,
+) -> Result<KanbanAutomationPreset, String> {
+    let raw = std::fs::read(path).map_err(|e| e.to_string())?;
+    let bytes = match source {
+        TemplateSource::Vault => maybe_decrypt_vault_bytes(raw, state)?,
+        TemplateSource::App | TemplateSource::Builtin => raw,
+    };
+    let stored: StoredKanbanPreset = serde_json::from_slice(&bytes).map_err(|e| e.to_string())?;
+    Ok(KanbanAutomationPreset {
+        kind: stored.kind,
+        name: stored.name,
+        source,
+        updated_at: stored.updated_at,
+        rule: stored.payload,
+    })
+}
+
+fn write_automation_preset_to_scope(
+    vault_path: Option<&str>,
+    source: &TemplateSource,
+    name: &str,
+    rule: Value,
+    state: &State<AppState>,
+) -> Result<KanbanAutomationPreset, String> {
+    if source == &TemplateSource::Builtin {
+        return Err("Built-in presets cannot be modified".into());
+    }
+    let path = preset_path(vault_path, source, "automations", name)?;
+    let stored = StoredKanbanPreset {
+        version: 1,
+        kind: "kanban-automation".into(),
+        name: name.to_string(),
+        payload: rule.clone(),
+        updated_at: now_ms(),
+    };
+    let serialized = serde_json::to_vec_pretty(&stored).map_err(|e| e.to_string())?;
+    let bytes = match source {
+        TemplateSource::Vault => maybe_encrypt_vault_bytes(&serialized, state)?,
+        TemplateSource::App => serialized,
+        TemplateSource::Builtin => return Err("Built-in presets cannot be modified".into()),
+    };
+    std::fs::write(&path, bytes).map_err(|e| e.to_string())?;
+    Ok(KanbanAutomationPreset {
+        kind: "kanban-automation".into(),
+        name: name.to_string(),
+        source: source.clone(),
+        updated_at: stored.updated_at,
+        rule,
     })
 }
 
@@ -659,6 +799,164 @@ pub fn create_blank_kanban_template(
 }
 
 #[tauri::command]
+pub fn list_kanban_filter_presets(
+    vault_path: Option<String>,
+    state: State<AppState>,
+) -> Result<Vec<KanbanFilterPreset>, String> {
+    let mut out = Vec::new();
+
+    for source in [TemplateSource::Vault, TemplateSource::App] {
+        let dir = match scope_kanban_preset_dir(vault_path.as_deref(), &source, "filters") {
+            Ok(dir) => dir,
+            Err(err) if source == TemplateSource::Vault && vault_path.is_none() => return Err(err),
+            Err(_) => continue,
+        };
+        if !dir.exists() {
+            continue;
+        }
+        for entry in std::fs::read_dir(&dir).map_err(|e| e.to_string())? {
+            let path = entry.map_err(|e| e.to_string())?.path();
+            if !path.is_file() {
+                continue;
+            }
+            if let Ok(preset) = load_filter_preset_from_path(&path, source.clone(), &state) {
+                out.push(preset);
+            }
+        }
+    }
+
+    out.sort_by(|a, b| {
+        a.name
+            .to_lowercase()
+            .cmp(&b.name.to_lowercase())
+            .then(a.updated_at.cmp(&b.updated_at))
+    });
+    Ok(out)
+}
+
+#[tauri::command]
+pub fn save_kanban_filter_preset(
+    vault_path: Option<String>,
+    source: TemplateSource,
+    preset_name: String,
+    spec: Value,
+    state: State<AppState>,
+) -> Result<KanbanFilterPreset, String> {
+    write_filter_preset_to_scope(vault_path.as_deref(), &source, &preset_name, spec, &state)
+}
+
+#[tauri::command]
+pub fn delete_kanban_filter_preset(
+    vault_path: Option<String>,
+    source: TemplateSource,
+    preset_name: String,
+) -> Result<(), String> {
+    if source == TemplateSource::Builtin {
+        return Err("Built-in presets cannot be deleted".into());
+    }
+    let path = preset_path(vault_path.as_deref(), &source, "filters", &preset_name)?;
+    if !path.exists() {
+        return Ok(());
+    }
+    std::fs::remove_file(path).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn copy_kanban_filter_preset(
+    vault_path: Option<String>,
+    from_source: TemplateSource,
+    to_source: TemplateSource,
+    preset_name: String,
+    state: State<AppState>,
+) -> Result<KanbanFilterPreset, String> {
+    if to_source == TemplateSource::Builtin {
+        return Err("Built-in presets cannot be overwritten".into());
+    }
+    let path = preset_path(vault_path.as_deref(), &from_source, "filters", &preset_name)?;
+    let preset = load_filter_preset_from_path(&path, from_source, &state)?;
+    write_filter_preset_to_scope(vault_path.as_deref(), &to_source, &preset.name, preset.spec, &state)
+}
+
+#[tauri::command]
+pub fn list_kanban_automation_presets(
+    vault_path: Option<String>,
+    state: State<AppState>,
+) -> Result<Vec<KanbanAutomationPreset>, String> {
+    let mut out = Vec::new();
+
+    for source in [TemplateSource::Vault, TemplateSource::App] {
+        let dir = match scope_kanban_preset_dir(vault_path.as_deref(), &source, "automations") {
+            Ok(dir) => dir,
+            Err(err) if source == TemplateSource::Vault && vault_path.is_none() => return Err(err),
+            Err(_) => continue,
+        };
+        if !dir.exists() {
+            continue;
+        }
+        for entry in std::fs::read_dir(&dir).map_err(|e| e.to_string())? {
+            let path = entry.map_err(|e| e.to_string())?.path();
+            if !path.is_file() {
+                continue;
+            }
+            if let Ok(preset) = load_automation_preset_from_path(&path, source.clone(), &state) {
+                out.push(preset);
+            }
+        }
+    }
+
+    out.sort_by(|a, b| {
+        a.name
+            .to_lowercase()
+            .cmp(&b.name.to_lowercase())
+            .then(a.updated_at.cmp(&b.updated_at))
+    });
+    Ok(out)
+}
+
+#[tauri::command]
+pub fn save_kanban_automation_preset(
+    vault_path: Option<String>,
+    source: TemplateSource,
+    preset_name: String,
+    rule: Value,
+    state: State<AppState>,
+) -> Result<KanbanAutomationPreset, String> {
+    write_automation_preset_to_scope(vault_path.as_deref(), &source, &preset_name, rule, &state)
+}
+
+#[tauri::command]
+pub fn delete_kanban_automation_preset(
+    vault_path: Option<String>,
+    source: TemplateSource,
+    preset_name: String,
+) -> Result<(), String> {
+    if source == TemplateSource::Builtin {
+        return Err("Built-in presets cannot be deleted".into());
+    }
+    let path = preset_path(vault_path.as_deref(), &source, "automations", &preset_name)?;
+    if !path.exists() {
+        return Ok(());
+    }
+    std::fs::remove_file(path).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn copy_kanban_automation_preset(
+    vault_path: Option<String>,
+    from_source: TemplateSource,
+    to_source: TemplateSource,
+    preset_name: String,
+    state: State<AppState>,
+) -> Result<KanbanAutomationPreset, String> {
+    if to_source == TemplateSource::Builtin {
+        return Err("Built-in presets cannot be overwritten".into());
+    }
+    let path = preset_path(vault_path.as_deref(), &from_source, "automations", &preset_name)?;
+    let preset = load_automation_preset_from_path(&path, from_source, &state)?;
+    write_automation_preset_to_scope(vault_path.as_deref(), &to_source, &preset.name, preset.rule, &state)
+}
+
+#[tauri::command]
 pub fn list_note_snippets(
     vault_path: Option<String>,
     state: State<AppState>,
@@ -734,8 +1032,9 @@ pub fn delete_note_snippet(
 mod tests {
     use super::{
         board_hash, built_in_templates, generate_note_snippet_id, normalize_relative_path,
-        parse_template_file, snippet_file_name, template_file_name,
+        parse_template_file, scope_kanban_preset_dir, snippet_file_name, template_file_name,
     };
+    use crate::models::template::TemplateSource;
     use crate::test_support::TempVault;
     use serde_json::json;
     use std::path::PathBuf;
@@ -859,5 +1158,18 @@ mod tests {
     fn generated_note_snippet_ids_are_prefixed() {
         let id = generate_note_snippet_id("Meeting Notes");
         assert!(id.starts_with("snippet-"));
+    }
+
+    #[test]
+    fn scope_kanban_preset_dir_uses_hidden_template_namespace() {
+        let vault = TempVault::new().expect("temp vault should exist");
+        let dir = scope_kanban_preset_dir(
+            Some(vault.path().to_str().expect("vault path should be utf-8")),
+            &TemplateSource::Vault,
+            "filters",
+        )
+        .expect("preset dir should resolve");
+
+        assert!(dir.ends_with(".collab/templates/kanban/filters"));
     }
 }

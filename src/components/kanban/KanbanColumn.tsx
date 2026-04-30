@@ -1,4 +1,5 @@
 import { useState, useMemo, useRef, useEffect } from 'react';
+import { useDroppable } from '@dnd-kit/core';
 import { useSortable, SortableContext, verticalListSortingStrategy } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
 import {
@@ -8,7 +9,7 @@ import {
 } from 'lucide-react';
 import { cn } from '../../lib/utils';
 import { useKanbanContext } from '../../views/KanbanPage';
-import type { KanbanColumn, ColumnSortField } from '../../types/kanban';
+import { getKanbanSwimlanes, type KanbanColumn, type ColumnSortField, type KanbanLane } from '../../types/kanban';
 import KanbanCardView from './KanbanCard';
 import {
   DropdownMenu,
@@ -46,8 +47,51 @@ interface Props {
   column: KanbanColumn;
 }
 
+const KANBAN_LANE_DROP_PREFIX = 'lane:';
+
+function makeLaneDropId(columnId: string, laneKey: string) {
+  return `${KANBAN_LANE_DROP_PREFIX}${encodeURIComponent(columnId)}:${encodeURIComponent(laneKey)}`;
+}
+
+function SwimlaneSection({
+  columnId,
+  lane,
+}: {
+  columnId: string;
+  lane: KanbanLane;
+}) {
+  const laneDropId = makeLaneDropId(columnId, lane.key);
+  const { setNodeRef, isOver } = useDroppable({ id: laneDropId });
+
+  return (
+    <section className="flex flex-col gap-1">
+      <div className="flex items-center justify-between px-1">
+        <span className="text-[10px] font-semibold uppercase tracking-[0.14em] text-muted-foreground/70">
+          {lane.title}
+        </span>
+        <span className="text-[10px] text-muted-foreground/60 tabular-nums">{lane.cards.length}</span>
+      </div>
+      <div
+        ref={setNodeRef}
+        className={cn(
+          'rounded-md border border-border/20 bg-background/30 p-1 min-h-[52px] transition-colors',
+          isOver && 'border-primary/30 bg-primary/5',
+        )}
+      >
+        <SortableContext items={lane.cards.map((card) => card.id)} strategy={verticalListSortingStrategy}>
+          <div className="flex flex-col gap-1.5">
+            {lane.cards.map((card) => (
+              <KanbanCardView key={card.id} card={card} columnId={columnId} />
+            ))}
+          </div>
+        </SortableContext>
+      </div>
+    </section>
+  );
+}
+
 export default function KanbanColumnView({ column }: Props) {
-  const { updateBoard, knownUsers } = useKanbanContext();
+  const { updateBoard, knownUsers, board } = useKanbanContext();
   const [editingTitle,     setEditingTitle]     = useState(false);
   const [titleDraft,       setTitleDraft]       = useState(column.title);
   const titleInputRef  = useRef<HTMLInputElement>(null);
@@ -259,6 +303,11 @@ export default function KanbanColumnView({ column }: Props) {
 
   const cardIds    = sortedCards.map(c => c.id);
   const activeSort = column.sort && column.sort.field !== 'none' ? column.sort : null;
+  const swimlaneMode = board.viewSettings?.swimlaneMode ?? 'none';
+  const swimlanes = useMemo(
+    () => getKanbanSwimlanes(sortedCards, swimlaneMode, knownUsers),
+    [knownUsers, sortedCards, swimlaneMode],
+  );
 
   return (
     <>
@@ -499,13 +548,21 @@ export default function KanbanColumnView({ column }: Props) {
           }
         >
           <div className="flex-1 overflow-y-auto">
-            <SortableContext items={cardIds} strategy={verticalListSortingStrategy}>
-              <div className="flex flex-col gap-1.5 p-1.5 min-h-[60px]">
-                {sortedCards.map(card => (
-                  <KanbanCardView key={card.id} card={card} columnId={column.id} />
+            {swimlaneMode === 'none' ? (
+              <SortableContext items={cardIds} strategy={verticalListSortingStrategy}>
+                <div className="flex flex-col gap-1.5 p-1.5 min-h-[60px]">
+                  {sortedCards.map(card => (
+                    <KanbanCardView key={card.id} card={card} columnId={column.id} />
+                  ))}
+                </div>
+              </SortableContext>
+            ) : (
+              <div className="flex flex-col gap-2 p-1.5 min-h-[60px]">
+                {swimlanes.map((lane) => (
+                  <SwimlaneSection key={lane.key} columnId={column.id} lane={lane} />
                 ))}
               </div>
-            </SortableContext>
+            )}
           </div>
 
           {/* Add card */}

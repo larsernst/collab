@@ -20,6 +20,26 @@ pub struct KanbanTemplate {
     pub board: Value,
 }
 
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct KanbanFilterPreset {
+    pub kind: String,
+    pub name: String,
+    pub source: TemplateSource,
+    pub updated_at: u64,
+    pub spec: Value,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct KanbanAutomationPreset {
+    pub kind: String,
+    pub name: String,
+    pub source: TemplateSource,
+    pub updated_at: u64,
+    pub rule: Value,
+}
+
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum NoteSnippetScope {

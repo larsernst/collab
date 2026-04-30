@@ -6,6 +6,7 @@ import {
   Calendar,
   Columns2,
   Flag,
+  Repeat,
   Trash2,
   Users,
 } from 'lucide-react';
@@ -71,6 +72,9 @@ export function CardDialogSidebar({
   toggleArchive,
   deleteCard,
 }: Props) {
+  const recurrence = draft.recurrence;
+  const recurrenceEnabled = Boolean(draft.startDate || draft.dueDate);
+
   return (
     <div className="w-52 shrink-0 border-l border-border/30 overflow-y-auto px-4 py-3 flex flex-col gap-4">
       <section>
@@ -205,6 +209,123 @@ export function CardDialogSidebar({
             ))}
           </SelectContent>
         </Select>
+      </section>
+
+      <section>
+        <label className="section-label flex items-center gap-1"><Repeat size={11} /> Recurring</label>
+        {!recurrenceEnabled ? (
+          <p className="text-[10px] text-muted-foreground/50 mt-1">Add a start or due date to enable recurrence.</p>
+        ) : (
+          <div className="flex flex-col gap-1.5">
+            <button
+              type="button"
+              onClick={() => patchDraft({
+                recurrence: recurrence?.enabled
+                  ? null
+                  : {
+                      enabled: true,
+                      mode: 'weekly',
+                      interval: 1,
+                      anchor: draft.dueDate ? 'dueDate' : 'completionDate',
+                      copyMode: 'clone',
+                      preserveChecklist: false,
+                    },
+              })}
+              className={cn(
+                'rounded-md border px-2.5 py-1.5 text-xs text-left transition-colors',
+                recurrence?.enabled
+                  ? 'border-primary/40 bg-primary/10 text-foreground'
+                  : 'border-border/30 bg-muted/25 text-muted-foreground hover:text-foreground',
+              )}
+            >
+              {recurrence?.enabled ? 'Recurring task enabled' : 'Enable recurring task'}
+            </button>
+
+            {recurrence?.enabled && (
+              <>
+                <Select
+                  value={recurrence.mode}
+                  onValueChange={(value) => patchDraft({
+                    recurrence: { ...recurrence, mode: value as typeof recurrence.mode },
+                  })}
+                >
+                  <SelectTrigger className="h-7 text-xs">
+                    <SelectValue placeholder="Repeat cadence" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="daily" className="text-xs">Daily</SelectItem>
+                    <SelectItem value="weekly" className="text-xs">Weekly</SelectItem>
+                    <SelectItem value="monthly" className="text-xs">Monthly</SelectItem>
+                    <SelectItem value="interval" className="text-xs">Every N days</SelectItem>
+                  </SelectContent>
+                </Select>
+
+                <Select
+                  value={recurrence.anchor ?? 'dueDate'}
+                  onValueChange={(value) => patchDraft({
+                    recurrence: { ...recurrence, anchor: value as 'dueDate' | 'completionDate' },
+                  })}
+                >
+                  <SelectTrigger className="h-7 text-xs">
+                    <SelectValue placeholder="Anchor" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="dueDate" className="text-xs">Anchor from due date</SelectItem>
+                    <SelectItem value="completionDate" className="text-xs">Anchor from completion</SelectItem>
+                  </SelectContent>
+                </Select>
+
+                <div className="flex items-center gap-1.5">
+                  <button
+                    type="button"
+                    onClick={() => patchDraft({
+                      recurrence: {
+                        ...recurrence,
+                        interval: Math.max(1, (recurrence.interval ?? 1) - 1),
+                      },
+                    })}
+                    className="h-7 w-7 rounded border border-border/30 text-xs text-muted-foreground hover:text-foreground"
+                  >
+                    -
+                  </button>
+                  <div className="flex-1 rounded border border-border/30 bg-muted/25 px-2 py-1 text-center text-xs text-foreground">
+                    Every {recurrence.interval ?? 1} {(recurrence.mode === 'weekly' ? 'week' : recurrence.mode === 'monthly' ? 'month' : 'day')}{(recurrence.interval ?? 1) === 1 ? '' : 's'}
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => patchDraft({
+                      recurrence: {
+                        ...recurrence,
+                        interval: Math.max(1, (recurrence.interval ?? 1) + 1),
+                      },
+                    })}
+                    className="h-7 w-7 rounded border border-border/30 text-xs text-muted-foreground hover:text-foreground"
+                  >
+                    +
+                  </button>
+                </div>
+
+                <button
+                  type="button"
+                  onClick={() => patchDraft({
+                    recurrence: {
+                      ...recurrence,
+                      preserveChecklist: !recurrence.preserveChecklist,
+                    },
+                  })}
+                  className={cn(
+                    'rounded-md border px-2.5 py-1.5 text-xs text-left transition-colors',
+                    recurrence.preserveChecklist
+                      ? 'border-primary/40 bg-primary/10 text-foreground'
+                      : 'border-border/30 bg-muted/25 text-muted-foreground hover:text-foreground',
+                  )}
+                >
+                  Preserve checklist completion
+                </button>
+              </>
+            )}
+          </div>
+        )}
       </section>
 
       <section>

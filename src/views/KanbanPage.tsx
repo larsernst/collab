@@ -4,7 +4,7 @@ import { LayoutDashboard } from 'lucide-react';
 import { tauriCommands } from '../lib/tauri';
 import { useVaultStore } from '../store/vaultStore';
 import { useCollabStore } from '../store/collabStore';
-import type { KanbanBoard } from '../types/kanban';
+import { normalizeKanbanBoard, runKanbanAutomations, type KanbanBoard } from '../types/kanban';
 import type { KnownUser } from '../types/vault';
 import KanbanBoardView from '../components/kanban/KanbanBoard';
 import { useEditorStore } from '../store/editorStore';
@@ -31,13 +31,13 @@ export function useKanbanContext(): KanbanCtx {
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 function makeDefaultBoard(): KanbanBoard {
-  return {
+  return normalizeKanbanBoard({
     columns: [
       { id: crypto.randomUUID(), title: 'To Do',       cards: [] },
       { id: crypto.randomUUID(), title: 'In Progress', cards: [] },
       { id: crypto.randomUUID(), title: 'Done',        cards: [] },
     ],
-  };
+  });
 }
 
 // ── Component ─────────────────────────────────────────────────────────────────
@@ -63,7 +63,8 @@ export default function KanbanPage({ relativePath }: { relativePath: string | nu
     if (!vault || !relativePath) return;
     markWriteStarted();
     try {
-      const serialized = JSON.stringify(newBoard, null, 2);
+      const automatedBoard = runKanbanAutomations(normalizeKanbanBoard(newBoard), 'onBoardSave');
+      const serialized = JSON.stringify(automatedBoard, null, 2);
       const result = await tauriCommands.writeNote(
         vault.path,
         relativePath,
@@ -78,6 +79,7 @@ export default function KanbanPage({ relativePath }: { relativePath: string | nu
         return;
       }
       if (isMountedRef.current) {
+        setBoard(automatedBoard);
         hashRef.current = result.hash;
         isDirtyRef.current = false;
         markSaved(relativePath, result.hash);
@@ -113,7 +115,7 @@ export default function KanbanPage({ relativePath }: { relativePath: string | nu
       if (!isMountedRef.current) return;
       if (content.trim()) {
         const parsed: KanbanBoard = JSON.parse(content);
-        setBoard(parsed);
+        setBoard(runKanbanAutomations(normalizeKanbanBoard(parsed), 'onBoardOpen'));
         isDirtyRef.current = false;
         markLoaded(hash);
         setSavedHash(relativePath, hash);

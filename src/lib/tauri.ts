@@ -17,7 +17,7 @@ import type {
 import type { NoteMetadata, SearchResult } from '../types/note';
 import type { PresenceEntry, ChatMessage, SnapshotMeta } from '../types/collab';
 import type { KanbanBoard } from '../types/kanban';
-import type { KanbanTemplate, TemplateSource } from '../types/template';
+import type { KanbanAutomationPreset, KanbanFilterPreset, KanbanTemplate, TemplateSource } from '../types/template';
 import type { NoteSnippet, NoteSnippetDraft, NoteSnippetScope } from '../types/noteSnippet';
 import type { PdfSidecarState } from '../types/pdf';
 import type { UpdateInfo } from '../store/updateStore';
@@ -170,6 +170,38 @@ export const tauriCommands = {
     source: TemplateSource,
     templateName: string,
   ) => invoke<KanbanTemplate>('create_blank_kanban_template', { vaultPath: vaultPath ?? null, source, templateName }),
+  listKanbanFilterPresets: (vaultPath?: string | null) =>
+    invoke<KanbanFilterPreset[]>('list_kanban_filter_presets', { vaultPath: vaultPath ?? null }),
+  saveKanbanFilterPreset: (
+    vaultPath: string | null | undefined,
+    source: TemplateSource,
+    presetName: string,
+    spec: import('../types/kanban').KanbanFilterSpec,
+  ) => invoke<KanbanFilterPreset>('save_kanban_filter_preset', { vaultPath: vaultPath ?? null, source, presetName, spec }),
+  deleteKanbanFilterPreset: (vaultPath: string | null | undefined, source: TemplateSource, presetName: string) =>
+    invoke<void>('delete_kanban_filter_preset', { vaultPath: vaultPath ?? null, source, presetName }),
+  copyKanbanFilterPreset: (
+    vaultPath: string | null | undefined,
+    fromSource: TemplateSource,
+    toSource: TemplateSource,
+    presetName: string,
+  ) => invoke<KanbanFilterPreset>('copy_kanban_filter_preset', { vaultPath: vaultPath ?? null, fromSource, toSource, presetName }),
+  listKanbanAutomationPresets: (vaultPath?: string | null) =>
+    invoke<KanbanAutomationPreset[]>('list_kanban_automation_presets', { vaultPath: vaultPath ?? null }),
+  saveKanbanAutomationPreset: (
+    vaultPath: string | null | undefined,
+    source: TemplateSource,
+    presetName: string,
+    rule: import('../types/kanban').KanbanAutomationRule,
+  ) => invoke<KanbanAutomationPreset>('save_kanban_automation_preset', { vaultPath: vaultPath ?? null, source, presetName, rule }),
+  deleteKanbanAutomationPreset: (vaultPath: string | null | undefined, source: TemplateSource, presetName: string) =>
+    invoke<void>('delete_kanban_automation_preset', { vaultPath: vaultPath ?? null, source, presetName }),
+  copyKanbanAutomationPreset: (
+    vaultPath: string | null | undefined,
+    fromSource: TemplateSource,
+    toSource: TemplateSource,
+    presetName: string,
+  ) => invoke<KanbanAutomationPreset>('copy_kanban_automation_preset', { vaultPath: vaultPath ?? null, fromSource, toSource, presetName }),
   listNoteSnippets: (vaultPath?: string | null) =>
     invoke<NoteSnippet[]>('list_note_snippets', { vaultPath: vaultPath ?? null }),
   saveNoteSnippet: (

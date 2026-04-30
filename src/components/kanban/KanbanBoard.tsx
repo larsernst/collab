@@ -18,6 +18,7 @@ import {
   CalendarDays,
   GanttChart,
   Archive,
+  BarChart3,
   ArchiveRestore,
   Clock3,
   ArrowUp,
@@ -29,25 +30,43 @@ import {
   Flag,
   Users,
   Calendar,
+  Filter,
+  Play,
+  Bot,
+  Trash2,
 } from 'lucide-react';
+import { toast } from 'sonner';
 import { cn } from '../../lib/utils';
 import { useKanbanContext } from '../../views/KanbanPage';
 import { useCollabStore } from '../../store/collabStore';
 import { useKanbanStore } from '../../store/kanbanStore';
 import { formatDate, useUiStore } from '../../store/uiStore';
+import { useVaultStore } from '../../store/vaultStore';
+import { tauriCommands } from '../../lib/tauri';
 import KanbanColumnView from './KanbanColumn';
 import KanbanCardView from './KanbanCard';
 import CalendarView from './CalendarView';
 import TimelineView from './TimelineView';
+import type { KanbanAutomationAction } from '../../types/kanban';
 import {
+  applyCardSwimlaneValue,
+  getActiveBoardFilter,
   getCardAttachmentPaths,
+  getFilteredBoard,
+  getKanbanBoardStats,
   getMissingColumnDefaultTags,
   mergeUniqueTags,
+  runKanbanAutomations,
   syncChecklistReferences,
+  type KanbanAutomationRule,
   type ColumnSortField,
   type KanbanCard,
   type KanbanColumn,
+  type KanbanFilterSpec,
+  type KanbanPriority,
+  type KanbanSwimlaneMode,
 } from '../../types/kanban';
+import type { KanbanAutomationPreset, KanbanFilterPreset, TemplateSource } from '../../types/template';
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '../ui/dialog';
 import { Button } from '../ui/button';
 import { Input } from '../ui/input';
@@ -60,6 +79,7 @@ import {
   DropdownMenuSubTrigger,
   DropdownMenuTrigger,
 } from '../ui/dropdown-menu';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../ui/select';
 import {
   DocumentTopBar,
   documentTopBarGroupClass,
@@ -74,6 +94,30 @@ interface MoveTagsPromptState {
   columnId: string;
   columnTitle: string;
   missingTags: string[];
+}
+
+const KANBAN_LANE_DROP_PREFIX = 'lane:';
+
+function parseLaneDropId(id: string): { columnId: string; laneKey: string } | null {
+  if (!id.startsWith(KANBAN_LANE_DROP_PREFIX)) return null;
+  const remainder = id.slice(KANBAN_LANE_DROP_PREFIX.length);
+  const separatorIndex = remainder.indexOf(':');
+  if (separatorIndex === -1) return null;
+  return {
+    columnId: decodeURIComponent(remainder.slice(0, separatorIndex)),
+    laneKey: decodeURIComponent(remainder.slice(separatorIndex + 1)),
+  };
+}
+
+function getLaneValueFromKey(laneKey: string) {
+  const separatorIndex = laneKey.indexOf(':');
+  if (separatorIndex === -1) return null;
+  const value = laneKey.slice(separatorIndex + 1);
+  return value === 'none' ? null : value;
+}
+
+function presetToken(source: TemplateSource, name: string) {
+  return `${source}:${name}`;
 }
 
 const PRIORITY_ORDER: Record<string, number> = { high: 0, medium: 1, low: 2 };
@@ -91,6 +135,104 @@ const SORT_FIELDS: { field: ColumnSortField; label: string }[] = [
   { field: 'dueDate', label: 'Due date' },
   { field: 'assignees', label: 'Assignees' },
 ];
+
+type AutomationConditionKind = 'overdue' | 'dueWithinDays' | 'hasTag' | 'column' | 'priority' | 'assigneeState' | 'doneState';
+type AutomationActionKind = 'moveToColumn' | 'addTag' | 'removeTag' | 'setPriority' | 'setDone' | 'assignUser';
+
+interface AutomationDraft {
+  name: string;
+  trigger: KanbanAutomationRule['trigger'];
+  conditionKind: AutomationConditionKind;
+  conditionValue: string;
+  actionKind: AutomationActionKind;
+  actionValue: string;
+}
+
+function makeDefaultAutomationDraft(): AutomationDraft {
+  return {
+    name: '',
+    trigger: 'manual',
+    conditionKind: 'overdue',
+    conditionValue: '',
+    actionKind: 'moveToColumn',
+    actionValue: '',
+  };
+}
+
+function buildAutomationRuleFromDraft(draft: AutomationDraft): KanbanAutomationRule {
+  const name = draft.name.trim() || 'Automation rule';
+  const condition =
+    draft.conditionKind === 'overdue'
+      ? { overdue: true }
+      : draft.conditionKind === 'dueWithinDays'
+        ? { dueWithinDays: Math.max(0, Number(draft.conditionValue) || 0) }
+        : draft.conditionKind === 'hasTag'
+          ? { hasTag: draft.conditionValue.trim() }
+          : draft.conditionKind === 'column'
+            ? { columnId: draft.conditionValue }
+            : draft.conditionKind === 'priority'
+              ? { priority: (draft.conditionValue || 'none') as KanbanPriority | 'none' }
+              : draft.conditionKind === 'assigneeState'
+                ? { assigneeState: (draft.conditionValue || 'empty') as 'empty' | 'present' }
+                : { isDone: draft.conditionValue === 'done' };
+
+  const action: KanbanAutomationAction =
+    draft.actionKind === 'moveToColumn'
+      ? { type: 'moveToColumn', columnId: draft.actionValue }
+      : draft.actionKind === 'addTag'
+        ? { type: 'addTag', tag: draft.actionValue.trim() }
+        : draft.actionKind === 'removeTag'
+          ? { type: 'removeTag', tag: draft.actionValue.trim() }
+          : draft.actionKind === 'setPriority'
+            ? { type: 'setPriority', priority: (draft.actionValue || 'none') as KanbanPriority | 'none' }
+            : draft.actionKind === 'setDone'
+              ? { type: 'setDone', isDone: draft.actionValue === 'done' }
+              : { type: 'assignUser', userId: draft.actionValue || null };
+
+  return {
+    id: crypto.randomUUID(),
+    name,
+    enabled: true,
+    trigger: draft.trigger,
+    condition,
+    action,
+  };
+}
+
+function describeAutomationRule(rule: KanbanAutomationRule, columns: KanbanColumn[]) {
+  const action = rule.action;
+  const conditionText =
+    rule.condition.overdue
+      ? 'when overdue'
+      : typeof rule.condition.dueWithinDays === 'number'
+        ? `when due within ${rule.condition.dueWithinDays} day(s)`
+        : rule.condition.hasTag
+          ? `when tagged ${rule.condition.hasTag}`
+          : rule.condition.columnId
+            ? `when in ${columns.find((column) => column.id === rule.condition.columnId)?.title ?? rule.condition.columnId}`
+            : rule.condition.priority
+              ? `when priority is ${rule.condition.priority}`
+              : rule.condition.assigneeState
+                ? `when assignee is ${rule.condition.assigneeState}`
+                : typeof rule.condition.isDone === 'boolean'
+                  ? `when ${rule.condition.isDone ? 'done' : 'not done'}`
+                  : 'when matched';
+
+  const actionText =
+    action.type === 'moveToColumn'
+      ? `move to ${columns.find((column) => column.id === action.columnId)?.title ?? action.columnId}`
+      : action.type === 'addTag'
+        ? `add tag ${action.tag}`
+        : action.type === 'removeTag'
+          ? `remove tag ${action.tag}`
+          : action.type === 'setPriority'
+            ? `set priority to ${action.priority}`
+            : action.type === 'setDone'
+              ? `mark ${action.isDone ? 'done' : 'not done'}`
+              : `assign ${action.userId ?? 'nobody'}`;
+
+  return `${conditionText}, ${actionText}`;
+}
 
 function archiveSearchText(card: KanbanCard) {
   return [
@@ -379,7 +521,8 @@ function ArchiveView({ onOpenCard }: { onOpenCard: (card: KanbanCard, columnId: 
 // ── Main board ────────────────────────────────────────────────────────────────
 
 export default function KanbanBoardView() {
-  const { board, updateBoard, relativePath } = useKanbanContext();
+  const { board, updateBoard, relativePath, knownUsers } = useKanbanContext();
+  const { vault } = useVaultStore();
   const { peers } = useCollabStore();
   const { boardPath, cardId: editingCardId, columnId: editingColumnId, clearEditing, setEditing } = useKanbanStore();
   const boardViewportRef = useRef<HTMLDivElement | null>(null);
@@ -389,6 +532,17 @@ export default function KanbanBoardView() {
   const [addingColumn, setAddingColumn] = useState(false);
   const [newColTitle, setNewColTitle] = useState('');
   const [moveTagsPrompt, setMoveTagsPrompt] = useState<MoveTagsPromptState | null>(null);
+  const [filterDialogOpen, setFilterDialogOpen] = useState(false);
+  const [automationDialogOpen, setAutomationDialogOpen] = useState(false);
+  const [saveFilterName, setSaveFilterName] = useState('');
+  const [saveFilterSource, setSaveFilterSource] = useState<'board' | TemplateSource>('board');
+  const [selectedFilterPresetName, setSelectedFilterPresetName] = useState<string>('');
+  const [workingFilter, setWorkingFilter] = useState<KanbanFilterSpec>({});
+  const [filterPresets, setFilterPresets] = useState<KanbanFilterPreset[]>([]);
+  const [automationPresets, setAutomationPresets] = useState<KanbanAutomationPreset[]>([]);
+  const [selectedAutomationPresetName, setSelectedAutomationPresetName] = useState<string>('');
+  const [automationDraft, setAutomationDraft] = useState<AutomationDraft>(makeDefaultAutomationDraft());
+  const [automationPresetName, setAutomationPresetName] = useState('');
 
   useEffect(() => {
     const handler = (event: Event) => {
@@ -414,6 +568,13 @@ export default function KanbanBoardView() {
     () => board.columns.reduce((count, column) => count + column.cards.filter((card) => card.archived).length, 0),
     [board.columns],
   );
+  const activeFilter = useMemo(() => getActiveBoardFilter(board), [board]);
+  const activeFilterSpec = activeFilter?.spec ?? (board.activeFilterId ? null : workingFilter);
+  const visibleBoard = useMemo(
+    () => getFilteredBoard(board, activeFilterSpec, knownUsers),
+    [activeFilterSpec, board, knownUsers],
+  );
+  const boardStats = useMemo(() => getKanbanBoardStats(board), [board]);
   const archivedEditingCard = useMemo(() => {
     if (boardPath !== relativePath || !editingCardId || !editingColumnId) return null;
     const column = board.columns.find((entry) => entry.id === editingColumnId);
@@ -477,19 +638,24 @@ export default function KanbanBoardView() {
     if (overId === lastOverIdRef.current) return;
     lastOverIdRef.current = overId;
 
+    const overLane = parseLaneDropId(overId);
     const overIsColumn = board.columns.some(c => c.id === overId);
 
     // Pre-check using current board state (may be slightly stale but good enough
     // to avoid calling updateBoard for the common same-column case).
     const srcColId = board.columns.find(col => col.cards.some(c => c.id === activeId))?.id;
-    const dstColId = overIsColumn
+    const dstColId = overLane
+      ? overLane.columnId
+      : overIsColumn
       ? overId
       : board.columns.find(col => col.cards.some(c => c.id === overId))?.id;
     if (!srcColId || !dstColId || srcColId === dstColId) return;
 
     updateBoard(prev => {
       const srcCol = prev.columns.find(col => col.cards.some(c => c.id === activeId));
-      const dstCol = overIsColumn
+      const dstCol = overLane
+        ? prev.columns.find(c => c.id === overLane.columnId)
+        : overIsColumn
         ? prev.columns.find(c => c.id === overId)
         : prev.columns.find(col => col.cards.some(c => c.id === overId));
 
@@ -498,7 +664,9 @@ export default function KanbanBoardView() {
       const srcIdx = srcCol.cards.findIndex(c => c.id === activeId);
       const dstIdx = overIsColumn
         ? dstCol.cards.length
-        : dstCol.cards.findIndex(c => c.id === overId);
+        : overLane
+          ? dstCol.cards.length
+          : dstCol.cards.findIndex(c => c.id === overId);
 
       const srcCards = [...srcCol.cards];
       const [card] = srcCards.splice(srcIdx, 1);
@@ -525,6 +693,7 @@ export default function KanbanBoardView() {
 
     const draggedId = active.id as string;
     const overId    = over.id as string;
+    const overLane = parseLaneDropId(overId);
 
     // ── Column reorder ──────────────────────────────────────────────────────
     // over.id may be a card inside the target column — resolve it to a column.
@@ -548,20 +717,25 @@ export default function KanbanBoardView() {
     const overIsColumn = board.columns.some(c => c.id === overId);
 
     let promptRequest: MoveTagsPromptState | null = null;
+    const swimlaneMode = board.viewSettings?.swimlaneMode ?? 'none';
 
     updateBoard(prev => {
       const srcCol = prev.columns.find(col => col.cards.some(c => c.id === draggedId));
       if (!srcCol) return prev;
       const srcIdx = srcCol.cards.findIndex(c => c.id === draggedId);
 
-      const dstCol = overIsColumn
+      const dstCol = overLane
+        ? prev.columns.find(c => c.id === overLane.columnId)
+        : overIsColumn
         ? prev.columns.find(c => c.id === overId)
         : prev.columns.find(col => col.cards.some(c => c.id === overId));
       if (!dstCol) return prev;
 
       const dstIdx = overIsColumn
         ? dstCol.cards.length
-        : dstCol.cards.findIndex(c => c.id === overId);
+        : overLane
+          ? dstCol.cards.length
+          : dstCol.cards.findIndex(c => c.id === overId);
 
       // Was this a genuine cross-column move (judged by original column at drag-start)?
       const wasCrossColumn = startColId !== null && startColId !== dstCol.id;
@@ -599,10 +773,19 @@ export default function KanbanBoardView() {
         const cards = reordered.map((card) => (
           card.id === draggedId ? finalizeMovedCard(card) : card
         ));
-        const nextBoard = {
+        let nextBoard = {
           ...prev,
           columns: prev.columns.map(col => col.id !== srcCol.id ? col : { ...col, cards }),
         };
+        if (overLane) {
+          nextBoard = applyCardSwimlaneValue(
+            nextBoard,
+            draggedId,
+            dstCol.id,
+            swimlaneMode,
+            getLaneValueFromKey(overLane.laneKey),
+          );
+        }
         const movedCard = cards.find((card) => card.id === draggedId);
         return movedCard ? syncChecklistReferences(nextBoard, draggedId, movedCard.isDone ?? false) : nextBoard;
       }
@@ -613,7 +796,7 @@ export default function KanbanBoardView() {
       const dstCards = [...dstCol.cards];
       const movedCard = finalizeMovedCard(card);
       dstCards.splice(dstIdx, 0, movedCard);
-      const nextBoard = {
+      let nextBoard = {
         ...prev,
         columns: prev.columns.map(c => {
           if (c.id === srcCol.id) return { ...c, cards: srcCards };
@@ -621,6 +804,15 @@ export default function KanbanBoardView() {
           return c;
         }),
       };
+      if (overLane) {
+        nextBoard = applyCardSwimlaneValue(
+          nextBoard,
+          draggedId,
+          dstCol.id,
+          swimlaneMode,
+          getLaneValueFromKey(overLane.laneKey),
+        );
+      }
       return syncChecklistReferences(nextBoard, draggedId, movedCard.isDone ?? false);
     });
 
@@ -639,7 +831,7 @@ export default function KanbanBoardView() {
     setAddingColumn(false);
   }
 
-  const columnIds = board.columns.map(c => c.id);
+  const columnIds = visibleBoard.columns.map(c => c.id);
   const totalCards = board.columns.reduce((n, c) => n + c.cards.length, 0);
 
   const scrollBoardBy = (deltaX: number) => {
@@ -763,6 +955,112 @@ export default function KanbanBoardView() {
     setMoveTagsPrompt(null);
   }, [updateBoard]);
 
+  const saveCurrentFilter = useCallback(() => {
+    const name = saveFilterName.trim();
+    if (!name) return;
+    if (saveFilterSource === 'board') {
+      const id = crypto.randomUUID();
+      updateBoard((prev) => ({
+        ...prev,
+        savedFilters: [
+          ...(prev.savedFilters ?? []),
+          { id, name, spec: workingFilter, updatedAt: Date.now() },
+        ],
+        activeFilterId: id,
+      }));
+      setSaveFilterName('');
+      setFilterDialogOpen(false);
+      return;
+    }
+
+    if (!vault) return;
+    tauriCommands.saveKanbanFilterPreset(vault.path, saveFilterSource, name, workingFilter)
+      .then(async () => {
+        setSaveFilterName('');
+        const next = await tauriCommands.listKanbanFilterPresets(vault.path);
+        setFilterPresets(next);
+        toast.success(`Saved ${saveFilterSource} filter preset "${name}"`);
+      })
+      .catch((error) => {
+        toast.error(`Failed to save filter preset: ${error}`);
+      });
+  }, [saveFilterName, saveFilterSource, updateBoard, vault, workingFilter]);
+
+  const runAutomationsNow = useCallback(() => {
+    updateBoard((prev) => runKanbanAutomations(prev, 'manual'));
+  }, [updateBoard]);
+
+  const applySelectedFilterPreset = useCallback(() => {
+    const preset = filterPresets.find((entry) => presetToken(entry.source, entry.name) === selectedFilterPresetName);
+    if (!preset) return;
+    const id = crypto.randomUUID();
+    updateBoard((prev) => ({
+      ...prev,
+      savedFilters: [
+        ...(prev.savedFilters ?? []),
+        { id, name: preset.name, spec: preset.spec, updatedAt: Date.now() },
+      ],
+      activeFilterId: id,
+    }));
+    setWorkingFilter(preset.spec);
+    toast.success(`Applied filter preset "${preset.name}" to this board`);
+  }, [filterPresets, selectedFilterPresetName, updateBoard]);
+
+  const addAutomationRule = useCallback(() => {
+    const rule = buildAutomationRuleFromDraft(automationDraft);
+    updateBoard((prev) => ({
+      ...prev,
+      automations: [...(prev.automations ?? []), rule],
+    }));
+    setAutomationDraft(makeDefaultAutomationDraft());
+  }, [automationDraft, updateBoard]);
+
+  const deleteAutomationRule = useCallback((ruleId: string) => {
+    updateBoard((prev) => ({
+      ...prev,
+      automations: (prev.automations ?? []).filter((rule) => rule.id !== ruleId),
+    }));
+  }, [updateBoard]);
+
+  const applySelectedAutomationPreset = useCallback(() => {
+    const preset = automationPresets.find((entry) => presetToken(entry.source, entry.name) === selectedAutomationPresetName);
+    if (!preset) return;
+    updateBoard((prev) => ({
+      ...prev,
+      automations: [...(prev.automations ?? []), { ...preset.rule, id: crypto.randomUUID(), name: preset.name }],
+    }));
+    toast.success(`Applied automation preset "${preset.name}" to this board`);
+  }, [automationPresets, selectedAutomationPresetName, updateBoard]);
+
+  const saveAutomationPreset = useCallback((rule: KanbanAutomationRule, source: Extract<TemplateSource, 'vault' | 'app'>) => {
+    if (!vault) return;
+    const presetName = automationPresetName.trim() || rule.name;
+    tauriCommands.saveKanbanAutomationPreset(vault.path, source, presetName, rule)
+      .then(async () => {
+        const next = await tauriCommands.listKanbanAutomationPresets(vault.path);
+        setAutomationPresets(next);
+        setAutomationPresetName('');
+        toast.success(`Saved ${source} automation preset "${presetName}"`);
+      })
+      .catch((error) => {
+        toast.error(`Failed to save automation preset: ${error}`);
+      });
+  }, [automationPresetName, vault]);
+
+  useEffect(() => {
+    if (!filterDialogOpen || !vault) return;
+    tauriCommands.listKanbanFilterPresets(vault.path)
+      .then(setFilterPresets)
+      .catch(() => {});
+  }, [filterDialogOpen, vault]);
+
+  useEffect(() => {
+    if (!automationDialogOpen || !vault) return;
+    tauriCommands.listKanbanAutomationPresets(vault.path)
+      .then(setAutomationPresets)
+      .catch(() => {});
+  }, [automationDialogOpen, vault]);
+
   return (
     <div className="flex flex-col h-full overflow-hidden">
       <DocumentTopBar
@@ -854,6 +1152,95 @@ export default function KanbanBoardView() {
             {view === 'board' && (
               <>
                 <div className={documentTopBarGroupClass}>
+                  <Select
+                    value={board.viewSettings?.swimlaneMode ?? 'none'}
+                    onValueChange={(value) => updateBoard((prev) => ({
+                      ...prev,
+                      viewSettings: {
+                        ...(prev.viewSettings ?? {}),
+                        swimlaneMode: value as KanbanSwimlaneMode,
+                      },
+                    }))}
+                  >
+                    <SelectTrigger className="h-8 min-w-[150px] text-xs">
+                      <SelectValue placeholder="No swimlanes" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="none" className="text-xs">No swimlanes</SelectItem>
+                      <SelectItem value="assignee" className="text-xs">Swimlanes: assignee</SelectItem>
+                      <SelectItem value="priority" className="text-xs">Swimlanes: priority</SelectItem>
+                      <SelectItem value="tag" className="text-xs">Swimlanes: tag</SelectItem>
+                      <SelectItem value="dueStatus" className="text-xs">Swimlanes: due status</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+
+                <div className={documentTopBarGroupClass}>
+                  <Select
+                    value={board.activeFilterId ?? '__all__'}
+                    onValueChange={(value) => {
+                      if (value === '__all__') {
+                        updateBoard((prev) => ({ ...prev, activeFilterId: null }));
+                        return;
+                      }
+                      updateBoard((prev) => ({ ...prev, activeFilterId: value }));
+                    }}
+                  >
+                    <SelectTrigger className="h-8 min-w-[140px] text-xs">
+                      <SelectValue placeholder="All cards" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="__all__" className="text-xs">All cards</SelectItem>
+                      {(board.savedFilters ?? []).map((filter) => (
+                        <SelectItem key={filter.id} value={filter.id} className="text-xs">
+                          {filter.name}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                  <button
+                    onClick={() => {
+                      setWorkingFilter(activeFilter?.spec ?? workingFilter);
+                      setFilterDialogOpen(true);
+                    }}
+                    className="flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs font-medium text-muted-foreground transition-colors hover:text-foreground"
+                  >
+                    <Filter size={12} />
+                    Filter
+                  </button>
+                </div>
+
+                <div className={documentTopBarGroupClass}>
+                  <button
+                    onClick={() => updateBoard((prev) => ({
+                      ...prev,
+                      viewSettings: {
+                        ...(prev.viewSettings ?? {}),
+                        statsPanelOpen: !(prev.viewSettings?.statsPanelOpen ?? false),
+                      },
+                    }))}
+                    className="flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs font-medium text-muted-foreground transition-colors hover:text-foreground"
+                  >
+                    <BarChart3 size={12} />
+                    Stats
+                  </button>
+                  <button
+                    onClick={() => setAutomationDialogOpen(true)}
+                    className="flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs font-medium text-muted-foreground transition-colors hover:text-foreground"
+                  >
+                    <Bot size={12} />
+                    Automations
+                  </button>
+                  <button
+                    onClick={runAutomationsNow}
+                    className="flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs font-medium text-muted-foreground transition-colors hover:text-foreground"
+                  >
+                    <Play size={12} />
+                    Run automations
+                  </button>
+                </div>
+
+                <div className={documentTopBarGroupClass}>
                   <button
                     onClick={() => setAddingColumn(true)}
                     className="flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs font-medium text-muted-foreground transition-colors hover:text-foreground"
@@ -885,6 +1272,28 @@ export default function KanbanBoardView() {
 
       {/* Board body — horizontal scroll */}
       {view === 'board' && <div className="flex-1 flex flex-col overflow-hidden">
+        {board.viewSettings?.statsPanelOpen && (
+          <div className="border-b border-border/30 px-4 py-3 grid grid-cols-2 lg:grid-cols-4 gap-3 bg-card/20">
+            <div className="rounded-lg border border-border/30 bg-muted/15 px-3 py-2">
+              <div className="text-[11px] text-muted-foreground">Active cards</div>
+              <div className="text-lg font-semibold text-foreground">{boardStats.totalActiveCards}</div>
+            </div>
+            <div className="rounded-lg border border-border/30 bg-muted/15 px-3 py-2">
+              <div className="text-[11px] text-muted-foreground">Due today</div>
+              <div className="text-lg font-semibold text-foreground">{boardStats.dueTodayCount}</div>
+            </div>
+            <div className="rounded-lg border border-border/30 bg-muted/15 px-3 py-2">
+              <div className="text-[11px] text-muted-foreground">Overdue</div>
+              <div className="text-lg font-semibold text-foreground">{boardStats.overdueCount}</div>
+            </div>
+            <div className="rounded-lg border border-border/30 bg-muted/15 px-3 py-2">
+              <div className="text-[11px] text-muted-foreground">Checklist progress</div>
+              <div className="text-lg font-semibold text-foreground">
+                {boardStats.checklistCompletion.completed}/{boardStats.checklistCompletion.total}
+              </div>
+            </div>
+          </div>
+        )}
         <div ref={boardViewportRef} className="flex-1 overflow-x-auto overflow-y-hidden">
           <DndContext
             sensors={sensors}
@@ -895,7 +1304,7 @@ export default function KanbanBoardView() {
           >
             <div className="flex gap-3 h-full p-4 w-max min-w-full items-start">
               <SortableContext items={columnIds} strategy={horizontalListSortingStrategy}>
-                {board.columns.map(col => (
+                {visibleBoard.columns.map(col => (
                   <KanbanColumnView key={col.id} column={col} />
                 ))}
               </SortableContext>
@@ -1014,6 +1423,398 @@ export default function KanbanBoardView() {
               </Button>
             </div>
           </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={filterDialogOpen} onOpenChange={setFilterDialogOpen}>
+        <DialogContent className="sm:max-w-lg">
+          <DialogHeader>
+            <DialogTitle>Board filters</DialogTitle>
+          </DialogHeader>
+          <div className="grid gap-4">
+            <div className="grid gap-1.5">
+              <label htmlFor="kanban-filter-query" className="text-sm font-medium">Search</label>
+              <Input
+                id="kanban-filter-query"
+                value={workingFilter.query ?? ''}
+                onChange={(event) => setWorkingFilter((prev) => ({ ...prev, query: event.target.value || undefined }))}
+                placeholder="Title, description, tags, comments..."
+              />
+            </div>
+
+            <div className="grid gap-1.5">
+              <label htmlFor="kanban-filter-assignee" className="text-sm font-medium">Assignee contains</label>
+              <Input
+                id="kanban-filter-assignee"
+                value={workingFilter.assigneeQuery ?? ''}
+                onChange={(event) => setWorkingFilter((prev) => ({ ...prev, assigneeQuery: event.target.value || undefined }))}
+                placeholder="Name or user id"
+              />
+            </div>
+
+            <div className="grid gap-1.5">
+              <label htmlFor="kanban-filter-tags" className="text-sm font-medium">Tags any</label>
+              <Input
+                id="kanban-filter-tags"
+                value={(workingFilter.tagsAny ?? []).join(', ')}
+                onChange={(event) => setWorkingFilter((prev) => ({
+                  ...prev,
+                  tagsAny: event.target.value
+                    ? event.target.value.split(',').map((tag) => tag.trim()).filter(Boolean)
+                    : undefined,
+                }))}
+                placeholder="bug, urgent"
+              />
+            </div>
+
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => setWorkingFilter((prev) => ({
+                  ...prev,
+                  includeArchived: !prev.includeArchived,
+                }))}
+                className={cn(
+                  'rounded-md border px-2.5 py-1.5 text-xs transition-colors',
+                  workingFilter.includeArchived
+                    ? 'border-primary/40 bg-primary/10 text-foreground'
+                    : 'border-border/30 text-muted-foreground hover:text-foreground',
+                )}
+              >
+                Include archived cards
+              </button>
+            </div>
+
+            <div className="grid gap-1.5">
+              <label htmlFor="kanban-filter-name" className="text-sm font-medium">Save current filter as</label>
+              <div className="flex gap-2">
+                <Input
+                  id="kanban-filter-name"
+                  value={saveFilterName}
+                  onChange={(event) => setSaveFilterName(event.target.value)}
+                  placeholder="My filter"
+                />
+                <Select value={saveFilterSource} onValueChange={(value) => setSaveFilterSource(value as 'board' | TemplateSource)}>
+                  <SelectTrigger className="w-[110px] shrink-0 text-xs">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="board" className="text-xs">Board</SelectItem>
+                    <SelectItem value="vault" className="text-xs">Vault</SelectItem>
+                    <SelectItem value="app" className="text-xs">App</SelectItem>
+                  </SelectContent>
+                </Select>
+                <Button type="button" onClick={saveCurrentFilter} className="shrink-0">
+                  Save
+                </Button>
+              </div>
+            </div>
+
+            <div className="grid gap-1.5">
+              <label htmlFor="kanban-filter-preset" className="text-sm font-medium">Apply preset</label>
+              <div className="flex gap-2">
+                <Select value={selectedFilterPresetName || '__none__'} onValueChange={(value) => setSelectedFilterPresetName(value === '__none__' ? '' : value)}>
+                  <SelectTrigger id="kanban-filter-preset" className="text-xs">
+                    <SelectValue placeholder="Choose a vault or app preset" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="__none__" className="text-xs">No preset selected</SelectItem>
+                    {filterPresets.map((preset) => (
+                      <SelectItem key={`${preset.source}:${preset.name}`} value={presetToken(preset.source, preset.name)} className="text-xs">
+                        {preset.name} ({preset.source})
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                <Button type="button" variant="outline" onClick={applySelectedFilterPreset} disabled={!selectedFilterPresetName}>
+                  Apply preset
+                </Button>
+              </div>
+            </div>
+          </div>
+          <DialogFooter>
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => {
+                setWorkingFilter({});
+                updateBoard((prev) => ({ ...prev, activeFilterId: null }));
+              }}
+            >
+              Clear
+            </Button>
+            <Button
+              type="button"
+              onClick={() => {
+                updateBoard((prev) => ({ ...prev, activeFilterId: null }));
+                setFilterDialogOpen(false);
+              }}
+            >
+              Apply quick filter
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={automationDialogOpen} onOpenChange={setAutomationDialogOpen}>
+        <DialogContent className="sm:max-w-3xl">
+          <DialogHeader>
+            <DialogTitle>Automations</DialogTitle>
+          </DialogHeader>
+          <div className="grid gap-6 lg:grid-cols-[1.1fr_0.9fr]">
+            <div className="grid gap-3">
+              <div className="rounded-lg border border-border/30 bg-muted/15 p-3">
+                <div className="mb-3 text-sm font-medium text-foreground">Create board rule</div>
+                <div className="grid gap-3">
+                  <Input
+                    value={automationDraft.name}
+                    onChange={(event) => setAutomationDraft((prev) => ({ ...prev, name: event.target.value }))}
+                    placeholder="Rule name"
+                  />
+
+                  <div className="grid grid-cols-2 gap-2">
+                    <Select
+                      value={automationDraft.trigger}
+                      onValueChange={(value) => setAutomationDraft((prev) => ({ ...prev, trigger: value as KanbanAutomationRule['trigger'] }))}
+                    >
+                      <SelectTrigger className="text-xs"><SelectValue /></SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="manual" className="text-xs">Manual</SelectItem>
+                        <SelectItem value="onBoardOpen" className="text-xs">On board open</SelectItem>
+                        <SelectItem value="onBoardSave" className="text-xs">On board save</SelectItem>
+                      </SelectContent>
+                    </Select>
+
+                    <Select
+                      value={automationDraft.conditionKind}
+                      onValueChange={(value) => setAutomationDraft((prev) => ({ ...prev, conditionKind: value as AutomationConditionKind, conditionValue: '' }))}
+                    >
+                      <SelectTrigger className="text-xs"><SelectValue /></SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="overdue" className="text-xs">Condition: overdue</SelectItem>
+                        <SelectItem value="dueWithinDays" className="text-xs">Condition: due within days</SelectItem>
+                        <SelectItem value="hasTag" className="text-xs">Condition: has tag</SelectItem>
+                        <SelectItem value="column" className="text-xs">Condition: in column</SelectItem>
+                        <SelectItem value="priority" className="text-xs">Condition: priority</SelectItem>
+                        <SelectItem value="assigneeState" className="text-xs">Condition: assignee state</SelectItem>
+                        <SelectItem value="doneState" className="text-xs">Condition: done state</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+
+                  {automationDraft.conditionKind !== 'overdue' && (
+                    automationDraft.conditionKind === 'column' ? (
+                      <Select
+                        value={automationDraft.conditionValue}
+                        onValueChange={(value) => setAutomationDraft((prev) => ({ ...prev, conditionValue: value }))}
+                      >
+                        <SelectTrigger className="text-xs"><SelectValue placeholder="Choose a column" /></SelectTrigger>
+                        <SelectContent>
+                          {board.columns.map((column) => (
+                            <SelectItem key={column.id} value={column.id} className="text-xs">{column.title}</SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    ) : automationDraft.conditionKind === 'priority' ? (
+                      <Select
+                        value={automationDraft.conditionValue || 'none'}
+                        onValueChange={(value) => setAutomationDraft((prev) => ({ ...prev, conditionValue: value }))}
+                      >
+                        <SelectTrigger className="text-xs"><SelectValue /></SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="none" className="text-xs">No priority</SelectItem>
+                          <SelectItem value="high" className="text-xs">High</SelectItem>
+                          <SelectItem value="medium" className="text-xs">Medium</SelectItem>
+                          <SelectItem value="low" className="text-xs">Low</SelectItem>
+                        </SelectContent>
+                      </Select>
+                    ) : automationDraft.conditionKind === 'assigneeState' ? (
+                      <Select
+                        value={automationDraft.conditionValue || 'empty'}
+                        onValueChange={(value) => setAutomationDraft((prev) => ({ ...prev, conditionValue: value }))}
+                      >
+                        <SelectTrigger className="text-xs"><SelectValue /></SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="empty" className="text-xs">Assignee empty</SelectItem>
+                          <SelectItem value="present" className="text-xs">Assignee present</SelectItem>
+                        </SelectContent>
+                      </Select>
+                    ) : automationDraft.conditionKind === 'doneState' ? (
+                      <Select
+                        value={automationDraft.conditionValue || 'done'}
+                        onValueChange={(value) => setAutomationDraft((prev) => ({ ...prev, conditionValue: value }))}
+                      >
+                        <SelectTrigger className="text-xs"><SelectValue /></SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="done" className="text-xs">Done</SelectItem>
+                          <SelectItem value="not-done" className="text-xs">Not done</SelectItem>
+                        </SelectContent>
+                      </Select>
+                    ) : (
+                      <Input
+                        value={automationDraft.conditionValue}
+                        onChange={(event) => setAutomationDraft((prev) => ({ ...prev, conditionValue: event.target.value }))}
+                        placeholder={automationDraft.conditionKind === 'dueWithinDays' ? 'Days' : 'Value'}
+                      />
+                    )
+                  )}
+
+                  <div className="grid grid-cols-2 gap-2">
+                    <Select
+                      value={automationDraft.actionKind}
+                      onValueChange={(value) => setAutomationDraft((prev) => ({ ...prev, actionKind: value as AutomationActionKind, actionValue: '' }))}
+                    >
+                      <SelectTrigger className="text-xs"><SelectValue /></SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="moveToColumn" className="text-xs">Action: move to column</SelectItem>
+                        <SelectItem value="addTag" className="text-xs">Action: add tag</SelectItem>
+                        <SelectItem value="removeTag" className="text-xs">Action: remove tag</SelectItem>
+                        <SelectItem value="setPriority" className="text-xs">Action: set priority</SelectItem>
+                        <SelectItem value="setDone" className="text-xs">Action: set done state</SelectItem>
+                        <SelectItem value="assignUser" className="text-xs">Action: assign user</SelectItem>
+                      </SelectContent>
+                    </Select>
+
+                    {automationDraft.actionKind === 'moveToColumn' ? (
+                      <Select
+                        value={automationDraft.actionValue}
+                        onValueChange={(value) => setAutomationDraft((prev) => ({ ...prev, actionValue: value }))}
+                      >
+                        <SelectTrigger className="text-xs"><SelectValue placeholder="Choose a column" /></SelectTrigger>
+                        <SelectContent>
+                          {board.columns.map((column) => (
+                            <SelectItem key={column.id} value={column.id} className="text-xs">{column.title}</SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    ) : automationDraft.actionKind === 'setPriority' ? (
+                      <Select
+                        value={automationDraft.actionValue || 'none'}
+                        onValueChange={(value) => setAutomationDraft((prev) => ({ ...prev, actionValue: value }))}
+                      >
+                        <SelectTrigger className="text-xs"><SelectValue /></SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="none" className="text-xs">No priority</SelectItem>
+                          <SelectItem value="high" className="text-xs">High</SelectItem>
+                          <SelectItem value="medium" className="text-xs">Medium</SelectItem>
+                          <SelectItem value="low" className="text-xs">Low</SelectItem>
+                        </SelectContent>
+                      </Select>
+                    ) : automationDraft.actionKind === 'setDone' ? (
+                      <Select
+                        value={automationDraft.actionValue || 'done'}
+                        onValueChange={(value) => setAutomationDraft((prev) => ({ ...prev, actionValue: value }))}
+                      >
+                        <SelectTrigger className="text-xs"><SelectValue /></SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="done" className="text-xs">Mark done</SelectItem>
+                          <SelectItem value="not-done" className="text-xs">Mark not done</SelectItem>
+                        </SelectContent>
+                      </Select>
+                    ) : automationDraft.actionKind === 'assignUser' ? (
+                      <Select
+                        value={automationDraft.actionValue || '__none__'}
+                        onValueChange={(value) => setAutomationDraft((prev) => ({ ...prev, actionValue: value === '__none__' ? '' : value }))}
+                      >
+                        <SelectTrigger className="text-xs"><SelectValue /></SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="__none__" className="text-xs">Unassign</SelectItem>
+                          {knownUsers.map((user) => (
+                            <SelectItem key={user.userId} value={user.userId} className="text-xs">{user.userName}</SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    ) : (
+                      <Input
+                        value={automationDraft.actionValue}
+                        onChange={(event) => setAutomationDraft((prev) => ({ ...prev, actionValue: event.target.value }))}
+                        placeholder="Value"
+                      />
+                    )}
+                  </div>
+
+                  <Button type="button" onClick={addAutomationRule}>
+                    Add rule
+                  </Button>
+                </div>
+              </div>
+
+              <div className="rounded-lg border border-border/30 bg-muted/15 p-3">
+                <div className="mb-3 text-sm font-medium text-foreground">Board rules</div>
+                <div className="space-y-2">
+                  {(board.automations ?? []).length === 0 && (
+                    <p className="text-xs text-muted-foreground">No automations on this board yet.</p>
+                  )}
+                  {(board.automations ?? []).map((rule) => (
+                    <div key={rule.id} className="rounded-md border border-border/25 bg-background/50 px-3 py-2">
+                      <div className="flex items-start justify-between gap-3">
+                        <div className="min-w-0">
+                          <div className="text-sm font-medium text-foreground">{rule.name}</div>
+                          <div className="mt-1 text-xs text-muted-foreground">{describeAutomationRule(rule, board.columns)}</div>
+                          <div className="mt-1 text-[10px] uppercase tracking-[0.14em] text-muted-foreground/60">
+                            {rule.trigger}
+                          </div>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => deleteAutomationRule(rule.id)}
+                          className="rounded-md p-1 text-muted-foreground hover:bg-accent/40 hover:text-foreground"
+                          aria-label={`Delete ${rule.name}`}
+                        >
+                          <Trash2 size={12} />
+                        </button>
+                      </div>
+                      <div className="mt-2 flex flex-wrap items-center gap-2">
+                        <Input
+                          value={automationPresetName}
+                          onChange={(event) => setAutomationPresetName(event.target.value)}
+                          placeholder="Preset name"
+                          className="h-8 max-w-[180px] text-xs"
+                        />
+                        <Button type="button" variant="outline" size="sm" onClick={() => saveAutomationPreset(rule, 'vault')}>
+                          Save to vault
+                        </Button>
+                        <Button type="button" variant="outline" size="sm" onClick={() => saveAutomationPreset(rule, 'app')}>
+                          Save to app
+                        </Button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </div>
+
+            <div className="rounded-lg border border-border/30 bg-muted/15 p-3">
+              <div className="mb-3 text-sm font-medium text-foreground">Automation presets</div>
+              <div className="grid gap-3">
+                <Select value={selectedAutomationPresetName || '__none__'} onValueChange={(value) => setSelectedAutomationPresetName(value === '__none__' ? '' : value)}>
+                  <SelectTrigger className="text-xs">
+                    <SelectValue placeholder="Choose a preset" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="__none__" className="text-xs">No preset selected</SelectItem>
+                    {automationPresets.map((preset) => (
+                      <SelectItem key={`${preset.source}:${preset.name}`} value={presetToken(preset.source, preset.name)} className="text-xs">
+                        {preset.name} ({preset.source})
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                <Button type="button" variant="outline" onClick={applySelectedAutomationPreset} disabled={!selectedAutomationPresetName}>
+                  Apply preset to board
+                </Button>
+                <div className="space-y-2">
+                  {automationPresets.map((preset) => (
+                    <div key={`${preset.source}:${preset.name}:summary`} className="rounded-md border border-border/25 bg-background/50 px-3 py-2">
+                      <div className="text-sm font-medium text-foreground">{preset.name}</div>
+                      <div className="mt-1 text-xs text-muted-foreground">{describeAutomationRule(preset.rule, board.columns)}</div>
+                      <div className="mt-1 text-[10px] uppercase tracking-[0.14em] text-muted-foreground/60">{preset.source}</div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </div>
+          </div>
         </DialogContent>
       </Dialog>
     </div>
