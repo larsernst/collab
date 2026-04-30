@@ -32,10 +32,17 @@ describe('resolveNoteAssetTarget', () => {
     });
   });
 
-  it('resolves nested relative image paths against the current note directory', () => {
+  it('treats local image paths as vault-root-relative by default', () => {
+    expect(resolveNoteAssetTarget('Folder/example.png', 'Notes/Sub/demo.md')).toEqual({
+      kind: 'vault',
+      value: 'Folder/example.png',
+    });
+  });
+
+  it('normalizes parent segments while staying rooted at the vault', () => {
     expect(resolveNoteAssetTarget('../Pictures/example.png', 'Notes/Sub/demo.md')).toEqual({
       kind: 'vault',
-      value: 'Notes/Pictures/example.png',
+      value: 'Pictures/example.png',
     });
   });
 });

@@ -51,7 +51,7 @@ function flattenVaultFiles(nodes: NoteFile[]): NoteFile[] {
 
 export function resolveNoteAssetTarget(
   assetPath: string,
-  noteRelativePath: string,
+  _noteRelativePath: string,
   fileTree?: NoteFile[],
 ): NoteAssetTarget | null {
   const trimmed = assetPath.trim();
@@ -77,12 +77,7 @@ export function resolveNoteAssetTarget(
     }
   }
 
-  const noteDir = noteRelativePath.includes('/')
-    ? noteRelativePath.split('/').slice(0, -1).join('/')
-    : '';
-  const relativeToVault = rawPath.startsWith('/')
-    ? normalizeRelativePath(rawPath)
-    : normalizeRelativePath(noteDir ? `${noteDir}/${rawPath}` : rawPath);
+  const relativeToVault = normalizeRelativePath(rawPath);
 
   return {
     kind: 'vault',
