@@ -2,8 +2,7 @@ import { createPortal } from 'react-dom';
 import { useEffect, useState } from 'react';
 import { FileText, Loader2 } from 'lucide-react';
 
-import { tauriCommands } from '../../lib/tauri';
-import { renderPdfPreviewFromDataUrl } from '../../lib/pdfPreview';
+import { getPdfPreviewDataUrl } from '../../lib/pdfPreview';
 import { getVaultDocumentTitle } from '../../lib/vaultLinks';
 import { useVaultStore } from '../../store/vaultStore';
 
@@ -31,8 +30,7 @@ export function PdfLinkPreviewPopover({ anchorRect, relativePath, enabled }: Pdf
     setLoading(true);
     setError(null);
 
-    void tauriCommands.readNoteAssetDataUrl(vault.path, relativePath)
-      .then((dataUrl) => renderPdfPreviewFromDataUrl(dataUrl))
+    void getPdfPreviewDataUrl(vault.path, relativePath)
       .then((rendered) => {
         if (cancelled) return;
         setPreviewSrc(rendered);

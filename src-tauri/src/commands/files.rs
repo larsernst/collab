@@ -120,6 +120,15 @@ pub struct PdfSidecarState {
     pub viewer_state: Option<PdfViewerState>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+struct DocumentPreviewCacheEntry {
+    pub source_modified_at: u64,
+    pub source_size: u64,
+    pub preview_mime: String,
+    pub generated_at: u64,
+}
+
 fn is_ignored_dir_name(name: &str) -> bool {
     matches!(
         name,
@@ -183,6 +192,16 @@ fn pdf_sidecar_relative_path(pdf_relative_path: &str) -> String {
     format!(".collab/pdf/{encoded}.json")
 }
 
+fn document_preview_cache_metadata_relative_path(relative_path: &str) -> String {
+    let encoded = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(relative_path);
+    format!(".collab/previews/documents/{encoded}.json")
+}
+
+fn document_preview_cache_payload_relative_path(relative_path: &str) -> String {
+    let encoded = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(relative_path);
+    format!(".collab/previews/documents/{encoded}.bin")
+}
+
 fn trash_entries_relative_dir() -> &'static str {
     ".collab/trash/entries"
 }
@@ -224,6 +243,12 @@ fn guess_mime_type(relative_path: &str) -> &'static str {
         Some("pdf") => "application/pdf",
         _ => "application/octet-stream",
     }
+}
+
+fn read_source_file_cache_state(full_path: &Path) -> Result<(u64, u64), String> {
+    let metadata = std::fs::metadata(full_path).map_err(|e| e.to_string())?;
+    let modified_at = metadata.modified().map(system_time_to_ms).unwrap_or(0);
+    Ok((modified_at, metadata.len()))
 }
 
 fn sanitize_file_name(name: &str) -> String {
@@ -1864,6 +1889,78 @@ pub fn write_pdf_sidecar_state(
 }
 
 #[tauri::command]
+pub fn read_cached_document_preview_data_url(
+    vault_path: String,
+    relative_path: String,
+    state: State<AppState>,
+) -> Result<Option<String>, String> {
+    let source_path = resolve_vault_path(&vault_path, &relative_path)?;
+    if !source_path.exists() {
+        return Ok(None);
+    }
+
+    let metadata_relative_path = document_preview_cache_metadata_relative_path(&relative_path);
+    let payload_relative_path = document_preview_cache_payload_relative_path(&relative_path);
+    let metadata_path = resolve_vault_path(&vault_path, &metadata_relative_path)?;
+    let payload_path = resolve_vault_path(&vault_path, &payload_relative_path)?;
+    if !metadata_path.exists() || !payload_path.exists() {
+        return Ok(None);
+    }
+
+    let (source_modified_at, source_size) = read_source_file_cache_state(&source_path)?;
+    let key_opt: Option<[u8; 32]> = *state.encryption_key.read();
+    let metadata_bytes = read_vault_bytes(&metadata_path, key_opt)?;
+    let cache_entry: DocumentPreviewCacheEntry =
+        serde_json::from_slice(&metadata_bytes).map_err(|e| e.to_string())?;
+
+    if cache_entry.source_modified_at != source_modified_at || cache_entry.source_size != source_size {
+        return Ok(None);
+    }
+
+    let preview_bytes = read_vault_bytes(&payload_path, key_opt)?;
+    let encoded = base64::engine::general_purpose::STANDARD.encode(preview_bytes);
+    Ok(Some(format!(
+        "data:{};base64,{}",
+        cache_entry.preview_mime, encoded
+    )))
+}
+
+#[tauri::command]
+pub fn write_cached_document_preview_data_url(
+    vault_path: String,
+    relative_path: String,
+    data_url: String,
+    state: State<AppState>,
+) -> Result<(), String> {
+    let source_path = resolve_vault_path(&vault_path, &relative_path)?;
+    if !source_path.exists() {
+        return Err(format!("Source file '{}' does not exist", relative_path));
+    }
+
+    let (mime, encoded) = parse_data_url(&data_url)?;
+    let preview_bytes = base64::engine::general_purpose::STANDARD
+        .decode(encoded)
+        .map_err(|e| format!("Failed to decode cached preview data: {e}"))?;
+    let (source_modified_at, source_size) = read_source_file_cache_state(&source_path)?;
+    let cache_entry = DocumentPreviewCacheEntry {
+        source_modified_at,
+        source_size,
+        preview_mime: mime.to_string(),
+        generated_at: system_time_to_ms(SystemTime::now()),
+    };
+
+    let metadata_relative_path = document_preview_cache_metadata_relative_path(&relative_path);
+    let payload_relative_path = document_preview_cache_payload_relative_path(&relative_path);
+    let metadata_path = resolve_vault_path(&vault_path, &metadata_relative_path)?;
+    let payload_path = resolve_vault_path(&vault_path, &payload_relative_path)?;
+    let key_opt: Option<[u8; 32]> = *state.encryption_key.read();
+    let metadata_bytes = serde_json::to_vec_pretty(&cache_entry).map_err(|e| e.to_string())?;
+
+    write_vault_bytes(&payload_path, &preview_bytes, key_opt)?;
+    write_vault_bytes(&metadata_path, &metadata_bytes, key_opt)
+}
+
+#[tauri::command]
 pub fn save_generated_image(
     vault_path: String,
     source_relative_path: String,
@@ -1956,6 +2053,7 @@ pub fn import_asset_into_vault(
 mod tests {
     use super::{
         build_tree, collect_entries, create_note_at_path, extension_for_mime, guess_mime_type,
+        document_preview_cache_metadata_relative_path, document_preview_cache_payload_relative_path,
         list_file_references_inner,
         is_allowed_extension, normalize_relative_path, overlay_relative_path, parse_data_url,
         pdf_sidecar_relative_path,
@@ -2500,6 +2598,16 @@ mod tests {
         let relative = pdf_sidecar_relative_path("Docs/spec.pdf");
         assert!(relative.starts_with(".collab/pdf/"));
         assert!(relative.ends_with(".json"));
+    }
+
+    #[test]
+    fn document_preview_cache_paths_use_hidden_collab_namespace() {
+        let metadata_relative = document_preview_cache_metadata_relative_path("Docs/spec.pdf");
+        let payload_relative = document_preview_cache_payload_relative_path("Docs/spec.pdf");
+        assert!(metadata_relative.starts_with(".collab/previews/documents/"));
+        assert!(metadata_relative.ends_with(".json"));
+        assert!(payload_relative.starts_with(".collab/previews/documents/"));
+        assert!(payload_relative.ends_with(".bin"));
     }
 }
 

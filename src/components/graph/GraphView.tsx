@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, useCallback } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import * as d3 from 'd3';
 import type { NoteMetadata } from '../../types/note';
 
@@ -20,47 +20,112 @@ interface GraphLink extends d3.SimulationLinkDatum<GraphNode> {
   target: string | GraphNode;
 }
 
+const LABEL_ALWAYS_VISIBLE_NODE_LIMIT = 120;
+const LABEL_DETAIL_SCALE_THRESHOLD = 1.15;
+
+function normalizeGraphLinkTarget(value: string) {
+  return value.trim().split(/[?#]/, 1)[0]?.replace(/\\/g, '/').toLowerCase() ?? '';
+}
+
+function stripMarkdownExtension(relativePath: string) {
+  return relativePath.replace(/\.md$/i, '');
+}
+
+function buildUniqueLookup(entries: Array<readonly [string, string]>) {
+  const counts = new Map<string, { path: string; count: number }>();
+
+  for (const [rawKey, path] of entries) {
+    const key = normalizeGraphLinkTarget(rawKey);
+    if (!key) continue;
+    const existing = counts.get(key);
+    if (!existing) {
+      counts.set(key, { path, count: 1 });
+      continue;
+    }
+    if (existing.path !== path) existing.count += 1;
+  }
+
+  return new Map(
+    Array.from(counts.entries())
+      .filter(([, value]) => value.count === 1)
+      .map(([key, value]) => [key, value.path] as const),
+  );
+}
+
+export function buildGraphData(notes: NoteMetadata[]) {
+  const visibleNotes = notes.slice(0, 500);
+  const exactRelativePathToPath = new Map<string, string>();
+  const exactRelativeStemToPath = new Map<string, string>();
+
+  for (const note of visibleNotes) {
+    exactRelativePathToPath.set(
+      normalizeGraphLinkTarget(note.relativePath),
+      note.relativePath,
+    );
+    exactRelativeStemToPath.set(
+      normalizeGraphLinkTarget(stripMarkdownExtension(note.relativePath)),
+      note.relativePath,
+    );
+  }
+
+  const basenameToPath = buildUniqueLookup(
+    visibleNotes.map((note) => [note.relativePath.split('/').pop() ?? '', note.relativePath] as const),
+  );
+  const stemToPath = buildUniqueLookup(
+    visibleNotes.map((note) => [
+      stripMarkdownExtension(note.relativePath.split('/').pop() ?? ''),
+      note.relativePath,
+    ] as const),
+  );
+  const titleToPath = buildUniqueLookup(
+    visibleNotes.map((note) => [note.title, note.relativePath] as const),
+  );
+
+  const nodes: GraphNode[] = visibleNotes.map((n) => ({
+    id: n.relativePath,
+    title: n.title,
+    relativePath: n.relativePath,
+    tags: n.tags,
+    linkCount: n.wikilinksOut.length,
+  }));
+
+  const nodeIds = new Set(nodes.map((node) => node.id));
+  const linkKeys = new Set<string>();
+  const links: GraphLink[] = [];
+
+  for (const note of visibleNotes) {
+    for (const wikilink of note.wikilinksOut) {
+      const normalizedTarget = normalizeGraphLinkTarget(wikilink);
+      if (!normalizedTarget) continue;
+
+      const targetPath = exactRelativePathToPath.get(normalizedTarget)
+        ?? exactRelativeStemToPath.get(normalizedTarget)
+        ?? basenameToPath.get(normalizedTarget)
+        ?? stemToPath.get(normalizedTarget)
+        ?? titleToPath.get(normalizedTarget);
+
+      if (
+        targetPath &&
+        targetPath !== note.relativePath &&
+        nodeIds.has(targetPath)
+      ) {
+        const linkKey = `${note.relativePath}->${targetPath}`;
+        if (linkKeys.has(linkKey)) continue;
+        linkKeys.add(linkKey);
+        links.push({ source: note.relativePath, target: targetPath });
+      }
+    }
+  }
+
+  return { nodes, links };
+}
+
 export default function GraphView({ notes, onNodeClick }: GraphViewProps) {
   const svgRef = useRef<SVGSVGElement>(null);
   const simulationRef = useRef<d3.Simulation<GraphNode, GraphLink> | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedNode, setSelectedNode] = useState<string | null>(null);
-
-  const buildGraph = useCallback(() => {
-    const nameToPath = new Map<string, string>();
-    for (const note of notes) {
-      nameToPath.set(note.title.toLowerCase(), note.relativePath);
-      const fname =
-        note.relativePath.split('/').pop()?.replace(/\.md$/, '') ?? '';
-      nameToPath.set(fname.toLowerCase(), note.relativePath);
-    }
-
-    const nodes: GraphNode[] = notes.slice(0, 500).map((n) => ({
-      id: n.relativePath,
-      title: n.title,
-      relativePath: n.relativePath,
-      tags: n.tags,
-      linkCount: n.wikilinksOut.length,
-    }));
-
-    const nodeIds = new Set(nodes.map((n) => n.id));
-    const links: GraphLink[] = [];
-
-    for (const note of notes.slice(0, 500)) {
-      for (const wikilink of note.wikilinksOut) {
-        const targetPath = nameToPath.get(wikilink.toLowerCase());
-        if (
-          targetPath &&
-          targetPath !== note.relativePath &&
-          nodeIds.has(targetPath)
-        ) {
-          links.push({ source: note.relativePath, target: targetPath });
-        }
-      }
-    }
-
-    return { nodes, links };
-  }, [notes]);
+  const graphData = useMemo(() => buildGraphData(notes), [notes]);
 
   useEffect(() => {
     if (!svgRef.current) return;
@@ -68,7 +133,7 @@ export default function GraphView({ notes, onNodeClick }: GraphViewProps) {
     svg.selectAll('*').remove();
 
     const { width, height } = svgRef.current.getBoundingClientRect();
-    const { nodes, links } = buildGraph();
+    const { nodes, links } = graphData;
 
     if (nodes.length === 0) {
       svg
@@ -84,10 +149,46 @@ export default function GraphView({ notes, onNodeClick }: GraphViewProps) {
 
     // Setup zoom
     const g = svg.append('g');
+    const shouldAlwaysShowLabels = nodes.length <= LABEL_ALWAYS_VISIBLE_NODE_LIMIT;
+    let currentScale = 1;
+
+    const nodeRadius = d3
+      .scaleSqrt()
+      .domain([0, 20])
+      .range([5, 16])
+      .clamp(true);
+
+    const linkLayer = g.append('g');
+    const nodeLayer = g.append('g');
+
+    // Links
+    const link = linkLayer
+      .selectAll('line')
+      .data(links)
+      .join('line')
+      .attr('stroke', '#334155')
+      .attr('stroke-opacity', links.length > 300 ? 0.5 : 0.8)
+      .attr('stroke-width', links.length > 300 ? 0.8 : 1);
+
+    const applyInteractionDetail = (interacting: boolean, scale = currentScale) => {
+      const showLabels = !interacting && (shouldAlwaysShowLabels || scale >= LABEL_DETAIL_SCALE_THRESHOLD);
+      label.attr('display', showLabels ? null : 'none');
+
+      link.attr('marker-end', interacting ? null : 'url(#arrowhead)');
+    };
+
     const zoom = d3
       .zoom<SVGSVGElement, unknown>()
       .scaleExtent([0.1, 4])
-      .on('zoom', (event) => g.attr('transform', event.transform));
+      .on('start', () => applyInteractionDetail(true))
+      .on('zoom', (event) => {
+        currentScale = event.transform.k;
+        g.attr('transform', event.transform);
+      })
+      .on('end', (event) => {
+        currentScale = event.transform.k;
+        applyInteractionDetail(false, currentScale);
+      });
     svg.call(zoom);
 
     // Arrow marker
@@ -96,7 +197,7 @@ export default function GraphView({ notes, onNodeClick }: GraphViewProps) {
       .append('marker')
       .attr('id', 'arrowhead')
       .attr('viewBox', '-0 -5 10 10')
-      .attr('refX', 20)
+      .attr('refX', 10)
       .attr('refY', 0)
       .attr('orient', 'auto')
       .attr('markerWidth', 6)
@@ -105,26 +206,8 @@ export default function GraphView({ notes, onNodeClick }: GraphViewProps) {
       .attr('d', 'M 0,-5 L 10,0 L 0,5')
       .attr('fill', '#334155');
 
-    // Links
-    const link = g
-      .append('g')
-      .selectAll('line')
-      .data(links)
-      .join('line')
-      .attr('stroke', '#334155')
-      .attr('stroke-width', 1)
-      .attr('marker-end', 'url(#arrowhead)');
-
-    // Node radius based on link count
-    const radiusScale = d3
-      .scaleSqrt()
-      .domain([0, 20])
-      .range([5, 16])
-      .clamp(true);
-
     // Nodes
-    const node = g
-      .append('g')
+    const node = nodeLayer
       .selectAll('g')
       .data(nodes)
       .join('g')
@@ -136,27 +219,30 @@ export default function GraphView({ notes, onNodeClick }: GraphViewProps) {
 
     node
       .append('circle')
-      .attr('r', (d) => radiusScale(d.linkCount))
+      .attr('r', (d) => nodeRadius(d.linkCount))
       .attr('fill', (d) => (d.tags.length > 0 ? '#8b5cf6' : '#3b82f6'))
       .attr('stroke', '#1e293b')
       .attr('stroke-width', 2);
 
-    node
+    const label = node
       .append('text')
       .text((d) =>
         d.title.length > 20 ? d.title.slice(0, 17) + '\u2026' : d.title
       )
-      .attr('x', (d) => radiusScale(d.linkCount) + 4)
+      .attr('x', (d) => nodeRadius(d.linkCount) + 4)
       .attr('y', 4)
       .attr('font-size', 11)
       .attr('fill', '#94a3b8')
       .attr('pointer-events', 'none');
 
+    applyInteractionDetail(false);
+
     // Drag behaviour
     const drag = d3
       .drag<SVGGElement, GraphNode>()
       .on('start', (event, d) => {
-        if (!event.active) simulation.alphaTarget(0.3).restart();
+        applyInteractionDetail(true);
+        if (!event.active) simulation.alphaTarget(0.12).restart();
         d.fx = d.x;
         d.fy = d.y;
       })
@@ -168,13 +254,83 @@ export default function GraphView({ notes, onNodeClick }: GraphViewProps) {
         if (!event.active) simulation.alphaTarget(0);
         d.fx = null;
         d.fy = null;
+        applyInteractionDetail(false);
       });
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     node.call(drag as any);
 
+    let frameId: number | null = null;
+    const renderPositions = () => {
+      frameId = null;
+      link
+        .attr('x1', (d) => {
+          const source = d.source as GraphNode;
+          const target = d.target as GraphNode;
+          const sx = source.x ?? 0;
+          const sy = source.y ?? 0;
+          const tx = target.x ?? 0;
+          const ty = target.y ?? 0;
+          const dx = tx - sx;
+          const dy = ty - sy;
+          const distance = Math.hypot(dx, dy) || 1;
+          const sourceOffset = nodeRadius(source.linkCount) + 2;
+          return sx + (dx / distance) * sourceOffset;
+        })
+        .attr('y1', (d) => {
+          const source = d.source as GraphNode;
+          const target = d.target as GraphNode;
+          const sx = source.x ?? 0;
+          const sy = source.y ?? 0;
+          const tx = target.x ?? 0;
+          const ty = target.y ?? 0;
+          const dx = tx - sx;
+          const dy = ty - sy;
+          const distance = Math.hypot(dx, dy) || 1;
+          const sourceOffset = nodeRadius(source.linkCount) + 2;
+          return sy + (dy / distance) * sourceOffset;
+        })
+        .attr('x2', (d) => {
+          const source = d.source as GraphNode;
+          const target = d.target as GraphNode;
+          const sx = source.x ?? 0;
+          const sy = source.y ?? 0;
+          const tx = target.x ?? 0;
+          const ty = target.y ?? 0;
+          const dx = tx - sx;
+          const dy = ty - sy;
+          const distance = Math.hypot(dx, dy) || 1;
+          const targetOffset = nodeRadius(target.linkCount) + 1;
+          return tx - (dx / distance) * targetOffset;
+        })
+        .attr('y2', (d) => {
+          const source = d.source as GraphNode;
+          const target = d.target as GraphNode;
+          const sx = source.x ?? 0;
+          const sy = source.y ?? 0;
+          const tx = target.x ?? 0;
+          const ty = target.y ?? 0;
+          const dx = tx - sx;
+          const dy = ty - sy;
+          const distance = Math.hypot(dx, dy) || 1;
+          const targetOffset = nodeRadius(target.linkCount) + 1;
+          return ty - (dy / distance) * targetOffset;
+        });
+      node.attr(
+        'transform',
+        (d) => `translate(${d.x ?? 0},${d.y ?? 0})`
+      );
+    };
+
+    const scheduleRender = () => {
+      if (frameId !== null) return;
+      frameId = window.requestAnimationFrame(renderPositions);
+    };
+
     // Force simulation
     const simulation = d3
       .forceSimulation<GraphNode>(nodes)
+      .alphaDecay(0.08)
+      .velocityDecay(0.45)
       .force(
         'link',
         d3
@@ -188,26 +344,19 @@ export default function GraphView({ notes, onNodeClick }: GraphViewProps) {
         'collision',
         d3
           .forceCollide<GraphNode>()
-          .radius((d) => radiusScale(d.linkCount) + 8)
+          .radius((d) => nodeRadius(d.linkCount) + 8)
       )
-      .on('tick', () => {
-        link
-          .attr('x1', (d) => (d.source as GraphNode).x ?? 0)
-          .attr('y1', (d) => (d.source as GraphNode).y ?? 0)
-          .attr('x2', (d) => (d.target as GraphNode).x ?? 0)
-          .attr('y2', (d) => (d.target as GraphNode).y ?? 0);
-        node.attr(
-          'transform',
-          (d) => `translate(${d.x ?? 0},${d.y ?? 0})`
-        );
-      });
+      .on('tick', scheduleRender);
+
+    scheduleRender();
 
     simulationRef.current = simulation;
 
     return () => {
+      if (frameId !== null) window.cancelAnimationFrame(frameId);
       simulation.stop();
     };
-  }, [notes, buildGraph, onNodeClick]);
+  }, [graphData, onNodeClick]);
 
   // Suppress unused-variable warning for selectedNode — kept for future highlight logic
   void selectedNode;

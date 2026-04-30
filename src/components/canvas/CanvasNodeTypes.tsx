@@ -131,6 +131,7 @@ function NoteCardNode({ id, data, selected }: { id: string; data: CanvasNodeData
                 content={data.markdownContent}
                 className="h-full overflow-hidden text-[13px] leading-relaxed [&_.contains-task-list]:pl-4 [&_blockquote]:border-l-2 [&_blockquote]:border-primary/30 [&_blockquote]:pl-3 [&_h1]:mb-2 [&_h1]:text-xl [&_h2]:mb-2 [&_h2]:text-lg [&_h3]:mb-1 [&_img]:hidden [&_ol]:pl-5 [&_p]:mb-2 [&_pre]:hidden [&_table]:hidden [&_ul]:pl-5"
                 onWikilinkClick={data.onWikilinkClick}
+                currentDocumentRelativePath={data.relativePath}
               />
             ) : (
               <div className="line-clamp-6 whitespace-pre-wrap leading-relaxed">

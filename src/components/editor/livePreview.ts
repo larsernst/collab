@@ -500,14 +500,14 @@ function processInline(
 
   // ── Images ![alt](path) and ![[path]] ───────────────────────────────────
   run(/!\[([^\]\n]*?)\]\(([^)\n]*?)\)/g, (m, s, e) => {
-    const target = resolveNoteAssetTarget(m[2], noteRelativePath);
+    const target = resolveNoteAssetTarget(m[2], noteRelativePath, useVaultStore.getState().fileTree);
     if (!target) return null;
     return [widget(s, e, new ImageWidget(target, m[1]))];
   });
   run(/!\[\[([^\]|]+?)(\|([^\]]+?))?\]\]/g, (m, s, e) => {
     const path = m[1];
     if (!isLikelyImagePath(path)) return null;
-    const target = resolveNoteAssetTarget(path, noteRelativePath);
+    const target = resolveNoteAssetTarget(path, noteRelativePath, useVaultStore.getState().fileTree);
     if (!target) return null;
     const alt = m[3] ?? path.split('/').pop() ?? path;
     return [widget(s, e, new ImageWidget(target, alt))];

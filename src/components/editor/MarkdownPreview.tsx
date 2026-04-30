@@ -21,8 +21,11 @@ import container from 'markdown-it-container';
 import hljs from 'highlight.js';
 import DOMPurify from 'dompurify';
 import { useUiStore } from '../../store/uiStore';
+import { useVaultStore } from '../../store/vaultStore';
+import { tauriCommands } from '../../lib/tauri';
 import { WebLinkPreviewPopover } from '../previews/WebLinkPreviewPopover';
 import { extractHttpUrls, prefetchWebPreviews } from '../../lib/webPreviewCache';
+import { resolveNoteAssetTarget } from '../../lib/noteAssets';
 import 'katex/dist/katex.min.css';
 import 'highlight.js/styles/atom-one-dark.css';
 
@@ -180,14 +183,17 @@ interface MarkdownPreviewProps {
   content: string;
   className?: string;
   onWikilinkClick?: (relativePath: string) => void;
+  currentDocumentRelativePath?: string;
 }
 
 function isPreviewableHttpUrl(value: string | null | undefined) {
   return !!value && /^https?:\/\//i.test(value);
 }
 
-function PreviewInner({ content, className = '', onWikilinkClick }: MarkdownPreviewProps) {
+function PreviewInner({ content, className = '', onWikilinkClick, currentDocumentRelativePath }: MarkdownPreviewProps) {
   const { webPreviewsEnabled, hoverWebLinkPreviewsEnabled, backgroundWebPreviewPrefetchEnabled } = useUiStore();
+  const vault = useVaultStore((state) => state.vault);
+  const fileTree = useVaultStore((state) => state.fileTree);
   const rootRef = useRef<HTMLDivElement | null>(null);
   const [hoveredUrl, setHoveredUrl] = useState<string | null>(null);
   const [hoverRect, setHoverRect] = useState<DOMRect | null>(null);
@@ -210,6 +216,40 @@ function PreviewInner({ content, className = '', onWikilinkClick }: MarkdownPrev
     if (urls.length === 0) return;
     prefetchWebPreviews(urls);
   }, [backgroundWebPreviewPrefetchEnabled, content, hoverWebLinkPreviewsEnabled, webPreviewsEnabled]);
+
+  useEffect(() => {
+    const root = rootRef.current;
+    if (!root) return;
+
+    const images = Array.from(root.querySelectorAll<HTMLImageElement>('img[src]'));
+    if (images.length === 0) return;
+
+    let cancelled = false;
+
+    for (const image of images) {
+      const rawSrc = image.getAttribute('src');
+      if (!rawSrc || !vault?.path || !currentDocumentRelativePath) continue;
+      const target = resolveNoteAssetTarget(rawSrc, currentDocumentRelativePath, fileTree);
+      if (!target || target.kind !== 'vault') continue;
+
+      image.dataset.assetKind = 'vault';
+      image.dataset.assetValue = target.value;
+
+      void tauriCommands.readNoteAssetDataUrl(vault.path, target.value)
+        .then((dataUrl) => {
+          if (cancelled || !image.isConnected) return;
+          image.src = dataUrl;
+        })
+        .catch(() => {
+          if (cancelled || !image.isConnected) return;
+          image.dataset.previewError = 'true';
+        });
+    }
+
+    return () => {
+      cancelled = true;
+    };
+  }, [currentDocumentRelativePath, html, vault?.path]);
 
   function handleClick(e: React.MouseEvent<HTMLDivElement>) {
     if (!onWikilinkClick) return;

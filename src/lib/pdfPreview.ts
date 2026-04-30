@@ -1,9 +1,11 @@
 import { getDocument, GlobalWorkerOptions } from 'pdfjs-dist';
+import { tauriCommands } from './tauri';
 
 const workerUrl = new URL('pdfjs-dist/build/pdf.worker.mjs', import.meta.url).toString();
 GlobalWorkerOptions.workerSrc = workerUrl;
 
 const previewCache = new Map<string, Promise<string>>();
+const inFlightVaultPreviewLoads = new Map<string, Promise<string>>();
 
 export async function renderPdfPreviewFromDataUrl(dataUrl: string) {
   const key = dataUrl;
@@ -39,5 +41,45 @@ export async function renderPdfPreviewFromDataUrl(dataUrl: string) {
   })();
 
   previewCache.set(key, promise);
+  return promise;
+}
+
+type PdfPreviewLoaderDeps = {
+  readCachedDocumentPreviewDataUrl: typeof tauriCommands.readCachedDocumentPreviewDataUrl;
+  readNoteAssetDataUrl: typeof tauriCommands.readNoteAssetDataUrl;
+  writeCachedDocumentPreviewDataUrl: typeof tauriCommands.writeCachedDocumentPreviewDataUrl;
+  renderPdfPreviewFromDataUrl: typeof renderPdfPreviewFromDataUrl;
+};
+
+export async function loadPdfPreviewDataUrl(
+  vaultPath: string,
+  relativePath: string,
+  deps: PdfPreviewLoaderDeps = {
+    readCachedDocumentPreviewDataUrl: tauriCommands.readCachedDocumentPreviewDataUrl,
+    readNoteAssetDataUrl: tauriCommands.readNoteAssetDataUrl,
+    writeCachedDocumentPreviewDataUrl: tauriCommands.writeCachedDocumentPreviewDataUrl,
+    renderPdfPreviewFromDataUrl,
+  },
+) {
+  const cached = await deps.readCachedDocumentPreviewDataUrl(vaultPath, relativePath);
+  if (cached) return cached;
+
+  const sourceDataUrl = await deps.readNoteAssetDataUrl(vaultPath, relativePath);
+  const renderedPreview = await deps.renderPdfPreviewFromDataUrl(sourceDataUrl);
+  void deps.writeCachedDocumentPreviewDataUrl(vaultPath, relativePath, renderedPreview).catch(() => {});
+  return renderedPreview;
+}
+
+export async function getPdfPreviewDataUrl(vaultPath: string, relativePath: string) {
+  const key = `${vaultPath}::${relativePath}`;
+  const existing = inFlightVaultPreviewLoads.get(key);
+  if (existing) return existing;
+
+  const promise = loadPdfPreviewDataUrl(vaultPath, relativePath)
+    .finally(() => {
+      inFlightVaultPreviewLoads.delete(key);
+    });
+
+  inFlightVaultPreviewLoads.set(key, promise);
   return promise;
 }

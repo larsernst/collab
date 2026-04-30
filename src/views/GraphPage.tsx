@@ -1,3 +1,4 @@
+import { memo, useCallback } from 'react';
 import { useNoteIndexStore } from '../store/noteIndexStore';
 import { useEditorStore } from '../store/editorStore';
 import { useUiStore } from '../store/uiStore';
@@ -8,15 +9,17 @@ interface Props {
   onNodeClick?: (relativePath: string, title: string) => void;
 }
 
-export default function GraphPage({ onNodeClick }: Props = {}) {
-  const { notes } = useNoteIndexStore();
-  const { openTab } = useEditorStore();
-  const { setActiveView } = useUiStore();
+function GraphPage({ onNodeClick }: Props = {}) {
+  const notes = useNoteIndexStore((state) => state.notes);
+  const openTab = useEditorStore((state) => state.openTab);
+  const setActiveView = useUiStore((state) => state.setActiveView);
 
-  const handleNodeClick = onNodeClick ?? ((relativePath: string, title: string) => {
+  const defaultNodeClick = useCallback((relativePath: string, title: string) => {
     openTab(relativePath, title, 'note');
     setActiveView('editor');
-  });
+  }, [openTab, setActiveView]);
+
+  const handleNodeClick = onNodeClick ?? defaultNodeClick;
 
   return (
     <div className="w-full h-full app-fade-slide-in">
@@ -24,3 +27,5 @@ export default function GraphPage({ onNodeClick }: Props = {}) {
     </div>
   );
 }
+
+export default memo(GraphPage);

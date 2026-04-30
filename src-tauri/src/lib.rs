@@ -116,6 +116,8 @@ pub fn run() {
             commands::files::delete_image_overlay,
             commands::files::read_pdf_sidecar_state,
             commands::files::write_pdf_sidecar_state,
+            commands::files::read_cached_document_preview_data_url,
+            commands::files::write_cached_document_preview_data_url,
             commands::files::save_generated_image,
             commands::files::import_asset_into_vault,
             commands::files::write_note,

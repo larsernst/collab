@@ -1,3 +1,5 @@
+import type { NoteFile } from '../types/vault';
+
 const IMAGE_EXT_RE = /\.(avif|bmp|gif|ico|jpe?g|png|svg|webp)$/i;
 const ABSOLUTE_URL_RE = /^(?:[a-z][a-z\d+.-]*:|\/\/)/i;
 
@@ -30,17 +32,51 @@ export type NoteAssetTarget =
   | { kind: 'direct'; value: string }
   | { kind: 'vault'; value: string };
 
+function flattenVaultFiles(nodes: NoteFile[]): NoteFile[] {
+  const flat: NoteFile[] = [];
+
+  const visit = (items: NoteFile[]) => {
+    for (const item of items) {
+      if (item.isFolder) {
+        if (item.children?.length) visit(item.children);
+        continue;
+      }
+      flat.push(item);
+    }
+  };
+
+  visit(nodes);
+  return flat;
+}
+
 export function resolveNoteAssetTarget(
   assetPath: string,
   noteRelativePath: string,
+  fileTree?: NoteFile[],
 ): NoteAssetTarget | null {
   const trimmed = assetPath.trim();
   if (!trimmed) return null;
-  if (ABSOLUTE_URL_RE.test(trimmed) || trimmed.startsWith('data:') || trimmed.startsWith('blob:')) {
-    return { kind: 'direct', value: trimmed };
+  const unwrapped = trimmed.startsWith('<') && trimmed.endsWith('>')
+    ? trimmed.slice(1, -1).trim()
+    : trimmed;
+  if (ABSOLUTE_URL_RE.test(unwrapped) || unwrapped.startsWith('data:') || unwrapped.startsWith('blob:')) {
+    return { kind: 'direct', value: unwrapped };
   }
 
-  const [rawPath, suffix = ''] = trimmed.match(/^([^?#]*)(.*)$/)?.slice(1) ?? [trimmed, ''];
+  const [rawPath, suffix = ''] = unwrapped.match(/^([^?#]*)(.*)$/)?.slice(1) ?? [unwrapped, ''];
+  const vaultRelativePath = normalizeRelativePath(rawPath);
+  if (fileTree?.length) {
+    const exactVaultMatch = flattenVaultFiles(fileTree).find((file) => (
+      file.relativePath.toLowerCase() === vaultRelativePath.toLowerCase()
+    ));
+    if (exactVaultMatch) {
+      return {
+        kind: 'vault',
+        value: `${exactVaultMatch.relativePath}${suffix}`,
+      };
+    }
+  }
+
   const noteDir = noteRelativePath.includes('/')
     ? noteRelativePath.split('/').slice(0, -1).join('/')
     : '';

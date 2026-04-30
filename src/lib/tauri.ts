@@ -78,6 +78,10 @@ export const tauriCommands = {
     invoke<PdfSidecarState>('read_pdf_sidecar_state', { vaultPath, pdfRelativePath }),
   writePdfSidecarState: (vaultPath: string, pdfRelativePath: string, state: PdfSidecarState) =>
     invoke<void>('write_pdf_sidecar_state', { vaultPath, pdfRelativePath, state }),
+  readCachedDocumentPreviewDataUrl: (vaultPath: string, relativePath: string) =>
+    invoke<string | null>('read_cached_document_preview_data_url', { vaultPath, relativePath }),
+  writeCachedDocumentPreviewDataUrl: (vaultPath: string, relativePath: string, dataUrl: string) =>
+    invoke<void>('write_cached_document_preview_data_url', { vaultPath, relativePath, dataUrl }),
   saveGeneratedImage: (
     vaultPath: string,
     sourceRelativePath: string,
