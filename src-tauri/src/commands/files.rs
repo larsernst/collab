@@ -1791,12 +1791,16 @@ fn build_tree(entries: Vec<NoteFile>) -> Vec<NoteFile> {
     // Add orphan files (files at root level)
     root.extend(orphan_files);
 
-    // Sort: folders first, then files, alphabetically
-    root.sort_by(|a, b| match (a.is_folder, b.is_folder) {
-        (true, false) => std::cmp::Ordering::Less,
-        (false, true) => std::cmp::Ordering::Greater,
-        _ => a.name.to_lowercase().cmp(&b.name.to_lowercase()),
-    });
+    fn sort_tree_alphabetically(nodes: &mut [NoteFile]) {
+        nodes.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+        for node in nodes.iter_mut() {
+            if let Some(children) = node.children.as_mut() {
+                sort_tree_alphabetically(children);
+            }
+        }
+    }
+
+    sort_tree_alphabetically(&mut root);
 
     root
 }
@@ -2336,22 +2340,32 @@ mod tests {
     }
 
     #[test]
-    fn build_tree_nests_folder_children_and_keeps_root_files_sorted() {
+    fn build_tree_nests_folder_children_and_sorts_alphabetically_at_each_level() {
         let vault = TempVault::new().expect("temp vault should exist");
+        vault.write_text("Alpha.md", "# Alpha").expect("root note should be written");
+        vault.write_text("Zoo.kanban", "{}").expect("root board should be written");
         vault.write_text("Notes/Zeta.md", "# Zeta").expect("note should be written");
+        vault.write_text("Notes/Alpha.md", "# Alpha").expect("note should be written");
         vault.write_text("Notes/Projects/Alpha.md", "# Alpha").expect("nested note should be written");
         vault.write_text("Root.md", "# Root").expect("root note should be written");
 
         let entries = collect_entries(&vault.path_string()).expect("entries should collect");
         let tree = build_tree(entries);
 
+        let root_names: Vec<&str> = tree.iter().map(|entry| entry.name.as_str()).collect();
+        assert_eq!(root_names, vec!["Alpha.md", "Notes", "Root.md", "Zoo.kanban"]);
+
         let notes_folder = tree.iter().find(|entry| entry.relative_path == "Notes").expect("notes folder should exist");
         let notes_children = notes_folder.children.as_ref().expect("notes folder should have children");
+        let notes_child_names: Vec<&str> = notes_children.iter().map(|entry| entry.name.as_str()).collect();
+        assert_eq!(notes_child_names, vec!["Alpha.md", "Projects", "Zeta.md"]);
         let nested_folder = notes_children
             .iter()
             .find(|entry| entry.relative_path == "Notes/Projects")
             .expect("nested folder should exist");
         let nested_children = nested_folder.children.as_ref().expect("nested folder should have children");
+        let nested_child_names: Vec<&str> = nested_children.iter().map(|entry| entry.name.as_str()).collect();
+        assert_eq!(nested_child_names, vec!["Alpha.md"]);
 
         assert!(tree.iter().any(|entry| entry.relative_path == "Root.md" && !entry.is_folder));
         assert!(notes_children.iter().any(|entry| entry.relative_path == "Notes/Zeta.md"));
