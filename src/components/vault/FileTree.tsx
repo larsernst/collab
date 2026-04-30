@@ -63,8 +63,8 @@ export default function FileTree() {
   const {
     setActiveView,
     confirmDelete: confirmDeleteEnabled,
-    fileTreeCollapsedPaths,
-    setFileTreeCollapsedPaths,
+    fileTreeCollapsedPathsByVault,
+    setFileTreeCollapsedPathsForVault,
   } = useUiStore();
   const { myUserId, myUserName } = useCollabStore();
   const [dialog, setDialog] = useState<DialogState>({ type: 'none' });
@@ -79,13 +79,15 @@ export default function FileTree() {
     preview: PathChangePreview;
     apply: () => Promise<void>;
   } | null>(null);
-  const collapsed = useMemo(() => new Set(fileTreeCollapsedPaths), [fileTreeCollapsedPaths]);
+  const collapsedPaths = vault?.path ? (fileTreeCollapsedPathsByVault[vault.path] ?? []) : [];
+  const collapsed = useMemo(() => new Set(collapsedPaths), [collapsedPaths]);
 
   const setCollapsed = useCallback((value: React.SetStateAction<Set<string>>) => {
-    const previous = new Set(fileTreeCollapsedPaths);
+    if (!vault?.path) return;
+    const previous = new Set(collapsedPaths);
     const next = value instanceof Function ? value(previous) : value;
-    setFileTreeCollapsedPaths(Array.from(next));
-  }, [fileTreeCollapsedPaths, setFileTreeCollapsedPaths]);
+    setFileTreeCollapsedPathsForVault(vault.path, Array.from(next));
+  }, [collapsedPaths, setFileTreeCollapsedPathsForVault, vault?.path]);
 
   function flatten(nodes: NoteFile[]): NoteFile[] {
     return nodes.flatMap((node) => [node, ...(node.children ? flatten(node.children) : [])]);

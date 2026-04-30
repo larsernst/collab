@@ -111,7 +111,7 @@ describe('FileTree folder collapse state', () => {
       activeView: 'editor',
       sidebarPanel: 'files',
       collabTab: 'peers',
-      fileTreeCollapsedPaths: [],
+      fileTreeCollapsedPathsByVault: {},
       sidebarWidth: 240,
       isSidebarOpen: true,
       isSettingsOpen: false,
@@ -142,7 +142,7 @@ describe('FileTree folder collapse state', () => {
 
     fireEvent.click(screen.getByText('Docs'));
     expect(screen.queryByText('child.md')).toBeNull();
-    expect(useUiStore.getState().fileTreeCollapsedPaths).toEqual(['Docs']);
+    expect(useUiStore.getState().fileTreeCollapsedPathsByVault['/vault']).toEqual(['Docs']);
 
     firstRender.unmount();
     render(<FileTree />);

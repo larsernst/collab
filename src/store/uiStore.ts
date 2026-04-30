@@ -100,6 +100,16 @@ function normalizePersistedUiState(
   const editorFont = isEditorFont(state.editorFont)
     ? state.editorFont
     : DEFAULT_EDITOR_FONT;
+  const fileTreeCollapsedPathsByVault =
+    state.fileTreeCollapsedPathsByVault && typeof state.fileTreeCollapsedPathsByVault === 'object'
+      ? state.fileTreeCollapsedPathsByVault as Record<string, string[]>
+      : {};
+  const legacyCollapsedPaths = Array.isArray(state.fileTreeCollapsedPaths)
+    ? state.fileTreeCollapsedPaths.filter((value): value is string => typeof value === 'string')
+    : [];
+  const lastOpenedVaultPath = typeof state.lastOpenedVaultPath === 'string'
+    ? state.lastOpenedVaultPath
+    : null;
 
   return {
     ...state,
@@ -107,6 +117,11 @@ function normalizePersistedUiState(
     interfaceFontSize: normalizeFontSize(state.interfaceFontSize ?? legacyFontSize, DEFAULT_INTERFACE_FONT_SIZE),
     editorFont,
     editorFontSize: normalizeFontSize(state.editorFontSize, DEFAULT_EDITOR_FONT_SIZE),
+    fileTreeCollapsedPathsByVault: (
+      legacyCollapsedPaths.length > 0 && lastOpenedVaultPath && !fileTreeCollapsedPathsByVault[lastOpenedVaultPath]
+    )
+      ? { ...fileTreeCollapsedPathsByVault, [lastOpenedVaultPath]: legacyCollapsedPaths }
+      : fileTreeCollapsedPathsByVault,
   } as Partial<UiState>;
 }
 
@@ -158,7 +173,7 @@ interface UiState {
   activeView:    ActiveView;
   sidebarPanel:  SidebarPanel;
   collabTab:     CollabTab;
-  fileTreeCollapsedPaths: string[];
+  fileTreeCollapsedPathsByVault: Record<string, string[]>;
   sidebarWidth:  number;
   isSidebarOpen: boolean;
   isSettingsOpen: boolean;
@@ -200,7 +215,7 @@ interface UiState {
   setActiveView:    (view: ActiveView) => void;
   setSidebarPanel:  (panel: SidebarPanel) => void;
   setCollabTab:     (tab: CollabTab) => void;
-  setFileTreeCollapsedPaths: (paths: string[]) => void;
+  setFileTreeCollapsedPathsForVault: (vaultPath: string, paths: string[]) => void;
   setSidebarWidth:  (width: number) => void;
   toggleSidebar:    () => void;
   openSettings:     () => void;
@@ -242,7 +257,7 @@ export const useUiStore = create<UiState>()(
       activeView:     'editor',
       sidebarPanel:   'files',
       collabTab:      'peers',
-      fileTreeCollapsedPaths: [],
+      fileTreeCollapsedPathsByVault: {},
       sidebarWidth:   240,
       isSidebarOpen:      true,
       isSettingsOpen:     false,
@@ -280,7 +295,12 @@ export const useUiStore = create<UiState>()(
       setActiveView:   (activeView)   => set({ activeView }),
       setSidebarPanel: (sidebarPanel) => set({ sidebarPanel }),
       setCollabTab:    (collabTab)    => set({ collabTab }),
-      setFileTreeCollapsedPaths: (fileTreeCollapsedPaths) => set({ fileTreeCollapsedPaths }),
+      setFileTreeCollapsedPathsForVault: (vaultPath, paths) => set((state) => ({
+        fileTreeCollapsedPathsByVault: {
+          ...state.fileTreeCollapsedPathsByVault,
+          [vaultPath]: paths,
+        },
+      })),
       setSidebarWidth: (sidebarWidth) => set({ sidebarWidth }),
       toggleSidebar:   ()             => set((s) => ({ isSidebarOpen: !s.isSidebarOpen })),
       openSettings:     ()             => set({ isSettingsOpen: true }),
@@ -328,7 +348,7 @@ export const useUiStore = create<UiState>()(
       // Don't persist transient state
       partialize: (s) => ({
         collabTab:      s.collabTab,
-        fileTreeCollapsedPaths: s.fileTreeCollapsedPaths,
+        fileTreeCollapsedPathsByVault: s.fileTreeCollapsedPathsByVault,
         sidebarWidth:  s.sidebarWidth,
         isSidebarOpen: s.isSidebarOpen,
         theme:         s.theme,
