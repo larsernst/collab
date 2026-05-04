@@ -65,4 +65,24 @@ describe('CanvasNodeTypes', () => {
 
     expect(onOpen).toHaveBeenCalledWith('Notes/test.md');
   });
+
+  it('keeps note card titles on the foreground color without requiring hover', () => {
+    const NoteCardNode = nodeTypes.noteCard;
+
+    render(
+      <NoteCardNode
+        id="note-2"
+        selected={false}
+        data={{
+          title: 'Visible title',
+          subtitle: 'Notes',
+          relativePath: 'Notes/visible.md',
+          excerpt: 'preview',
+        }}
+      />,
+    );
+
+    expect(screen.getByRole('button').className).toContain('text-foreground');
+    expect(screen.getByText('Visible title').className).toContain('text-foreground');
+  });
 });

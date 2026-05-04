@@ -22,6 +22,15 @@ interface GraphLink extends d3.SimulationLinkDatum<GraphNode> {
 
 const LABEL_ALWAYS_VISIBLE_NODE_LIMIT = 120;
 const LABEL_DETAIL_SCALE_THRESHOLD = 1.15;
+const GRAPH_COLORS = {
+  emptyState: 'var(--muted-foreground)',
+  linkStroke: 'color-mix(in oklch, var(--primary) 22%, var(--muted-foreground) 78%)',
+  nodeFill: 'var(--primary)',
+  taggedNodeFill: 'var(--primary)',
+  nodeStroke: 'var(--primary)',
+  labelFill: 'var(--muted-foreground)',
+  nodeGlow: 'color-mix(in oklch, var(--primary) 26%, transparent)',
+} as const;
 
 function normalizeGraphLinkTarget(value: string) {
   return value.trim().split(/[?#]/, 1)[0]?.replace(/\\/g, '/').toLowerCase() ?? '';
@@ -141,7 +150,7 @@ export default function GraphView({ notes, onNodeClick }: GraphViewProps) {
         .attr('x', width / 2)
         .attr('y', height / 2)
         .attr('text-anchor', 'middle')
-        .attr('fill', '#64748b')
+        .style('fill', GRAPH_COLORS.emptyState)
         .attr('font-size', 14)
         .text('No notes found. Create some notes to see the graph.');
       return;
@@ -166,7 +175,7 @@ export default function GraphView({ notes, onNodeClick }: GraphViewProps) {
       .selectAll('line')
       .data(links)
       .join('line')
-      .attr('stroke', '#334155')
+      .style('stroke', GRAPH_COLORS.linkStroke)
       .attr('stroke-opacity', links.length > 300 ? 0.5 : 0.8)
       .attr('stroke-width', links.length > 300 ? 0.8 : 1);
 
@@ -204,7 +213,7 @@ export default function GraphView({ notes, onNodeClick }: GraphViewProps) {
       .attr('markerHeight', 6)
       .append('path')
       .attr('d', 'M 0,-5 L 10,0 L 0,5')
-      .attr('fill', '#334155');
+      .style('fill', GRAPH_COLORS.linkStroke);
 
     // Nodes
     const node = nodeLayer
@@ -220,9 +229,12 @@ export default function GraphView({ notes, onNodeClick }: GraphViewProps) {
     node
       .append('circle')
       .attr('r', (d) => nodeRadius(d.linkCount))
-      .attr('fill', (d) => (d.tags.length > 0 ? '#8b5cf6' : '#3b82f6'))
-      .attr('stroke', '#1e293b')
-      .attr('stroke-width', 2);
+      .style('fill', (d) => (d.tags.length > 0 ? GRAPH_COLORS.taggedNodeFill : GRAPH_COLORS.nodeFill))
+      .style('fill-opacity', (d) => (d.tags.length > 0 ? 0.95 : 0.72))
+      .style('stroke', GRAPH_COLORS.nodeStroke)
+      .style('stroke-opacity', 0.42)
+      .style('filter', `drop-shadow(0 0 8px ${GRAPH_COLORS.nodeGlow})`)
+      .attr('stroke-width', 4);
 
     const label = node
       .append('text')
@@ -232,7 +244,7 @@ export default function GraphView({ notes, onNodeClick }: GraphViewProps) {
       .attr('x', (d) => nodeRadius(d.linkCount) + 4)
       .attr('y', 4)
       .attr('font-size', 11)
-      .attr('fill', '#94a3b8')
+      .style('fill', GRAPH_COLORS.labelFill)
       .attr('pointer-events', 'none');
 
     applyInteractionDetail(false);

@@ -113,7 +113,7 @@ function NoteCardNode({ id, data, selected }: { id: string; data: CanvasNodeData
       <CanvasCardFrame selected={selected}>
         <button
           onDoubleClick={() => data.relativePath && data.onOpen?.(data.relativePath)}
-          className="flex h-full flex-col text-left"
+          className="flex h-full min-h-0 w-full flex-1 flex-col text-left text-foreground"
           type="button"
         >
           <div className="flex items-center gap-2 border-b border-border/60 px-3 py-2">
@@ -121,7 +121,7 @@ function NoteCardNode({ id, data, selected }: { id: string; data: CanvasNodeData
               <FileText size={14} />
             </div>
             <div className="min-w-0 flex-1">
-              <div className="truncate text-sm font-semibold">{data.title}</div>
+              <div className="truncate text-sm font-semibold text-foreground">{data.title}</div>
               <div className="truncate text-[11px] text-muted-foreground">{data.subtitle}</div>
             </div>
           </div>
@@ -162,7 +162,7 @@ function FileCardNode({ id, data, selected }: { id: string; data: CanvasNodeData
       <CanvasCardFrame selected={selected}>
         <button
           onDoubleClick={() => data.relativePath && data.onOpen?.(data.relativePath)}
-          className="flex h-full flex-col text-left"
+          className="flex h-full min-h-0 w-full flex-1 flex-col text-left text-foreground"
           type="button"
         >
           <div className="flex items-center gap-2 border-b border-border/60 px-3 py-2">
@@ -170,7 +170,7 @@ function FileCardNode({ id, data, selected }: { id: string; data: CanvasNodeData
               {data.extension ? getFileIcon(data.extension) : <FileText size={14} />}
             </div>
             <div className="min-w-0 flex-1">
-              <div className="truncate text-sm font-semibold">{data.title}</div>
+              <div className="truncate text-sm font-semibold text-foreground">{data.title}</div>
               <div className="truncate text-[11px] text-muted-foreground">{data.subtitle}</div>
             </div>
           </div>

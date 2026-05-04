@@ -728,6 +728,12 @@
 
 /* Header anchor links */
 .markdown-preview .header-anchor {
+  opacity: 1;
+  color: inherit;
+  text-decoration: none;
+}
+.markdown-preview .header-anchor::after {
+  content: '#';
   opacity: 0;
   margin-left: 0.4em;
   font-size: 0.8em;
@@ -735,12 +741,12 @@
   color: var(--primary);
   transition: opacity 0.15s;
 }
-.markdown-preview h1:hover .header-anchor,
-.markdown-preview h2:hover .header-anchor,
-.markdown-preview h3:hover .header-anchor,
-.markdown-preview h4:hover .header-anchor,
-.markdown-preview h5:hover .header-anchor,
-.markdown-preview h6:hover .header-anchor {
+.markdown-preview h1:hover .header-anchor::after,
+.markdown-preview h2:hover .header-anchor::after,
+.markdown-preview h3:hover .header-anchor::after,
+.markdown-preview h4:hover .header-anchor::after,
+.markdown-preview h5:hover .header-anchor::after,
+.markdown-preview h6:hover .header-anchor::after {
   opacity: 1;
 }
 
