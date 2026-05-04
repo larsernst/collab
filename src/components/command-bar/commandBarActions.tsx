@@ -19,6 +19,7 @@ import { toast } from 'sonner';
 import { dispatchEditorToolbarAction } from '../../lib/editorToolbarActions';
 import { tauriCommands } from '../../lib/tauri';
 import type { ActiveView, DateFormat } from '../../store/uiStore';
+import type { PendingSearchJump } from '../../store/editorStore';
 import type { NoteMetadata, SearchResult } from '../../types/note';
 import type { NoteFile, VaultMeta } from '../../types/vault';
 
@@ -34,6 +35,7 @@ export interface RenderCtx {
   openSettings: () => void;
   refreshFileTree: () => Promise<void>;
   setInput: (s: string) => void;
+  setPendingSearchJump: (target: PendingSearchJump | null) => void;
   close: () => void;
 }
 

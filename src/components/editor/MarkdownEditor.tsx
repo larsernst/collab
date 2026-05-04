@@ -45,6 +45,7 @@ export interface MarkdownEditorHandle {
   focus: () => void;
   replaceRange: (from: number, to: number, text: string) => void;
   moveCursorToEnd: () => void;
+  revealRange: (from: number, to?: number) => void;
   getViewState: () => MarkdownEditorViewState | null;
   restoreViewState: (editorViewState: MarkdownEditorViewState) => void;
   getTableAtCursor: () => { from: number; to: number; text: string } | null;

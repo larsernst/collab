@@ -11,7 +11,7 @@ export default function SearchPanel() {
   const [query, setQuery] = useState('');
   const [results, setResults] = useState<SearchResult[]>([]);
   const { vault } = useVaultStore();
-  const { openTab } = useEditorStore();
+  const { openTab, setPendingSearchJump } = useEditorStore();
   const { setActiveView } = useUiStore();
 
   useEffect(() => {
@@ -44,6 +44,7 @@ export default function SearchPanel() {
           <button
             key={r.relativePath}
             onClick={() => {
+              setPendingSearchJump({ relativePath: r.relativePath, query });
               openTab(r.relativePath, r.title, 'note');
               setActiveView('editor');
             }}

@@ -20,7 +20,7 @@ import {
   syntaxHighlighting,
 } from '@codemirror/language';
 import { languages } from '@codemirror/language-data';
-import { searchKeymap, highlightSelectionMatches } from '@codemirror/search';
+import { search, searchKeymap, highlightSelectionMatches } from '@codemirror/search';
 import {
   drawSelection,
   dropCursor,
@@ -35,6 +35,7 @@ import { GFM } from '@lezer/markdown';
 import { asciiArrowLigatures, handleTabKey } from './indentationPlugins';
 import { useVaultStore } from '../../store/vaultStore';
 import { getVaultWikilinkAutocompleteItems } from '../../lib/vaultLinks';
+import { createMarkdownSearchPanel } from './MarkdownSearchPanel';
 
 export type MarkdownEditorCompartments = {
   theme: Compartment;
@@ -126,6 +127,7 @@ export function createMarkdownEditorState({
         highlightActiveLineGutter(),
         highlightActiveLine(),
         highlightSelectionMatches(),
+        search({ createPanel: createMarkdownSearchPanel, top: true }),
         history(),
         drawSelection(),
         dropCursor(),
@@ -161,6 +163,7 @@ export function createMarkdownEditorState({
       extensions: [
         lineNumbers(),
         highlightActiveLine(),
+        search({ createPanel: createMarkdownSearchPanel, top: true }),
         history(),
         markdown({ base: markdownLanguage, extensions: GFM }),
         keymap.of([{ key: 'Tab', run: handleTabKey, shift: indentLess }, ...defaultKeymap, ...historyKeymap]),

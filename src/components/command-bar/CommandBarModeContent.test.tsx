@@ -20,6 +20,7 @@ function makeCtx(overrides: Partial<RenderCtx> = {}): RenderCtx {
     openSettings: vi.fn(),
     refreshFileTree: vi.fn(async () => {}),
     setInput: vi.fn(),
+    setPendingSearchJump: vi.fn(),
     close: vi.fn(),
     ...overrides,
   };

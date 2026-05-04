@@ -91,6 +91,7 @@ type MarkdownEditorHandleShape = {
   focus: () => void;
   replaceRange: (from: number, to: number, text: string) => void;
   moveCursorToEnd: () => void;
+  revealRange: (from: number, to?: number) => void;
   getViewState: () => MarkdownEditorViewState | null;
   restoreViewState: (editorViewState: MarkdownEditorViewState) => void;
   getTableAtCursor: () => { from: number; to: number; text: string } | null;
@@ -154,6 +155,19 @@ export function useMarkdownEditorHandle({
       const end = view.state.doc.length;
       view.dispatch({
         selection: { anchor: end, head: end },
+      });
+      view.focus();
+    },
+
+    revealRange(from, to = from) {
+      const view = viewRef.current;
+      if (!view) return;
+      const docLength = view.state.doc.length;
+      const anchor = Math.max(0, Math.min(from, docLength));
+      const head = Math.max(0, Math.min(to, docLength));
+      view.dispatch({
+        selection: { anchor, head },
+        scrollIntoView: true,
       });
       view.focus();
     },

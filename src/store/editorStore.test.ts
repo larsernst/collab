@@ -10,6 +10,7 @@ describe('editorStore renameTab', () => {
       activeTabPath: null,
       forceReloadPath: null,
       revealEditorPath: null,
+      pendingSearchJump: null,
       noteViewStates: {},
     });
   });
@@ -88,5 +89,21 @@ describe('editorStore renameTab', () => {
       selectionAnchor: 11,
       selectionHead: 13,
     });
+  });
+
+  it('stores and clears one-shot pending search jump targets', () => {
+    useEditorStore.getState().setPendingSearchJump({
+      relativePath: 'Notes/a.md',
+      query: 'search term',
+    });
+
+    expect(useEditorStore.getState().pendingSearchJump).toEqual({
+      relativePath: 'Notes/a.md',
+      query: 'search term',
+    });
+
+    useEditorStore.getState().setPendingSearchJump(null);
+
+    expect(useEditorStore.getState().pendingSearchJump).toBeNull();
   });
 });

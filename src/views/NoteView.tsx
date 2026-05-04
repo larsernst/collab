@@ -17,6 +17,7 @@ import { useUiStore } from '../store/uiStore';
 import { extractHttpUrls, prefetchWebPreviews } from '../lib/webPreviewCache';
 import { useDocumentSessionState } from '../lib/documentSession';
 import { useNoteSnippetStore } from '../store/noteSnippetStore';
+import { findSearchJumpRange } from '../lib/searchNavigation';
 
 function extractFirstH1(content: string): string | null {
   for (const line of content.split('\n')) {
@@ -46,6 +47,8 @@ export default function NoteView({ relativePath }: { relativePath: string }) {
   const setForceReloadPath = useEditorStore((state) => state.setForceReloadPath);
   const revealEditorPath = useEditorStore((state) => state.revealEditorPath);
   const setRevealEditorPath = useEditorStore((state) => state.setRevealEditorPath);
+  const pendingSearchJump = useEditorStore((state) => state.pendingSearchJump);
+  const setPendingSearchJump = useEditorStore((state) => state.setPendingSearchJump);
   const setNoteViewState = useEditorStore((state) => state.setNoteViewState);
   const { addConflict, myUserId, myUserName } = useCollabStore();
   const [content, setContent] = useState<string | null>(null);
@@ -139,6 +142,17 @@ export default function NoteView({ relativePath }: { relativePath: string }) {
     });
     return () => window.cancelAnimationFrame(frame);
   }, [content, relativePath, revealEditorPath, setRevealEditorPath]);
+
+  useEffect(() => {
+    if (pendingSearchJump?.relativePath !== relativePath || content === null) return;
+    const frame = window.requestAnimationFrame(() => {
+      const range = findSearchJumpRange(content, pendingSearchJump.query);
+      if (range) editorRef.current?.revealRange(range.from, range.to);
+      else editorRef.current?.revealRange(0, 0);
+      setPendingSearchJump(null);
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [content, pendingSearchJump, relativePath, setPendingSearchJump]);
 
   // Auto-reload when another user edits the same file (no local dirty changes)
   const isDirtyRef = useRef(false);
@@ -255,7 +269,7 @@ export default function NoteView({ relativePath }: { relativePath: string }) {
           onChange={handleChange}
           onSave={(c) => handleSave(c, true)}
           relativePath={relativePath}
-          initialViewState={revealEditorPath === relativePath ? null : initialViewState}
+          initialViewState={revealEditorPath === relativePath || pendingSearchJump?.relativePath === relativePath ? null : initialViewState}
           onViewStateChange={(viewState) => setNoteViewState(relativePath, viewState)}
         />
       </div>

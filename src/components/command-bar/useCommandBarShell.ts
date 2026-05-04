@@ -18,7 +18,7 @@ export function useCommandBarShell() {
 
   const { vault, fileTree, refreshFileTree } = useVaultStore();
   const { notes } = useNoteIndexStore();
-  const { openTab } = useEditorStore();
+  const { openTab, setPendingSearchJump } = useEditorStore();
   const { activeView, setActiveView, openSettings, dateFormat } = useUiStore();
 
   useEffect(() => {
@@ -86,6 +86,7 @@ export function useCommandBarShell() {
     openSettings,
     refreshFileTree,
     setInput,
+    setPendingSearchJump,
     close,
   };
 

@@ -124,6 +124,7 @@ function renderSearch(mode: { type: 'search'; query: string }, ctx: RenderCtx) {
                 key={result.relativePath}
                 value={result.relativePath + result.title}
                 onSelect={() => {
+                  ctx.setPendingSearchJump({ relativePath: result.relativePath, query: mode.query });
                   ctx.openTab(result.relativePath, result.title, type);
                   ctx.setActiveView(getViewForType(type));
                   ctx.close();
@@ -155,6 +156,7 @@ function renderSearch(mode: { type: 'search'; query: string }, ctx: RenderCtx) {
                 key={file.relativePath}
                 value={file.relativePath + file.name}
                 onSelect={() => {
+                  if (type === 'note') ctx.setPendingSearchJump({ relativePath: file.relativePath, query: mode.query });
                   ctx.openTab(file.relativePath, file.name, type);
                   ctx.setActiveView(getViewForType(type));
                   ctx.close();
