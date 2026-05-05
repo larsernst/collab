@@ -46,7 +46,21 @@ export default function SettingsGeneralSection({
 
       <Separator className="bg-border/40 my-4" />
 
-      <SectionLabel>Web Previews</SectionLabel>
+      <SectionLabel>Previews</SectionLabel>
+      <OptionRow
+        label="Hover previews in file tree"
+        description="Show a lightweight image or PDF preview beside supported files when hovering them in the file tree"
+      >
+        <ToggleSwitch
+          checked={fileTreeHoverPreviewsEnabled}
+          onToggle={() => setFileTreeHoverPreviewsEnabled(!fileTreeHoverPreviewsEnabled)}
+          animated
+        />
+      </OptionRow>
+
+      <div className="mb-2 mt-4 text-[11px] font-semibold uppercase tracking-[0.16em] text-muted-foreground/70">
+        Web previews
+      </div>
       <OptionRow
         label="Enable web previews"
         description="Master switch for loading website previews anywhere in the app, including canvas web cards"
@@ -80,17 +94,6 @@ export default function SettingsGeneralSection({
           checked={backgroundWebPreviewPrefetchEnabled}
           onToggle={() => setBackgroundWebPreviewPrefetchEnabled(!backgroundWebPreviewPrefetchEnabled)}
           disabled={!webPreviewsEnabled || !hoverWebLinkPreviewsEnabled}
-          animated
-        />
-      </OptionRow>
-
-      <OptionRow
-        label="Hover previews in file tree"
-        description="Show a lightweight image or PDF preview beside supported files when hovering them in the file tree"
-      >
-        <ToggleSwitch
-          checked={fileTreeHoverPreviewsEnabled}
-          onToggle={() => setFileTreeHoverPreviewsEnabled(!fileTreeHoverPreviewsEnabled)}
           animated
         />
       </OptionRow>

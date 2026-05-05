@@ -3,6 +3,10 @@ import { describe, expect, it, vi } from 'vitest';
 
 import SettingsGeneralSection from './SettingsGeneralSection';
 
+function getSwitchForLabel(label: string) {
+  return screen.getByText(label).closest('[aria-disabled]')?.querySelector('[role="switch"]') as HTMLElement;
+}
+
 describe('SettingsGeneralSection', () => {
   it('handles startup and file operation toggles', () => {
     const setRestorePreviousSession = vi.fn();
@@ -25,11 +29,10 @@ describe('SettingsGeneralSection', () => {
       />,
     );
 
-    const switches = screen.getAllByRole('switch');
-    fireEvent.click(switches[0]);
+    fireEvent.click(getSwitchForLabel('Restore previous session'));
     expect(setRestorePreviousSession).toHaveBeenCalledWith(true);
 
-    fireEvent.click(switches[5]);
+    fireEvent.click(getSwitchForLabel('Confirm before deleting'));
     expect(setConfirmDelete).toHaveBeenCalledWith(true);
   });
 
@@ -56,17 +59,16 @@ describe('SettingsGeneralSection', () => {
       />,
     );
 
-    const switches = screen.getAllByRole('switch');
-    fireEvent.click(switches[1]);
+    fireEvent.click(getSwitchForLabel('Enable web previews'));
     expect(setWebPreviewsEnabled).toHaveBeenCalledWith(false);
 
-    fireEvent.click(switches[2]);
+    fireEvent.click(getSwitchForLabel('Hover previews for links'));
     expect(setHoverWebLinkPreviewsEnabled).toHaveBeenCalledWith(false);
 
-    fireEvent.click(switches[3]);
+    fireEvent.click(getSwitchForLabel('Background prefetch for open documents'));
     expect(setBackgroundWebPreviewPrefetchEnabled).toHaveBeenCalledWith(true);
 
-    fireEvent.click(switches[4]);
+    fireEvent.click(getSwitchForLabel('Hover previews in file tree'));
     expect(setFileTreeHoverPreviewsEnabled).toHaveBeenCalledWith(true);
   });
 
@@ -90,5 +92,28 @@ describe('SettingsGeneralSection', () => {
 
     expect(screen.getByText('Hover previews for links').closest('[aria-disabled="true"]')).not.toBeNull();
     expect(screen.getByText('Background prefetch for open documents').closest('[aria-disabled="true"]')).not.toBeNull();
+  });
+
+  it('shows file tree previews under the broader previews section', () => {
+    render(
+      <SettingsGeneralSection
+        restorePreviousSession={true}
+        setRestorePreviousSession={vi.fn()}
+        webPreviewsEnabled={true}
+        setWebPreviewsEnabled={vi.fn()}
+        hoverWebLinkPreviewsEnabled={true}
+        setHoverWebLinkPreviewsEnabled={vi.fn()}
+        backgroundWebPreviewPrefetchEnabled={false}
+        setBackgroundWebPreviewPrefetchEnabled={vi.fn()}
+        fileTreeHoverPreviewsEnabled={false}
+        setFileTreeHoverPreviewsEnabled={vi.fn()}
+        confirmDelete={true}
+        setConfirmDelete={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByText('Previews')).toBeTruthy();
+    expect(screen.getByText('Web previews')).toBeTruthy();
+    expect(screen.getByText('Hover previews in file tree')).toBeTruthy();
   });
 });
