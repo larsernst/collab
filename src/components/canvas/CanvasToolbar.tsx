@@ -1,5 +1,8 @@
 import {
+  ChevronDown,
+  Diamond,
   FileText,
+  Flag,
   Globe,
   Maximize2,
   Minus,
@@ -8,10 +11,22 @@ import {
   Plus as PlusIcon,
   Plus,
   RotateCcw,
+  Route,
+  Users,
 } from 'lucide-react';
 
 import { documentTopBarGroupClass } from '../layout/DocumentTopBar';
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from '../ui/dropdown-menu';
 import { Button } from '../ui/button';
+import type { PlanningCanvasNode } from '../../types/canvas';
+import type { CanvasPlanningPreset } from './canvasPlanning';
 
 interface CanvasToolbarProps {
   zoomLabel: string;
@@ -19,6 +34,8 @@ interface CanvasToolbarProps {
   onAddFile: () => void;
   onAddText: () => void;
   onAddWeb: () => void;
+  onAddPlanningNode: (type: PlanningCanvasNode['type']) => void;
+  onApplyPreset: (preset: CanvasPlanningPreset) => void;
   onZoomOut: () => void;
   onResetZoom: () => void;
   onZoomIn: () => void;
@@ -31,6 +48,8 @@ export function CanvasToolbar({
   onAddFile,
   onAddText,
   onAddWeb,
+  onAddPlanningNode,
+  onApplyPreset,
   onZoomOut,
   onResetZoom,
   onZoomIn,
@@ -55,6 +74,78 @@ export function CanvasToolbar({
           <Globe size={14} />
           Add web
         </Button>
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <Button size="sm" variant="ghost" className="h-8 gap-1.5 px-2.5 text-xs">
+              <Route size={14} />
+              Planning
+              <ChevronDown size={13} />
+            </Button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="start" className="w-60">
+            <DropdownMenuLabel>Flow</DropdownMenuLabel>
+            <DropdownMenuItem onSelect={() => onAddPlanningNode('process')}>
+              <Route size={14} />
+              Process
+            </DropdownMenuItem>
+            <DropdownMenuItem onSelect={() => onAddPlanningNode('decision')}>
+              <Diamond size={14} />
+              Decision
+            </DropdownMenuItem>
+            <DropdownMenuItem onSelect={() => onAddPlanningNode('terminator')}>
+              <Flag size={14} />
+              Start / End
+            </DropdownMenuItem>
+            <DropdownMenuItem onSelect={() => onAddPlanningNode('junction')}>
+              <Plus size={14} />
+              Junction
+            </DropdownMenuItem>
+            <DropdownMenuItem onSelect={() => onAddPlanningNode('crossing')}>
+              <Route size={14} />
+              Crossing
+            </DropdownMenuItem>
+            <DropdownMenuSeparator />
+            <DropdownMenuLabel>Planning</DropdownMenuLabel>
+            <DropdownMenuItem onSelect={() => onAddPlanningNode('milestone')}>
+              <Flag size={14} />
+              Milestone
+            </DropdownMenuItem>
+            <DropdownMenuItem onSelect={() => onAddPlanningNode('actor')}>
+              <Users size={14} />
+              Actor
+            </DropdownMenuItem>
+            <DropdownMenuItem onSelect={() => onAddPlanningNode('document')}>
+              <FileText size={14} />
+              Document
+            </DropdownMenuItem>
+            <DropdownMenuSeparator />
+            <DropdownMenuLabel>Structure</DropdownMenuLabel>
+            <DropdownMenuItem onSelect={() => onAddPlanningNode('swimlane')}>
+              <Route size={14} />
+              Swimlane
+            </DropdownMenuItem>
+            <DropdownMenuItem onSelect={() => onAddPlanningNode('group')}>
+              <Route size={14} />
+              Group
+            </DropdownMenuItem>
+          </DropdownMenuContent>
+        </DropdownMenu>
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <Button size="sm" variant="ghost" className="h-8 gap-1.5 px-2.5 text-xs">
+              <Plus size={14} />
+              Presets
+              <ChevronDown size={13} />
+            </Button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="start" className="w-56">
+            <DropdownMenuItem onSelect={() => onApplyPreset('flowchart')}>Flowchart</DropdownMenuItem>
+            <DropdownMenuItem onSelect={() => onApplyPreset('project_workflow')}>Project workflow</DropdownMenuItem>
+            <DropdownMenuItem onSelect={() => onApplyPreset('responsibility_lanes')}>Responsibility lanes</DropdownMenuItem>
+            <DropdownMenuItem onSelect={() => onApplyPreset('decision_tree')}>Decision tree</DropdownMenuItem>
+            <DropdownMenuItem onSelect={() => onApplyPreset('system_process_sketch')}>System/process sketch</DropdownMenuItem>
+          </DropdownMenuContent>
+        </DropdownMenu>
       </div>
 
       <div className={documentTopBarGroupClass}>

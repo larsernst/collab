@@ -59,4 +59,37 @@ describe('CanvasFlowNodeUtils', () => {
       content: 'hello',
     });
   });
+
+  it('round-trips a planning flow node back into a persisted planning node', () => {
+    expect(fromFlowNode({
+      id: 'decision-1',
+      type: 'decisionCard',
+      position: { x: 12, y: 14 },
+      width: 280,
+      height: 180,
+      data: {
+        title: 'Approve?',
+        content: 'If approved, continue to delivery.',
+        planning: {
+          status: 'blocked',
+          priority: 'high',
+          ownerLabel: 'Lead',
+        },
+      },
+    } as never)).toEqual({
+      id: 'decision-1',
+      type: 'decision',
+      position: { x: 12, y: 14 },
+      width: 280,
+      height: 180,
+      title: 'Approve?',
+      body: 'If approved, continue to delivery.',
+      linkedRelativePath: undefined,
+      planning: {
+        status: 'blocked',
+        priority: 'high',
+        ownerLabel: 'Lead',
+      },
+    });
+  });
 });

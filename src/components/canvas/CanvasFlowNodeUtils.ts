@@ -1,13 +1,14 @@
 import type { Node as FlowNode } from '@xyflow/react';
 
 import type { CanvasWebCardDefaultMode } from '../../store/uiStore';
-import type { CanvasNode } from '../../types/canvas';
+import type { CanvasNode, PlanningCanvasNode } from '../../types/canvas';
 import type { CanvasNodeData } from './CanvasNodeTypes';
 import {
   buildNodePreviewState,
   buildWebPreviewState,
   type PreviewState,
 } from './CanvasPreviewUtils';
+import { getPlanningNodeLabel, isPlanningNode } from './canvasPlanning';
 
 const DEFAULT_NODE_SIZE = { width: 300, height: 180 };
 
@@ -24,6 +25,29 @@ export function toFlowNode(
   autoLoadEnabled: boolean,
   webPreviewsEnabled: boolean,
 ): FlowNode<CanvasNodeData> {
+  if (isPlanningNode(node)) {
+    return {
+      id: node.id,
+      type: `${node.type}Card`,
+      position: node.position,
+      selected: false,
+      data: {
+        nodeKind: node.type,
+        title: node.title,
+        subtitle: getPlanningNodeLabel(node.type),
+        content: node.body,
+        linkedRelativePath: node.linkedRelativePath,
+        planning: node.planning,
+        orientation: node.type === 'swimlane' ? node.orientation ?? 'horizontal' : undefined,
+        onSnapToGrid: callbacks.onSnapToGrid,
+      },
+      style: {
+        width: node.width,
+        height: node.height,
+      },
+    };
+  }
+
   if (node.type === 'text') {
     return {
       id: node.id,
@@ -101,7 +125,29 @@ export function fromFlowNode(node: FlowNode<CanvasNodeData>): CanvasNode {
         ? node.style.height
         : DEFAULT_NODE_SIZE.height;
 
-  if (node.type === 'textCard') {
+  const nodeType = node.type ?? 'fileCard';
+  const planningType = nodeType.endsWith('Card')
+    ? nodeType.slice(0, -4)
+    : nodeType;
+
+  if (planningType !== 'note' && planningType !== 'file' && planningType !== 'text' && planningType !== 'web') {
+    return {
+      id: node.id,
+      type: planningType as PlanningCanvasNode['type'],
+      position: node.position,
+      width,
+      height,
+      title: node.data.title ?? getPlanningNodeLabel(planningType as PlanningCanvasNode['type']),
+      body: node.data.content ?? '',
+      linkedRelativePath: node.data.linkedRelativePath || undefined,
+      planning: node.data.planning,
+      ...(planningType === 'swimlane'
+        ? { orientation: node.data.orientation ?? 'horizontal' }
+        : {}),
+    } as PlanningCanvasNode;
+  }
+
+  if (nodeType === 'textCard') {
     return {
       id: node.id,
       type: 'text',
@@ -112,7 +158,7 @@ export function fromFlowNode(node: FlowNode<CanvasNodeData>): CanvasNode {
     };
   }
 
-  if (node.type === 'webCard') {
+  if (nodeType === 'webCard') {
     return {
       id: node.id,
       type: 'web',
@@ -124,7 +170,7 @@ export function fromFlowNode(node: FlowNode<CanvasNodeData>): CanvasNode {
     };
   }
 
-  if (node.type === 'noteCard') {
+  if (nodeType === 'noteCard') {
     return {
       id: node.id,
       type: 'note',

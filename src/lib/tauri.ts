@@ -97,8 +97,14 @@ export const tauriCommands = {
   }),
   importAssetIntoVault: (vaultPath: string, sourcePath: string, targetFolder?: string) =>
     invoke<string>('import_asset_into_vault', { vaultPath, sourcePath, targetFolder: targetFolder ?? null }),
-  writeNote: (vaultPath: string, relativePath: string, content: string, expectedHash?: string) =>
-    invoke<WriteResult>('write_note', { vaultPath, relativePath, content, expectedHash: expectedHash ?? null }),
+  writeNote: (vaultPath: string, relativePath: string, content: string, expectedHash?: string, baseContent?: string) =>
+    invoke<WriteResult>('write_note', {
+      vaultPath,
+      relativePath,
+      content,
+      expectedHash: expectedHash ?? null,
+      baseContent: baseContent ?? null,
+    }),
   createNote: (vaultPath: string, relativePath: string) => invoke<NoteFile>('create_note', { vaultPath, relativePath }),
   moveNoteToTrash: (
     vaultPath: string,

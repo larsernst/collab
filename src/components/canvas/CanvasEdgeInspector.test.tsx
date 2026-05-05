@@ -57,6 +57,7 @@ describe('CanvasEdgeInspector', () => {
         edgeLabelDraft=""
         onEdgeLabelChange={vi.fn()}
         onLineStyleChange={vi.fn()}
+        onRoutingStyleChange={vi.fn()}
         onAnimationDirectionChange={vi.fn()}
         onAnimationChange={vi.fn()}
         onMarkerStartChange={vi.fn()}
@@ -79,6 +80,7 @@ describe('CanvasEdgeInspector', () => {
         selectedEdgeData={{
           label: 'Depends on',
           lineStyle: 'solid',
+          routingStyle: 'curved',
           animated: false,
           animationReverse: false,
           markerStart: false,
@@ -87,6 +89,7 @@ describe('CanvasEdgeInspector', () => {
         edgeLabelDraft="Depends on"
         onEdgeLabelChange={onEdgeLabelChange}
         onLineStyleChange={vi.fn()}
+        onRoutingStyleChange={vi.fn()}
         onAnimationDirectionChange={vi.fn()}
         onAnimationChange={onAnimationChange}
         onMarkerStartChange={onMarkerStartChange}

@@ -34,6 +34,7 @@ import {
   Play,
   Bot,
   Trash2,
+  ChevronDown,
 } from 'lucide-react';
 import { toast } from 'sonner';
 import { cn } from '../../lib/utils';
@@ -74,6 +75,10 @@ import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuRadioGroup,
+  DropdownMenuRadioItem,
+  DropdownMenuSeparator,
   DropdownMenuSub,
   DropdownMenuSubContent,
   DropdownMenuSubTrigger,
@@ -134,6 +139,13 @@ const SORT_FIELDS: { field: ColumnSortField; label: string }[] = [
   { field: 'startDate', label: 'Start date' },
   { field: 'dueDate', label: 'Due date' },
   { field: 'assignees', label: 'Assignees' },
+];
+const SWIMLANE_OPTIONS: { value: KanbanSwimlaneMode; label: string }[] = [
+  { value: 'none', label: 'No swimlanes' },
+  { value: 'assignee', label: 'Assignee' },
+  { value: 'priority', label: 'Priority' },
+  { value: 'tag', label: 'Tag' },
+  { value: 'dueStatus', label: 'Due status' },
 ];
 
 type AutomationConditionKind = 'overdue' | 'dueWithinDays' | 'hasTag' | 'column' | 'priority' | 'assigneeState' | 'doneState';
@@ -568,8 +580,11 @@ export default function KanbanBoardView() {
     () => board.columns.reduce((count, column) => count + column.cards.filter((card) => card.archived).length, 0),
     [board.columns],
   );
+  const swimlaneMode = board.viewSettings?.swimlaneMode ?? 'none';
   const activeFilter = useMemo(() => getActiveBoardFilter(board), [board]);
   const activeFilterSpec = activeFilter?.spec ?? (board.activeFilterId ? null : workingFilter);
+  const activeSwimlaneLabel = SWIMLANE_OPTIONS.find((option) => option.value === swimlaneMode)?.label ?? 'No swimlanes';
+  const activeFilterLabel = activeFilter?.name ?? 'All cards';
   const visibleBoard = useMemo(
     () => getFilteredBoard(board, activeFilterSpec, knownUsers),
     [activeFilterSpec, board, knownUsers],
@@ -1152,62 +1167,76 @@ export default function KanbanBoardView() {
             {view === 'board' && (
               <>
                 <div className={documentTopBarGroupClass}>
-                  <Select
-                    value={board.viewSettings?.swimlaneMode ?? 'none'}
-                    onValueChange={(value) => updateBoard((prev) => ({
-                      ...prev,
-                      viewSettings: {
-                        ...(prev.viewSettings ?? {}),
-                        swimlaneMode: value as KanbanSwimlaneMode,
-                      },
-                    }))}
-                  >
-                    <SelectTrigger className="h-8 min-w-[150px] text-xs">
-                      <SelectValue placeholder="No swimlanes" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="none" className="text-xs">No swimlanes</SelectItem>
-                      <SelectItem value="assignee" className="text-xs">Swimlanes: assignee</SelectItem>
-                      <SelectItem value="priority" className="text-xs">Swimlanes: priority</SelectItem>
-                      <SelectItem value="tag" className="text-xs">Swimlanes: tag</SelectItem>
-                      <SelectItem value="dueStatus" className="text-xs">Swimlanes: due status</SelectItem>
-                    </SelectContent>
-                  </Select>
-                </div>
-
-                <div className={documentTopBarGroupClass}>
-                  <Select
-                    value={board.activeFilterId ?? '__all__'}
-                    onValueChange={(value) => {
-                      if (value === '__all__') {
-                        updateBoard((prev) => ({ ...prev, activeFilterId: null }));
-                        return;
-                      }
-                      updateBoard((prev) => ({ ...prev, activeFilterId: value }));
-                    }}
-                  >
-                    <SelectTrigger className="h-8 min-w-[140px] text-xs">
-                      <SelectValue placeholder="All cards" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="__all__" className="text-xs">All cards</SelectItem>
-                      {(board.savedFilters ?? []).map((filter) => (
-                        <SelectItem key={filter.id} value={filter.id} className="text-xs">
-                          {filter.name}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                  <button
+                  <DropdownMenu>
+                    <DropdownMenuTrigger asChild>
+                      <Button size="sm" variant="ghost" className="h-8 min-w-[170px] justify-between gap-1.5 px-2.5 text-xs">
+                        <span className="truncate">Swimlanes: {activeSwimlaneLabel}</span>
+                        <ChevronDown size={13} />
+                      </Button>
+                    </DropdownMenuTrigger>
+                    <DropdownMenuContent align="start" className="min-w-[180px]">
+                      <DropdownMenuLabel>Swimlanes</DropdownMenuLabel>
+                      <DropdownMenuSeparator />
+                      <DropdownMenuRadioGroup
+                        value={swimlaneMode}
+                        onValueChange={(value) => updateBoard((prev) => ({
+                          ...prev,
+                          viewSettings: {
+                            ...(prev.viewSettings ?? {}),
+                            swimlaneMode: value as KanbanSwimlaneMode,
+                          },
+                        }))}
+                      >
+                        {SWIMLANE_OPTIONS.map((option) => (
+                          <DropdownMenuRadioItem key={option.value} value={option.value}>
+                            {option.label}
+                          </DropdownMenuRadioItem>
+                        ))}
+                      </DropdownMenuRadioGroup>
+                    </DropdownMenuContent>
+                  </DropdownMenu>
+                  <DropdownMenu>
+                    <DropdownMenuTrigger asChild>
+                      <Button size="sm" variant="ghost" className="h-8 min-w-[150px] justify-between gap-1.5 px-2.5 text-xs">
+                        <span className="truncate">Filter: {activeFilterLabel}</span>
+                        <ChevronDown size={13} />
+                      </Button>
+                    </DropdownMenuTrigger>
+                    <DropdownMenuContent align="start" className="min-w-[180px]">
+                      <DropdownMenuLabel>Filters</DropdownMenuLabel>
+                      <DropdownMenuSeparator />
+                      <DropdownMenuRadioGroup
+                        value={board.activeFilterId ?? '__all__'}
+                        onValueChange={(value) => {
+                          if (value === '__all__') {
+                            updateBoard((prev) => ({ ...prev, activeFilterId: null }));
+                            return;
+                          }
+                          updateBoard((prev) => ({ ...prev, activeFilterId: value }));
+                        }}
+                      >
+                        <DropdownMenuRadioItem value="__all__">All cards</DropdownMenuRadioItem>
+                        {(board.savedFilters ?? []).length > 0 ? <DropdownMenuSeparator /> : null}
+                        {(board.savedFilters ?? []).map((filter) => (
+                          <DropdownMenuRadioItem key={filter.id} value={filter.id}>
+                            {filter.name}
+                          </DropdownMenuRadioItem>
+                        ))}
+                      </DropdownMenuRadioGroup>
+                    </DropdownMenuContent>
+                  </DropdownMenu>
+                  <Button
+                    size="sm"
+                    variant="ghost"
                     onClick={() => {
                       setWorkingFilter(activeFilter?.spec ?? workingFilter);
                       setFilterDialogOpen(true);
                     }}
-                    className="flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs font-medium text-muted-foreground transition-colors hover:text-foreground"
+                    className="h-8 gap-1.5 px-2.5 text-xs text-muted-foreground"
                   >
                     <Filter size={12} />
                     Filter
-                  </button>
+                  </Button>
                 </div>
 
                 <div className={documentTopBarGroupClass}>

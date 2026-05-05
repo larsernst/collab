@@ -24,6 +24,7 @@ export interface NoteContent {
 
 export interface WriteResult {
   hash: string;
+  mergedContent?: string;
   conflict?: ConflictInfo;
 }
 

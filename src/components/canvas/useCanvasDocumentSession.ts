@@ -82,6 +82,7 @@ export function useCanvasDocumentSession({
 }: UseCanvasDocumentSessionOptions) {
   const saveTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const pendingViewportRef = useRef<Viewport | null>(null);
+  const savedCanvasContentRef = useRef<string | null>(null);
   const [loadRevision, setLoadRevision] = useState(0);
 
   const loadCanvas = useCallback(async (isInitial = false) => {
@@ -96,11 +97,13 @@ export function useCanvasDocumentSession({
 
       if (content.trim()) {
         canvas = JSON.parse(content) as CanvasData;
+        savedCanvasContentRef.current = content;
       } else if (isInitial) {
         const blank = EMPTY_CANVAS;
         const result = await tauriCommands.writeNote(vault.path, relativePath, JSON.stringify(blank, null, 2));
         currentHash = result.hash;
         canvas = blank;
+        savedCanvasContentRef.current = JSON.stringify(blank, null, 2);
       }
 
       markLoaded(currentHash);
@@ -176,12 +179,25 @@ export function useCanvasDocumentSession({
         relativePath,
         serialized,
         hashRef.current ?? undefined,
+        savedCanvasContentRef.current ?? undefined,
       );
       if (result.conflict) {
         addConflict({ ...result.conflict, ourContent: serialized });
         return;
       }
       if (isMountedRef.current) {
+        const mergedSerialized = result.mergedContent ?? serialized;
+        if (mergedSerialized !== serialized) {
+          markLoaded(result.hash);
+          const mergedCanvas = JSON.parse(mergedSerialized) as CanvasData;
+          resetPreviewState();
+          setViewport(mergedCanvas.viewport ?? EMPTY_CANVAS.viewport);
+          setNodes(buildFlowNode(mergedCanvas));
+          setEdges(mergedCanvas.edges.map(toFlowEdge));
+          pendingViewportRef.current = mergedCanvas.viewport ?? EMPTY_CANVAS.viewport;
+          setLoadRevision((prev) => prev + 1);
+        }
+        savedCanvasContentRef.current = mergedSerialized;
         hashRef.current = result.hash;
         isDirtyRef.current = false;
         markSaved(relativePath, result.hash);
@@ -189,7 +205,7 @@ export function useCanvasDocumentSession({
           tauriCommands.createSnapshot(
             vault.path,
             relativePath,
-            serialized,
+            mergedSerialized,
             myUserId,
             myUserName,
           ).catch(() => {});

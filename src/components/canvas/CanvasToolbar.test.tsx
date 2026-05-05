@@ -11,6 +11,17 @@ vi.mock('../layout/DocumentTopBar', () => ({
   documentTopBarGroupClass: 'toolbar-group',
 }));
 
+vi.mock('../ui/dropdown-menu', () => ({
+  DropdownMenu: ({ children }: { children: React.ReactNode }) => <>{children}</>,
+  DropdownMenuTrigger: ({ children }: { children: React.ReactNode }) => <>{children}</>,
+  DropdownMenuContent: ({ children }: { children: React.ReactNode }) => <>{children}</>,
+  DropdownMenuItem: ({ children, onSelect }: { children: React.ReactNode; onSelect?: () => void }) => (
+    <button type="button" onClick={onSelect}>{children}</button>
+  ),
+  DropdownMenuLabel: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
+  DropdownMenuSeparator: () => null,
+}));
+
 import { CanvasToolbar } from './CanvasToolbar';
 
 describe('CanvasToolbar', () => {
@@ -31,6 +42,8 @@ describe('CanvasToolbar', () => {
         onAddFile={onAddFile}
         onAddText={onAddText}
         onAddWeb={onAddWeb}
+        onAddPlanningNode={vi.fn()}
+        onApplyPreset={vi.fn()}
         onZoomOut={vi.fn()}
         onResetZoom={vi.fn()}
         onZoomIn={vi.fn()}
@@ -62,6 +75,8 @@ describe('CanvasToolbar', () => {
         onAddFile={vi.fn()}
         onAddText={vi.fn()}
         onAddWeb={vi.fn()}
+        onAddPlanningNode={vi.fn()}
+        onApplyPreset={vi.fn()}
         onZoomOut={onZoomOut}
         onResetZoom={onResetZoom}
         onZoomIn={onZoomIn}

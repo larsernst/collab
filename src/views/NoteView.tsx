@@ -59,6 +59,7 @@ export default function NoteView({ relativePath }: { relativePath: string }) {
   } = useUiStore();
   const loadSnippets = useNoteSnippetStore((state) => state.loadSnippets);
   const editorRef = useRef<MarkdownEditorHandle | null>(null);
+  const savedContentRef = useRef<string | null>(null);
   const { hashRef, markLoaded, shouldSkipAutosave, markWriteStarted, shouldCreateSnapshot } = useDocumentSessionState();
   const initialViewState = useMemo<NoteEditorViewState | null>(
     () => useEditorStore.getState().noteViewStates[relativePath] ?? null,
@@ -71,6 +72,7 @@ export default function NoteView({ relativePath }: { relativePath: string }) {
     tauriCommands.readNote(vault.path, relativePath)
       .then((nc) => {
         setContent(nc.content);
+        savedContentRef.current = nc.content;
         markLoaded(nc.hash);
         setSavedHash(relativePath, nc.hash);
       })
@@ -166,6 +168,7 @@ export default function NoteView({ relativePath }: { relativePath: string }) {
         const nc = await tauriCommands.readNote(vault.path, relativePath);
         if (nc.hash !== hashRef.current) {
           setContent(nc.content);
+          savedContentRef.current = nc.content;
           markLoaded(nc.hash);
           setSavedHash(relativePath, nc.hash);
         }
@@ -209,22 +212,29 @@ export default function NoteView({ relativePath }: { relativePath: string }) {
         relativePath,
         newContent,
         hashRef.current,
+        savedContentRef.current ?? undefined,
       );
       if (result.conflict) {
         addConflict({ ...result.conflict, ourContent: newContent });
         return;
       }
 
+      const savedContent = result.mergedContent ?? newContent;
+      if (savedContent !== newContent) {
+        markLoaded(result.hash);
+        setContent(savedContent);
+      }
+      savedContentRef.current = savedContent;
       hashRef.current = result.hash;
       isDirtyRef.current = false;
       markSaved(relativePath, result.hash);
 
       if (manual && shouldCreateSnapshot(result.hash)) {
-        tauriCommands.createSnapshot(vault.path, relativePath, newContent, myUserId, myUserName)
+        tauriCommands.createSnapshot(vault.path, relativePath, savedContent, myUserId, myUserName)
           .catch(() => {});
       }
 
-      const h1 = extractFirstH1(newContent);
+      const h1 = extractFirstH1(savedContent);
       if (h1) {
         const sanitized = sanitizeFilename(h1);
         const parts = relativePath.split('/');

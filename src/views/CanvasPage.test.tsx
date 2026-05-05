@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import React from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -9,6 +9,7 @@ import { useVaultStore } from '../store/vaultStore';
 
 const canvasEvents = vi.hoisted(() => ({
   fileModifiedHandler: null as null | ((event: { payload: { path: string } }) => void | Promise<void>),
+  reactFlowProps: null as null | Record<string, unknown>,
 }));
 
 const tauriMocks = vi.hoisted(() => ({
@@ -65,7 +66,10 @@ vi.mock('@xyflow/react', async () => {
 
   return {
     ReactFlowProvider: ({ children }: { children: React.ReactNode }) => <>{children}</>,
-    ReactFlow: ({ children }: { children: React.ReactNode }) => <div data-testid="react-flow">{children}</div>,
+    ReactFlow: ({ children, ...props }: { children: React.ReactNode } & Record<string, unknown>) => {
+      canvasEvents.reactFlowProps = props;
+      return <div data-testid="react-flow">{children}</div>;
+    },
     Background: () => null,
     Panel: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
     BaseEdge: () => null,
@@ -117,6 +121,7 @@ describe('CanvasPage save behavior', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     canvasEvents.fileModifiedHandler = null;
+    canvasEvents.reactFlowProps = null;
 
     useVaultStore.setState({
       vault: { id: 'vault-1', path: '/vault', name: 'Vault', isEncrypted: false, lastOpened: Date.now() },
@@ -316,5 +321,42 @@ describe('CanvasPage save behavior', () => {
         isDirty: true,
       }),
     );
+  });
+
+  it('auto-connects a node created from the insert menu even when connect-start metadata is incomplete', async () => {
+    tauriMocks.readNote.mockResolvedValue({
+      content: JSON.stringify({
+        nodes: [{ id: 'source-1', type: 'text', content: 'Source', position: { x: 0, y: 0 }, width: 280, height: 160 }],
+        edges: [],
+        viewport: { x: 0, y: 0, zoom: 1 },
+      }),
+      hash: 'hash-1',
+      modifiedAt: 1,
+    });
+
+    render(<CanvasPage relativePath="Boards/test.canvas" />);
+
+    expect(await screen.findByText(/1 card and 0 links/i)).toBeTruthy();
+
+    await act(async () => {
+      (canvasEvents.reactFlowProps?.onConnectStart as ((event: MouseEvent, params: { nodeId?: string; handleId?: string }) => void) | undefined)?.(
+        {} as MouseEvent,
+        { handleId: 'right-out' },
+      );
+      (canvasEvents.reactFlowProps?.onConnectEnd as ((event: MouseEvent, state: { toNode: null; fromNode: { id: string }; fromHandle: { id: string } }) => void) | undefined)?.(
+        { clientX: 180, clientY: 200 } as MouseEvent,
+        {
+          toNode: null,
+          fromNode: { id: 'source-1' },
+          fromHandle: { id: 'right-out' },
+        },
+      );
+    });
+
+    fireEvent.click(await screen.findByText('Text'));
+
+    await waitFor(() => {
+      expect(screen.getByText(/2 cards and 1 link/i)).toBeTruthy();
+    });
   });
 });

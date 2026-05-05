@@ -35,12 +35,22 @@ import {
 } from '../components/canvas/CanvasEdgeTypes';
 import { CanvasEdgeInspector } from '../components/canvas/CanvasEdgeInspector';
 import { fromFlowNode, toFlowNode } from '../components/canvas/CanvasFlowNodeUtils';
+import { CanvasNodeInspector } from '../components/canvas/CanvasNodeInspector';
+import { CanvasInsertMenu } from '../components/canvas/CanvasInsertMenu';
 import { useCanvasDocumentSession } from '../components/canvas/useCanvasDocumentSession';
 import { CanvasToolbar } from '../components/canvas/CanvasToolbar';
 import { CanvasPickerDialog, type CanvasPickerMode } from '../components/canvas/CanvasPickerDialog';
 import { useCanvasNodeCommands } from '../components/canvas/useCanvasNodeCommands';
+import type { PendingAutoConnect } from '../components/canvas/useCanvasNodeCommands';
 import { useCanvasPreviews } from '../components/canvas/useCanvasPreviews';
 import { useCanvasViewportControls } from '../components/canvas/useCanvasViewportControls';
+import {
+  createSplitJunctionNode,
+  mergeSingleJunction,
+  splitEdgeWithJunction,
+} from '../components/canvas/canvasDiagramUtils';
+import { isPlanningNodeType } from '../components/canvas/canvasPlanning';
+import type { CanvasInsertItem } from '../components/canvas/canvasInsertItems';
 import {
   getBaseName,
   getPreviewKey,
@@ -59,10 +69,15 @@ import type {
   CanvasData,
   CanvasEdge,
   CanvasEdgeLineStyle,
+  CanvasEdgeRoutingStyle,
   CanvasNode,
+  CanvasPlanningMetadata,
+  CanvasSwimlaneOrientation,
+  PlanningCanvasNode,
 } from '../types/canvas';
 import type { NoteFile } from '../types/vault';
 import { useDocumentSessionState } from '../lib/documentSession';
+import type { OnConnectStartParams, FinalConnectionState } from '@xyflow/react';
 
 const pdfWorkerUrl = new URL('pdfjs-dist/build/pdf.worker.mjs', import.meta.url).toString();
 GlobalWorkerOptions.workerSrc = pdfWorkerUrl;
@@ -93,6 +108,141 @@ function snapPosition(position: { x: number; y: number }, grid = CANVAS_GRID) {
   return {
     x: snapValue(position.x, grid),
     y: snapValue(position.y, grid),
+  };
+}
+
+function getHandleSide(handleId?: string | null) {
+  if (!handleId) return null;
+  if (handleId.startsWith('right')) return 'right';
+  if (handleId.startsWith('bottom')) return 'bottom';
+  if (handleId.startsWith('left')) return 'left';
+  if (handleId.startsWith('top')) return 'top';
+  return null;
+}
+
+function getHandleDatasetFromEventTarget(target: EventTarget | null) {
+  if (!(target instanceof HTMLElement)) return null;
+  const handleEl = target.closest('[data-nodeid][data-handleid]');
+  if (!(handleEl instanceof HTMLElement)) return null;
+
+  const nodeId = handleEl.dataset.nodeid;
+  const handleId = handleEl.dataset.handleid;
+  if (!nodeId) return null;
+
+  return {
+    nodeId,
+    handleId: handleId ?? undefined,
+  };
+}
+
+function logAutoConnect(stage: string, details: Record<string, unknown>) {
+  console.debug(`[canvas-auto-connect] ${stage}`, details);
+}
+
+interface CanvasInsertSession {
+  flowPosition: { x: number; y: number };
+  autoConnect: PendingAutoConnect | null;
+}
+
+function getAutoConnectTargetHandle(sourceSide?: string | null) {
+  if (sourceSide === 'bottom') return 'top-in';
+  return 'left-in';
+}
+
+function getAutoConnectHandles({
+  sourceNode,
+  targetPosition,
+  sourceHandle,
+  sourceSide,
+}: {
+  sourceNode?: FlowNode<CanvasNodeData>;
+  targetPosition: { x: number; y: number };
+  sourceHandle?: string;
+  sourceSide?: string | null;
+}) {
+  if (!sourceNode) {
+    return {
+      sourceHandle,
+      targetHandle: getAutoConnectTargetHandle(sourceSide),
+    };
+  }
+
+  const sourceWidth = typeof sourceNode.width === 'number'
+    ? sourceNode.width
+    : typeof sourceNode.measured?.width === 'number'
+      ? sourceNode.measured.width
+      : typeof sourceNode.style?.width === 'number'
+        ? sourceNode.style.width
+        : 300;
+  const sourceHeight = typeof sourceNode.height === 'number'
+    ? sourceNode.height
+    : typeof sourceNode.measured?.height === 'number'
+      ? sourceNode.measured.height
+      : typeof sourceNode.style?.height === 'number'
+        ? sourceNode.style.height
+        : 180;
+  const sourceCenterX = sourceNode.position.x + sourceWidth / 2;
+  const sourceCenterY = sourceNode.position.y + sourceHeight / 2;
+  const deltaX = targetPosition.x - sourceCenterX;
+  const deltaY = targetPosition.y - sourceCenterY;
+
+  if (Math.abs(deltaY) > Math.abs(deltaX) && deltaY >= 0) {
+    return {
+      sourceHandle: sourceSide === 'right' ? 'bottom-out' : (sourceHandle ?? 'bottom-out'),
+      targetHandle: 'top-in',
+    };
+  }
+
+  return {
+    sourceHandle: sourceSide === 'bottom' ? 'right-out' : (sourceHandle ?? 'right-out'),
+    targetHandle: 'left-in',
+  };
+}
+
+function getAutoConnectEdge({
+  pendingAutoConnect,
+  existingNode,
+  newNode,
+}: {
+  pendingAutoConnect: PendingAutoConnect;
+  existingNode?: FlowNode<CanvasNodeData>;
+  newNode: CanvasNode;
+}): CanvasEdge {
+  if (pendingAutoConnect.handleType === 'target') {
+    return {
+      id: crypto.randomUUID(),
+      source: newNode.id,
+      sourceHandle: pendingAutoConnect.sourceSide === 'top' ? 'bottom-out' : 'right-out',
+      target: pendingAutoConnect.source,
+      targetHandle: pendingAutoConnect.sourceHandle ?? (pendingAutoConnect.sourceSide === 'top' ? 'top-in' : 'left-in'),
+      lineStyle: 'solid',
+      routingStyle: 'curved',
+      animated: false,
+      animationReverse: false,
+      markerStart: false,
+      markerEnd: true,
+    };
+  }
+
+  const autoConnectHandles = getAutoConnectHandles({
+    sourceNode: existingNode,
+    targetPosition: newNode.position,
+    sourceHandle: pendingAutoConnect.sourceHandle,
+    sourceSide: pendingAutoConnect.sourceSide,
+  });
+
+  return {
+    id: crypto.randomUUID(),
+    source: pendingAutoConnect.source,
+    sourceHandle: autoConnectHandles.sourceHandle,
+    target: newNode.id,
+    targetHandle: autoConnectHandles.targetHandle,
+    lineStyle: 'solid',
+    routingStyle: 'curved',
+    animated: false,
+    animationReverse: false,
+    markerStart: false,
+    markerEnd: true,
   };
 }
 
@@ -157,12 +307,26 @@ function CanvasBoard({ relativePath }: { relativePath: string | null }) {
   const [viewport, setViewport] = useState(EMPTY_CANVAS.viewport);
   const [pickerMode, setPickerMode] = useState<CanvasPickerMode>(null);
   const [edgeLabelDraft, setEdgeLabelDraft] = useState('');
+  const [insertSession, setInsertSession] = useState<CanvasInsertSession | null>(null);
+  const [insertMenuState, setInsertMenuState] = useState<{
+    open: boolean;
+    x: number;
+    y: number;
+    flowPosition: { x: number; y: number };
+  }>({
+    open: false,
+    x: 0,
+    y: 0,
+    flowPosition: { x: 0, y: 0 },
+  });
   const { hashRef, lastWriteRef, markLoaded, shouldSkipAutosave, markWriteStarted, shouldCreateSnapshot } = useDocumentSessionState();
+  const pendingAutoConnectRef = useRef<PendingAutoConnect | null>(null);
 
   const allFiles = useMemo(() => flattenFiles(fileTree).filter((node) => !node.isFolder), [fileTree]);
   const availableNotes = useMemo(() => allFiles.filter((file) => file.extension.toLowerCase() === 'md'), [allFiles]);
   const availableFiles = useMemo(() => allFiles.filter((file) => file.extension.toLowerCase() !== 'md'), [allFiles]);
   const selectedEdge = useMemo(() => edges.find((edge) => edge.selected), [edges]);
+  const selectedNode = useMemo(() => nodes.find((node) => node.selected), [nodes]);
   const zoomLabel = `${Math.round(viewport.zoom * 100)}%`;
 
   useEffect(() => {
@@ -317,14 +481,20 @@ function CanvasBoard({ relativePath }: { relativePath: string | null }) {
     setEdgeLabelDraft(selectedEdge?.data?.label ?? '');
   }, [selectedEdge?.id]);
 
-  const addCanvasNode = useCallback((node: CanvasNode) => {
-    const preview = previews[getPreviewKey(node)];
-    setNodes((prev) => [...prev, toFlowNode({
+  const addCanvasNode = useCallback((node: CanvasNode, pendingAutoConnectOverride?: PendingAutoConnect | null) => {
+    const snappedNode: CanvasNode = {
       ...node,
       position: snapPosition(node.position),
       width: snapSize(node.width, node.type === 'text' ? 200 : 220),
       height: snapSize(node.height, node.type === 'text' ? 120 : 140),
-    }, preview, {
+    };
+    const preview = previews[getPreviewKey(snappedNode)];
+    logAutoConnect('add-node', {
+      node: snappedNode,
+      pendingAutoConnectOverride,
+      pendingAutoConnectRef: pendingAutoConnectRef.current,
+    });
+    setNodes((prev) => [...prev, toFlowNode(snappedNode, preview, {
       onOpen: openRelativePath,
       onTextChange: updateTextContent,
       onSnapToGrid: snapNodeToGrid,
@@ -333,11 +503,67 @@ function CanvasBoard({ relativePath }: { relativePath: string | null }) {
       onRequestWebPreview: requestWebPreview,
       onOpenUrl: openExternalUrl,
     }, canvasWebCardDefaultMode, canvasWebCardAutoLoad, webPreviewsEnabled)]);
+    const pendingAutoConnect = pendingAutoConnectOverride ?? pendingAutoConnectRef.current;
+    if (pendingAutoConnect) {
+      const sourceNode = nodes.find((candidate) => candidate.id === pendingAutoConnect.source);
+      const nextEdge = getAutoConnectEdge({
+        pendingAutoConnect,
+        existingNode: sourceNode,
+        newNode: snappedNode,
+      });
+      logAutoConnect('queue-edge', {
+        pendingAutoConnect,
+        sourceNode: sourceNode ? {
+          id: sourceNode.id,
+          position: sourceNode.position,
+          width: sourceNode.width ?? sourceNode.measured?.width ?? sourceNode.style?.width,
+          height: sourceNode.height ?? sourceNode.measured?.height ?? sourceNode.style?.height,
+        } : null,
+        targetNode: {
+          id: snappedNode.id,
+          position: snappedNode.position,
+        },
+        nextEdge,
+      });
+      setEdges((prev) => [...prev, toFlowEdge(nextEdge)]);
+      if (!pendingAutoConnectOverride || pendingAutoConnectRef.current === pendingAutoConnectOverride) {
+        pendingAutoConnectRef.current = null;
+      }
+    }
+  }, [canvasWebCardAutoLoad, canvasWebCardDefaultMode, nodes, openExternalUrl, openRelativePath, previews, requestWebPreview, setEdges, setNodes, snapNodeToGrid, updateTextContent, updateWebDisplayModeOverride, updateWebUrl, webPreviewsEnabled]);
+
+  const addCanvasNodes = useCallback((newNodes: CanvasNode[]) => {
+    setNodes((prev) => [
+      ...prev,
+      ...newNodes.map((node) => toFlowNode({
+        ...node,
+        position: snapPosition(node.position),
+        width: snapSize(node.width, node.type === 'text' ? 200 : 220),
+        height: snapSize(node.height, node.type === 'text' ? 120 : 140),
+      }, previews[getPreviewKey(node)], {
+        onOpen: openRelativePath,
+        onTextChange: updateTextContent,
+        onSnapToGrid: snapNodeToGrid,
+        onWebUrlChange: updateWebUrl,
+        onWebDisplayModeOverrideChange: updateWebDisplayModeOverride,
+        onRequestWebPreview: requestWebPreview,
+        onOpenUrl: openExternalUrl,
+      }, canvasWebCardDefaultMode, canvasWebCardAutoLoad, webPreviewsEnabled)),
+    ]);
   }, [canvasWebCardAutoLoad, canvasWebCardDefaultMode, openExternalUrl, openRelativePath, previews, requestWebPreview, setNodes, snapNodeToGrid, updateTextContent, updateWebDisplayModeOverride, updateWebUrl, webPreviewsEnabled]);
+
+  const addCanvasEdges = useCallback((newEdges: CanvasEdge[]) => {
+    setEdges((prev) => [...prev, ...newEdges.map((edge) => toFlowEdge(edge))]);
+  }, [setEdges]);
 
   const {
     addTextNode,
+    addTextNodeAt,
     addWebNode,
+    addWebNodeAt,
+    addPlanningNode,
+    applyPlanningPreset,
+    addPlanningNodeAt,
     handleDropOnCanvas,
     handlePickerSelect,
   } = useCanvasNodeCommands({
@@ -345,8 +571,11 @@ function CanvasBoard({ relativePath }: { relativePath: string | null }) {
     viewportRef,
     pickerMode,
     setPickerMode,
+    pickerInsertPosition: insertSession?.flowPosition ?? null,
     allFiles,
     addCanvasNode,
+    addCanvasNodes,
+    addCanvasEdges,
   });
 
   const handleConnect = useCallback((connection: Connection) => {
@@ -354,9 +583,12 @@ function CanvasBoard({ relativePath }: { relativePath: string | null }) {
       addEdge(
         toFlowEdge({
           ...connection,
+          sourceHandle: connection.sourceHandle ?? undefined,
+          targetHandle: connection.targetHandle ?? undefined,
           id: crypto.randomUUID(),
           label: undefined,
           lineStyle: 'solid',
+          routingStyle: 'curved',
           animated: false,
           animationReverse: false,
           markerStart: false,
@@ -366,6 +598,88 @@ function CanvasBoard({ relativePath }: { relativePath: string | null }) {
       ) as CanvasFlowEdge[],
     );
   }, [setEdges]);
+
+  const handleConnectStart = useCallback((event: MouseEvent | TouchEvent, params: OnConnectStartParams) => {
+    const eventTarget = 'target' in event ? event.target : null;
+    const datasetHandle = getHandleDatasetFromEventTarget(eventTarget);
+    const sourceNodeId = params.nodeId ?? datasetHandle?.nodeId ?? null;
+    const sourceHandleId = params.handleId ?? datasetHandle?.handleId;
+
+    pendingAutoConnectRef.current = sourceNodeId
+      ? {
+          source: sourceNodeId,
+          sourceHandle: sourceHandleId ?? undefined,
+          sourceSide: getHandleSide(sourceHandleId),
+          handleType: params.handleType ?? (sourceHandleId?.endsWith('-in') ? 'target' : 'source'),
+        }
+      : null;
+    logAutoConnect('connect-start', {
+      params,
+      datasetHandle,
+      pendingAutoConnect: pendingAutoConnectRef.current,
+    });
+  }, []);
+
+  const openInsertMenuAt = useCallback((clientX: number, clientY: number, autoConnect?: PendingAutoConnect | null) => {
+    const rect = viewportRef.current?.getBoundingClientRect();
+    const flowPosition = reactFlow.screenToFlowPosition({ x: clientX, y: clientY });
+    setInsertMenuState({
+      open: true,
+      x: rect ? Math.min(clientX - rect.left, rect.width - 332) : clientX,
+      y: rect ? Math.min(clientY - rect.top, rect.height - 340) : clientY,
+      flowPosition,
+    });
+    setInsertSession({
+      flowPosition,
+      autoConnect: autoConnect ?? null,
+    });
+  }, [reactFlow]);
+
+  const handleConnectEnd = useCallback((event: MouseEvent | TouchEvent, connectionState: FinalConnectionState) => {
+    logAutoConnect('connect-end-initial', {
+      connectionState,
+      pendingAutoConnect: pendingAutoConnectRef.current,
+    });
+    if (connectionState.toNode) {
+      pendingAutoConnectRef.current = null;
+      logAutoConnect('connect-end-to-node', {
+        connectionState,
+      });
+      return;
+    }
+
+    if (!pendingAutoConnectRef.current) {
+      const sourceNodeId = 'fromHandle' in connectionState
+        && connectionState.fromHandle
+        && typeof connectionState.fromHandle === 'object'
+        && 'nodeId' in connectionState.fromHandle
+        && typeof connectionState.fromHandle.nodeId === 'string'
+        ? connectionState.fromHandle.nodeId
+        : 'fromNode' in connectionState && connectionState.fromNode && typeof connectionState.fromNode === 'object' && 'id' in connectionState.fromNode
+        ? String(connectionState.fromNode.id)
+        : null;
+      const sourceHandleId = 'fromHandle' in connectionState && connectionState.fromHandle && typeof connectionState.fromHandle === 'object' && 'id' in connectionState.fromHandle && typeof connectionState.fromHandle.id === 'string'
+        ? connectionState.fromHandle.id
+        : undefined;
+
+      if (sourceNodeId) {
+        pendingAutoConnectRef.current = {
+          source: sourceNodeId,
+          sourceHandle: sourceHandleId,
+          sourceSide: getHandleSide(sourceHandleId),
+          handleType: sourceHandleId?.endsWith('-in') ? 'target' : 'source',
+        };
+      }
+    }
+
+    logAutoConnect('connect-end-open-menu', {
+      connectionState,
+      pendingAutoConnect: pendingAutoConnectRef.current,
+    });
+
+    const point = 'changedTouches' in event ? event.changedTouches[0] : event;
+    openInsertMenuAt(point.clientX, point.clientY, pendingAutoConnectRef.current);
+  }, [openInsertMenuAt]);
 
   const handleReconnect = useCallback<OnReconnect<CanvasFlowEdge>>((oldEdge, newConnection) => {
     setEdges((prev) => (reconnectEdge(oldEdge, newConnection, prev) as CanvasFlowEdge[]).map((edge) => (
@@ -384,8 +698,24 @@ function CanvasBoard({ relativePath }: { relativePath: string | null }) {
   }, [onEdgesChangeBase]);
 
   const deleteSelection = useCallback(() => {
+    const selectedJunctionIds = nodes
+      .filter((node) => node.selected && node.type === 'junctionCard')
+      .map((node) => node.id);
+
+    const mergeCandidates = selectedJunctionIds
+      .map((nodeId) => mergeSingleJunction(nodeId, edges.map(fromFlowEdge)))
+      .filter((candidate): candidate is NonNullable<typeof candidate> => candidate !== null);
+
     setNodes((prev) => prev.filter((node) => !node.selected));
-    setEdges((prev) => prev.filter((edge) => !edge.selected));
+    setEdges((prev) => {
+      const selectedEdgeIds = prev.filter((edge) => edge.selected).map((edge) => edge.id);
+      const removedMergedEdgeIds = new Set(mergeCandidates.flatMap((candidate) => candidate.removedEdgeIds));
+      const remaining = prev.filter((edge) => !selectedEdgeIds.includes(edge.id) && !removedMergedEdgeIds.has(edge.id));
+      return [
+        ...remaining,
+        ...mergeCandidates.map((candidate) => toFlowEdge(candidate.mergedEdge)),
+      ];
+    });
   }, [setEdges, setNodes]);
 
   const {
@@ -425,6 +755,10 @@ function CanvasBoard({ relativePath }: { relativePath: string | null }) {
     updateSelectedEdge((edge) => ({ ...edge, lineStyle }));
   }, [updateSelectedEdge]);
 
+  const updateSelectedEdgeRoutingStyle = useCallback((routingStyle: CanvasEdgeRoutingStyle) => {
+    updateSelectedEdge((edge) => ({ ...edge, routingStyle }));
+  }, [updateSelectedEdge]);
+
   const updateSelectedEdgeAnimation = useCallback((animated: boolean) => {
     updateSelectedEdge((edge) => ({ ...edge, animated }));
   }, [updateSelectedEdge]);
@@ -440,6 +774,140 @@ function CanvasBoard({ relativePath }: { relativePath: string | null }) {
   const updateSelectedEdgeMarkerEnd = useCallback((markerEnd: boolean) => {
     updateSelectedEdge((edge) => ({ ...edge, markerEnd }));
   }, [updateSelectedEdge]);
+
+  const updateSelectedPlanningNode = useCallback((updater: (node: FlowNode<CanvasNodeData>) => FlowNode<CanvasNodeData>) => {
+    if (!selectedNode?.id) return;
+    setNodes((prev) => prev.map((node) => (
+      node.id === selectedNode.id
+        ? { ...updater(node), selected: true }
+        : node
+    )));
+  }, [selectedNode?.id, setNodes]);
+
+  const updateSelectedPlanningNodeTitle = useCallback((title: string) => {
+    const selectedNodeType = selectedNode?.type ?? '';
+    if (!selectedNode || !isPlanningNodeType(selectedNodeType.replace(/Card$/, '') as PlanningCanvasNode['type'])) return;
+    updateSelectedPlanningNode((node) => ({
+      ...node,
+      data: { ...node.data, title },
+    }));
+  }, [selectedNode, updateSelectedPlanningNode]);
+
+  const updateSelectedPlanningNodeBody = useCallback((content: string) => {
+    const selectedNodeType = selectedNode?.type ?? '';
+    if (!selectedNode || !isPlanningNodeType(selectedNodeType.replace(/Card$/, '') as PlanningCanvasNode['type'])) return;
+    updateSelectedPlanningNode((node) => ({
+      ...node,
+      data: { ...node.data, content },
+    }));
+  }, [selectedNode, updateSelectedPlanningNode]);
+
+  const updateSelectedPlanningNodeLinkedPath = useCallback((linkedRelativePath: string) => {
+    const selectedNodeType = selectedNode?.type ?? '';
+    if (!selectedNode || !isPlanningNodeType(selectedNodeType.replace(/Card$/, '') as PlanningCanvasNode['type'])) return;
+    updateSelectedPlanningNode((node) => ({
+      ...node,
+      data: { ...node.data, linkedRelativePath },
+    }));
+  }, [selectedNode, updateSelectedPlanningNode]);
+
+  const updateSelectedPlanningNodeMeta = useCallback((planning: CanvasPlanningMetadata) => {
+    const selectedNodeType = selectedNode?.type ?? '';
+    if (!selectedNode || !isPlanningNodeType(selectedNodeType.replace(/Card$/, '') as PlanningCanvasNode['type'])) return;
+    updateSelectedPlanningNode((node) => ({
+      ...node,
+      data: { ...node.data, planning },
+    }));
+  }, [selectedNode, updateSelectedPlanningNode]);
+
+  const updateSelectedPlanningNodeOrientation = useCallback((orientation: CanvasSwimlaneOrientation) => {
+    if (selectedNode?.type !== 'swimlaneCard') return;
+    updateSelectedPlanningNode((node) => ({
+      ...node,
+      data: { ...node.data, orientation },
+    }));
+  }, [selectedNode?.type, updateSelectedPlanningNode]);
+
+  const handleInsertMenuClose = useCallback(() => {
+    setInsertMenuState((prev) => ({ ...prev, open: false }));
+    if (!pickerMode) {
+      setInsertSession(null);
+      pendingAutoConnectRef.current = null;
+    }
+  }, [pickerMode]);
+
+  const handleInsertItemSelect = useCallback((item: CanvasInsertItem) => {
+    const flowPosition = insertSession?.flowPosition ?? insertMenuState.flowPosition;
+    setInsertMenuState((prev) => ({ ...prev, open: false }));
+    logAutoConnect('insert-item-select', {
+      itemId: item.id,
+      flowPosition,
+      pendingAutoConnect: insertSession?.autoConnect ?? pendingAutoConnectRef.current,
+    });
+
+    if (item.id === 'note' || item.id === 'file') {
+      setPickerMode(item.id);
+      return;
+    }
+
+    if (item.id === 'text') {
+      addTextNodeAt(flowPosition);
+      setInsertSession(null);
+      pendingAutoConnectRef.current = null;
+      return;
+    }
+
+    if (item.id === 'web') {
+      addWebNodeAt(flowPosition);
+      setInsertSession(null);
+      pendingAutoConnectRef.current = null;
+      return;
+    }
+
+    addPlanningNodeAt(item.id, flowPosition);
+    setInsertSession(null);
+    pendingAutoConnectRef.current = null;
+  }, [addPlanningNodeAt, addTextNodeAt, addWebNodeAt, insertMenuState.flowPosition, insertSession, setPickerMode]);
+
+  const handleEdgeDoubleClick = useCallback((event: React.MouseEvent, edge: CanvasFlowEdge) => {
+    event.preventDefault();
+    const position = reactFlow.screenToFlowPosition({ x: event.clientX, y: event.clientY });
+    const junction = createSplitJunctionNode({
+      x: position.x - 36,
+      y: position.y - 36,
+    });
+    const split = splitEdgeWithJunction(fromFlowEdge(edge), junction);
+    setNodes((prev) => [
+      ...prev,
+      toFlowNode(junction, undefined, {
+        onOpen: openRelativePath,
+        onTextChange: updateTextContent,
+        onSnapToGrid: snapNodeToGrid,
+        onWebUrlChange: updateWebUrl,
+        onWebDisplayModeOverrideChange: updateWebDisplayModeOverride,
+        onRequestWebPreview: requestWebPreview,
+        onOpenUrl: openExternalUrl,
+      }, canvasWebCardDefaultMode, canvasWebCardAutoLoad, webPreviewsEnabled),
+    ]);
+    setEdges((prev) => [
+      ...prev.filter((existing) => existing.id !== edge.id),
+      ...split.edges.map((nextEdge: CanvasEdge) => toFlowEdge(nextEdge)),
+    ]);
+  }, [
+    canvasWebCardAutoLoad,
+    canvasWebCardDefaultMode,
+    openExternalUrl,
+    openRelativePath,
+    reactFlow,
+    requestWebPreview,
+    setEdges,
+    setNodes,
+    snapNodeToGrid,
+    updateTextContent,
+    updateWebDisplayModeOverride,
+    updateWebUrl,
+    webPreviewsEnabled,
+  ]);
 
   if (!relativePath) {
     return (
@@ -473,6 +941,8 @@ function CanvasBoard({ relativePath }: { relativePath: string | null }) {
             onAddFile={() => setPickerMode('file')}
             onAddText={addTextNode}
             onAddWeb={addWebNode}
+            onAddPlanningNode={addPlanningNode}
+            onApplyPreset={applyPlanningPreset}
             onZoomOut={() => adjustZoom(-1)}
             onResetZoom={resetZoom}
             onZoomIn={() => adjustZoom(1)}
@@ -495,9 +965,40 @@ function CanvasBoard({ relativePath }: { relativePath: string | null }) {
         mode={pickerMode}
         files={pickerMode === 'note' ? availableNotes : availableFiles}
         onOpenChange={(open) => {
-          if (!open) setPickerMode(null);
+          if (!open) {
+            logAutoConnect('picker-open-change', {
+              open,
+              selectionCommitted: false,
+              pendingAutoConnect: pendingAutoConnectRef.current,
+              insertSession,
+            });
+            setPickerMode(null);
+            setInsertSession(null);
+            pendingAutoConnectRef.current = null;
+          }
         }}
-        onSelect={handlePickerSelect}
+        onSelect={(file) => {
+          const pendingAutoConnect = insertSession?.autoConnect
+            ? { ...insertSession.autoConnect }
+            : pendingAutoConnectRef.current
+              ? { ...pendingAutoConnectRef.current }
+              : null;
+          logAutoConnect('picker-select', {
+            file: file.relativePath,
+            pendingAutoConnect,
+            insertSession,
+          });
+          handlePickerSelect(file, pendingAutoConnect);
+          setInsertSession(null);
+          pendingAutoConnectRef.current = null;
+        }}
+      />
+      <CanvasInsertMenu
+        open={insertMenuState.open}
+        x={insertMenuState.x}
+        y={insertMenuState.y}
+        onSelect={handleInsertItemSelect}
+        onClose={handleInsertMenuClose}
       />
 
       <ReactFlow<FlowNode<CanvasNodeData>, CanvasFlowEdge>
@@ -507,7 +1008,15 @@ function CanvasBoard({ relativePath }: { relativePath: string | null }) {
         onEdgesChange={onEdgesChange}
         onNodeDragStop={(_, node) => snapNodeToGrid(node.id)}
         onConnect={handleConnect}
+        onConnectStart={handleConnectStart}
+        onConnectEnd={handleConnectEnd}
         onReconnect={handleReconnect}
+        onPaneContextMenu={(event) => {
+          event.preventDefault();
+          pendingAutoConnectRef.current = null;
+          openInsertMenuAt(event.clientX, event.clientY, null);
+        }}
+        onEdgeDoubleClick={handleEdgeDoubleClick}
         onMoveEnd={(_: MouseEvent | TouchEvent | null, nextViewport: Viewport) => setViewport(nextViewport)}
         nodeTypes={nodeTypes}
         edgeTypes={edgeTypes}
@@ -544,10 +1053,31 @@ function CanvasBoard({ relativePath }: { relativePath: string | null }) {
             edgeLabelDraft={edgeLabelDraft}
             onEdgeLabelChange={updateSelectedEdgeLabel}
             onLineStyleChange={updateSelectedEdgeLineStyle}
+            onRoutingStyleChange={updateSelectedEdgeRoutingStyle}
             onAnimationDirectionChange={updateSelectedEdgeAnimationDirection}
             onAnimationChange={updateSelectedEdgeAnimation}
             onMarkerStartChange={updateSelectedEdgeMarkerStart}
             onMarkerEndChange={updateSelectedEdgeMarkerEnd}
+            onDeleteSelected={deleteSelection}
+          />
+        </Panel>
+        <Panel position="top-left">
+          <CanvasNodeInspector
+            selectedNode={selectedNode ? {
+              id: selectedNode.id,
+              type: selectedNode.type ?? '',
+              title: selectedNode.data.title,
+              subtitle: selectedNode.data.subtitle,
+              content: selectedNode.data.content,
+              linkedRelativePath: selectedNode.data.linkedRelativePath,
+              planning: selectedNode.data.planning,
+              orientation: selectedNode.data.orientation,
+            } : null}
+            onTitleChange={updateSelectedPlanningNodeTitle}
+            onBodyChange={updateSelectedPlanningNodeBody}
+            onLinkedPathChange={updateSelectedPlanningNodeLinkedPath}
+            onPlanningChange={updateSelectedPlanningNodeMeta}
+            onOrientationChange={updateSelectedPlanningNodeOrientation}
             onDeleteSelected={deleteSelection}
           />
         </Panel>

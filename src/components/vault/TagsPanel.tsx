@@ -25,12 +25,13 @@ async function patchNoteTag(
     action === 'add'
       ? addTagToContent(nc.content, tag)
       : removeTagFromContent(nc.content, tag);
-  const result = await tauriCommands.writeNote(vaultPath, note.relativePath, patched, nc.hash);
+  const result = await tauriCommands.writeNote(vaultPath, note.relativePath, patched, nc.hash, nc.content);
   if (result.conflict) {
     toast.error(`Conflict saving ${note.title} — please reload it.`);
     return;
   }
-  const newTags = getTagsFromContent(patched);
+  const savedContent = result.mergedContent ?? patched;
+  const newTags = getTagsFromContent(savedContent);
   updateNote(note.relativePath, { ...note, tags: newTags, hash: result.hash });
 }
 

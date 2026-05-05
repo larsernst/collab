@@ -26,6 +26,8 @@ pub struct NoteContent {
 pub struct WriteResult {
     pub hash: String,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub merged_content: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub conflict: Option<ConflictInfo>,
 }
 

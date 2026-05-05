@@ -52,6 +52,7 @@ export default function KanbanPage({ relativePath }: { relativePath: string | nu
   const isMountedRef    = useRef(true);
   const isDirtyRef      = useRef(false);
   const saveTimerRef    = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  const savedBoardContentRef = useRef<string | null>(null);
   const { hashRef, lastWriteRef, markLoaded, markWriteStarted, shouldCreateSnapshot } = useDocumentSessionState();
 
   useEffect(() => {
@@ -70,6 +71,7 @@ export default function KanbanPage({ relativePath }: { relativePath: string | nu
         relativePath,
         serialized,
         hashRef.current,
+        savedBoardContentRef.current ?? undefined,
       );
       if (result.conflict) {
         addConflict({
@@ -79,7 +81,15 @@ export default function KanbanPage({ relativePath }: { relativePath: string | nu
         return;
       }
       if (isMountedRef.current) {
-        setBoard(automatedBoard);
+        const mergedSerialized = result.mergedContent ?? serialized;
+        const mergedBoard = mergedSerialized === serialized
+          ? automatedBoard
+          : runKanbanAutomations(normalizeKanbanBoard(JSON.parse(mergedSerialized) as KanbanBoard), 'onBoardSave');
+        if (mergedSerialized !== serialized) {
+          markLoaded(result.hash);
+        }
+        setBoard(mergedBoard);
+        savedBoardContentRef.current = mergedSerialized;
         hashRef.current = result.hash;
         isDirtyRef.current = false;
         markSaved(relativePath, result.hash);
@@ -87,7 +97,7 @@ export default function KanbanPage({ relativePath }: { relativePath: string | nu
           tauriCommands.createSnapshot(
             vault.path,
             relativePath,
-            serialized,
+            mergedSerialized,
             myUserId,
             myUserName,
           ).catch(() => {});
@@ -116,6 +126,7 @@ export default function KanbanPage({ relativePath }: { relativePath: string | nu
       if (content.trim()) {
         const parsed: KanbanBoard = JSON.parse(content);
         setBoard(runKanbanAutomations(normalizeKanbanBoard(parsed), 'onBoardOpen'));
+        savedBoardContentRef.current = content;
         isDirtyRef.current = false;
         markLoaded(hash);
         setSavedHash(relativePath, hash);
@@ -125,6 +136,7 @@ export default function KanbanPage({ relativePath }: { relativePath: string | nu
         const result = await tauriCommands.writeNote(
           vault.path, relativePath, JSON.stringify(def, null, 2), undefined,
         );
+        savedBoardContentRef.current = JSON.stringify(def, null, 2);
         isDirtyRef.current = false;
         markLoaded(result.hash);
         setSavedHash(relativePath, result.hash);

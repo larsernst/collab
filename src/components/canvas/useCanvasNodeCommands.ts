@@ -1,8 +1,21 @@
 import { useCallback } from 'react';
 
-import type { CanvasNode, FileCanvasNode, NoteCanvasNode, TextCanvasNode, WebCanvasNode } from '../../types/canvas';
+import type {
+  CanvasEdge,
+  CanvasNode,
+  FileCanvasNode,
+  NoteCanvasNode,
+  PlanningCanvasNode,
+  TextCanvasNode,
+  WebCanvasNode,
+} from '../../types/canvas';
 import type { NoteFile } from '../../types/vault';
 import type { CanvasPickerMode } from './CanvasPickerDialog';
+import {
+  buildPlanningPreset,
+  getPlanningNodeDefaults,
+  type CanvasPlanningPreset,
+} from './canvasPlanning';
 
 const DEFAULT_NODE_SIZE = { width: 300, height: 180 };
 const DEFAULT_TEXT_NODE_SIZE = { width: 280, height: 160 };
@@ -11,13 +24,23 @@ interface ReactFlowPositionApi {
   screenToFlowPosition: (position: { x: number; y: number }) => { x: number; y: number };
 }
 
+export interface PendingAutoConnect {
+  source: string;
+  sourceHandle?: string;
+  sourceSide?: string | null;
+  handleType?: 'source' | 'target';
+}
+
 interface UseCanvasNodeCommandsOptions {
   reactFlow: ReactFlowPositionApi;
   viewportRef: React.RefObject<HTMLDivElement | null>;
   pickerMode: CanvasPickerMode;
   setPickerMode: (mode: CanvasPickerMode) => void;
+  pickerInsertPosition?: { x: number; y: number } | null;
   allFiles: NoteFile[];
-  addCanvasNode: (node: CanvasNode) => void;
+  addCanvasNode: (node: CanvasNode, pendingAutoConnect?: PendingAutoConnect | null) => void;
+  addCanvasNodes?: (nodes: CanvasNode[]) => void;
+  addCanvasEdges?: (edges: CanvasEdge[]) => void;
 }
 
 export function useCanvasNodeCommands({
@@ -25,8 +48,11 @@ export function useCanvasNodeCommands({
   viewportRef,
   pickerMode,
   setPickerMode,
+  pickerInsertPosition,
   allFiles,
   addCanvasNode,
+  addCanvasNodes,
+  addCanvasEdges,
 }: UseCanvasNodeCommandsOptions) {
   const getViewportCenterPosition = useCallback(() => {
     const viewportEl = viewportRef.current;
@@ -38,8 +64,8 @@ export function useCanvasNodeCommands({
     });
   }, [reactFlow, viewportRef]);
 
-  const handlePickerSelect = useCallback((file: NoteFile) => {
-    const center = getViewportCenterPosition();
+  const handlePickerSelect = useCallback((file: NoteFile, pendingAutoConnect?: PendingAutoConnect | null) => {
+    const center = pickerInsertPosition ?? getViewportCenterPosition();
     const id = crypto.randomUUID();
     if (pickerMode === 'note') {
       const node: NoteCanvasNode = {
@@ -50,7 +76,7 @@ export function useCanvasNodeCommands({
         width: DEFAULT_NODE_SIZE.width,
         height: DEFAULT_NODE_SIZE.height,
       };
-      addCanvasNode(node);
+      addCanvasNode(node, pendingAutoConnect);
     } else {
       const node: FileCanvasNode = {
         id,
@@ -60,13 +86,13 @@ export function useCanvasNodeCommands({
         width: DEFAULT_NODE_SIZE.width,
         height: DEFAULT_NODE_SIZE.height,
       };
-      addCanvasNode(node);
+      addCanvasNode(node, pendingAutoConnect);
     }
     setPickerMode(null);
-  }, [addCanvasNode, getViewportCenterPosition, pickerMode, setPickerMode]);
+  }, [addCanvasNode, getViewportCenterPosition, pickerInsertPosition, pickerMode, setPickerMode]);
 
-  const addTextNode = useCallback(() => {
-    const center = getViewportCenterPosition();
+  const addTextNodeAt = useCallback((position?: { x: number; y: number }) => {
+    const center = position ?? getViewportCenterPosition();
     const node: TextCanvasNode = {
       id: crypto.randomUUID(),
       type: 'text',
@@ -78,8 +104,12 @@ export function useCanvasNodeCommands({
     addCanvasNode(node);
   }, [addCanvasNode, getViewportCenterPosition]);
 
-  const addWebNode = useCallback(() => {
-    const center = getViewportCenterPosition();
+  const addTextNode = useCallback(() => {
+    addTextNodeAt();
+  }, [addTextNodeAt]);
+
+  const addWebNodeAt = useCallback((position?: { x: number; y: number }) => {
+    const center = position ?? getViewportCenterPosition();
     const node: WebCanvasNode = {
       id: crypto.randomUUID(),
       type: 'web',
@@ -91,6 +121,39 @@ export function useCanvasNodeCommands({
     };
     addCanvasNode(node);
   }, [addCanvasNode, getViewportCenterPosition]);
+
+  const addWebNode = useCallback(() => {
+    addWebNodeAt();
+  }, [addWebNodeAt]);
+
+  const addPlanningNodeAt = useCallback((type: PlanningCanvasNode['type'], position?: { x: number; y: number }) => {
+    const center = position ?? getViewportCenterPosition();
+    const defaults = getPlanningNodeDefaults(type);
+    const node: PlanningCanvasNode = {
+      id: crypto.randomUUID(),
+      type,
+      title: defaults.title,
+      body: defaults.body,
+      planning: defaults.planning,
+      ...(defaults.orientation ? { orientation: defaults.orientation } : {}),
+      position: center,
+      width: defaults.width,
+      height: defaults.height,
+    } as PlanningCanvasNode;
+    addCanvasNode(node);
+  }, [addCanvasNode, getViewportCenterPosition]);
+
+  const addPlanningNode = useCallback((type: PlanningCanvasNode['type']) => {
+    addPlanningNodeAt(type);
+  }, [addPlanningNodeAt]);
+
+  const applyPlanningPreset = useCallback((preset: CanvasPlanningPreset) => {
+    const center = getViewportCenterPosition();
+    const { nodes, edges } = buildPlanningPreset(preset, center);
+    if (addCanvasNodes) addCanvasNodes(nodes);
+    else nodes.forEach((node) => addCanvasNode(node));
+    addCanvasEdges?.(edges);
+  }, [addCanvasEdges, addCanvasNode, addCanvasNodes, getViewportCenterPosition]);
 
   const handleDropOnCanvas = useCallback((event: React.DragEvent<HTMLDivElement>) => {
     event.preventDefault();
@@ -124,7 +187,12 @@ export function useCanvasNodeCommands({
 
   return {
     addTextNode,
+    addTextNodeAt,
     addWebNode,
+    addWebNodeAt,
+    addPlanningNode,
+    addPlanningNodeAt,
+    applyPlanningPreset,
     handleDropOnCanvas,
     handlePickerSelect,
   };

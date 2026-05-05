@@ -10,7 +10,7 @@ import {
   type Node as FlowNode,
 } from '@xyflow/react';
 
-import type { CanvasEdge, CanvasEdgeLineStyle } from '../../types/canvas';
+import type { CanvasEdge, CanvasEdgeLineStyle, CanvasEdgeRoutingStyle } from '../../types/canvas';
 import type { CanvasNodeData } from './CanvasNodeTypes';
 
 const DEFAULT_NODE_HEIGHT = 180;
@@ -30,6 +30,7 @@ export const DEFAULT_CANVAS_EDGE_STYLE = {
 export interface CanvasEdgeData extends Record<string, unknown> {
   label?: string;
   lineStyle: CanvasEdgeLineStyle;
+  routingStyle: CanvasEdgeRoutingStyle;
   animated: boolean;
   animationReverse: boolean;
   markerStart: boolean;
@@ -37,6 +38,13 @@ export interface CanvasEdgeData extends Record<string, unknown> {
 }
 
 export type CanvasFlowEdge = FlowEdge<CanvasEdgeData>;
+
+interface NodeGeometry {
+  centerX: number;
+  centerY: number;
+  width: number;
+  height: number;
+}
 
 interface EdgeGeometry {
   sourceX: number;
@@ -51,6 +59,10 @@ interface EdgeGeometry {
   labelY: number;
 }
 
+function isHorizontalPosition(position: Position) {
+  return position === Position.Left || position === Position.Right;
+}
+
 function normalizeVector(x: number, y: number) {
   const length = Math.hypot(x, y) || 1;
   return { x: x / length, y: y / length };
@@ -59,6 +71,7 @@ function normalizeVector(x: number, y: number) {
 export function getCanvasEdgeData(edge?: {
   label?: string;
   lineStyle?: CanvasEdgeLineStyle;
+  routingStyle?: CanvasEdgeRoutingStyle;
   animated?: boolean;
   animationReverse?: boolean;
   markerStart?: boolean;
@@ -67,6 +80,7 @@ export function getCanvasEdgeData(edge?: {
   return {
     label: edge?.label ?? '',
     lineStyle: edge?.lineStyle ?? 'solid',
+    routingStyle: edge?.routingStyle ?? 'curved',
     animated: edge?.animated ?? false,
     animationReverse: edge?.animationReverse ?? false,
     markerStart: edge?.markerStart ?? false,
@@ -94,6 +108,43 @@ function getCanvasArrowMarkerIdForEdge(edgeId: string, kind: 'start' | 'end') {
 
 function buildCanvasEdgePath(geometry: EdgeGeometry) {
   return `M ${geometry.sourceX} ${geometry.sourceY} C ${geometry.controlSourceX} ${geometry.controlSourceY}, ${geometry.controlTargetX} ${geometry.controlTargetY}, ${geometry.targetX} ${geometry.targetY}`;
+}
+
+function buildOrthogonalCanvasEdgePath(geometry: EdgeGeometry) {
+  const sourceHorizontal = geometry.controlSourceX !== geometry.sourceX;
+  const targetHorizontal = geometry.controlTargetX !== geometry.targetX;
+
+  if (sourceHorizontal && targetHorizontal) {
+    const midX = (geometry.controlSourceX + geometry.controlTargetX) / 2;
+    return [
+      `M ${geometry.sourceX} ${geometry.sourceY}`,
+      `L ${geometry.controlSourceX} ${geometry.controlSourceY}`,
+      `L ${midX} ${geometry.controlSourceY}`,
+      `L ${midX} ${geometry.controlTargetY}`,
+      `L ${geometry.controlTargetX} ${geometry.controlTargetY}`,
+      `L ${geometry.targetX} ${geometry.targetY}`,
+    ].join(' ');
+  }
+
+  if (!sourceHorizontal && !targetHorizontal) {
+    const midY = (geometry.controlSourceY + geometry.controlTargetY) / 2;
+    return [
+      `M ${geometry.sourceX} ${geometry.sourceY}`,
+      `L ${geometry.controlSourceX} ${geometry.controlSourceY}`,
+      `L ${geometry.controlSourceX} ${midY}`,
+      `L ${geometry.controlTargetX} ${midY}`,
+      `L ${geometry.controlTargetX} ${geometry.controlTargetY}`,
+      `L ${geometry.targetX} ${geometry.targetY}`,
+    ].join(' ');
+  }
+
+  return [
+    `M ${geometry.sourceX} ${geometry.sourceY}`,
+    `L ${geometry.controlSourceX} ${geometry.controlSourceY}`,
+    `L ${geometry.controlSourceX} ${geometry.controlTargetY}`,
+    `L ${geometry.controlTargetX} ${geometry.controlTargetY}`,
+    `L ${geometry.targetX} ${geometry.targetY}`,
+  ].join(' ');
 }
 
 function interpolateGeometry(from: EdgeGeometry, to: EdgeGeometry, progress: number): EdgeGeometry {
@@ -126,8 +177,11 @@ export function fromFlowEdge(edge: CanvasFlowEdge): CanvasEdge {
     id: edge.id,
     source: edge.source,
     target: edge.target,
+    sourceHandle: edge.sourceHandle ?? undefined,
+    targetHandle: edge.targetHandle ?? undefined,
     label: data.label || undefined,
     lineStyle: data.lineStyle,
+    routingStyle: data.routingStyle,
     animated: data.animated,
     animationReverse: data.animationReverse,
     markerStart: data.markerStart,
@@ -142,6 +196,8 @@ export function toFlowEdge(edge: CanvasEdge): CanvasFlowEdge {
     type: 'stacked',
     source: edge.source,
     target: edge.target,
+    sourceHandle: edge.sourceHandle,
+    targetHandle: edge.targetHandle,
     label: data.label,
     data,
     markerStart: data.markerStart ? `url(#${getCanvasArrowMarkerId('start')})` : undefined,
@@ -177,24 +233,39 @@ function getSlotOffset(index: number, count: number, nodeHeight: number) {
 
 function getOrderedSiblingEdges(
   edges: CanvasFlowEdge[],
-  nodeId: string,
+  edge: Pick<CanvasFlowEdge, 'id' | 'source' | 'target' | 'sourceHandle' | 'targetHandle'>,
   direction: 'source' | 'target',
-  nodeGeometry: Map<string, { centerY: number; height: number }>,
-  pendingEdge?: Pick<CanvasFlowEdge, 'id' | 'source' | 'target'>,
+  nodeGeometry: Map<string, NodeGeometry>,
+  anchorPosition: Position,
+  pendingEdge?: Pick<CanvasFlowEdge, 'id' | 'source' | 'target' | 'sourceHandle' | 'targetHandle'>,
 ) {
   const subjectKey = direction === 'source' ? 'source' : 'target';
   const oppositeKey = direction === 'source' ? 'target' : 'source';
+  const handleKey = direction === 'source' ? 'sourceHandle' : 'targetHandle';
+  const nodeId = edge[subjectKey];
+  const handleId = edge[handleKey] ?? null;
   const siblings = edges
-    .filter((edge) => edge[subjectKey] === nodeId)
-    .map((edge) => ({ id: edge.id, oppositeId: edge[oppositeKey] }));
+    .filter((candidate) => candidate[subjectKey] === nodeId && (candidate[handleKey] ?? null) === handleId)
+    .map((candidate) => ({ id: candidate.id, oppositeId: candidate[oppositeKey] }));
 
-  if (pendingEdge && pendingEdge[subjectKey] === nodeId && !siblings.some((edge) => edge.id === pendingEdge.id)) {
+  if (
+    pendingEdge
+    && pendingEdge[subjectKey] === nodeId
+    && (pendingEdge[handleKey] ?? null) === handleId
+    && !siblings.some((candidate) => candidate.id === pendingEdge.id)
+  ) {
     siblings.push({ id: pendingEdge.id, oppositeId: pendingEdge[oppositeKey] });
   }
 
   siblings.sort((left, right) => {
-    const leftCenter = nodeGeometry.get(left.oppositeId)?.centerY ?? 0;
-    const rightCenter = nodeGeometry.get(right.oppositeId)?.centerY ?? 0;
+    const leftNode = nodeGeometry.get(left.oppositeId);
+    const rightNode = nodeGeometry.get(right.oppositeId);
+    const leftCenter = isHorizontalPosition(anchorPosition)
+      ? (leftNode?.centerY ?? 0)
+      : (leftNode?.centerX ?? 0);
+    const rightCenter = isHorizontalPosition(anchorPosition)
+      ? (rightNode?.centerY ?? 0)
+      : (rightNode?.centerX ?? 0);
     if (leftCenter !== rightCenter) return leftCenter - rightCenter;
     if (left.oppositeId !== right.oppositeId) return left.oppositeId.localeCompare(right.oppositeId);
     return left.id.localeCompare(right.id);
@@ -203,7 +274,57 @@ function getOrderedSiblingEdges(
   return siblings;
 }
 
-function getAnchoredEdgeGeometry({
+function getOrthogonalFacingLaneLimit({
+  sourceX,
+  sourceY,
+  targetX,
+  targetY,
+  sourcePosition,
+  targetPosition,
+}: {
+  sourceX: number;
+  sourceY: number;
+  targetX: number;
+  targetY: number;
+  sourcePosition: Position;
+  targetPosition: Position;
+}) {
+  if (
+    sourcePosition === Position.Right
+    && targetPosition === Position.Left
+    && targetX >= sourceX
+  ) {
+    return (targetX - sourceX) / 2;
+  }
+
+  if (
+    sourcePosition === Position.Left
+    && targetPosition === Position.Right
+    && sourceX >= targetX
+  ) {
+    return (sourceX - targetX) / 2;
+  }
+
+  if (
+    sourcePosition === Position.Bottom
+    && targetPosition === Position.Top
+    && targetY >= sourceY
+  ) {
+    return (targetY - sourceY) / 2;
+  }
+
+  if (
+    sourcePosition === Position.Top
+    && targetPosition === Position.Bottom
+    && sourceY >= targetY
+  ) {
+    return (sourceY - targetY) / 2;
+  }
+
+  return null;
+}
+
+export function getAnchoredEdgeGeometry({
   edge,
   edges,
   nodeGeometry,
@@ -214,9 +335,9 @@ function getAnchoredEdgeGeometry({
   sourcePosition,
   targetPosition,
 }: {
-  edge: Pick<CanvasFlowEdge, 'id' | 'source' | 'target'>;
+  edge: Pick<CanvasFlowEdge, 'id' | 'source' | 'target' | 'sourceHandle' | 'targetHandle'>;
   edges: CanvasFlowEdge[];
-  nodeGeometry: Map<string, { centerY: number; height: number }>;
+  nodeGeometry: Map<string, NodeGeometry>;
   sourceX: number;
   sourceY: number;
   targetX: number;
@@ -224,35 +345,58 @@ function getAnchoredEdgeGeometry({
   sourcePosition: Position;
   targetPosition: Position;
 }): EdgeGeometry {
-  const sourceSiblings = getOrderedSiblingEdges(edges, edge.source, 'source', nodeGeometry, edge);
-  const targetSiblings = getOrderedSiblingEdges(edges, edge.target, 'target', nodeGeometry, edge);
+  const sourceSiblings = getOrderedSiblingEdges(edges, edge, 'source', nodeGeometry, sourcePosition, edge);
+  const targetSiblings = getOrderedSiblingEdges(edges, edge, 'target', nodeGeometry, targetPosition, edge);
   const sourceIndex = Math.max(0, sourceSiblings.findIndex((candidate) => candidate.id === edge.id));
   const targetIndex = Math.max(0, targetSiblings.findIndex((candidate) => candidate.id === edge.id));
+  const sourceNode = nodeGeometry.get(edge.source);
+  const targetNode = nodeGeometry.get(edge.target);
   const sourceNodeHeight = nodeGeometry.get(edge.source)?.height ?? DEFAULT_NODE_HEIGHT;
   const targetNodeHeight = nodeGeometry.get(edge.target)?.height ?? DEFAULT_NODE_HEIGHT;
-  const sourceOffset = getSlotOffset(sourceIndex, sourceSiblings.length, sourceNodeHeight);
-  const targetOffset = getSlotOffset(targetIndex, targetSiblings.length, targetNodeHeight);
-  const anchoredSourceY = sourceY + sourceOffset;
-  const anchoredTargetY = targetY + targetOffset;
-  const directionFromSource = sourcePosition === Position.Left ? -1 : sourcePosition === Position.Right ? 1 : 0;
-  const directionFromTarget = targetPosition === Position.Left ? -1 : targetPosition === Position.Right ? 1 : 0;
-  const horizontalDistance = Math.max(Math.abs(targetX - sourceX), CANVAS_EDGE_LANE * 2);
-  const laneDistance = Math.max(CANVAS_EDGE_LANE, Math.min(horizontalDistance * 0.38, 96));
-  const controlSourceX = sourceX + directionFromSource * laneDistance;
-  const controlTargetX = targetX + directionFromTarget * laneDistance;
-  const controlSourceY = anchoredSourceY + sourceOffset * 0.18;
-  const controlTargetY = anchoredTargetY + targetOffset * 0.18;
-  const labelX = (sourceX + targetX) / 2 + (sourceOffset - targetOffset) * 0.18;
+  const sourceNodeWidth = sourceNode?.width ?? 300;
+  const targetNodeWidth = targetNode?.width ?? 300;
+  const sourceAxisSpread = isHorizontalPosition(sourcePosition) ? sourceNodeHeight : sourceNodeWidth;
+  const targetAxisSpread = isHorizontalPosition(targetPosition) ? targetNodeHeight : targetNodeWidth;
+  const normalizedSourceOffset = getSlotOffset(sourceIndex, sourceSiblings.length, sourceAxisSpread);
+  const normalizedTargetOffset = getSlotOffset(targetIndex, targetSiblings.length, targetAxisSpread);
+  const anchoredSourceX = isHorizontalPosition(sourcePosition) ? sourceX : sourceX + normalizedSourceOffset;
+  const anchoredSourceY = isHorizontalPosition(sourcePosition) ? sourceY + normalizedSourceOffset : sourceY;
+  const anchoredTargetX = isHorizontalPosition(targetPosition) ? targetX : targetX + normalizedTargetOffset;
+  const anchoredTargetY = isHorizontalPosition(targetPosition) ? targetY + normalizedTargetOffset : targetY;
+  const directionFromSourceX = sourcePosition === Position.Left ? -1 : sourcePosition === Position.Right ? 1 : 0;
+  const directionFromSourceY = sourcePosition === Position.Top ? -1 : sourcePosition === Position.Bottom ? 1 : 0;
+  const directionFromTargetX = targetPosition === Position.Left ? -1 : targetPosition === Position.Right ? 1 : 0;
+  const directionFromTargetY = targetPosition === Position.Top ? -1 : targetPosition === Position.Bottom ? 1 : 0;
+  const baseLaneDistance = Math.max(
+    CANVAS_EDGE_LANE,
+    Math.min(Math.max(Math.abs(anchoredTargetX - anchoredSourceX), Math.abs(anchoredTargetY - anchoredSourceY)) * 0.32, 96),
+  );
+  const facingLaneLimit = getOrthogonalFacingLaneLimit({
+    sourceX: anchoredSourceX,
+    sourceY: anchoredSourceY,
+    targetX: anchoredTargetX,
+    targetY: anchoredTargetY,
+    sourcePosition,
+    targetPosition,
+  });
+  const laneDistance = facingLaneLimit == null
+    ? baseLaneDistance
+    : Math.max(0, Math.min(baseLaneDistance, facingLaneLimit));
+  const controlSourceX = anchoredSourceX + directionFromSourceX * laneDistance;
+  const controlTargetX = anchoredTargetX + directionFromTargetX * laneDistance;
+  const controlSourceY = anchoredSourceY + directionFromSourceY * laneDistance;
+  const controlTargetY = anchoredTargetY + directionFromTargetY * laneDistance;
+  const labelX = (anchoredSourceX + anchoredTargetX) / 2;
   const labelY = (anchoredSourceY + anchoredTargetY) / 2;
 
   return {
-    sourceX,
+    sourceX: anchoredSourceX,
     sourceY: anchoredSourceY,
     controlSourceX,
     controlSourceY,
     controlTargetX,
     controlTargetY,
-    targetX,
+    targetX: anchoredTargetX,
     targetY: anchoredTargetY,
     labelX,
     labelY,
@@ -263,6 +407,15 @@ function getNodeGeometryMap(nodes: FlowNode<CanvasNodeData>[]) {
   return new Map(nodes.map((node) => [
     node.id,
     {
+      centerX: (node.position.x ?? 0) + (
+        typeof node.width === 'number'
+          ? node.width
+          : typeof node.measured?.width === 'number'
+            ? node.measured.width
+            : typeof node.style?.width === 'number'
+              ? node.style.width
+              : 300
+      ) / 2,
       centerY: (node.position.y ?? 0) + (
         typeof node.height === 'number'
           ? node.height
@@ -279,7 +432,14 @@ function getNodeGeometryMap(nodes: FlowNode<CanvasNodeData>[]) {
           : typeof node.style?.height === 'number'
             ? node.style.height
             : DEFAULT_NODE_HEIGHT,
-    },
+      width: typeof node.width === 'number'
+        ? node.width
+        : typeof node.measured?.width === 'number'
+          ? node.measured.width
+          : typeof node.style?.width === 'number'
+            ? node.style.width
+            : 300,
+    } satisfies NodeGeometry,
   ]));
 }
 
@@ -403,7 +563,9 @@ function StackedCanvasEdge(props: EdgeProps<CanvasFlowEdge>) {
     targetX: pathTargetX,
     targetY: pathTargetY,
   };
-  const path = buildCanvasEdgePath(pathGeometry);
+  const path = data.routingStyle === 'orthogonal'
+    ? buildOrthogonalCanvasEdgePath(pathGeometry)
+    : buildCanvasEdgePath(pathGeometry);
 
   return (
     <>
@@ -521,10 +683,12 @@ function StackedCanvasEdge(props: EdgeProps<CanvasFlowEdge>) {
 export function StackedConnectionLine({
   connectionLineStyle,
   fromNode,
+  fromHandle,
   fromX,
   fromY,
   fromPosition,
   toNode,
+  toHandle,
   toX,
   toY,
   toPosition,
@@ -532,10 +696,12 @@ export function StackedConnectionLine({
   const edges = useEdges<CanvasFlowEdge>();
   const nodes = useNodes<FlowNode<CanvasNodeData>>();
   const nodeGeometry = useMemo(() => getNodeGeometryMap(nodes), [nodes]);
-  const previewEdge: Pick<CanvasFlowEdge, 'id' | 'source' | 'target'> = {
+  const previewEdge: Pick<CanvasFlowEdge, 'id' | 'source' | 'target' | 'sourceHandle' | 'targetHandle'> = {
     id: '__canvas-connection-preview__',
     source: fromNode.id,
+    sourceHandle: fromHandle.id ?? undefined,
     target: toNode?.id ?? '__pointer__',
+    targetHandle: toHandle?.id ?? undefined,
   };
   const geometry = getAnchoredEdgeGeometry({
     edge: previewEdge,
@@ -549,6 +715,7 @@ export function StackedConnectionLine({
     targetPosition: toPosition,
   });
   const path = buildCanvasEdgePath(geometry);
+  const previewPath = buildOrthogonalCanvasEdgePath(geometry);
 
   return (
     <g>
@@ -565,6 +732,12 @@ export function StackedConnectionLine({
           transition: 'd 180ms cubic-bezier(0.22, 1, 0.36, 1)',
           opacity: 0.9,
         }}
+      />
+      <path
+        d={previewPath}
+        fill="none"
+        stroke="transparent"
+        strokeWidth={0}
       />
     </g>
   );

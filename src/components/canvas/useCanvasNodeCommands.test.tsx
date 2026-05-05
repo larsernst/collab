@@ -25,6 +25,8 @@ describe('useCanvasNodeCommands', () => {
       setPickerMode: vi.fn(),
       allFiles: [],
       addCanvasNode,
+      addCanvasNodes: vi.fn(),
+      addCanvasEdges: vi.fn(),
     }));
 
     result.current.addTextNode();
@@ -56,6 +58,8 @@ describe('useCanvasNodeCommands', () => {
       setPickerMode,
       allFiles: [],
       addCanvasNode,
+      addCanvasNodes: vi.fn(),
+      addCanvasEdges: vi.fn(),
     }));
 
     result.current.handlePickerSelect({
@@ -97,6 +101,8 @@ describe('useCanvasNodeCommands', () => {
         size: 0,
       }],
       addCanvasNode,
+      addCanvasNodes: vi.fn(),
+      addCanvasEdges: vi.fn(),
     }));
 
     const preventDefault = vi.fn();
@@ -118,5 +124,36 @@ describe('useCanvasNodeCommands', () => {
       width: 300,
       height: 180,
     });
+  });
+
+  it('creates a planning node with defaults', () => {
+    const addCanvasNode = vi.fn();
+
+    const { result } = renderHook(() => useCanvasNodeCommands({
+      reactFlow: {
+        screenToFlowPosition: ({ x, y }) => ({ x, y }),
+      },
+      viewportRef: {
+        current: {
+          getBoundingClientRect: () => ({ left: 0, top: 0, width: 300, height: 200 }),
+        } as unknown as HTMLDivElement,
+      },
+      pickerMode: null,
+      setPickerMode: vi.fn(),
+      allFiles: [],
+      addCanvasNode,
+      addCanvasNodes: vi.fn(),
+      addCanvasEdges: vi.fn(),
+    }));
+
+    result.current.addPlanningNode('decision');
+
+    expect(addCanvasNode).toHaveBeenCalledWith(expect.objectContaining({
+      id: '11111111-1111-1111-1111-111111111111',
+      type: 'decision',
+      title: 'Decision',
+      width: 280,
+      height: 180,
+    }));
   });
 });

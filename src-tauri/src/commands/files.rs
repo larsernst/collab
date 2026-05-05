@@ -1499,7 +1499,7 @@ fn rewrite_all_references(
 
         if let Some(next_content) = updated {
             let full_path = resolve_vault_path(vault_path, &entry.relative_path)?;
-            write_note_to_path(&full_path, &entry.relative_path, next_content, None, key_opt)?;
+            write_note_to_path(&full_path, &entry.relative_path, next_content, None, None, key_opt)?;
         }
     }
 
@@ -1534,26 +1534,208 @@ fn read_note_from_path(
     Ok(NoteContent { content, hash, modified_at })
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct TextEditHunk {
+    base_start: usize,
+    base_end: usize,
+    replacement: Vec<String>,
+}
+
+fn split_text_preserving_newlines(content: &str) -> Vec<String> {
+    content.split_inclusive('\n').map(|part| part.to_string()).collect()
+}
+
+fn compute_line_edit_hunks(base: &str, modified: &str) -> Vec<TextEditHunk> {
+    let base_lines = split_text_preserving_newlines(base);
+    let modified_lines = split_text_preserving_newlines(modified);
+    let n = base_lines.len();
+    let m = modified_lines.len();
+    let mut lcs = vec![vec![0usize; m + 1]; n + 1];
+
+    for i in (0..n).rev() {
+        for j in (0..m).rev() {
+            lcs[i][j] = if base_lines[i] == modified_lines[j] {
+                lcs[i + 1][j + 1] + 1
+            } else {
+                lcs[i + 1][j].max(lcs[i][j + 1])
+            };
+        }
+    }
+
+    let mut i = 0usize;
+    let mut j = 0usize;
+    let mut base_index = 0usize;
+    let mut hunks = Vec::new();
+    let mut active_start: Option<usize> = None;
+    let mut active_end = 0usize;
+    let mut replacement = Vec::new();
+
+    while i < n || j < m {
+        if i < n && j < m && base_lines[i] == modified_lines[j] {
+            if let Some(start) = active_start.take() {
+                hunks.push(TextEditHunk {
+                    base_start: start,
+                    base_end: active_end,
+                    replacement: std::mem::take(&mut replacement),
+                });
+            }
+            i += 1;
+            j += 1;
+            base_index += 1;
+            continue;
+        }
+
+        if active_start.is_none() {
+            active_start = Some(base_index);
+            active_end = base_index;
+        }
+
+        if j < m && (i == n || lcs[i][j + 1] >= lcs[i + 1][j]) {
+            replacement.push(modified_lines[j].clone());
+            j += 1;
+        } else if i < n {
+            i += 1;
+            base_index += 1;
+            active_end += 1;
+        }
+    }
+
+    if let Some(start) = active_start.take() {
+        hunks.push(TextEditHunk {
+            base_start: start,
+            base_end: active_end,
+            replacement,
+        });
+    }
+
+    hunks
+}
+
+fn try_auto_merge_text(base: &str, ours: &str, theirs: &str) -> Option<String> {
+    if ours == theirs {
+        return Some(ours.to_string());
+    }
+
+    let our_hunks = compute_line_edit_hunks(base, ours);
+    let their_hunks = compute_line_edit_hunks(base, theirs);
+    let base_lines = split_text_preserving_newlines(base);
+    let mut merged_hunks = Vec::new();
+    let mut our_index = 0usize;
+    let mut their_index = 0usize;
+
+    while our_index < our_hunks.len() || their_index < their_hunks.len() {
+        match (our_hunks.get(our_index), their_hunks.get(their_index)) {
+            (Some(our_hunk), Some(their_hunk)) => {
+                if our_hunk.base_end <= their_hunk.base_start {
+                    merged_hunks.push(our_hunk.clone());
+                    our_index += 1;
+                } else if their_hunk.base_end <= our_hunk.base_start {
+                    merged_hunks.push(their_hunk.clone());
+                    their_index += 1;
+                } else if our_hunk == their_hunk {
+                    merged_hunks.push(our_hunk.clone());
+                    our_index += 1;
+                    their_index += 1;
+                } else {
+                    return None;
+                }
+            }
+            (Some(our_hunk), None) => {
+                merged_hunks.push(our_hunk.clone());
+                our_index += 1;
+            }
+            (None, Some(their_hunk)) => {
+                merged_hunks.push(their_hunk.clone());
+                their_index += 1;
+            }
+            (None, None) => break,
+        }
+    }
+
+    let mut merged = String::new();
+    let mut cursor = 0usize;
+    for hunk in merged_hunks {
+        for line in &base_lines[cursor..hunk.base_start] {
+            merged.push_str(line);
+        }
+        for line in &hunk.replacement {
+            merged.push_str(line);
+        }
+        cursor = hunk.base_end;
+    }
+    for line in &base_lines[cursor..] {
+        merged.push_str(line);
+    }
+
+    Some(merged)
+}
+
 fn write_note_to_path(
     full_path: &Path,
     relative_path: &str,
     content: String,
     expected_hash: Option<String>,
+    base_content: Option<String>,
     key_opt: Option<[u8; 32]>,
 ) -> Result<WriteResult, String> {
+    let mut content_to_write = content;
+    let mut merged_content: Option<String> = None;
+
     if let Some(ref expected) = expected_hash {
         if full_path.exists() {
             let current = read_note_from_path(full_path, relative_path, key_opt)?;
             if &current.hash != expected {
-                let hash = compute_hash(&content);
-                return Ok(WriteResult {
-                    hash,
-                    conflict: Some(ConflictInfo {
-                        our_content: content,
-                        their_content: current.content,
-                        relative_path: relative_path.to_string(),
-                    }),
-                });
+                if current.content == content_to_write {
+                    return Ok(WriteResult {
+                        hash: current.hash,
+                        merged_content: None,
+                        conflict: None,
+                    });
+                }
+
+                if let Some(ref base) = base_content {
+                    if base == &content_to_write {
+                        return Ok(WriteResult {
+                            hash: current.hash,
+                            merged_content: Some(current.content),
+                            conflict: None,
+                        });
+                    }
+
+                    if let Some(merged) = try_auto_merge_text(base, &content_to_write, &current.content) {
+                        if merged == current.content {
+                            return Ok(WriteResult {
+                                hash: current.hash,
+                                merged_content: Some(current.content),
+                                conflict: None,
+                            });
+                        }
+                        content_to_write = merged.clone();
+                        merged_content = Some(merged);
+                    } else {
+                        let hash = compute_hash(&content_to_write);
+                        return Ok(WriteResult {
+                            hash,
+                            merged_content: None,
+                            conflict: Some(ConflictInfo {
+                                our_content: content_to_write,
+                                their_content: current.content,
+                                relative_path: relative_path.to_string(),
+                            }),
+                        });
+                    }
+                } else {
+                    let hash = compute_hash(&content_to_write);
+                    return Ok(WriteResult {
+                        hash,
+                        merged_content: None,
+                        conflict: Some(ConflictInfo {
+                            our_content: content_to_write,
+                            their_content: current.content,
+                            relative_path: relative_path.to_string(),
+                        }),
+                    });
+                }
             }
         }
     }
@@ -1563,17 +1745,17 @@ fn write_note_to_path(
     }
 
     let bytes_to_write: Vec<u8> = if let Some(ref key) = key_opt {
-        crypto::encrypt_bytes(key, content.as_bytes())?
+        crypto::encrypt_bytes(key, content_to_write.as_bytes())?
     } else {
-        content.as_bytes().to_vec()
+        content_to_write.as_bytes().to_vec()
     };
 
     let tmp_path = full_path.with_extension("tmp");
     std::fs::write(&tmp_path, &bytes_to_write).map_err(|e| e.to_string())?;
     std::fs::rename(&tmp_path, full_path).map_err(|e| e.to_string())?;
 
-    let hash = compute_hash(&content);
-    Ok(WriteResult { hash, conflict: None })
+    let hash = compute_hash(&content_to_write);
+    Ok(WriteResult { hash, merged_content, conflict: None })
 }
 
 fn create_note_at_path(
@@ -2418,10 +2600,12 @@ mod tests {
             "Notes/Test.md",
             "# Test\n\nUpdated body".into(),
             Some(initial.hash.clone()),
+            Some(initial.content.clone()),
             None,
         )
         .expect("write should succeed");
         assert!(write.conflict.is_none());
+        assert_eq!(write.merged_content, None);
 
         let updated = read_note_from_path(&target, "Notes/Test.md", None)
             .expect("updated note should be readable");
@@ -2443,6 +2627,7 @@ mod tests {
             "Notes/Test.md",
             "Our version".into(),
             Some(stale_hash),
+            Some("Our stale base".into()),
             None,
         )
         .expect("write should return a conflict result");
@@ -2456,6 +2641,57 @@ mod tests {
             .read_text("Notes/Test.md")
             .expect("existing file should remain unchanged");
         assert_eq!(on_disk, "Their version");
+    }
+
+    #[test]
+    fn write_note_auto_merges_non_overlapping_line_changes() {
+        let vault = TempVault::new().expect("temp vault should exist");
+        let target = vault.resolve("Notes/Test.md");
+        let base = "alpha\nbeta\ngamma\n";
+        vault
+            .write_text("Notes/Test.md", "alpha\nbeta updated by them\ngamma\n")
+            .expect("existing note should be written");
+
+        let stale_hash = super::compute_hash(base);
+        let result = write_note_to_path(
+            &target,
+            "Notes/Test.md",
+            "alpha\nbeta\ngamma updated by us\n".into(),
+            Some(stale_hash),
+            Some(base.into()),
+            None,
+        )
+        .expect("write should succeed with auto merge");
+
+        assert!(result.conflict.is_none());
+        let merged = result.merged_content.expect("merged content should be returned");
+        assert_eq!(merged, "alpha\nbeta updated by them\ngamma updated by us\n");
+        let on_disk = vault.read_text("Notes/Test.md").expect("merged note should be readable");
+        assert_eq!(on_disk, merged);
+    }
+
+    #[test]
+    fn write_note_conflicts_when_same_line_changes_overlap() {
+        let vault = TempVault::new().expect("temp vault should exist");
+        let target = vault.resolve("Notes/Test.md");
+        let base = "alpha\nbeta\ngamma\n";
+        vault
+            .write_text("Notes/Test.md", "alpha\nbeta updated by them\ngamma\n")
+            .expect("existing note should be written");
+
+        let stale_hash = super::compute_hash(base);
+        let result = write_note_to_path(
+            &target,
+            "Notes/Test.md",
+            "alpha\nbeta updated by us\ngamma\n".into(),
+            Some(stale_hash),
+            Some(base.into()),
+            None,
+        )
+        .expect("write should return a conflict result");
+
+        assert!(result.conflict.is_some());
+        assert!(result.merged_content.is_none());
     }
 
     #[test]
@@ -2479,6 +2715,7 @@ mod tests {
             "Secret/Test.md",
             "# Test\n\nEncrypted body".into(),
             Some(initial.hash.clone()),
+            Some(initial.content.clone()),
             Some(key),
         )
         .expect("encrypted write should succeed");
@@ -2661,11 +2898,12 @@ pub fn write_note(
     relative_path: String,
     content: String,
     expected_hash: Option<String>,
+    base_content: Option<String>,
     state: State<AppState>,
 ) -> Result<WriteResult, String> {
     let full_path = resolve_vault_path(&vault_path, &relative_path)?;
     let key_opt: Option<[u8; 32]> = *state.encryption_key.read();
-    write_note_to_path(&full_path, &relative_path, content, expected_hash, key_opt)
+    write_note_to_path(&full_path, &relative_path, content, expected_hash, base_content, key_opt)
 }
 
 #[tauri::command]

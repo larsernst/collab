@@ -400,7 +400,7 @@ pub fn restore_snapshot(
     std::fs::write(&tmp, &bytes).map_err(|e| e.to_string())?;
     std::fs::rename(&tmp, &full_path).map_err(|e| e.to_string())?;
 
-    Ok(WriteResult { hash: compute_hash(&snapshot_content), conflict: None })
+    Ok(WriteResult { hash: compute_hash(&snapshot_content), merged_content: None, conflict: None })
 }
 
 // ── Permissions ───────────────────────────────────────────────────────────────

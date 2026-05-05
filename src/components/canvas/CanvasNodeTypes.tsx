@@ -1,14 +1,36 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react';
-import { FileImage, FileText, Globe, Layout, LayoutDashboard, PencilLine } from 'lucide-react';
+import {
+  CheckCircle2,
+  CircleDot,
+  Diamond,
+  FileImage,
+  FileText,
+  Globe,
+  Layout,
+  LayoutDashboard,
+  Milestone,
+  PencilLine,
+  Route,
+  SquareDashedKanban,
+  Users,
+} from 'lucide-react';
 import { Handle, NodeResizer, Position, useStore } from '@xyflow/react';
 
 import { MarkdownPreview } from '../editor/MarkdownPreview';
+import { Badge } from '../ui/badge';
 import { Button } from '../ui/button';
 import { Input } from '../ui/input';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../ui/select';
 import { cn } from '../../lib/utils';
-import type { CanvasWebDisplayMode } from '../../types/canvas';
+import type {
+  CanvasPlanningMetadata,
+  CanvasSwimlaneOrientation,
+  CanvasWebDisplayMode,
+  PlanningCanvasNode,
+} from '../../types/canvas';
 import { normalizeWebPreviewUrl } from '../../lib/webPreviewCache';
+import { getPlanningNodeLabel } from './canvasPlanning';
+import { supportsLinkedPath, supportsPlanningMetadata } from './canvasDiagramUtils';
 
 const IMAGE_EXTENSIONS = new Set(['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg', 'bmp', 'ico', 'avif']);
 
@@ -23,6 +45,10 @@ export interface CanvasNodeData extends Record<string, unknown> {
   extension?: string;
   content?: string;
   url?: string;
+  nodeKind?: PlanningCanvasNode['type'];
+  linkedRelativePath?: string;
+  planning?: CanvasPlanningMetadata;
+  orientation?: CanvasSwimlaneOrientation;
   hasRichPreview?: boolean;
   previewError?: string | null;
   previewLoading?: boolean;
@@ -56,22 +82,90 @@ function normalizeWebUrl(value: string) {
 function CanvasCardFrame({
   selected,
   children,
+  className,
+  style,
 }: {
   selected?: boolean;
   children: ReactNode;
+  className?: string;
+  style?: React.CSSProperties;
 }) {
   return (
     <div
+      style={style}
       className={cn(
         'flex h-full w-full flex-col overflow-hidden rounded-2xl border bg-card/96 text-card-foreground shadow-lg backdrop-blur-xs-webkit transition-[transform,width,height,box-shadow,border-color] app-motion-fast',
         selected
           ? 'border-primary/60 shadow-primary/15'
           : 'border-border/70 shadow-black/12 hover:shadow-black/18',
+        className,
       )}
     >
       {children}
     </div>
   );
+}
+
+function PlanningStatusBadges({
+  planning,
+  kind,
+}: {
+  planning?: CanvasPlanningMetadata;
+  kind: PlanningCanvasNode['type'];
+}) {
+  if (!supportsPlanningMetadata(kind)) return null;
+  const tags = planning?.tags?.filter(Boolean) ?? [];
+  if (!planning && tags.length === 0) return null;
+
+  return (
+    <div className="mt-2 flex flex-wrap gap-1.5">
+          {planning?.status ? (
+        <Badge variant="secondary" className="rounded-full bg-primary/10 text-[10px] uppercase tracking-wide text-primary">
+          {planning.status.replace(/_/g, ' ')}
+        </Badge>
+      ) : null}
+      {planning?.priority ? (
+        <Badge variant="outline" className="rounded-full text-[10px] uppercase tracking-wide">
+          {planning.priority}
+        </Badge>
+      ) : null}
+      {planning?.ownerLabel ? (
+        <Badge variant="outline" className="rounded-full text-[10px]">
+          {planning.ownerLabel}
+        </Badge>
+      ) : null}
+      {tags.slice(0, 3).map((tag) => (
+        <Badge key={tag} variant="outline" className="rounded-full text-[10px]">
+          #{tag}
+        </Badge>
+      ))}
+    </div>
+  );
+}
+
+function getPlanningNodeIcon(kind: PlanningCanvasNode['type']) {
+  switch (kind) {
+    case 'process':
+      return <Route size={14} />;
+    case 'decision':
+      return <Diamond size={14} />;
+    case 'terminator':
+      return <CheckCircle2 size={14} />;
+    case 'document':
+      return <FileText size={14} />;
+    case 'milestone':
+      return <Milestone size={14} />;
+    case 'actor':
+      return <Users size={14} />;
+    case 'group':
+      return <SquareDashedKanban size={14} />;
+    case 'swimlane':
+      return <Layout size={14} />;
+    case 'junction':
+      return <CircleDot size={14} />;
+    case 'crossing':
+      return <Route size={14} />;
+  }
 }
 
 function CardHandles() {
@@ -85,17 +179,128 @@ function CardHandles() {
 
   return (
     <>
-      <Handle
-        type="target"
-        position={Position.Left}
-        className={handleClassName}
-      />
-      <Handle
-        type="source"
-        position={Position.Right}
-        className={handleClassName}
-      />
+      <Handle id="left-in" type="target" position={Position.Left} className={handleClassName} />
+      <Handle id="right-out" type="source" position={Position.Right} className={handleClassName} />
+      <Handle id="top-in" type="target" position={Position.Top} className={handleClassName} />
+      <Handle id="bottom-out" type="source" position={Position.Bottom} className={handleClassName} />
     </>
+  );
+}
+
+function PlanningNodeShell({
+  id,
+  data,
+  selected,
+  minWidth = 220,
+  minHeight = 130,
+  shapeClassName,
+  bodyClassName,
+  compact = false,
+}: {
+  id: string;
+  data: CanvasNodeData;
+  selected?: boolean;
+  minWidth?: number;
+  minHeight?: number;
+  shapeClassName?: string;
+  bodyClassName?: string;
+  compact?: boolean;
+}) {
+  const kind = data.nodeKind ?? 'process';
+  const icon = getPlanningNodeIcon(kind);
+  const isContainer = kind === 'group' || kind === 'swimlane';
+  const isCrossing = kind === 'crossing';
+  const isJunction = kind === 'junction';
+  const shapeStyle = kind === 'decision'
+    ? { clipPath: 'polygon(50% 0%, 100% 50%, 50% 100%, 0% 50%)' }
+    : kind === 'milestone'
+      ? { clipPath: 'polygon(12% 0%, 88% 0%, 100% 50%, 88% 100%, 12% 100%, 0% 50%)' }
+      : undefined;
+
+  return (
+    <div className="group relative h-full w-full">
+      <NodeResizer
+        isVisible={!!selected}
+        minWidth={minWidth}
+        minHeight={minHeight}
+        lineClassName="!border-primary/30"
+        handleClassName="!border-primary/50 !bg-background !w-3 !h-3"
+        onResizeEnd={() => data.onSnapToGrid?.(id)}
+      />
+      <CanvasCardFrame
+        selected={selected}
+        className={cn(
+          isContainer ? 'bg-card/55 shadow-none' : '',
+          kind === 'group' ? 'border-dashed' : '',
+          kind === 'swimlane' ? 'border-primary/20 bg-primary/5' : '',
+          kind === 'terminator' ? 'rounded-[999px]' : '',
+          kind === 'document' ? 'after:pointer-events-none after:absolute after:top-0 after:right-0 after:h-10 after:w-10 after:border-l after:border-b after:border-border/50 after:bg-background/35' : '',
+          kind === 'milestone' ? 'bg-gradient-to-br from-primary/10 via-card to-card px-2 py-2' : '',
+          kind === 'actor' ? 'bg-gradient-to-br from-primary/8 via-card to-card' : '',
+          (isCrossing || isJunction) ? 'items-center justify-center rounded-[999px]' : '',
+          shapeClassName,
+        )}
+        style={shapeStyle}
+      >
+        {isJunction ? (
+          <div className="flex h-full w-full items-center justify-center">
+            <div className="flex size-9 items-center justify-center rounded-full border border-primary/35 bg-primary/12 text-primary">
+              {icon}
+            </div>
+          </div>
+        ) : isCrossing ? (
+          <div className="relative flex h-full w-full items-center justify-center overflow-hidden">
+            <div className="absolute left-5 right-5 h-[2px] bg-primary/65" />
+            <div className="absolute top-5 bottom-5 w-[2px] bg-primary/40" />
+            <div className="relative rounded-full border border-primary/35 bg-background/95 px-3 py-1 text-[11px] font-medium text-primary">
+              Crossing
+            </div>
+          </div>
+        ) : (
+          <>
+            <div className={cn(
+              'flex items-center gap-2 border-b border-border/60 px-3 py-2',
+              kind === 'decision' ? 'px-8 pt-4' : '',
+              kind === 'milestone' ? 'border-transparent px-6 pt-4' : '',
+              kind === 'actor' ? 'bg-primary/6' : '',
+            )}>
+              <div className="flex size-7 items-center justify-center rounded-xl bg-primary/12 text-primary">
+                {icon}
+              </div>
+              <div className="min-w-0 flex-1">
+                <div className="truncate text-sm font-semibold text-foreground">{data.title}</div>
+                <div className="truncate text-[11px] text-muted-foreground">
+                  {getPlanningNodeLabel(kind)}{supportsLinkedPath(kind) && data.linkedRelativePath ? ` · ${data.linkedRelativePath}` : ''}
+                </div>
+              </div>
+              {kind === 'milestone' && data.planning?.milestoneLabel ? (
+                <Badge variant="outline" className="rounded-full text-[10px]">
+                  {data.planning.milestoneLabel}
+                </Badge>
+              ) : null}
+            </div>
+            <div className={cn(
+              'min-h-0 flex-1 overflow-hidden px-3 py-3',
+              kind === 'decision' ? 'px-8 pb-5 pt-3 text-center' : '',
+              kind === 'milestone' ? 'px-6 pb-5 pt-1' : '',
+              bodyClassName,
+            )}>
+              {data.content ? (
+                <div className={cn(compact ? 'line-clamp-3 text-xs' : 'line-clamp-6 text-sm', 'whitespace-pre-wrap leading-relaxed text-muted-foreground')}>
+                  {data.content}
+                </div>
+              ) : (
+                <div className="text-sm leading-relaxed text-muted-foreground">
+                  {isContainer ? 'Use this as a structural layer for related nodes.' : 'Add context from the node inspector.'}
+                </div>
+              )}
+              <PlanningStatusBadges planning={data.planning} kind={kind} />
+            </div>
+          </>
+        )}
+      </CanvasCardFrame>
+      <CardHandles />
+    </div>
   );
 }
 
@@ -492,9 +697,143 @@ function WebCardNode({ id, data, selected }: { id: string; data: CanvasNodeData;
   );
 }
 
+function ProcessCardNode(props: { id: string; data: CanvasNodeData; selected?: boolean }) {
+  return <PlanningNodeShell {...props} minWidth={220} minHeight={130} />;
+}
+
+function DecisionCardNode({ id, data, selected }: { id: string; data: CanvasNodeData; selected?: boolean }) {
+  return (
+    <div className="group relative h-full w-full">
+      <NodeResizer
+        isVisible={!!selected}
+        minWidth={240}
+        minHeight={150}
+        lineClassName="!border-primary/30"
+        handleClassName="!border-primary/50 !bg-background !w-3 !h-3"
+        onResizeEnd={() => data.onSnapToGrid?.(id)}
+      />
+      <div className="relative h-full w-full">
+        <svg viewBox="0 0 100 100" preserveAspectRatio="none" className="absolute inset-0 h-full w-full overflow-visible">
+          <polygon
+            points="50,2 98,50 50,98 2,50"
+            fill="color-mix(in oklch, var(--card) 96%, var(--primary) 4%)"
+            stroke={selected ? 'color-mix(in oklch, var(--primary) 60%, white 10%)' : 'color-mix(in oklch, var(--border) 88%, transparent)'}
+            strokeWidth="2.2"
+          />
+        </svg>
+        <div className="absolute inset-[18%_18%] flex flex-col items-center justify-center text-center">
+          <div className="mb-2 flex size-8 items-center justify-center rounded-full bg-primary/12 text-primary">
+            <Diamond size={16} />
+          </div>
+          <div className="line-clamp-2 text-sm font-semibold text-foreground">{data.title}</div>
+          <div className="mt-2 line-clamp-4 whitespace-pre-wrap text-xs leading-relaxed text-muted-foreground">
+            {data.content || 'Branch condition'}
+          </div>
+        </div>
+      </div>
+      <CardHandles />
+    </div>
+  );
+}
+
+function TerminatorCardNode({ id, data, selected }: { id: string; data: CanvasNodeData; selected?: boolean }) {
+  return (
+    <div className="group relative h-full w-full">
+      <NodeResizer
+        isVisible={!!selected}
+        minWidth={210}
+        minHeight={110}
+        lineClassName="!border-primary/30"
+        handleClassName="!border-primary/50 !bg-background !w-3 !h-3"
+        onResizeEnd={() => data.onSnapToGrid?.(id)}
+      />
+      <div className="relative h-full w-full">
+        <svg viewBox="0 0 100 44" preserveAspectRatio="none" className="absolute inset-0 h-full w-full overflow-visible">
+          <rect
+            x="1.5"
+            y="1.5"
+            width="97"
+            height="41"
+            rx="21"
+            fill="color-mix(in oklch, var(--card) 96%, var(--primary) 4%)"
+            stroke={selected ? 'color-mix(in oklch, var(--primary) 60%, white 10%)' : 'color-mix(in oklch, var(--border) 88%, transparent)'}
+            strokeWidth="1.8"
+          />
+        </svg>
+        <div className="absolute inset-[18%_10%] flex flex-col items-center justify-center text-center">
+          <div className="mb-1 flex size-7 items-center justify-center rounded-full bg-primary/12 text-primary">
+            <CheckCircle2 size={15} />
+          </div>
+          <div className="line-clamp-2 text-sm font-semibold text-foreground">{data.title}</div>
+          {data.content ? (
+            <div className="mt-1 line-clamp-2 text-xs leading-relaxed text-muted-foreground">{data.content}</div>
+          ) : null}
+        </div>
+      </div>
+      <CardHandles />
+    </div>
+  );
+}
+
+function DocumentPlanningCardNode(props: { id: string; data: CanvasNodeData; selected?: boolean }) {
+  return <PlanningNodeShell {...props} minWidth={220} minHeight={140} />;
+}
+
+function MilestoneCardNode(props: { id: string; data: CanvasNodeData; selected?: boolean }) {
+  return <PlanningNodeShell {...props} minWidth={220} minHeight={130} />;
+}
+
+function ActorCardNode(props: { id: string; data: CanvasNodeData; selected?: boolean }) {
+  return <PlanningNodeShell {...props} minWidth={220} minHeight={130} compact />;
+}
+
+function GroupCardNode(props: { id: string; data: CanvasNodeData; selected?: boolean }) {
+  return <PlanningNodeShell {...props} minWidth={320} minHeight={220} bodyClassName="bg-transparent/20" />;
+}
+
+function SwimlaneCardNode({ id, data, selected }: { id: string; data: CanvasNodeData; selected?: boolean }) {
+  const orientation = data.orientation ?? 'horizontal';
+  return (
+    <PlanningNodeShell
+      id={id}
+      data={{
+        ...data,
+        content: `${orientation === 'horizontal' ? 'Horizontal' : 'Vertical'} lane for phases, teams, or ownership.`,
+      }}
+      selected={selected}
+      minWidth={420}
+      minHeight={180}
+      bodyClassName={cn(
+        'relative',
+        orientation === 'horizontal'
+          ? 'before:absolute before:top-16 before:left-0 before:right-0 before:border-t before:border-dashed before:border-primary/25'
+          : 'before:absolute before:top-0 before:bottom-0 before:left-28 before:border-l before:border-dashed before:border-primary/25',
+      )}
+    />
+  );
+}
+
+function JunctionCardNode(props: { id: string; data: CanvasNodeData; selected?: boolean }) {
+  return <PlanningNodeShell {...props} minWidth={72} minHeight={72} compact />;
+}
+
+function CrossingCardNode(props: { id: string; data: CanvasNodeData; selected?: boolean }) {
+  return <PlanningNodeShell {...props} minWidth={96} minHeight={64} compact />;
+}
+
 export const nodeTypes = {
   noteCard: NoteCardNode,
   fileCard: FileCardNode,
   textCard: TextCardNode,
   webCard: WebCardNode,
+  processCard: ProcessCardNode,
+  decisionCard: DecisionCardNode,
+  terminatorCard: TerminatorCardNode,
+  documentCard: DocumentPlanningCardNode,
+  milestoneCard: MilestoneCardNode,
+  actorCard: ActorCardNode,
+  groupCard: GroupCardNode,
+  swimlaneCard: SwimlaneCardNode,
+  junctionCard: JunctionCardNode,
+  crossingCard: CrossingCardNode,
 };

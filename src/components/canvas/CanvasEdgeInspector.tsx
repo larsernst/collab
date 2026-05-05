@@ -1,6 +1,6 @@
 import { Link2, Trash2 } from 'lucide-react';
 
-import type { CanvasEdgeLineStyle } from '../../types/canvas';
+import type { CanvasEdgeLineStyle, CanvasEdgeRoutingStyle } from '../../types/canvas';
 import type { CanvasEdgeData } from './CanvasEdgeTypes';
 import { Button } from '../ui/button';
 import { Checkbox } from '../ui/checkbox';
@@ -12,6 +12,7 @@ interface CanvasEdgeInspectorProps {
   edgeLabelDraft: string;
   onEdgeLabelChange: (label: string) => void;
   onLineStyleChange: (lineStyle: CanvasEdgeLineStyle) => void;
+  onRoutingStyleChange: (routingStyle: CanvasEdgeRoutingStyle) => void;
   onAnimationDirectionChange: (animationReverse: boolean) => void;
   onAnimationChange: (animated: boolean) => void;
   onMarkerStartChange: (markerStart: boolean) => void;
@@ -24,6 +25,7 @@ export function CanvasEdgeInspector({
   edgeLabelDraft,
   onEdgeLabelChange,
   onLineStyleChange,
+  onRoutingStyleChange,
   onAnimationDirectionChange,
   onAnimationChange,
   onMarkerStartChange,
@@ -58,6 +60,21 @@ export function CanvasEdgeInspector({
                   <SelectItem value="solid">Solid</SelectItem>
                   <SelectItem value="dashed">Dashed</SelectItem>
                   <SelectItem value="dotted">Dotted</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="rounded-xl border border-border/60 bg-card/45 p-2">
+              <div className="mb-1 text-[11px] font-medium text-muted-foreground">Routing</div>
+              <Select
+                value={selectedEdgeData.routingStyle}
+                onValueChange={(value) => onRoutingStyleChange(value as CanvasEdgeRoutingStyle)}
+              >
+                <SelectTrigger size="sm" className="h-8 w-full bg-background/70 text-xs">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent align="end">
+                  <SelectItem value="curved">Curved</SelectItem>
+                  <SelectItem value="orthogonal">Orthogonal</SelectItem>
                 </SelectContent>
               </Select>
             </div>
