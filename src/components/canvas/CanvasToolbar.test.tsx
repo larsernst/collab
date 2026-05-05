@@ -9,6 +9,12 @@ vi.mock('../ui/button', () => ({
 
 vi.mock('../layout/DocumentTopBar', () => ({
   documentTopBarGroupClass: 'toolbar-group',
+  DocumentTopBarButton: ({ children, onClick, title, ...props }: React.ButtonHTMLAttributes<HTMLButtonElement>) => (
+    <button type="button" onClick={onClick} title={title} {...props}>{children}</button>
+  ),
+  DocumentTopBarIconButton: ({ children, onClick, title, ...props }: React.ButtonHTMLAttributes<HTMLButtonElement>) => (
+    <button type="button" onClick={onClick} title={title} {...props}>{children}</button>
+  ),
 }));
 
 vi.mock('../ui/dropdown-menu', () => ({

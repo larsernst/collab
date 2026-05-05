@@ -65,6 +65,14 @@ vi.mock('../layout/DocumentTopBar', () => ({
       <div>{secondary}</div>
     </div>
   ),
+  DocumentTopBarButton: ({
+    children,
+    onClick,
+    title,
+    ...props
+  }: React.ButtonHTMLAttributes<HTMLButtonElement>) => (
+    <button type="button" onClick={onClick} title={title} {...props}>{children}</button>
+  ),
   documentTopBarGroupClass: 'group',
   getDocumentBaseName: () => 'Test Board',
   getDocumentFolderPath: () => 'Boards',
