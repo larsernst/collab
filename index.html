@@ -11,19 +11,43 @@
         --boot-bg: oklch(0.17 0.015 264);
         --boot-fg: oklch(0.93 0.01 264);
         --boot-muted: oklch(0.62 0.02 264);
-        --boot-accent: oklch(0.67 0.22 293);
-        --boot-target-bg: oklch(0.17 0.015 264);
-        --boot-target-fg: oklch(0.93 0.01 264);
-        --boot-target-muted: oklch(0.62 0.02 264);
-        --boot-target-accent: oklch(0.67 0.22 293);
+        --boot-accent: oklch(0.68 0.22 293);
+        --boot-accent-soft: oklch(0.68 0.22 293 / 0.18);
+        --boot-accent-secondary: oklch(0.65 0.19 237 / 0.14);
+        --boot-card-bg: color-mix(in oklch, var(--boot-bg) 84%, black);
+        --boot-card-border: oklch(1 0 0 / 0.08);
+        --boot-progress-track: oklch(1 0 0 / 0.08);
+        --boot-font-sans: "Geist Variable", Inter, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      }
+
+      html[data-boot-theme="midnight"] {
+        color-scheme: dark;
+        --boot-bg: oklch(0.07 0 0);
+        --boot-fg: oklch(0.90 0 0);
+        --boot-muted: oklch(0.55 0.01 264);
+        --boot-card-bg: color-mix(in oklch, var(--boot-bg) 90%, black);
+        --boot-card-border: oklch(1 0 0 / 0.06);
+        --boot-progress-track: oklch(1 0 0 / 0.07);
+      }
+
+      html[data-boot-theme="warm"] {
+        color-scheme: dark;
+        --boot-bg: oklch(0.11 0.02 60);
+        --boot-fg: oklch(0.92 0.02 60);
+        --boot-muted: oklch(0.60 0.03 60);
+        --boot-card-bg: color-mix(in oklch, var(--boot-bg) 84%, black);
+        --boot-card-border: oklch(1 0 0 / 0.07);
+        --boot-progress-track: oklch(1 0 0 / 0.07);
       }
 
       html[data-boot-theme="light"] {
         color-scheme: light;
-        --boot-target-bg: oklch(0.97 0 0);
-        --boot-target-fg: oklch(0.14 0 0);
-        --boot-target-muted: oklch(0.45 0.01 264);
-        --boot-target-accent: oklch(0.54 0.23 293);
+        --boot-bg: oklch(0.97 0 0);
+        --boot-fg: oklch(0.14 0 0);
+        --boot-muted: oklch(0.45 0.01 264);
+        --boot-card-bg: oklch(1 0 0 / 0.88);
+        --boot-card-border: oklch(0 0 0 / 0.08);
+        --boot-progress-track: oklch(0 0 0 / 0.08);
       }
 
       html, body {
@@ -36,7 +60,7 @@
 
       body {
         overflow: hidden;
-        font-family: Inter, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        font-family: var(--boot-font-sans);
       }
 
       #root {
@@ -50,8 +74,8 @@
         display: grid;
         place-items: center;
         background:
-          radial-gradient(circle at 20% 20%, oklch(0.67 0.22 293 / 0.16), transparent 28%),
-          radial-gradient(circle at 80% 0%, oklch(0.65 0.19 237 / 0.14), transparent 30%),
+          radial-gradient(circle at 20% 20%, var(--boot-accent-soft), transparent 28%),
+          radial-gradient(circle at 80% 0%, var(--boot-accent-secondary), transparent 30%),
           linear-gradient(180deg, color-mix(in oklch, var(--boot-bg) 86%, black), var(--boot-bg));
         transition: opacity 220ms ease;
         z-index: 9999;
@@ -72,10 +96,66 @@
         width: min(320px, calc(100vw - 48px));
         padding: 24px 22px;
         border-radius: 18px;
-        background: color-mix(in oklch, var(--boot-bg) 84%, black);
-        border: 1px solid oklch(1 0 0 / 0.08);
+        background: var(--boot-card-bg);
+        border: 1px solid var(--boot-card-border);
         box-shadow: 0 20px 60px oklch(0 0 0 / 0.32);
         transition: opacity 90ms ease;
+      }
+
+      .boot-header {
+        display: flex;
+        align-items: center;
+        gap: 14px;
+      }
+
+      .boot-logo-shell {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: 48px;
+        height: 48px;
+        border-radius: 16px;
+        background: color-mix(in oklch, var(--boot-accent) 14%, transparent);
+        border: 1px solid color-mix(in oklch, var(--boot-accent) 22%, var(--boot-card-border));
+        box-shadow:
+          0 10px 26px color-mix(in oklch, var(--boot-accent) 18%, transparent),
+          inset 0 1px 0 oklch(1 0 0 / 0.10);
+        color: var(--boot-accent);
+        flex-shrink: 0;
+      }
+
+      .boot-logo {
+        width: 26px;
+        height: 26px;
+        display: block;
+      }
+
+      .boot-logo-back {
+        opacity: 0.10;
+      }
+
+      .boot-logo-front {
+        opacity: 0.14;
+      }
+
+      html[data-boot-theme="light"] .boot-logo-back {
+        opacity: 0.14;
+      }
+
+      html[data-boot-theme="light"] .boot-logo-front {
+        opacity: 0.18;
+      }
+
+      .boot-logo-secondary-stroke {
+        opacity: 0.72;
+      }
+
+      html[data-boot-theme="light"] .boot-logo-secondary-stroke {
+        opacity: 0.84;
+      }
+
+      .boot-copy {
+        min-width: 0;
       }
 
       .boot-title {
@@ -98,7 +178,7 @@
         height: 3px;
         border-radius: 999px;
         overflow: hidden;
-        background: oklch(1 0 0 / 0.08);
+        background: var(--boot-progress-track);
       }
 
       .boot-progress-bar {
@@ -119,9 +199,31 @@
         const stored = localStorage.getItem('ui-storage');
         const parsed = stored ? JSON.parse(stored) : {};
         const theme = parsed?.state?.theme ?? 'dark';
+        const accentColor = parsed?.state?.accentColor ?? 'violet';
+        const interfaceFont = parsed?.state?.interfaceFont ?? 'geist';
         const isLight = theme === 'light';
+        const accentMap = {
+          violet: { accent: 'oklch(0.68 0.22 293)', soft: 'oklch(0.68 0.22 293 / 0.18)', secondary: 'oklch(0.65 0.19 237 / 0.14)' },
+          blue: { accent: 'oklch(0.65 0.19 237)', soft: 'oklch(0.65 0.19 237 / 0.18)', secondary: 'oklch(0.74 0.14 200 / 0.12)' },
+          emerald: { accent: 'oklch(0.72 0.17 162)', soft: 'oklch(0.72 0.17 162 / 0.18)', secondary: 'oklch(0.65 0.19 237 / 0.10)' },
+          rose: { accent: 'oklch(0.66 0.22 13)', soft: 'oklch(0.66 0.22 13 / 0.18)', secondary: 'oklch(0.68 0.22 293 / 0.10)' },
+          orange: { accent: 'oklch(0.72 0.18 50)', soft: 'oklch(0.72 0.18 50 / 0.18)', secondary: 'oklch(0.66 0.22 13 / 0.10)' },
+          cyan: { accent: 'oklch(0.74 0.14 200)', soft: 'oklch(0.74 0.14 200 / 0.18)', secondary: 'oklch(0.65 0.19 237 / 0.10)' },
+        };
+        const fontMap = {
+          geist: '"Geist Variable", Inter, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif',
+          inter: '"Inter Variable", "Inter", system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif',
+          serif: 'Georgia, "Times New Roman", serif',
+          mono: '"JetBrains Mono", "Fira Code", "Geist Mono Variable", "Courier New", monospace',
+        };
+        const accent = accentMap[accentColor] ?? accentMap.violet;
+        const font = fontMap[interfaceFont] ?? fontMap.geist;
         document.documentElement.classList.toggle('dark', !isLight);
-        document.documentElement.dataset.bootTheme = isLight ? 'light' : 'dark';
+        document.documentElement.dataset.bootTheme = theme;
+        document.documentElement.style.setProperty('--boot-accent', accent.accent);
+        document.documentElement.style.setProperty('--boot-accent-soft', accent.soft);
+        document.documentElement.style.setProperty('--boot-accent-secondary', accent.secondary);
+        document.documentElement.style.setProperty('--boot-font-sans', font);
       } catch {
         document.documentElement.classList.add('dark');
       }
@@ -130,8 +232,21 @@
   <body>
     <div id="boot-screen" aria-hidden="true">
       <div class="boot-card">
-        <p class="boot-title">collab</p>
-        <p class="boot-subtitle">Loading workspace…</p>
+        <div class="boot-header">
+          <div class="boot-logo-shell" aria-hidden="true">
+            <svg class="boot-logo" viewBox="0 0 64 64" fill="none" xmlns="http://www.w3.org/2000/svg">
+              <rect class="boot-logo-back" x="7" y="10" width="30" height="34" rx="8" fill="currentColor" />
+              <rect class="boot-logo-front" x="18" y="6" width="30" height="34" rx="8" fill="currentColor" />
+              <path d="M35 8H45V18" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" />
+              <path d="M25 24H39" stroke="currentColor" stroke-width="3" stroke-linecap="round" />
+              <path class="boot-logo-secondary-stroke" d="M25 30H34" stroke="currentColor" stroke-width="3" stroke-linecap="round" />
+            </svg>
+          </div>
+          <div class="boot-copy">
+            <p class="boot-title">collab</p>
+            <p class="boot-subtitle">Loading workspace…</p>
+          </div>
+        </div>
         <div class="boot-progress"><div class="boot-progress-bar"></div></div>
       </div>
     </div>
