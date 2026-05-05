@@ -177,6 +177,8 @@ pub fn run() {
             commands::collab::create_snapshot,
             commands::collab::list_snapshots,
             commands::collab::read_snapshot,
+            commands::collab::delete_snapshot,
+            commands::collab::clear_snapshot_history,
             commands::collab::restore_snapshot,
             // collab — permissions
             commands::collab::invite_member,

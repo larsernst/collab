@@ -24,6 +24,9 @@ import { ConfirmDeleteDialog, InputDialog, RenameMovePreviewDialog } from './Vau
 import TrashPanel from './TrashPanel';
 import type { PathChangePreview } from '../../types/vault';
 import FileReferencesPanel from './FileReferencesPanel';
+import { FileTreeHoverPreviewPopover } from '../previews/FileTreeHoverPreviewPopover';
+import { VersionHistoryModal } from '../collaboration/history/VersionHistoryModal';
+import { supportsVersionHistoryRelativePath } from '../collaboration/history/historyUtils';
 
 type DialogState =
   | { type: 'none' }
@@ -63,6 +66,7 @@ export default function FileTree() {
   const {
     setActiveView,
     confirmDelete: confirmDeleteEnabled,
+    fileTreeHoverPreviewsEnabled,
     fileTreeCollapsedPathsByVault,
     setFileTreeCollapsedPathsForVault,
   } = useUiStore();
@@ -79,6 +83,7 @@ export default function FileTree() {
     preview: PathChangePreview;
     apply: () => Promise<void>;
   } | null>(null);
+  const [historyModalPath, setHistoryModalPath] = useState<string | null>(null);
   const collapsedPaths = vault?.path ? (fileTreeCollapsedPathsByVault[vault.path] ?? []) : [];
   const collapsed = useMemo(() => new Set(collapsedPaths), [collapsedPaths]);
 
@@ -518,6 +523,7 @@ export default function FileTree() {
               onCreateFolder={handleCreateFolder}
               onDelete={handleDelete}
               onRename={handleRename}
+              onViewHistory={setHistoryModalPath}
               onSelect={setSelectedRelativePath}
               draggingPath={draggingPath}
               dropTargetPath={dropTargetPath}
@@ -525,6 +531,7 @@ export default function FileTree() {
               setDraggingPath={setDraggingPath}
               setDropTargetPath={setDropTargetPath}
               onMove={handleMove}
+              fileTreeHoverPreviewsEnabled={fileTreeHoverPreviewsEnabled}
             />
           ))
         )}
@@ -539,6 +546,13 @@ export default function FileTree() {
           onOpenReference={handleOpenReference}
         />
       ) : null}
+      <VersionHistoryModal
+        open={historyModalPath !== null}
+        relativePath={historyModalPath}
+        onOpenChange={(open) => {
+          if (!open) setHistoryModalPath(null);
+        }}
+      />
     </div>
   );
 }
@@ -553,6 +567,7 @@ interface FileTreeNodeProps {
   onCreateFolder: (parentPath?: string) => void;
   onDelete: (file: NoteFile) => void;
   onRename: (file: NoteFile) => void;
+  onViewHistory: (relativePath: string) => void;
   onSelect: (relativePath: string) => void;
   draggingPath: string | null;
   dropTargetPath: string | null | '__root__';
@@ -560,19 +575,22 @@ interface FileTreeNodeProps {
   setDraggingPath: (path: string | null) => void;
   setDropTargetPath: (path: string | null | '__root__') => void;
   onMove: (fromPath: string, toFolderPath: string | '__root__') => void;
+  fileTreeHoverPreviewsEnabled: boolean;
 }
 
 function FileTreeNode({
   node, depth, collapsed, setCollapsed,
-  onOpenFile, onCreateNote, onCreateFolder, onDelete, onRename,
+  onOpenFile, onCreateNote, onCreateFolder, onDelete, onRename, onViewHistory,
   onSelect,
   draggingPath, dropTargetPath, taskAttachmentsByPath, setDraggingPath, setDropTargetPath, onMove,
+  fileTreeHoverPreviewsEnabled,
 }: FileTreeNodeProps) {
   const { activeTabPath, openTab } = useEditorStore();
   const { peers } = useCollabStore();
   const { setActiveView } = useUiStore();
   const { setEditing } = useKanbanStore();
   const [attachmentPopoverOpen, setAttachmentPopoverOpen] = useState(false);
+  const [hoverPreviewAnchorRect, setHoverPreviewAnchorRect] = useState<DOMRect | null>(null);
 
   const isCollapsed = collapsed.has(node.relativePath);
   const isActive = activeTabPath === node.relativePath;
@@ -582,7 +600,9 @@ function FileTreeNode({
   const attachmentRefs = taskAttachmentsByPath[node.relativePath] ?? [];
   const isTaskAttached = !node.isFolder && attachmentRefs.length > 0;
   const isImageAsset = isImageFile(node);
+  const isPdfAsset = isPdfFile(node);
   const isManagedFolder = isManagedPicturesFolder(node);
+  const supportsVersionHistory = supportsVersionHistoryRelativePath(node.relativePath, node.isFolder);
 
   const toggleCollapse = () => {
     setCollapsed((prev) => {
@@ -618,6 +638,11 @@ function FileTreeNode({
         <div>
           <div
             draggable
+            onMouseEnter={(event) => {
+              if (!fileTreeHoverPreviewsEnabled || (!isPdfAsset && !isImageAsset)) return;
+              setHoverPreviewAnchorRect(event.currentTarget.getBoundingClientRect());
+            }}
+            onMouseLeave={() => setHoverPreviewAnchorRect(null)}
             onDragStart={(e) => {
               e.stopPropagation();
               setDraggingPath(node.relativePath);
@@ -759,6 +784,12 @@ function FileTreeNode({
               </Popover>
             )}
           </div>
+          <FileTreeHoverPreviewPopover
+            anchorRect={hoverPreviewAnchorRect}
+            relativePath={isPdfAsset || isImageAsset ? node.relativePath : null}
+            type={isPdfAsset ? 'pdf' : isImageAsset ? 'image' : null}
+            enabled={fileTreeHoverPreviewsEnabled && (isPdfAsset || isImageAsset)}
+          />
 
           {/* Children */}
           {node.isFolder && !isCollapsed && node.children && (
@@ -775,6 +806,7 @@ function FileTreeNode({
                   onCreateFolder={onCreateFolder}
                   onDelete={onDelete}
                   onRename={onRename}
+                  onViewHistory={onViewHistory}
                   onSelect={onSelect}
                   draggingPath={draggingPath}
                   dropTargetPath={dropTargetPath}
@@ -782,6 +814,7 @@ function FileTreeNode({
                   setDraggingPath={setDraggingPath}
                   setDropTargetPath={setDropTargetPath}
                   onMove={onMove}
+                  fileTreeHoverPreviewsEnabled={fileTreeHoverPreviewsEnabled}
                 />
               ))}
             </div>
@@ -798,6 +831,7 @@ function FileTreeNode({
           </>
         )}
         {!isManagedFolder && <ContextMenuItem onClick={() => onRename(node)}>Rename</ContextMenuItem>}
+        {supportsVersionHistory && <ContextMenuItem onClick={() => onViewHistory(node.relativePath)}>View version history</ContextMenuItem>}
         {!isManagedFolder && <ContextMenuSeparator />}
         {!isManagedFolder && (
           <ContextMenuItem onClick={() => onDelete(node)} className="text-destructive focus:text-destructive">Delete</ContextMenuItem>

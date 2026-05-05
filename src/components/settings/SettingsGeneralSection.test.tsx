@@ -18,6 +18,8 @@ describe('SettingsGeneralSection', () => {
         setHoverWebLinkPreviewsEnabled={vi.fn()}
         backgroundWebPreviewPrefetchEnabled={false}
         setBackgroundWebPreviewPrefetchEnabled={vi.fn()}
+        fileTreeHoverPreviewsEnabled={false}
+        setFileTreeHoverPreviewsEnabled={vi.fn()}
         confirmDelete={false}
         setConfirmDelete={setConfirmDelete}
       />,
@@ -27,7 +29,7 @@ describe('SettingsGeneralSection', () => {
     fireEvent.click(switches[0]);
     expect(setRestorePreviousSession).toHaveBeenCalledWith(true);
 
-    fireEvent.click(switches[4]);
+    fireEvent.click(switches[5]);
     expect(setConfirmDelete).toHaveBeenCalledWith(true);
   });
 
@@ -35,6 +37,7 @@ describe('SettingsGeneralSection', () => {
     const setWebPreviewsEnabled = vi.fn();
     const setHoverWebLinkPreviewsEnabled = vi.fn();
     const setBackgroundWebPreviewPrefetchEnabled = vi.fn();
+    const setFileTreeHoverPreviewsEnabled = vi.fn();
 
     render(
       <SettingsGeneralSection
@@ -46,6 +49,8 @@ describe('SettingsGeneralSection', () => {
         setHoverWebLinkPreviewsEnabled={setHoverWebLinkPreviewsEnabled}
         backgroundWebPreviewPrefetchEnabled={false}
         setBackgroundWebPreviewPrefetchEnabled={setBackgroundWebPreviewPrefetchEnabled}
+        fileTreeHoverPreviewsEnabled={false}
+        setFileTreeHoverPreviewsEnabled={setFileTreeHoverPreviewsEnabled}
         confirmDelete={true}
         setConfirmDelete={vi.fn()}
       />,
@@ -60,6 +65,9 @@ describe('SettingsGeneralSection', () => {
 
     fireEvent.click(switches[3]);
     expect(setBackgroundWebPreviewPrefetchEnabled).toHaveBeenCalledWith(true);
+
+    fireEvent.click(switches[4]);
+    expect(setFileTreeHoverPreviewsEnabled).toHaveBeenCalledWith(true);
   });
 
   it('visually marks dependent web preview rows as disabled', () => {
@@ -73,6 +81,8 @@ describe('SettingsGeneralSection', () => {
         setHoverWebLinkPreviewsEnabled={vi.fn()}
         backgroundWebPreviewPrefetchEnabled={false}
         setBackgroundWebPreviewPrefetchEnabled={vi.fn()}
+        fileTreeHoverPreviewsEnabled={false}
+        setFileTreeHoverPreviewsEnabled={vi.fn()}
         confirmDelete={true}
         setConfirmDelete={vi.fn()}
       />,

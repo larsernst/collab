@@ -210,6 +210,7 @@ interface UiState {
   webPreviewsEnabled: boolean;
   hoverWebLinkPreviewsEnabled: boolean;
   backgroundWebPreviewPrefetchEnabled: boolean;
+  fileTreeHoverPreviewsEnabled: boolean;
 
   // Actions
   setActiveView:    (view: ActiveView) => void;
@@ -249,6 +250,7 @@ interface UiState {
   setWebPreviewsEnabled: (value: boolean) => void;
   setHoverWebLinkPreviewsEnabled: (value: boolean) => void;
   setBackgroundWebPreviewPrefetchEnabled: (value: boolean) => void;
+  setFileTreeHoverPreviewsEnabled: (value: boolean) => void;
 }
 
 export const useUiStore = create<UiState>()(
@@ -291,6 +293,7 @@ export const useUiStore = create<UiState>()(
       webPreviewsEnabled: true,
       hoverWebLinkPreviewsEnabled: true,
       backgroundWebPreviewPrefetchEnabled: true,
+      fileTreeHoverPreviewsEnabled: true,
 
       setActiveView:   (activeView)   => set({ activeView }),
       setSidebarPanel: (sidebarPanel) => set({ sidebarPanel }),
@@ -337,6 +340,7 @@ export const useUiStore = create<UiState>()(
       setWebPreviewsEnabled: (webPreviewsEnabled) => set({ webPreviewsEnabled }),
       setHoverWebLinkPreviewsEnabled: (hoverWebLinkPreviewsEnabled) => set({ hoverWebLinkPreviewsEnabled }),
       setBackgroundWebPreviewPrefetchEnabled: (backgroundWebPreviewPrefetchEnabled) => set({ backgroundWebPreviewPrefetchEnabled }),
+      setFileTreeHoverPreviewsEnabled: (fileTreeHoverPreviewsEnabled) => set({ fileTreeHoverPreviewsEnabled }),
     }),
     {
       name: 'ui-storage',
@@ -377,6 +381,7 @@ export const useUiStore = create<UiState>()(
         webPreviewsEnabled: s.webPreviewsEnabled,
         hoverWebLinkPreviewsEnabled: s.hoverWebLinkPreviewsEnabled,
         backgroundWebPreviewPrefetchEnabled: s.backgroundWebPreviewPrefetchEnabled,
+        fileTreeHoverPreviewsEnabled: s.fileTreeHoverPreviewsEnabled,
       }),
     }
   )

@@ -1,54 +1,15 @@
-import { useState, useEffect, useCallback } from 'react';
-import { RotateCcw, Eye, Clock } from 'lucide-react';
-import { useEditorStore } from '../../../store/editorStore';
-import { useVaultStore } from '../../../store/vaultStore';
-import { useCollabStore } from '../../../store/collabStore';
-import { tauriCommands } from '../../../lib/tauri';
-import type { SnapshotMeta } from '../../../types/collab';
+import { useCallback, useEffect, useState } from 'react';
+import { Clock3, Eye, RotateCcw } from 'lucide-react';
 
-function relativeTime(ts: number): string {
-  const diff = Date.now() - ts;
-  if (diff < 60_000) return 'just now';
-  if (diff < 3_600_000) return `${Math.floor(diff / 60_000)}m ago`;
-  if (diff < 86_400_000) return `${Math.floor(diff / 3_600_000)}h ago`;
-  return `${Math.floor(diff / 86_400_000)}d ago`;
-}
+import { Button } from '@/components/ui/button';
+import { tauriCommands } from '@/lib/tauri';
+import { useCollabStore } from '@/store/collabStore';
+import { useEditorStore } from '@/store/editorStore';
+import { useVaultStore } from '@/store/vaultStore';
+import type { SnapshotMeta } from '@/types/collab';
 
-interface DiffModalProps {
-  snapshotContent: string;
-  currentContent: string;
-  onClose: () => void;
-}
-
-function DiffModal({ snapshotContent, currentContent, onClose }: DiffModalProps) {
-  return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50" onClick={onClose}>
-      <div
-        className="bg-background border border-border rounded-xl shadow-2xl w-[80vw] max-h-[80vh] flex flex-col overflow-hidden"
-        onClick={(e) => e.stopPropagation()}
-      >
-        <div className="flex items-center justify-between px-4 py-3 border-b border-border">
-          <span className="text-sm font-medium">Snapshot content</span>
-          <button onClick={onClose} className="text-muted-foreground hover:text-foreground text-xs px-2 py-1 rounded hover:bg-muted">
-            Close
-          </button>
-        </div>
-        <div className="flex-1 overflow-auto">
-          <div className="grid grid-cols-2 divide-x divide-border h-full">
-            <div className="p-3">
-              <p className="text-xs text-muted-foreground mb-2 font-medium">Snapshot</p>
-              <pre className="text-xs whitespace-pre-wrap font-mono text-foreground/80">{snapshotContent}</pre>
-            </div>
-            <div className="p-3">
-              <p className="text-xs text-muted-foreground mb-2 font-medium">Current</p>
-              <pre className="text-xs whitespace-pre-wrap font-mono text-foreground/80">{currentContent}</pre>
-            </div>
-          </div>
-        </div>
-      </div>
-    </div>
-  );
-}
+import { relativeTime, supportsVersionHistoryTabType } from './historyUtils';
+import { VersionHistoryModal } from './VersionHistoryModal';
 
 export function HistoryPanel() {
   const { activeTabPath, openTabs, setForceReloadPath } = useEditorStore();
@@ -56,13 +17,13 @@ export function HistoryPanel() {
   const { myUserId, myUserName } = useCollabStore();
   const [snapshots, setSnapshots] = useState<SnapshotMeta[]>([]);
   const [loading, setLoading] = useState(false);
-  const [diffState, setDiffState] = useState<{ snapshot: string; current: string } | null>(null);
   const [restoringId, setRestoringId] = useState<string | null>(null);
+  const [historyModalOpen, setHistoryModalOpen] = useState(false);
   const activeTab = openTabs.find((tab) => tab.relativePath === activeTabPath) ?? null;
-  const supportsHistory = activeTab ? ['note', 'kanban', 'canvas'].includes(activeTab.type) : false;
+  const supportsHistory = supportsVersionHistoryTabType(activeTab?.type);
 
   const load = useCallback(async () => {
-    if (!vault || !activeTabPath || !supportsHistory) return;
+    if (!vault?.path || !activeTabPath || !supportsHistory) return;
     setLoading(true);
     try {
       const list = await tauriCommands.listSnapshots(vault.path, activeTabPath);
@@ -72,33 +33,23 @@ export function HistoryPanel() {
     } finally {
       setLoading(false);
     }
-  }, [vault?.path, activeTabPath, supportsHistory]);
+  }, [activeTabPath, supportsHistory, vault?.path]);
 
-  useEffect(() => { load(); }, [load]);
+  useEffect(() => {
+    void load();
+  }, [load]);
 
-  const handleView = async (snap: SnapshotMeta) => {
-    if (!vault || !activeTabPath) return;
+  const handleRestore = useCallback(async (snapshot: SnapshotMeta) => {
+    if (!vault?.path || !activeTabPath) return;
+    setRestoringId(snapshot.id);
     try {
-      const [snapshotContent, noteContent] = await Promise.all([
-        tauriCommands.readSnapshot(vault.path, activeTabPath, snap.id),
-        tauriCommands.readNote(vault.path, activeTabPath).then((n) => n.content),
-      ]);
-      setDiffState({ snapshot: snapshotContent, current: noteContent });
-    } catch {}
-  };
-
-  const handleRestore = async (snap: SnapshotMeta) => {
-    if (!vault || !activeTabPath) return;
-    setRestoringId(snap.id);
-    try {
-      await tauriCommands.restoreSnapshot(vault.path, activeTabPath, snap.id, myUserId, myUserName);
+      await tauriCommands.restoreSnapshot(vault.path, activeTabPath, snapshot.id, myUserId, myUserName);
       setForceReloadPath(activeTabPath);
-      load();
-    } catch {
+      await load();
     } finally {
       setRestoringId(null);
     }
-  };
+  }, [activeTabPath, load, myUserId, myUserName, setForceReloadPath, vault?.path]);
 
   if (!activeTabPath) {
     return (
@@ -118,9 +69,14 @@ export function HistoryPanel() {
 
   return (
     <>
-      <div className="flex flex-col">
-        <div className="px-3 py-2 border-b border-border/50">
-          <p className="text-xs text-muted-foreground truncate">{activeTabPath.split('/').pop()}</p>
+      <div className="flex h-full flex-col">
+        <div className="border-b border-border/50 px-3 py-3">
+          <p className="truncate text-xs font-medium text-foreground">{activeTabPath.split('/').pop()}</p>
+          <p className="mt-1 truncate text-[11px] text-muted-foreground">{activeTabPath}</p>
+          <Button className="mt-3 w-full justify-center" variant="outline" size="sm" onClick={() => setHistoryModalOpen(true)}>
+            <Eye size={14} />
+            Open full history
+          </Button>
         </div>
         {loading ? (
           <p className="px-3 py-6 text-xs text-muted-foreground text-center">Loading...</p>
@@ -129,30 +85,30 @@ export function HistoryPanel() {
             No snapshots yet. Save this document to create one.
           </p>
         ) : (
-          <div className="flex flex-col divide-y divide-border/40">
-            {snapshots.map((snap) => (
-              <div key={snap.id} className="flex items-center gap-2 px-3 py-2.5 hover:bg-muted/30 transition-colors group">
-                <Clock size={13} className="text-muted-foreground flex-shrink-0 mt-0.5" />
-                <div className="flex-1 min-w-0">
-                  <p className="text-xs font-medium truncate">
-                    {snap.label ?? relativeTime(snap.timestamp)}
+          <div className="flex min-h-0 flex-1 flex-col overflow-y-auto divide-y divide-border/40">
+            {snapshots.slice(0, 8).map((snapshot) => (
+              <div key={snapshot.id} className="flex items-center gap-2 px-3 py-2.5 hover:bg-muted/30 transition-colors group">
+                <Clock3 size={13} className="mt-0.5 shrink-0 text-muted-foreground" />
+                <div className="min-w-0 flex-1">
+                  <p className="truncate text-xs font-medium">
+                    {snapshot.label ?? relativeTime(snapshot.timestamp)}
                   </p>
                   <p className="text-[10px] text-muted-foreground">
-                    {snap.authorName} · {relativeTime(snap.timestamp)}
+                    {snapshot.authorName} · {relativeTime(snapshot.timestamp)}
                   </p>
                 </div>
-                <div className="flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                <div className="flex gap-1 opacity-0 transition-opacity group-hover:opacity-100">
                   <button
-                    onClick={() => handleView(snap)}
-                    className="p-1 rounded hover:bg-muted text-muted-foreground hover:text-foreground"
-                    title="View"
+                    onClick={() => setHistoryModalOpen(true)}
+                    className="rounded p-1 text-muted-foreground hover:bg-muted hover:text-foreground"
+                    title="View full history"
                   >
                     <Eye size={13} />
                   </button>
                   <button
-                    onClick={() => handleRestore(snap)}
-                    disabled={restoringId === snap.id}
-                    className="p-1 rounded hover:bg-muted text-muted-foreground hover:text-foreground disabled:opacity-40"
+                    onClick={() => void handleRestore(snapshot)}
+                    disabled={restoringId === snapshot.id}
+                    className="rounded p-1 text-muted-foreground hover:bg-muted hover:text-foreground disabled:opacity-40"
                     title="Restore"
                   >
                     <RotateCcw size={13} />
@@ -163,13 +119,11 @@ export function HistoryPanel() {
           </div>
         )}
       </div>
-      {diffState && (
-        <DiffModal
-          snapshotContent={diffState.snapshot}
-          currentContent={diffState.current}
-          onClose={() => setDiffState(null)}
-        />
-      )}
+      <VersionHistoryModal
+        open={historyModalOpen}
+        relativePath={activeTabPath}
+        onOpenChange={setHistoryModalOpen}
+      />
     </>
   );
 }

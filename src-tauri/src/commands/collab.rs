@@ -347,6 +347,57 @@ pub fn read_snapshot(
 }
 
 #[tauri::command]
+pub fn delete_snapshot(
+    vault_path: String,
+    relative_path: String,
+    snapshot_id: String,
+) -> Result<(), String> {
+    let dir = history_dir(&vault_path).join(path_key(&relative_path));
+    let index_path = dir.join("index.json");
+
+    if !index_path.exists() {
+      return Ok(());
+    }
+
+    let data = std::fs::read_to_string(&index_path).map_err(|e| e.to_string())?;
+    let mut index: Vec<SnapshotMeta> = serde_json::from_str(&data).unwrap_or_default();
+    index.retain(|entry| entry.id != snapshot_id);
+
+    let snap_path = dir.join(format!("{}.snap", snapshot_id));
+    if snap_path.exists() {
+        std::fs::remove_file(&snap_path).map_err(|e| e.to_string())?;
+    }
+
+    if index.is_empty() {
+        if index_path.exists() {
+            std::fs::remove_file(&index_path).map_err(|e| e.to_string())?;
+        }
+        if dir.exists() {
+            let _ = std::fs::remove_dir(&dir);
+        }
+        return Ok(());
+    }
+
+    let serialized = serde_json::to_string_pretty(&index).map_err(|e| e.to_string())?;
+    let tmp = index_path.with_extension("tmp");
+    std::fs::write(&tmp, serialized).map_err(|e| e.to_string())?;
+    std::fs::rename(&tmp, &index_path).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+pub fn clear_snapshot_history(
+    vault_path: String,
+    relative_path: String,
+) -> Result<(), String> {
+    let dir = history_dir(&vault_path).join(path_key(&relative_path));
+    if dir.exists() {
+        std::fs::remove_dir_all(&dir).map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+#[tauri::command]
 pub fn restore_snapshot(
     vault_path: String,
     relative_path: String,
@@ -506,8 +557,9 @@ pub fn remove_member(
 #[cfg(test)]
 mod tests {
     use super::{
-        clear_presence, create_snapshot, list_snapshots, path_key, persist_chat_message,
-        read_all_presence, read_chat_messages, read_snapshot, write_presence,
+        clear_presence, clear_snapshot_history, create_snapshot, delete_snapshot, list_snapshots,
+        path_key, persist_chat_message, read_all_presence, read_chat_messages, read_snapshot,
+        write_presence,
     };
     use crate::{
         models::{
@@ -664,6 +716,61 @@ mod tests {
         assert_eq!(snapshots.len(), 50);
         assert_eq!(snapshots.first().map(|meta| meta.label.clone()), Some(None));
         assert_eq!(snapshots.last().map(|meta| meta.id.as_str()).is_some(), true);
+    }
+
+    #[test]
+    fn delete_snapshot_removes_only_target_entry() {
+        let vault = TempVault::new().expect("temp vault should exist");
+
+        let first = create_snapshot(
+            vault.path_string(),
+            "Notes/Test.md".into(),
+            "first".into(),
+            "user".into(),
+            "User".into(),
+            None,
+        )
+        .expect("first snapshot should create");
+
+        let second = create_snapshot(
+            vault.path_string(),
+            "Notes/Test.md".into(),
+            "second".into(),
+            "user".into(),
+            "User".into(),
+            None,
+        )
+        .expect("second snapshot should create");
+
+        delete_snapshot(vault.path_string(), "Notes/Test.md".into(), second.id.clone())
+            .expect("snapshot should delete");
+
+        let snapshots = list_snapshots(vault.path_string(), "Notes/Test.md".into())
+            .expect("snapshots should list");
+        assert_eq!(snapshots.len(), 1);
+        assert_eq!(snapshots[0].id, first.id);
+    }
+
+    #[test]
+    fn clear_snapshot_history_removes_all_entries() {
+        let vault = TempVault::new().expect("temp vault should exist");
+
+        create_snapshot(
+            vault.path_string(),
+            "Notes/Test.md".into(),
+            "first".into(),
+            "user".into(),
+            "User".into(),
+            None,
+        )
+        .expect("snapshot should create");
+
+        clear_snapshot_history(vault.path_string(), "Notes/Test.md".into())
+            .expect("history should clear");
+
+        let snapshots = list_snapshots(vault.path_string(), "Notes/Test.md".into())
+            .expect("snapshots should list");
+        assert!(snapshots.is_empty());
     }
 
     #[test]

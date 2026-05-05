@@ -78,7 +78,7 @@ describe('useCanvasNodeCommands', () => {
       position: { x: 100, y: 50 },
       width: 300,
       height: 180,
-    });
+    }, undefined);
     expect(setPickerMode).toHaveBeenCalledWith(null);
   });
 

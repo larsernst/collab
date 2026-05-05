@@ -69,6 +69,7 @@ export default function SettingsModal() {
     webPreviewsEnabled, setWebPreviewsEnabled,
     hoverWebLinkPreviewsEnabled, setHoverWebLinkPreviewsEnabled,
     backgroundWebPreviewPrefetchEnabled, setBackgroundWebPreviewPrefetchEnabled,
+    fileTreeHoverPreviewsEnabled, setFileTreeHoverPreviewsEnabled,
   } = useUiStore();
 
   const { myUserName, myUserColor, myUserId, setMyProfile } = useCollabStore();
@@ -164,6 +165,8 @@ export default function SettingsModal() {
                 setHoverWebLinkPreviewsEnabled={setHoverWebLinkPreviewsEnabled}
                 backgroundWebPreviewPrefetchEnabled={backgroundWebPreviewPrefetchEnabled}
                 setBackgroundWebPreviewPrefetchEnabled={setBackgroundWebPreviewPrefetchEnabled}
+                fileTreeHoverPreviewsEnabled={fileTreeHoverPreviewsEnabled}
+                setFileTreeHoverPreviewsEnabled={setFileTreeHoverPreviewsEnabled}
                 confirmDelete={confirmDelete}
                 setConfirmDelete={setConfirmDelete}
               />

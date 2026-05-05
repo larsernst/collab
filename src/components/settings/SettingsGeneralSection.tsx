@@ -11,6 +11,8 @@ type Props = {
   setHoverWebLinkPreviewsEnabled: (value: boolean) => void;
   backgroundWebPreviewPrefetchEnabled: boolean;
   setBackgroundWebPreviewPrefetchEnabled: (value: boolean) => void;
+  fileTreeHoverPreviewsEnabled: boolean;
+  setFileTreeHoverPreviewsEnabled: (value: boolean) => void;
   confirmDelete: boolean;
   setConfirmDelete: (value: boolean) => void;
 };
@@ -24,6 +26,8 @@ export default function SettingsGeneralSection({
   setHoverWebLinkPreviewsEnabled,
   backgroundWebPreviewPrefetchEnabled,
   setBackgroundWebPreviewPrefetchEnabled,
+  fileTreeHoverPreviewsEnabled,
+  setFileTreeHoverPreviewsEnabled,
   confirmDelete,
   setConfirmDelete,
 }: Props) {
@@ -76,6 +80,17 @@ export default function SettingsGeneralSection({
           checked={backgroundWebPreviewPrefetchEnabled}
           onToggle={() => setBackgroundWebPreviewPrefetchEnabled(!backgroundWebPreviewPrefetchEnabled)}
           disabled={!webPreviewsEnabled || !hoverWebLinkPreviewsEnabled}
+          animated
+        />
+      </OptionRow>
+
+      <OptionRow
+        label="Hover previews in file tree"
+        description="Show a lightweight image or PDF preview beside supported files when hovering them in the file tree"
+      >
+        <ToggleSwitch
+          checked={fileTreeHoverPreviewsEnabled}
+          onToggle={() => setFileTreeHoverPreviewsEnabled(!fileTreeHoverPreviewsEnabled)}
           animated
         />
       </OptionRow>

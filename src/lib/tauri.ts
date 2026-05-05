@@ -297,6 +297,10 @@ export const tauriCommands = {
     invoke<SnapshotMeta[]>('list_snapshots', { vaultPath, relativePath }),
   readSnapshot: (vaultPath: string, relativePath: string, snapshotId: string) =>
     invoke<string>('read_snapshot', { vaultPath, relativePath, snapshotId }),
+  deleteSnapshot: (vaultPath: string, relativePath: string, snapshotId: string) =>
+    invoke<void>('delete_snapshot', { vaultPath, relativePath, snapshotId }),
+  clearSnapshotHistory: (vaultPath: string, relativePath: string) =>
+    invoke<void>('clear_snapshot_history', { vaultPath, relativePath }),
   restoreSnapshot: (
     vaultPath: string,
     relativePath: string,

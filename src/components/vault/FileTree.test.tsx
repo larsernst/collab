@@ -40,11 +40,25 @@ vi.mock('./FileReferencesPanel', () => ({
   default: () => null,
 }));
 
+vi.mock('../previews/FileTreeHoverPreviewPopover', () => ({
+  FileTreeHoverPreviewPopover: ({ relativePath, type, enabled }: { relativePath: string | null; type: string | null; enabled: boolean }) => (
+    enabled && relativePath && type ? <div data-testid="file-hover-preview">{`${type}:${relativePath}`}</div> : null
+  ),
+}));
+
+vi.mock('../collaboration/history/VersionHistoryModal', () => ({
+  VersionHistoryModal: ({ open, relativePath }: { open: boolean; relativePath: string | null }) => (
+    open && relativePath ? <div data-testid="version-history-modal">{relativePath}</div> : null
+  ),
+}));
+
 vi.mock('../ui/context-menu', () => ({
   ContextMenu: ({ children }: { children: React.ReactNode }) => <>{children}</>,
   ContextMenuTrigger: ({ children }: { children: React.ReactNode }) => <>{children}</>,
   ContextMenuContent: ({ children }: { children: React.ReactNode }) => <>{children}</>,
-  ContextMenuItem: ({ children }: { children: React.ReactNode }) => <>{children}</>,
+  ContextMenuItem: ({ children, onClick, className }: { children: React.ReactNode; onClick?: () => void; className?: string }) => (
+    <button type="button" onClick={onClick} className={className}>{children}</button>
+  ),
   ContextMenuSeparator: () => null,
 }));
 
@@ -117,6 +131,7 @@ describe('FileTree folder collapse state', () => {
       isSettingsOpen: false,
       isVaultManagerOpen: false,
       confirmDelete: true,
+      fileTreeHoverPreviewsEnabled: true,
     });
 
     useCollabStore.setState({
@@ -148,5 +163,71 @@ describe('FileTree folder collapse state', () => {
     render(<FileTree />);
 
     expect(screen.queryByText('child.md')).toBeNull();
+  });
+
+  it('shows a PDF hover preview when enabled', () => {
+    useVaultStore.setState({
+      ...useVaultStore.getState(),
+      fileTree: [
+        {
+          relativePath: 'Docs/spec.pdf',
+          name: 'spec.pdf',
+          extension: 'pdf',
+          modifiedAt: 1,
+          size: 10,
+          isFolder: false,
+        },
+      ],
+    });
+
+    render(<FileTree />);
+
+    fireEvent.mouseEnter(screen.getByText('spec.pdf'));
+
+    expect(screen.getByTestId('file-hover-preview').textContent).toBe('pdf:Docs/spec.pdf');
+  });
+
+  it('shows an image hover preview when enabled', () => {
+    useVaultStore.setState({
+      ...useVaultStore.getState(),
+      fileTree: [
+        {
+          relativePath: 'Pictures/demo.png',
+          name: 'demo.png',
+          extension: 'png',
+          modifiedAt: 1,
+          size: 10,
+          isFolder: false,
+        },
+      ],
+    });
+
+    render(<FileTree />);
+
+    fireEvent.mouseEnter(screen.getByText('demo.png'));
+
+    expect(screen.getByTestId('file-hover-preview').textContent).toBe('image:Pictures/demo.png');
+  });
+
+  it('opens version history from the file context menu for supported files', () => {
+    useVaultStore.setState({
+      ...useVaultStore.getState(),
+      fileTree: [
+        {
+          relativePath: 'Docs/plan.md',
+          name: 'plan.md',
+          extension: 'md',
+          modifiedAt: 1,
+          size: 10,
+          isFolder: false,
+        },
+      ],
+    });
+
+    render(<FileTree />);
+
+    fireEvent.click(screen.getByText('View version history'));
+
+    expect(screen.getByTestId('version-history-modal').textContent).toBe('Docs/plan.md');
   });
 });
