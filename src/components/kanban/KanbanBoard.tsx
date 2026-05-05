@@ -87,6 +87,7 @@ import {
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../ui/select';
 import {
   DocumentTopBar,
+  DocumentTopBarButton,
   documentTopBarGroupClass,
   getDocumentBaseName,
   getDocumentFolderPath,
@@ -1109,59 +1110,55 @@ export default function KanbanBoardView() {
         secondary={
           <>
             <div className={documentTopBarGroupClass}>
-              <button
+              <DocumentTopBarButton
                 onClick={() => setView('board')}
                 className={cn(
-                  'flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs font-medium transition-colors',
                   view === 'board'
                     ? 'bg-accent text-accent-foreground'
                     : 'text-muted-foreground hover:text-foreground',
                 )}
               >
-                <LayoutDashboard size={12} />
+                <LayoutDashboard size={14} />
                 Board
-              </button>
-              <button
+              </DocumentTopBarButton>
+              <DocumentTopBarButton
                 onClick={() => setView('calendar')}
                 className={cn(
-                  'flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs font-medium transition-colors',
                   view === 'calendar'
                     ? 'bg-accent text-accent-foreground'
                     : 'text-muted-foreground hover:text-foreground',
                 )}
               >
-                <CalendarDays size={12} />
+                <CalendarDays size={14} />
                 Calendar
-              </button>
-              <button
+              </DocumentTopBarButton>
+              <DocumentTopBarButton
                 onClick={() => setView('timeline')}
                 className={cn(
-                  'flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs font-medium transition-colors',
                   view === 'timeline'
                     ? 'bg-accent text-accent-foreground'
                     : 'text-muted-foreground hover:text-foreground',
                 )}
               >
-                <GanttChart size={12} />
+                <GanttChart size={14} />
                 Timeline
-              </button>
-              <button
+              </DocumentTopBarButton>
+              <DocumentTopBarButton
                 onClick={() => setView('archive')}
                 className={cn(
-                  'flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs font-medium transition-colors',
                   view === 'archive'
                     ? 'bg-accent text-accent-foreground'
                     : 'text-muted-foreground hover:text-foreground',
                 )}
               >
-                <Archive size={12} />
+                <Archive size={14} />
                 Archive
                 {archivedCount > 0 && (
                   <span className="rounded-full bg-background/70 px-1.5 py-0.5 text-[10px] leading-none">
                     {archivedCount}
                   </span>
                 )}
-              </button>
+              </DocumentTopBarButton>
             </div>
 
             {view === 'board' && (
@@ -1169,10 +1166,10 @@ export default function KanbanBoardView() {
                 <div className={documentTopBarGroupClass}>
                   <DropdownMenu>
                     <DropdownMenuTrigger asChild>
-                      <Button size="sm" variant="ghost" className="h-8 min-w-[170px] justify-between gap-1.5 px-2.5 text-xs">
+                      <DocumentTopBarButton>
                         <span className="truncate">Swimlanes: {activeSwimlaneLabel}</span>
                         <ChevronDown size={13} />
-                      </Button>
+                      </DocumentTopBarButton>
                     </DropdownMenuTrigger>
                     <DropdownMenuContent align="start" className="min-w-[180px]">
                       <DropdownMenuLabel>Swimlanes</DropdownMenuLabel>
@@ -1197,10 +1194,10 @@ export default function KanbanBoardView() {
                   </DropdownMenu>
                   <DropdownMenu>
                     <DropdownMenuTrigger asChild>
-                      <Button size="sm" variant="ghost" className="h-8 min-w-[150px] justify-between gap-1.5 px-2.5 text-xs">
+                      <DocumentTopBarButton>
                         <span className="truncate">Filter: {activeFilterLabel}</span>
                         <ChevronDown size={13} />
-                      </Button>
+                      </DocumentTopBarButton>
                     </DropdownMenuTrigger>
                     <DropdownMenuContent align="start" className="min-w-[180px]">
                       <DropdownMenuLabel>Filters</DropdownMenuLabel>
@@ -1225,22 +1222,19 @@ export default function KanbanBoardView() {
                       </DropdownMenuRadioGroup>
                     </DropdownMenuContent>
                   </DropdownMenu>
-                  <Button
-                    size="sm"
-                    variant="ghost"
+                  <DocumentTopBarButton
                     onClick={() => {
                       setWorkingFilter(activeFilter?.spec ?? workingFilter);
                       setFilterDialogOpen(true);
                     }}
-                    className="h-8 gap-1.5 px-2.5 text-xs text-muted-foreground"
                   >
                     <Filter size={12} />
                     Filter
-                  </Button>
+                  </DocumentTopBarButton>
                 </div>
 
                 <div className={documentTopBarGroupClass}>
-                  <button
+                  <DocumentTopBarButton
                     onClick={() => updateBoard((prev) => ({
                       ...prev,
                       viewSettings: {
@@ -1248,35 +1242,31 @@ export default function KanbanBoardView() {
                         statsPanelOpen: !(prev.viewSettings?.statsPanelOpen ?? false),
                       },
                     }))}
-                    className="flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs font-medium text-muted-foreground transition-colors hover:text-foreground"
                   >
-                    <BarChart3 size={12} />
+                    <BarChart3 size={14} />
                     Stats
-                  </button>
-                  <button
+                  </DocumentTopBarButton>
+                  <DocumentTopBarButton
                     onClick={() => setAutomationDialogOpen(true)}
-                    className="flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs font-medium text-muted-foreground transition-colors hover:text-foreground"
                   >
-                    <Bot size={12} />
+                    <Bot size={14} />
                     Automations
-                  </button>
-                  <button
+                  </DocumentTopBarButton>
+                  <DocumentTopBarButton
                     onClick={runAutomationsNow}
-                    className="flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs font-medium text-muted-foreground transition-colors hover:text-foreground"
                   >
-                    <Play size={12} />
+                    <Play size={14} />
                     Run automations
-                  </button>
+                  </DocumentTopBarButton>
                 </div>
 
                 <div className={documentTopBarGroupClass}>
-                  <button
+                  <DocumentTopBarButton
                     onClick={() => setAddingColumn(true)}
-                    className="flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs font-medium text-muted-foreground transition-colors hover:text-foreground"
                   >
-                    <Plus size={12} />
+                    <Plus size={14} />
                     Add column
-                  </button>
+                  </DocumentTopBarButton>
                 </div>
               </>
             )}

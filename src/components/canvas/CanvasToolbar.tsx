@@ -15,7 +15,11 @@ import {
   Users,
 } from 'lucide-react';
 
-import { documentTopBarGroupClass } from '../layout/DocumentTopBar';
+import {
+  DocumentTopBarButton,
+  DocumentTopBarIconButton,
+  documentTopBarGroupClass,
+} from '../layout/DocumentTopBar';
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -24,7 +28,6 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from '../ui/dropdown-menu';
-import { Button } from '../ui/button';
 import type { PlanningCanvasNode } from '../../types/canvas';
 import type { CanvasPlanningPreset } from './canvasPlanning';
 
@@ -58,29 +61,29 @@ export function CanvasToolbar({
   return (
     <>
       <div className={documentTopBarGroupClass}>
-        <Button size="sm" variant="ghost" className="h-8 gap-1.5 px-2.5 text-xs" onClick={onAddNote}>
+        <DocumentTopBarButton onClick={onAddNote}>
           <Plus size={14} />
           Add note
-        </Button>
-        <Button size="sm" variant="ghost" className="h-8 gap-1.5 px-2.5 text-xs" onClick={onAddFile}>
+        </DocumentTopBarButton>
+        <DocumentTopBarButton onClick={onAddFile}>
           <FileText size={14} />
           Add file
-        </Button>
-        <Button size="sm" variant="ghost" className="h-8 gap-1.5 px-2.5 text-xs" onClick={onAddText}>
+        </DocumentTopBarButton>
+        <DocumentTopBarButton onClick={onAddText}>
           <PencilLine size={14} />
           Add text
-        </Button>
-        <Button size="sm" variant="ghost" className="h-8 gap-1.5 px-2.5 text-xs" onClick={onAddWeb}>
+        </DocumentTopBarButton>
+        <DocumentTopBarButton onClick={onAddWeb}>
           <Globe size={14} />
           Add web
-        </Button>
+        </DocumentTopBarButton>
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
-            <Button size="sm" variant="ghost" className="h-8 gap-1.5 px-2.5 text-xs">
+            <DocumentTopBarButton>
               <Route size={14} />
               Planning
               <ChevronDown size={13} />
-            </Button>
+            </DocumentTopBarButton>
           </DropdownMenuTrigger>
           <DropdownMenuContent align="start" className="w-60">
             <DropdownMenuLabel>Flow</DropdownMenuLabel>
@@ -132,11 +135,11 @@ export function CanvasToolbar({
         </DropdownMenu>
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
-            <Button size="sm" variant="ghost" className="h-8 gap-1.5 px-2.5 text-xs">
+            <DocumentTopBarButton>
               <Plus size={14} />
               Presets
               <ChevronDown size={13} />
-            </Button>
+            </DocumentTopBarButton>
           </DropdownMenuTrigger>
           <DropdownMenuContent align="start" className="w-56">
             <DropdownMenuItem onSelect={() => onApplyPreset('flowchart')}>Flowchart</DropdownMenuItem>
@@ -149,9 +152,9 @@ export function CanvasToolbar({
       </div>
 
       <div className={documentTopBarGroupClass}>
-        <Button size="icon" variant="ghost" className="size-8" onClick={onZoomOut} title="Zoom out">
+        <DocumentTopBarIconButton onClick={onZoomOut} title="Zoom out">
           <Minus size={15} />
-        </Button>
+        </DocumentTopBarIconButton>
         <button
           type="button"
           onClick={onResetZoom}
@@ -160,20 +163,20 @@ export function CanvasToolbar({
         >
           {zoomLabel}
         </button>
-        <Button size="icon" variant="ghost" className="size-8" onClick={onZoomIn} title="Zoom in">
+        <DocumentTopBarIconButton onClick={onZoomIn} title="Zoom in">
           <PlusIcon size={15} />
-        </Button>
+        </DocumentTopBarIconButton>
       </div>
 
       <div className={documentTopBarGroupClass}>
-        <Button size="sm" variant="ghost" className="h-8 gap-1.5 px-2.5 text-xs" onClick={onFitView}>
+        <DocumentTopBarButton onClick={onFitView}>
           <Maximize2 size={14} />
           Fit view
-        </Button>
-        <Button size="sm" variant="ghost" className="h-8 gap-1.5 px-2.5 text-xs" onClick={onResetZoom}>
+        </DocumentTopBarButton>
+        <DocumentTopBarButton onClick={onResetZoom}>
           <RotateCcw size={14} />
           Reset zoom
-        </Button>
+        </DocumentTopBarButton>
       </div>
 
       <div className="hidden items-center gap-2 rounded-xl border border-border/60 bg-card/45 px-2.5 py-1 text-xs text-muted-foreground lg:flex">

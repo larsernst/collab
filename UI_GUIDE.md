@@ -112,6 +112,7 @@ Rules:
 
 - row 1 contains icon, title, path/subtitle, and compact metadata
 - row 2 contains grouped controls when needed
+- row 2 controls should use the shared `DocumentTopBar` control primitives instead of bespoke per-view button sizing
 - controls in the secondary row should be horizontally scrollable rather than wrapping into chaos
 - do not create bespoke document headers unless the shared pattern is being evolved for everyone
 
@@ -122,13 +123,14 @@ Toolbar controls should be visually chunked into small groups.
 Use:
 
 - rounded group containers
-- compact icon buttons
+- compact icon buttons sized through shared toolbar primitives when they live inside `DocumentTopBar`
 - consistent hover/focus treatment
 - tooltips for icon-only buttons
 
 Avoid:
 
 - long undifferentiated button rows
+- mixing different button heights, paddings, or icon scales inside the same toolbar family
 - mixing unrelated controls into one visual cluster
 
 ### Sidebars
@@ -294,4 +296,3 @@ When making UI changes:
 - Structural reference: `CODEBASE.md`
 - Agent/project implementation rules: `AGENTS.md`
 - Additional model-facing guidance: `CLAUDE.md`
-

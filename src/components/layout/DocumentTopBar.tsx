@@ -1,8 +1,11 @@
-import type { ReactNode } from 'react';
+import type { ComponentProps, ReactNode } from 'react';
 import { cn } from '../../lib/utils';
+import { Button } from '../ui/button';
 
 export const documentTopBarGroupClass =
   'flex items-center rounded-xl border border-border/60 bg-card/65 p-1 shadow-sm shadow-black/5';
+export const documentTopBarButtonClass = 'h-8 gap-1.5 px-2.5 text-xs';
+export const documentTopBarIconButtonClass = 'size-8';
 
 interface DocumentTopBarProps {
   title: string;
@@ -23,6 +26,38 @@ export function getDocumentFolderPath(relativePath: string | null | undefined) {
   if (!relativePath) return 'Vault root';
   const parts = relativePath.split('/');
   return parts.length > 1 ? parts.slice(0, -1).join('/') : 'Vault root';
+}
+
+export function DocumentTopBarButton({
+  className,
+  size = 'sm',
+  variant = 'ghost',
+  ...props
+}: ComponentProps<typeof Button>) {
+  return (
+    <Button
+      size={size}
+      variant={variant}
+      className={cn(documentTopBarButtonClass, className)}
+      {...props}
+    />
+  );
+}
+
+export function DocumentTopBarIconButton({
+  className,
+  size = 'icon',
+  variant = 'ghost',
+  ...props
+}: ComponentProps<typeof Button>) {
+  return (
+    <Button
+      size={size}
+      variant={variant}
+      className={cn(documentTopBarIconButtonClass, className)}
+      {...props}
+    />
+  );
 }
 
 export function DocumentTopBar({

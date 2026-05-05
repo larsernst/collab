@@ -218,6 +218,7 @@ export default function CalendarView() {
   const [anchorDate, setAnchorDate] = useState<Date>(() => toDateOnly(Date.now()));
   const [sortOrder,  setSortOrder]  = useState<CalendarSort>('default');
   const [filterUser, setFilterUser] = useState<string | null>(null);
+  const [yearSummaryIncludesHiddenColumns, setYearSummaryIncludesHiddenColumns] = useState(true);
   const [openCard,   setOpenCard]   = useState<{ card: KanbanCard; columnId: string } | null>(null);
   const [dayModal,   setDayModal]   = useState<Date | null>(null);
   const [pickerOpen, setPickerOpen] = useState(false);
@@ -280,13 +281,13 @@ export default function CalendarView() {
     }
   }
 
-  // Build flat card list — exclude hidden columns and cards without any explicit date
-  const flatCards = useMemo(() =>
+  // Build flat card list for calendar scheduling — exclude hidden columns and cards without any explicit date
+  const datedCards = useMemo(() =>
     board.columns
       .filter((col: KanbanColumn) => !col.hideFromTimeline)
       .flatMap((col: KanbanColumn) =>
         col.cards
-          .filter(card => !card.archived && (card.startDate || card.dueDate))
+          .filter(card => card.startDate || card.dueDate)
           .map(card => ({
             card,
             columnId: col.id,
@@ -296,9 +297,38 @@ export default function CalendarView() {
       ),
   [board]);
 
+  const yearSummaryCards = useMemo(() =>
+    board.columns
+      .filter((col: KanbanColumn) => yearSummaryIncludesHiddenColumns || !col.hideFromTimeline)
+      .flatMap((col: KanbanColumn) =>
+        col.cards
+          .filter((card) => {
+            if (card.archived) {
+              return Boolean(card.startDate || card.dueDate || typeof card.archivedAt === 'number');
+            }
+            return Boolean(card.startDate || card.dueDate);
+          })
+          .map((card) => ({
+            card,
+            columnId: col.id,
+            colColor: col.color ?? '#64748b',
+            colTitle: col.title,
+          })),
+      ),
+  [board, yearSummaryIncludesHiddenColumns]);
+
+  const flatCards = useMemo(
+    () => datedCards.filter(({ card }) => !card.archived),
+    [datedCards],
+  );
+
   const filteredCards = useMemo(() =>
     filterUser ? flatCards.filter(({ card }) => card.assignees.includes(filterUser)) : flatCards,
   [flatCards, filterUser]);
+
+  const filteredYearCards = useMemo(() =>
+    filterUser ? yearSummaryCards.filter(({ card }) => card.assignees.includes(filterUser)) : yearSummaryCards,
+  [yearSummaryCards, filterUser]);
 
   const sortedCards = useMemo(() => {
     const cards = [...filteredCards];
@@ -330,11 +360,25 @@ export default function CalendarView() {
     return effectiveStart(card);
   }
 
+  function effectiveArchivedAt(card: Pick<KanbanCard, 'archivedAt'>): Date | null {
+    return typeof card.archivedAt === 'number' ? toDateOnly(card.archivedAt) : null;
+  }
+
+  function archivedMatchesMonth(card: KanbanCard, monthAnchor: Date, monthEnd: Date): boolean {
+    const matchesScheduledRange = Boolean(card.startDate || card.dueDate)
+      && effectiveStart(card) <= monthEnd
+      && effectiveEnd(card) >= monthAnchor;
+    if (matchesScheduledRange) return true;
+
+    const archivedAt = effectiveArchivedAt(card);
+    return archivedAt !== null && archivedAt >= monthAnchor && archivedAt <= monthEnd;
+  }
+
   // All known users who appear on at least one card
   const activeUsers = useMemo(() => {
-    const ids = new Set(flatCards.flatMap(({ card }) => card.assignees));
+    const ids = new Set(datedCards.flatMap(({ card }) => card.assignees));
     return knownUsers.filter(u => ids.has(u.userId));
-  }, [flatCards, knownUsers]);
+  }, [datedCards, knownUsers]);
 
   // Cards active on a specific day
   function cardsForDay(day: Date) {
@@ -522,22 +566,41 @@ export default function CalendarView() {
   // ── Year view ─────────────────────────────────────────────────────────────
 
   function renderYearView() {
+    const monthlyStats = Array.from({ length: 12 }, (_, mi) => {
+      const monthAnchor = new Date(anchorYear, mi, 1);
+      const monthEnd = new Date(anchorYear, mi + 1, 0);
+      const activeCount = filteredYearCards.filter(({ card }) => {
+        if (card.archived) return false;
+        const s = effectiveStart(card);
+        const e = effectiveEnd(card);
+        return s <= monthEnd && e >= monthAnchor;
+      }).length;
+      const archivedCount = filteredYearCards.filter(({ card }) => {
+        if (!card.archived) return false;
+        return archivedMatchesMonth(card, monthAnchor, monthEnd);
+      }).length;
+      const totalCount = activeCount + archivedCount;
+      return {
+        monthIndex: mi,
+        monthAnchor,
+        totalCount,
+        activeCount,
+        archivedCount,
+      };
+    });
+    const maxMonthCount = Math.max(1, ...monthlyStats.map((month) => month.totalCount));
+
     return (
       <div className="flex-1 overflow-y-auto p-4">
         <div className="grid grid-cols-4 gap-3">
-          {Array.from({ length: 12 }, (_, mi) => {
-            const monthAnchor = new Date(anchorYear, mi, 1);
-            const monthEnd    = new Date(anchorYear, mi + 1, 0);
-            const monthCards  = sortedCards.filter(({ card }) => {
-              const s = effectiveStart(card);
-              const e = effectiveEnd(card);
-              return s <= monthEnd && e >= monthAnchor;
-            });
-            const isCurrentMonth = mi === today.getMonth() && anchorYear === today.getFullYear();
-            const density = Math.min(100, monthCards.length * 8);
+          {monthlyStats.map(({ monthIndex, monthAnchor, totalCount, activeCount, archivedCount }) => {
+            const isCurrentMonth = monthIndex === today.getMonth() && anchorYear === today.getFullYear();
+            const totalWidth = totalCount === 0 ? 0 : Math.max(8, (totalCount / maxMonthCount) * 100);
+            const activeWidth = totalCount === 0 ? 0 : (activeCount / totalCount) * totalWidth;
+            const archivedWidth = totalCount === 0 ? 0 : (archivedCount / totalCount) * totalWidth;
             return (
               <button
-                key={mi}
+                key={monthIndex}
                 onClick={() => { setAnchorDate(monthAnchor); setViewMode('month'); }}
                 className={cn(
                   'rounded-lg border border-border/20 p-3 text-left hover:bg-accent/30 transition-colors',
@@ -545,13 +608,31 @@ export default function CalendarView() {
                 )}
               >
                 <div className={cn('text-sm font-semibold mb-1', isCurrentMonth ? 'text-primary' : 'text-foreground')}>
-                  {MONTH_SHORT[mi]}
+                  {MONTH_SHORT[monthIndex]}
                 </div>
                 <div className="text-[11px] text-muted-foreground mb-2">
-                  {monthCards.length} {monthCards.length === 1 ? 'task' : 'tasks'}
+                  {totalCount} total
+                  {totalCount !== activeCount ? ` · ${activeCount} active` : ''}
                 </div>
-                <div className="h-1 rounded-full bg-muted/40 overflow-hidden">
-                  <div className="h-full bg-primary/60 rounded-full" style={{ width: `${density}%` }} />
+                <div className="h-2 rounded-full bg-muted/35 overflow-hidden">
+                  <div className="flex h-full rounded-full overflow-hidden" style={{ width: `${totalWidth}%` }}>
+                    {activeWidth > 0 && (
+                      <div className="h-full bg-primary/70" style={{ width: `${activeWidth}%` }} />
+                    )}
+                    {archivedWidth > 0 && (
+                      <div className="h-full bg-amber-500/45 dark:bg-amber-400/35" style={{ width: `${archivedWidth}%` }} />
+                    )}
+                  </div>
+                </div>
+                <div className="mt-2 flex items-center gap-3 text-[10px] text-muted-foreground">
+                  <span className="flex items-center gap-1">
+                    <span className="size-2 rounded-full bg-primary/70" />
+                    Active {activeCount}
+                  </span>
+                  <span className="flex items-center gap-1">
+                    <span className="size-2 rounded-full bg-amber-500/45 dark:bg-amber-400/35" />
+                    Archived {archivedCount}
+                  </span>
                 </div>
               </button>
             );
@@ -653,6 +734,20 @@ export default function CalendarView() {
             ))}
           </DropdownMenuContent>
         </DropdownMenu>
+
+        {viewMode === 'year' && (
+          <button
+            onClick={() => setYearSummaryIncludesHiddenColumns((current) => !current)}
+            className={cn(
+              'flex items-center gap-1.5 h-7 px-2.5 rounded-md border text-[11px] transition-colors',
+              yearSummaryIncludesHiddenColumns
+                ? 'border-primary/30 bg-primary/10 text-foreground'
+                : 'border-border/40 bg-background text-muted-foreground hover:text-foreground hover:bg-accent/50',
+            )}
+          >
+            {yearSummaryIncludesHiddenColumns ? 'Including hidden columns' : 'Ignoring hidden columns'}
+          </button>
+        )}
 
         {/* Assignee filter */}
         {activeUsers.length > 0 && (
