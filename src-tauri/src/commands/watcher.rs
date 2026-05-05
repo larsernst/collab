@@ -18,6 +18,21 @@ fn should_ignore_relative_path(relative: &str) -> bool {
         .any(|segment| !segment.is_empty() && (segment.starts_with('.') || is_ignored_dir_name(segment)))
 }
 
+fn nearest_visible_relative_parent(relative: &str) -> Option<String> {
+    let mut segments: Vec<&str> = relative.split('/').filter(|segment| !segment.is_empty()).collect();
+    while !segments.is_empty() {
+        segments.pop();
+        if segments.is_empty() {
+            break;
+        }
+        let candidate = segments.join("/");
+        if !candidate.starts_with(".collab/") && !should_ignore_relative_path(&candidate) {
+            return Some(candidate);
+        }
+    }
+    None
+}
+
 #[tauri::command]
 pub fn watch_vault(
     vault_path: String,
@@ -64,6 +79,10 @@ pub fn watch_vault(
                         }
 
                         if should_ignore_relative_path(&relative) {
+                            if let Some(parent) = nearest_visible_relative_parent(&relative) {
+                                let payload = serde_json::json!({ "path": parent });
+                                let _ = app_handle.emit("vault:file-modified", &payload);
+                            }
                             continue;
                         }
 
@@ -89,6 +108,32 @@ pub fn watch_vault(
     *watcher_lock = Some(debouncer);
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::nearest_visible_relative_parent;
+
+    #[test]
+    fn bubbles_hidden_temp_file_changes_to_visible_parent() {
+        assert_eq!(
+            nearest_visible_relative_parent("Docs/.goutputstream-ABC123"),
+            Some("Docs".to_string())
+        );
+    }
+
+    #[test]
+    fn skips_hidden_root_items_without_visible_parent() {
+        assert_eq!(nearest_visible_relative_parent(".hidden-file"), None);
+    }
+
+    #[test]
+    fn bubbles_nested_hidden_temp_paths_to_nearest_visible_parent() {
+        assert_eq!(
+            nearest_visible_relative_parent("Docs/Sub/.tmp-upload/spec.pdf.part"),
+            Some("Docs/Sub".to_string())
+        );
+    }
 }
 
 #[tauri::command]
