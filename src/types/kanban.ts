@@ -393,8 +393,12 @@ function setCardStateWithRecurrence(
 
   const columns = board.columns.map((column) => {
     let columnChanged = false;
-    const cards = column.cards.flatMap((card) => {
-      if (card.id !== cardId || card.isDone === isDone) return [card];
+    const cards: KanbanCard[] = [];
+    for (const card of column.cards) {
+      if (card.id !== cardId || card.isDone === isDone) {
+        cards.push(card);
+        continue;
+      }
       changed = true;
       columnChanged = true;
       const nextCard: KanbanCard = {
@@ -406,8 +410,8 @@ function setCardStateWithRecurrence(
         nextRecurringCard = createNextRecurringCard(card, completedAt);
         recurringColumnId = column.id;
       }
-      return [nextCard];
-    });
+      cards.push(nextCard);
+    }
 
     if (!columnChanged) return column;
     return { ...column, cards };
@@ -616,8 +620,14 @@ export function runKanbanAutomations(
 }
 
 export function getKanbanBoardStats(board: KanbanBoard, now = new Date()): KanbanBoardStats {
-  const activeCards = board.columns.flatMap((column) => column.cards.filter((card) => !card.archived));
-  const archivedCards = board.columns.flatMap((column) => column.cards.filter((card) => card.archived));
+  const activeCards = board.columns.reduce<KanbanCard[]>((cards, column) => {
+    cards.push(...column.cards.filter((card) => !card.archived));
+    return cards;
+  }, []);
+  const archivedCards = board.columns.reduce<KanbanCard[]>((cards, column) => {
+    cards.push(...column.cards.filter((card) => card.archived));
+    return cards;
+  }, []);
   const checklistTotal = activeCards.reduce((sum, card) => sum + card.checklist.length, 0);
   const checklistCompleted = activeCards.reduce((sum, card) => sum + card.checklist.filter((item) => item.checked).length, 0);
 

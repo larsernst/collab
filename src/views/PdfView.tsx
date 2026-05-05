@@ -40,7 +40,6 @@ import {
   getDocumentBaseName,
   getDocumentFolderPath,
 } from '../components/layout/DocumentTopBar';
-import type { NoteFile } from '../types/vault';
 import type { CanvasData } from '../types/canvas';
 import type {
   PdfBookmark,
@@ -58,6 +57,7 @@ import {
   buildPdfSnapshotMarkdown,
 } from '../lib/pdfWorkspace';
 import { PdfSendTargetDialog, type PdfSendTarget } from '../components/pdf/PdfSendTargetDialog';
+import { expandPdfHighlightRects, flattenPdfFiles } from './pdfViewUtils';
 
 const workerUrl = new URL('pdfjs-dist/build/pdf.worker.mjs', import.meta.url).toString();
 GlobalWorkerOptions.workerSrc = workerUrl;
@@ -181,10 +181,6 @@ function useElementSize<T extends HTMLElement>(ref: { current: T | null }) {
   }, [ref]);
 
   return size;
-}
-
-function flattenFiles(nodes: NoteFile[]): NoteFile[] {
-  return nodes.flatMap((node) => [node, ...(node.children ? flattenFiles(node.children) : [])]);
 }
 
 function getTimestamp() {
@@ -450,26 +446,24 @@ function PdfPageCanvas({
       </div>
 
       <div className="pointer-events-none absolute inset-0 z-[3]">
-        {highlights.flatMap((highlight) =>
-          highlight.rects.map((rect, index) => (
-            <button
-              key={`${highlight.id}-${index}`}
-              type="button"
-              className={cn(
-                'pointer-events-auto absolute rounded-sm border border-amber-400/40 bg-amber-300/30 transition-colors hover:bg-amber-300/45',
-                selectedHighlightId === highlight.id && 'bg-amber-300/60 ring-2 ring-amber-300/40',
-              )}
-              style={{
-                left: `${rect.left * 100}%`,
-                top: `${rect.top * 100}%`,
-                width: `${rect.width * 100}%`,
-                height: `${rect.height * 100}%`,
-              }}
-              onMouseDown={(event) => event.preventDefault()}
-              onClick={() => onHighlightClick(highlight)}
-            />
-          )),
-        )}
+        {expandPdfHighlightRects(highlights).map(({ highlight, rect, index }) => (
+          <button
+            key={`${highlight.id}-${index}`}
+            type="button"
+            className={cn(
+              'pointer-events-auto absolute rounded-sm border border-amber-400/40 bg-amber-300/30 transition-colors hover:bg-amber-300/45',
+              selectedHighlightId === highlight.id && 'bg-amber-300/60 ring-2 ring-amber-300/40',
+            )}
+            style={{
+              left: `${rect.left * 100}%`,
+              top: `${rect.top * 100}%`,
+              width: `${rect.width * 100}%`,
+              height: `${rect.height * 100}%`,
+            }}
+            onMouseDown={(event) => event.preventDefault()}
+            onClick={() => onHighlightClick(highlight)}
+          />
+        ))}
         {textAnnotations.map((annotation) => (
           (() => {
             const palette = getPdfTextAnnotationPalette(annotation);
@@ -589,7 +583,7 @@ export default function PdfView({ relativePath }: Props) {
   const [interactionMode, setInteractionMode] = useState<'none' | 'snapshot' | 'annotation'>('none');
   const [pendingSendAction, setPendingSendAction] = useState<PendingSendAction | null>(null);
 
-  const allFiles = useMemo(() => flattenFiles(fileTree).filter((node) => !node.isFolder), [fileTree]);
+  const allFiles = useMemo(() => flattenPdfFiles(fileTree).filter((node) => !node.isFolder), [fileTree]);
   const availableNotes = useMemo(() => allFiles.filter((file) => file.extension.toLowerCase() === 'md'), [allFiles]);
   const currentNotePath = useMemo(() => {
     const active = openTabs.find((tab) => tab.relativePath === activeTabPath && tab.type === 'note');

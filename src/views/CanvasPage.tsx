@@ -89,7 +89,14 @@ const EMPTY_CANVAS: CanvasData = {
   viewport: { x: 0, y: 0, zoom: 1 },
 };
 function flattenFiles(nodes: NoteFile[]): NoteFile[] {
-  return nodes.flatMap((node) => [node, ...(node.children ? flattenFiles(node.children) : [])]);
+  const flattened: NoteFile[] = [];
+  for (const node of nodes) {
+    flattened.push(node);
+    if (node.children?.length) {
+      flattened.push(...flattenFiles(node.children));
+    }
+  }
+  return flattened;
 }
 
 function getNameWithoutExtension(name: string): string {
@@ -709,7 +716,12 @@ function CanvasBoard({ relativePath }: { relativePath: string | null }) {
     setNodes((prev) => prev.filter((node) => !node.selected));
     setEdges((prev) => {
       const selectedEdgeIds = prev.filter((edge) => edge.selected).map((edge) => edge.id);
-      const removedMergedEdgeIds = new Set(mergeCandidates.flatMap((candidate) => candidate.removedEdgeIds));
+      const removedMergedEdgeIds = new Set(
+        mergeCandidates.reduce<string[]>((ids, candidate) => {
+          ids.push(...candidate.removedEdgeIds);
+          return ids;
+        }, []),
+      );
       const remaining = prev.filter((edge) => !selectedEdgeIds.includes(edge.id) && !removedMergedEdgeIds.has(edge.id));
       return [
         ...remaining,

@@ -179,16 +179,19 @@ export function TableEditorDialog({
               </div>
             ))}
 
-            {draft.rows.flatMap((row, rowIndex) => (
-              row.map((value, colIndex) => (
+            {draft.rows.reduce<React.ReactNode[]>((cells, row, rowIndex) => {
+              row.forEach((value, colIndex) => {
+                cells.push(
                 <div key={`cell-${rowIndex}-${colIndex}`} className="space-y-1 rounded-xl border border-border/30 bg-background/35 p-3">
                   <div className="text-[11px] text-muted-foreground">
                     Row {rowIndex + 1}, Col {colIndex + 1}
                   </div>
                   <TableCellInput value={value} onChange={(nextValue) => updateCell(rowIndex, colIndex, nextValue)} />
                 </div>
-              ))
-            ))}
+                );
+              });
+              return cells;
+            }, [])}
           </div>
         </div>
 

@@ -95,7 +95,14 @@ export default function FileTree() {
   }, [collapsedPaths, setFileTreeCollapsedPathsForVault, vault?.path]);
 
   function flatten(nodes: NoteFile[]): NoteFile[] {
-    return nodes.flatMap((node) => [node, ...(node.children ? flatten(node.children) : [])]);
+    const flattened: NoteFile[] = [];
+    for (const node of nodes) {
+      flattened.push(node);
+      if (node.children?.length) {
+        flattened.push(...flatten(node.children));
+      }
+    }
+    return flattened;
   }
 
   const selectedNode = selectedRelativePath
@@ -284,7 +291,14 @@ export default function FileTree() {
     let cancelled = false;
 
     function flatten(nodes: NoteFile[]): NoteFile[] {
-      return nodes.flatMap((node) => [node, ...(node.children ? flatten(node.children) : [])]);
+      const flattened: NoteFile[] = [];
+      for (const node of nodes) {
+        flattened.push(node);
+        if (node.children?.length) {
+          flattened.push(...flatten(node.children));
+        }
+      }
+      return flattened;
     }
 
     const kanbanFiles = flatten(fileTree).filter((node) => !node.isFolder && node.extension === 'kanban');
@@ -294,22 +308,25 @@ export default function FileTree() {
         try {
           const { content } = await tauriCommands.readNote(vault.path, file.relativePath);
           const board = JSON.parse(content) as KanbanBoard;
-          return board.columns.flatMap((column) =>
-            column.cards.flatMap((card) =>
-              getCardAttachmentPaths(card).map((path) => ({
-                path,
-                ref: {
-                  boardPath: file.relativePath,
-                  boardName: file.name,
-                  columnId: column.id,
-                  columnTitle: column.title,
-                  cardId: card.id,
-                  cardTitle: card.title,
-                  card,
-                },
-              })),
-            ),
-          );
+          return board.columns.reduce<Array<{ path: string; ref: TaskAttachmentRef }>>((items, column) => {
+            column.cards.forEach((card) => {
+              getCardAttachmentPaths(card).forEach((path) => {
+                items.push({
+                  path,
+                  ref: {
+                    boardPath: file.relativePath,
+                    boardName: file.name,
+                    columnId: column.id,
+                    columnTitle: column.title,
+                    cardId: card.id,
+                    cardTitle: card.title,
+                    card,
+                  },
+                });
+              });
+            });
+            return items;
+          }, []);
         } catch {
           return [];
         }
@@ -317,9 +334,11 @@ export default function FileTree() {
     ).then((attachedLists) => {
       if (cancelled) return;
       const next: Record<string, TaskAttachmentRef[]> = {};
-      for (const item of attachedLists.flat()) {
-        next[item.path] ??= [];
-        next[item.path].push(item.ref);
+      for (const attachedList of attachedLists) {
+        for (const item of attachedList) {
+          next[item.path] ??= [];
+          next[item.path].push(item.ref);
+        }
       }
       setTaskAttachmentsByPath(next);
     });

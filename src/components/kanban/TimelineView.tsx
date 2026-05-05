@@ -115,17 +115,22 @@ export default function TimelineView() {
 
   // Active users
   const flatCards = useMemo(() =>
-    board.columns
-      .filter(col => !col.hideFromTimeline)
-      .flatMap(col =>
-        col.cards
-          .filter(card => card.startDate || card.dueDate)
-          .map(card => ({ card, columnId: col.id })),
-      ),
+    board.columns.reduce<Array<{ card: KanbanCard; columnId: string }>>((cards, col) => {
+      if (col.hideFromTimeline) return cards;
+      col.cards.forEach((card) => {
+        if (card.startDate || card.dueDate) {
+          cards.push({ card, columnId: col.id });
+        }
+      });
+      return cards;
+    }, []),
   [board]);
 
   const activeUsers = useMemo(() => {
-    const ids = new Set(flatCards.flatMap(({ card }) => card.assignees));
+    const ids = new Set(flatCards.reduce<string[]>((assignees, { card }) => {
+      assignees.push(...card.assignees);
+      return assignees;
+    }, []));
     return knownUsers.filter(u => ids.has(u.userId));
   }, [flatCards, knownUsers]);
 

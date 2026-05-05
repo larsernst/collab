@@ -210,7 +210,10 @@ function renderMath(mode: { type: 'math'; expr: string }) {
 function renderTag(mode: { type: 'tag'; tag: string }, ctx: RenderCtx) {
   const { notes } = ctx;
   const q = mode.tag.toLowerCase();
-  const allTags = [...new Set(notes.flatMap((note) => note.tags))];
+  const allTags = [...new Set(notes.reduce<string[]>((tags, note) => {
+    tags.push(...note.tags);
+    return tags;
+  }, []))];
   const matchingTags = allTags
     .filter((tag) => !q || tag.toLowerCase().includes(q))
     .slice(0, 5);

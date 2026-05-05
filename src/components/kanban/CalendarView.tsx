@@ -3,7 +3,7 @@ import { ChevronLeft, ChevronRight, CalendarDays, CalendarIcon, ChevronsUpDown, 
 import { cn } from '../../lib/utils';
 import { useKanbanContext } from '../../views/KanbanPage';
 import { useUiStore, formatDate } from '../../store/uiStore';
-import type { KanbanCard, KanbanColumn } from '../../types/kanban';
+import type { KanbanCard } from '../../types/kanban';
 import CardDialog from './CardDialog';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '../ui/dialog';
 import { Popover, PopoverContent, PopoverTrigger } from '../ui/popover';
@@ -283,38 +283,40 @@ export default function CalendarView() {
 
   // Build flat card list for calendar scheduling — exclude hidden columns and cards without any explicit date
   const datedCards = useMemo(() =>
-    board.columns
-      .filter((col: KanbanColumn) => !col.hideFromTimeline)
-      .flatMap((col: KanbanColumn) =>
-        col.cards
-          .filter(card => card.startDate || card.dueDate)
-          .map(card => ({
+    board.columns.reduce<Array<{ card: KanbanCard; columnId: string; colColor: string; colTitle: string }>>((cards, col) => {
+      if (col.hideFromTimeline) return cards;
+      col.cards.forEach((card) => {
+        if (card.startDate || card.dueDate) {
+          cards.push({
             card,
             columnId: col.id,
             colColor: col.color ?? '#64748b',
             colTitle: col.title,
-          })),
-      ),
+          });
+        }
+      });
+      return cards;
+    }, []),
   [board]);
 
   const yearSummaryCards = useMemo(() =>
-    board.columns
-      .filter((col: KanbanColumn) => yearSummaryIncludesHiddenColumns || !col.hideFromTimeline)
-      .flatMap((col: KanbanColumn) =>
-        col.cards
-          .filter((card) => {
-            if (card.archived) {
-              return Boolean(card.startDate || card.dueDate || typeof card.archivedAt === 'number');
-            }
-            return Boolean(card.startDate || card.dueDate);
-          })
-          .map((card) => ({
+    board.columns.reduce<Array<{ card: KanbanCard; columnId: string; colColor: string; colTitle: string }>>((cards, col) => {
+      if (!yearSummaryIncludesHiddenColumns && col.hideFromTimeline) return cards;
+      col.cards.forEach((card) => {
+        const include = card.archived
+          ? Boolean(card.startDate || card.dueDate || typeof card.archivedAt === 'number')
+          : Boolean(card.startDate || card.dueDate);
+        if (include) {
+          cards.push({
             card,
             columnId: col.id,
             colColor: col.color ?? '#64748b',
             colTitle: col.title,
-          })),
-      ),
+          });
+        }
+      });
+      return cards;
+    }, []),
   [board, yearSummaryIncludesHiddenColumns]);
 
   const flatCards = useMemo(
@@ -376,7 +378,10 @@ export default function CalendarView() {
 
   // All known users who appear on at least one card
   const activeUsers = useMemo(() => {
-    const ids = new Set(datedCards.flatMap(({ card }) => card.assignees));
+    const ids = new Set(datedCards.reduce<string[]>((assignees, { card }) => {
+      assignees.push(...card.assignees);
+      return assignees;
+    }, []));
     return knownUsers.filter(u => ids.has(u.userId));
   }, [datedCards, knownUsers]);
 

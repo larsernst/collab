@@ -883,16 +883,19 @@ export function MathBlockEditorDialog({
                         className="grid gap-2"
                         style={{ gridTemplateColumns: `repeat(${Math.max(matrixCols, 1)}, minmax(0, 1fr))` }}
                       >
-                        {drafts.matrix.rows.flatMap((row, rowIndex) => (
-                          row.map((cell, colIndex) => (
+                        {drafts.matrix.rows.reduce<React.ReactNode[]>((cells, row, rowIndex) => {
+                          row.forEach((cell, colIndex) => {
+                            cells.push(
                             <Input
                               key={`matrix-${rowIndex}-${colIndex}`}
                               value={cell}
                               onChange={(event) => updateMatrixCell(rowIndex, colIndex, event.target.value)}
                               placeholder={`${rowIndex + 1},${colIndex + 1}`}
                             />
-                          ))
-                        ))}
+                            );
+                          });
+                          return cells;
+                        }, [])}
                       </div>
                       <Button
                         type="button"
