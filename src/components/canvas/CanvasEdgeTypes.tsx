@@ -59,6 +59,11 @@ interface EdgeGeometry {
   labelY: number;
 }
 
+interface PathPoint {
+  x: number;
+  y: number;
+}
+
 function isHorizontalPosition(position: Position) {
   return position === Position.Left || position === Position.Right;
 }
@@ -110,47 +115,92 @@ function buildCanvasEdgePath(geometry: EdgeGeometry) {
   return `M ${geometry.sourceX} ${geometry.sourceY} C ${geometry.controlSourceX} ${geometry.controlSourceY}, ${geometry.controlTargetX} ${geometry.controlTargetY}, ${geometry.targetX} ${geometry.targetY}`;
 }
 
-export function buildOrthogonalCanvasEdgePath(geometry: EdgeGeometry) {
+function getOrthogonalCanvasEdgePoints(geometry: EdgeGeometry): PathPoint[] {
   const sourceHorizontal = geometry.controlSourceX !== geometry.sourceX;
   const targetHorizontal = geometry.controlTargetX !== geometry.targetX;
 
   if (sourceHorizontal && targetHorizontal) {
     const midX = (geometry.controlSourceX + geometry.controlTargetX) / 2;
     return [
-      `M ${geometry.sourceX} ${geometry.sourceY}`,
-      `L ${geometry.controlSourceX} ${geometry.controlSourceY}`,
-      `L ${midX} ${geometry.controlSourceY}`,
-      `L ${midX} ${geometry.controlTargetY}`,
-      `L ${geometry.controlTargetX} ${geometry.controlTargetY}`,
-      `L ${geometry.targetX} ${geometry.targetY}`,
-    ].join(' ');
+      { x: geometry.sourceX, y: geometry.sourceY },
+      { x: geometry.controlSourceX, y: geometry.controlSourceY },
+      { x: midX, y: geometry.controlSourceY },
+      { x: midX, y: geometry.controlTargetY },
+      { x: geometry.controlTargetX, y: geometry.controlTargetY },
+      { x: geometry.targetX, y: geometry.targetY },
+    ];
   }
 
   if (!sourceHorizontal && !targetHorizontal) {
     const midY = (geometry.controlSourceY + geometry.controlTargetY) / 2;
     return [
-      `M ${geometry.sourceX} ${geometry.sourceY}`,
-      `L ${geometry.controlSourceX} ${geometry.controlSourceY}`,
-      `L ${geometry.controlSourceX} ${midY}`,
-      `L ${geometry.controlTargetX} ${midY}`,
-      `L ${geometry.controlTargetX} ${geometry.controlTargetY}`,
-      `L ${geometry.targetX} ${geometry.targetY}`,
-    ].join(' ');
+      { x: geometry.sourceX, y: geometry.sourceY },
+      { x: geometry.controlSourceX, y: geometry.controlSourceY },
+      { x: geometry.controlSourceX, y: midY },
+      { x: geometry.controlTargetX, y: midY },
+      { x: geometry.controlTargetX, y: geometry.controlTargetY },
+      { x: geometry.targetX, y: geometry.targetY },
+    ];
   }
 
   if (!sourceHorizontal && targetHorizontal) {
     return [
-      `M ${geometry.sourceX} ${geometry.sourceY}`,
-      `L ${geometry.sourceX} ${geometry.targetY}`,
-      `L ${geometry.targetX} ${geometry.targetY}`,
-    ].join(' ');
+      { x: geometry.sourceX, y: geometry.sourceY },
+      { x: geometry.sourceX, y: geometry.targetY },
+      { x: geometry.targetX, y: geometry.targetY },
+    ];
   }
 
   return [
-    `M ${geometry.sourceX} ${geometry.sourceY}`,
-    `L ${geometry.targetX} ${geometry.sourceY}`,
-    `L ${geometry.targetX} ${geometry.targetY}`,
-  ].join(' ');
+    { x: geometry.sourceX, y: geometry.sourceY },
+    { x: geometry.targetX, y: geometry.sourceY },
+    { x: geometry.targetX, y: geometry.targetY },
+  ];
+}
+
+export function buildOrthogonalCanvasEdgePath(geometry: EdgeGeometry) {
+  const points = getOrthogonalCanvasEdgePoints(geometry);
+  return points
+    .map((point, index) => `${index === 0 ? 'M' : 'L'} ${point.x} ${point.y}`)
+    .join(' ');
+}
+
+export function getOrthogonalCanvasEdgeLabelPosition(geometry: EdgeGeometry) {
+  const points = getOrthogonalCanvasEdgePoints(geometry);
+  const fallbackMidpoint = {
+    x: geometry.labelX,
+    y: geometry.labelY,
+  };
+
+  let bestSegment: { start: PathPoint; end: PathPoint; length: number } | null = null;
+  let bestDistance = Number.POSITIVE_INFINITY;
+
+  for (let index = 1; index < points.length; index += 1) {
+    const start = points[index - 1];
+    const end = points[index];
+    const length = Math.hypot(end.x - start.x, end.y - start.y);
+    if (length < 1) continue;
+
+    const midX = (start.x + end.x) / 2;
+    const midY = (start.y + end.y) / 2;
+    const distanceToFallback = Math.hypot(midX - fallbackMidpoint.x, midY - fallbackMidpoint.y);
+
+    if (
+      !bestSegment
+      || length > bestSegment.length
+      || (Math.abs(length - bestSegment.length) < 0.5 && distanceToFallback < bestDistance)
+    ) {
+      bestSegment = { start, end, length };
+      bestDistance = distanceToFallback;
+    }
+  }
+
+  if (!bestSegment) return fallbackMidpoint;
+
+  return {
+    x: (bestSegment.start.x + bestSegment.end.x) / 2,
+    y: (bestSegment.start.y + bestSegment.end.y) / 2,
+  };
 }
 
 function interpolateGeometry(from: EdgeGeometry, to: EdgeGeometry, progress: number): EdgeGeometry {
@@ -324,6 +374,7 @@ function getOrderedEndpointSiblings(
   requireExplicitHandle: boolean,
   pendingEdge?: Pick<CanvasFlowEdge, 'id' | 'source' | 'target' | 'sourceHandle' | 'targetHandle'>,
 ) {
+  const anchorNode = nodeGeometry.get(nodeId);
   const getSiblingDescriptors = (candidate: Pick<CanvasFlowEdge, 'id' | 'source' | 'target' | 'sourceHandle' | 'targetHandle'>) => {
     const descriptors: Array<{ key: string; oppositeId: string }> = [];
     if (
@@ -365,6 +416,15 @@ function getOrderedEndpointSiblings(
       ? (rightNode?.centerY ?? 0)
       : (rightNode?.centerX ?? 0);
     if (leftCenter !== rightCenter) return leftCenter - rightCenter;
+    if (anchorNode && leftNode && rightNode) {
+      const leftDistance = isHorizontalPosition(anchorPosition)
+        ? Math.abs(leftNode.centerX - anchorNode.centerX)
+        : Math.abs(leftNode.centerY - anchorNode.centerY);
+      const rightDistance = isHorizontalPosition(anchorPosition)
+        ? Math.abs(rightNode.centerX - anchorNode.centerX)
+        : Math.abs(rightNode.centerY - anchorNode.centerY);
+      if (leftDistance !== rightDistance) return leftDistance - rightDistance;
+    }
     if (left.oppositeId !== right.oppositeId) return left.oppositeId.localeCompare(right.oppositeId);
     return left.key.localeCompare(right.key);
   });
@@ -686,6 +746,9 @@ function StackedCanvasEdge(props: EdgeProps<CanvasFlowEdge>) {
   const path = data.routingStyle === 'orthogonal'
     ? buildOrthogonalCanvasEdgePath(pathGeometry)
     : buildCanvasEdgePath(pathGeometry);
+  const labelPosition = data.routingStyle === 'orthogonal'
+    ? getOrthogonalCanvasEdgeLabelPosition(displayGeometry)
+    : { x: displayGeometry.labelX, y: displayGeometry.labelY };
 
   return (
     <>
@@ -809,8 +872,8 @@ function StackedCanvasEdge(props: EdgeProps<CanvasFlowEdge>) {
       <BaseEdge
         {...props}
         path={path}
-        labelX={displayGeometry.labelX}
-        labelY={displayGeometry.labelY}
+        labelX={labelPosition.x}
+        labelY={labelPosition.y}
         interactionWidth={interactionStrokeWidth}
         style={{
           stroke: 'transparent',

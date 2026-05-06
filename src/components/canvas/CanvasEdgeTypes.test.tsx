@@ -1,7 +1,14 @@
 import { describe, expect, it } from 'vitest';
 import { Position } from '@xyflow/react';
 
-import { buildOrthogonalCanvasEdgePath, fromFlowEdge, getAnchoredEdgeGeometry, getCanvasEdgeData, toFlowEdge } from './CanvasEdgeTypes';
+import {
+  buildOrthogonalCanvasEdgePath,
+  fromFlowEdge,
+  getAnchoredEdgeGeometry,
+  getCanvasEdgeData,
+  getOrthogonalCanvasEdgeLabelPosition,
+  toFlowEdge,
+} from './CanvasEdgeTypes';
 
 describe('CanvasEdgeTypes', () => {
   it('fills edge defaults for a new connection', () => {
@@ -288,6 +295,57 @@ describe('CanvasEdgeTypes', () => {
     expect(geometry.targetY).toBe(100);
   });
 
+  it('orders same-level siblings on a horizontal handle by proximity instead of arbitrary id order', () => {
+    const edges = [
+      toFlowEdge({
+        id: 'edge-far',
+        source: 'junction',
+        sourceHandle: 'right-out',
+        target: 'target-far',
+        targetHandle: 'left-in',
+      }),
+      toFlowEdge({
+        id: 'edge-near',
+        source: 'junction',
+        sourceHandle: 'right-out',
+        target: 'target-near',
+        targetHandle: 'left-in',
+      }),
+    ];
+
+    const nodeGeometry = new Map([
+      ['junction', { centerX: 100, centerY: 300, width: 56, height: 56 }],
+      ['target-near', { centerX: 280, centerY: 120, width: 220, height: 180 }],
+      ['target-far', { centerX: 520, centerY: 120, width: 220, height: 180 }],
+    ]);
+
+    const farGeometry = getAnchoredEdgeGeometry({
+      edge: edges[0],
+      edges,
+      nodeGeometry,
+      sourceX: 128,
+      sourceY: 300,
+      targetX: 170,
+      targetY: 120,
+      sourcePosition: Position.Right,
+      targetPosition: Position.Left,
+    });
+
+    const nearGeometry = getAnchoredEdgeGeometry({
+      edge: edges[1],
+      edges,
+      nodeGeometry,
+      sourceX: 128,
+      sourceY: 300,
+      targetX: 170,
+      targetY: 120,
+      sourcePosition: Position.Right,
+      targetPosition: Position.Left,
+    });
+
+    expect(nearGeometry.sourceY).toBeLessThan(farGeometry.sourceY);
+  });
+
   it('routes bottom-to-right orthogonal edges with a single elbow', () => {
     const path = buildOrthogonalCanvasEdgePath({
       sourceX: 200,
@@ -305,5 +363,25 @@ describe('CanvasEdgeTypes', () => {
     expect(path).toBe(
       'M 200 300 L 200 180 L 384 180',
     );
+  });
+
+  it('places orthogonal labels on the main routed segment instead of the raw midpoint', () => {
+    const label = getOrthogonalCanvasEdgeLabelPosition({
+      sourceX: 73,
+      sourceY: 120,
+      controlSourceX: 73,
+      controlSourceY: 150,
+      controlTargetX: 610,
+      controlTargetY: 340,
+      targetX: 640,
+      targetY: 340,
+      labelX: 356.5,
+      labelY: 230,
+    });
+
+    expect(label).toEqual({
+      x: 356.5,
+      y: 340,
+    });
   });
 });

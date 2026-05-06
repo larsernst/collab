@@ -85,6 +85,7 @@ const pdfWorkerUrl = new URL('pdfjs-dist/build/pdf.worker.mjs', import.meta.url)
 GlobalWorkerOptions.workerSrc = pdfWorkerUrl;
 
 const CANVAS_GRID = 24;
+const CANVAS_HANDLE_AXIS_SWITCH_RATIO = 1.25;
 const EMPTY_CANVAS: CanvasData = {
   nodes: [],
   edges: [],
@@ -128,9 +129,71 @@ function snapPosition(position: { x: number; y: number }, grid = CANVAS_GRID) {
 }
 
 function getMinimumCanvasNodeSize(type: CanvasNode['type']) {
-  if (type === 'text') return { width: 200, height: 120 };
-  if (type === 'symbol') return { width: 140, height: 140 };
-  return { width: 220, height: 140 };
+  switch (type) {
+    case 'text':
+      return { width: 200, height: 120 };
+    case 'web':
+      return { width: 260, height: 180 };
+    case 'symbol':
+      return { width: 140, height: 140 };
+    case 'process':
+      return { width: 220, height: 130 };
+    case 'decision':
+      return { width: 240, height: 150 };
+    case 'terminator':
+      return { width: 210, height: 110 };
+    case 'document':
+      return { width: 220, height: 140 };
+    case 'milestone':
+    case 'actor':
+      return { width: 220, height: 130 };
+    case 'group':
+      return { width: 320, height: 220 };
+    case 'swimlane':
+      return { width: 420, height: 180 };
+    case 'junction':
+      return { width: 56, height: 56 };
+    case 'crossing':
+      return { width: 96, height: 64 };
+    case 'note':
+    case 'file':
+    default:
+      return { width: 220, height: 140 };
+  }
+}
+
+function getMinimumFlowNodeSize(type?: string | null) {
+  switch (type) {
+    case 'textCard':
+      return { width: 200, height: 120 };
+    case 'webCard':
+      return { width: 260, height: 180 };
+    case 'symbolCard':
+      return { width: 140, height: 140 };
+    case 'processCard':
+      return { width: 220, height: 130 };
+    case 'decisionCard':
+      return { width: 240, height: 150 };
+    case 'terminatorCard':
+      return { width: 210, height: 110 };
+    case 'documentCard':
+      return { width: 220, height: 140 };
+    case 'milestoneCard':
+    case 'actorCard':
+      return { width: 220, height: 130 };
+    case 'groupCard':
+      return { width: 320, height: 220 };
+    case 'swimlaneCard':
+      return { width: 420, height: 180 };
+    case 'junctionCard':
+      return { width: 56, height: 56 };
+    case 'crossingCard':
+      return { width: 96, height: 64 };
+    case 'noteCard':
+    case 'fileCard':
+    default:
+      return { width: 220, height: 140 };
+  }
 }
 
 function getHandleSide(handleId?: string | null) {
@@ -140,6 +203,85 @@ function getHandleSide(handleId?: string | null) {
   if (handleId.startsWith('left')) return 'left';
   if (handleId.startsWith('top')) return 'top';
   return null;
+}
+
+function getPositionHandleId(position: 'left' | 'right' | 'top' | 'bottom') {
+  if (position === 'left') return 'left-in';
+  if (position === 'right') return 'right-out';
+  if (position === 'top') return 'top-in';
+  return 'bottom-out';
+}
+
+function getFlowNodeCenter(node: Pick<FlowNode<CanvasNodeData>, 'position' | 'width' | 'height' | 'measured' | 'style'>) {
+  const width = typeof node.width === 'number'
+    ? node.width
+    : typeof node.measured?.width === 'number'
+      ? node.measured.width
+      : typeof node.style?.width === 'number'
+        ? node.style.width
+        : 300;
+  const height = typeof node.height === 'number'
+    ? node.height
+    : typeof node.measured?.height === 'number'
+      ? node.measured.height
+      : typeof node.style?.height === 'number'
+        ? node.style.height
+        : 180;
+
+  return {
+    x: node.position.x + width / 2,
+    y: node.position.y + height / 2,
+  };
+}
+
+function inferLooseHandleSide(
+  nodeId: string,
+  oppositeId: string,
+  nodeMap: Map<string, Pick<FlowNode<CanvasNodeData>, 'id' | 'position' | 'width' | 'height' | 'measured' | 'style'>>,
+) {
+  const node = nodeMap.get(nodeId);
+  const opposite = nodeMap.get(oppositeId);
+  if (!node || !opposite) return 'right' as const;
+
+  const nodeCenter = getFlowNodeCenter(node);
+  const oppositeCenter = getFlowNodeCenter(opposite);
+  const deltaX = oppositeCenter.x - nodeCenter.x;
+  const deltaY = oppositeCenter.y - nodeCenter.y;
+  const absDeltaX = Math.abs(deltaX);
+  const absDeltaY = Math.abs(deltaY);
+
+  if (absDeltaX > absDeltaY * CANVAS_HANDLE_AXIS_SWITCH_RATIO) {
+    return deltaX >= 0 ? 'right' : 'left';
+  }
+
+  if (absDeltaY > absDeltaX * CANVAS_HANDLE_AXIS_SWITCH_RATIO) {
+    return deltaY >= 0 ? 'bottom' : 'top';
+  }
+
+  return deltaY >= 0 ? 'bottom' : 'top';
+}
+
+export function normalizeLooseConnectionHandles<T extends {
+  source: string;
+  target: string;
+  sourceHandle?: string | null;
+  targetHandle?: string | null;
+}>(connection: T, flowNodes: Array<Pick<FlowNode<CanvasNodeData>, 'id' | 'position' | 'width' | 'height' | 'measured' | 'style'>>) {
+  if (connection.sourceHandle && connection.targetHandle) {
+    return {
+      sourceHandle: connection.sourceHandle ?? undefined,
+      targetHandle: connection.targetHandle ?? undefined,
+    };
+  }
+
+  const nodeMap = new Map(flowNodes.map((node) => [node.id, node]));
+  const sourceSide = inferLooseHandleSide(connection.source, connection.target, nodeMap);
+  const targetSide = inferLooseHandleSide(connection.target, connection.source, nodeMap);
+
+  return {
+    sourceHandle: connection.sourceHandle ?? getPositionHandleId(sourceSide),
+    targetHandle: connection.targetHandle ?? getPositionHandleId(targetSide),
+  };
 }
 
 function getHandleDatasetFromEventTarget(target: EventTarget | null) {
@@ -430,8 +572,7 @@ function CanvasBoard({ relativePath }: { relativePath: string | null }) {
     setNodes((prev) =>
       prev.map((node) => {
         if (node.id !== nodeId) return node;
-        const minWidth = node.type === 'textCard' ? 200 : 220;
-        const minHeight = node.type === 'textCard' ? 120 : 140;
+        const { width: minWidth, height: minHeight } = getMinimumFlowNodeSize(node.type);
         return {
           ...node,
           position: snapPosition(node.position),
@@ -542,6 +683,31 @@ function CanvasBoard({ relativePath }: { relativePath: string | null }) {
   useEffect(() => {
     setEdgeLabelDraft(selectedEdge?.data?.label ?? '');
   }, [selectedEdge?.id]);
+
+  useEffect(() => {
+    if (nodes.length === 0) return;
+
+    setEdges((prev) => {
+      let changed = false;
+      const next = prev.map((edge) => {
+        if (edge.sourceHandle && edge.targetHandle) return edge;
+        const normalizedHandles = normalizeLooseConnectionHandles(edge, nodes);
+        if (
+          normalizedHandles.sourceHandle === (edge.sourceHandle ?? undefined)
+          && normalizedHandles.targetHandle === (edge.targetHandle ?? undefined)
+        ) {
+          return edge;
+        }
+        changed = true;
+        return {
+          ...edge,
+          sourceHandle: normalizedHandles.sourceHandle,
+          targetHandle: normalizedHandles.targetHandle,
+        };
+      });
+      return changed ? next : prev;
+    });
+  }, [nodes, setEdges]);
 
   const addCanvasNode = useCallback((node: CanvasNode, pendingAutoConnectOverride?: PendingAutoConnect | null) => {
     const minimumSize = getMinimumCanvasNodeSize(node.type);
@@ -683,12 +849,13 @@ function CanvasBoard({ relativePath }: { relativePath: string | null }) {
   });
 
   const handleConnect = useCallback((connection: Connection) => {
+    const normalizedHandles = normalizeLooseConnectionHandles(connection, nodes);
     setEdges((prev) => [
       ...prev,
       toFlowEdge({
         ...connection,
-        sourceHandle: connection.sourceHandle ?? undefined,
-        targetHandle: connection.targetHandle ?? undefined,
+        sourceHandle: normalizedHandles.sourceHandle,
+        targetHandle: normalizedHandles.targetHandle,
         id: crypto.randomUUID(),
         label: undefined,
         lineStyle: 'solid',
@@ -699,7 +866,7 @@ function CanvasBoard({ relativePath }: { relativePath: string | null }) {
         markerEnd: false,
       }),
     ]);
-  }, [setEdges]);
+  }, [nodes, setEdges]);
 
   const handleConnectStart = useCallback((event: MouseEvent | TouchEvent, params: OnConnectStartParams) => {
     const eventTarget = 'target' in event ? event.target : null;
@@ -784,12 +951,21 @@ function CanvasBoard({ relativePath }: { relativePath: string | null }) {
   }, [openInsertMenuAt]);
 
   const handleReconnect = useCallback<OnReconnect<CanvasFlowEdge>>((oldEdge, newConnection) => {
-    setEdges((prev) => (reconnectEdge(oldEdge, newConnection, prev) as CanvasFlowEdge[]).map((edge) => (
+    const normalizedHandles = normalizeLooseConnectionHandles(newConnection, nodes);
+    setEdges((prev) => (reconnectEdge(
+      oldEdge,
+      {
+        ...newConnection,
+        sourceHandle: normalizedHandles.sourceHandle,
+        targetHandle: normalizedHandles.targetHandle,
+      },
+      prev,
+    ) as CanvasFlowEdge[]).map((edge) => (
       edge.id === oldEdge.id
         ? toFlowEdge(fromFlowEdge(edge))
         : edge
     )));
-  }, [setEdges]);
+  }, [nodes, setEdges]);
 
   const onNodesChange = useCallback((changes: NodeChange<FlowNode<CanvasNodeData>>[]) => {
     setNodes((prev) => applyNodeChanges(changes, prev));

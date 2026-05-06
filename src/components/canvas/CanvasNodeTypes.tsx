@@ -247,8 +247,8 @@ function PlanningNodeShell({
       >
         {isJunction ? (
           <div className="flex h-full w-full items-center justify-center">
-            <div className="flex size-9 items-center justify-center rounded-full border border-primary/35 bg-primary/12 text-primary">
-              {icon}
+            <div className="flex size-7 items-center justify-center rounded-full border border-primary/35 bg-primary/14 text-primary shadow-[0_0_0_6px_color-mix(in_oklch,var(--primary)_10%,transparent)]">
+              <CircleDot size={12} />
             </div>
           </div>
         ) : isCrossing ? (
@@ -899,7 +899,7 @@ function SwimlaneCardNode({ id, data, selected }: { id: string; data: CanvasNode
 }
 
 function JunctionCardNode(props: { id: string; data: CanvasNodeData; selected?: boolean }) {
-  return <PlanningNodeShell {...props} minWidth={72} minHeight={72} compact />;
+  return <PlanningNodeShell {...props} minWidth={56} minHeight={56} compact />;
 }
 
 function CrossingCardNode(props: { id: string; data: CanvasNodeData; selected?: boolean }) {

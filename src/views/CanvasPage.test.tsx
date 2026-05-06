@@ -110,13 +110,30 @@ vi.mock('sonner', () => ({
   },
 }));
 
-import CanvasPage from './CanvasPage';
+import CanvasPage, { normalizeLooseConnectionHandles } from './CanvasPage';
 
 function wait(ms: number) {
   return new Promise((resolve) => {
     setTimeout(resolve, ms);
   });
 }
+
+describe('normalizeLooseConnectionHandles', () => {
+  it('backfills missing handles for near-diagonal loose connections with stable physical sides', () => {
+    expect(normalizeLooseConnectionHandles({
+      source: 'junction',
+      target: 'printer',
+      sourceHandle: undefined,
+      targetHandle: undefined,
+    }, [
+      { id: 'junction', position: { x: 200, y: 300 }, width: 56, height: 56, measured: undefined, style: undefined },
+      { id: 'printer', position: { x: 260, y: 120 }, width: 220, height: 180, measured: undefined, style: undefined },
+    ])).toEqual({
+      sourceHandle: 'top-in',
+      targetHandle: 'bottom-out',
+    });
+  });
+});
 
 describe('CanvasPage save behavior', () => {
   beforeEach(() => {

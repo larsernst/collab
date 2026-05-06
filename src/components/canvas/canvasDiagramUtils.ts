@@ -18,8 +18,8 @@ export function createSplitJunctionNode(
     title: 'Junction',
     body: '',
     position,
-    width: 72,
-    height: 72,
+    width: 56,
+    height: 56,
   };
 }
 
