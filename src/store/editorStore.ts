@@ -110,27 +110,40 @@ export const useEditorStore = create<EditorState>()(
   setActiveTab: (relativePath) => set({ activeTabPath: relativePath }),
 
   markDirty: (relativePath) => {
-    set((state) => ({
-      openTabs: state.openTabs.map((t) =>
-        t.relativePath === relativePath ? { ...t, isDirty: true } : t
-      ),
-    }));
+    set((state) => {
+      let changed = false;
+      const openTabs = state.openTabs.map((tab) => {
+        if (tab.relativePath !== relativePath || tab.isDirty) return tab;
+        changed = true;
+        return { ...tab, isDirty: true };
+      });
+      return changed ? { openTabs } : state;
+    });
   },
 
   markSaved: (relativePath, hash) => {
-    set((state) => ({
-      openTabs: state.openTabs.map((t) =>
-        t.relativePath === relativePath ? { ...t, isDirty: false, savedHash: hash } : t
-      ),
-    }));
+    set((state) => {
+      let changed = false;
+      const openTabs = state.openTabs.map((tab) => {
+        if (tab.relativePath !== relativePath) return tab;
+        if (!tab.isDirty && tab.savedHash === hash) return tab;
+        changed = true;
+        return { ...tab, isDirty: false, savedHash: hash };
+      });
+      return changed ? { openTabs } : state;
+    });
   },
 
   setSavedHash: (relativePath, hash) => {
-    set((state) => ({
-      openTabs: state.openTabs.map((t) =>
-        t.relativePath === relativePath ? { ...t, savedHash: hash } : t
-      ),
-    }));
+    set((state) => {
+      let changed = false;
+      const openTabs = state.openTabs.map((tab) => {
+        if (tab.relativePath !== relativePath || tab.savedHash === hash) return tab;
+        changed = true;
+        return { ...tab, savedHash: hash };
+      });
+      return changed ? { openTabs } : state;
+    });
   },
 
   updateTabTitle: (relativePath, title) => {

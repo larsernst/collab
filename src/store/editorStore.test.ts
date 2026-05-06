@@ -106,4 +106,15 @@ describe('editorStore renameTab', () => {
 
     expect(useEditorStore.getState().pendingSearchJump).toBeNull();
   });
+
+  it('does not recreate tab state when marking an already-dirty tab dirty again', () => {
+    const state = useEditorStore.getState();
+    state.openTab('Boards/test.canvas', 'test', 'canvas');
+    state.markDirty('Boards/test.canvas');
+
+    const firstOpenTabs = useEditorStore.getState().openTabs;
+    useEditorStore.getState().markDirty('Boards/test.canvas');
+
+    expect(useEditorStore.getState().openTabs).toBe(firstOpenTabs);
+  });
 });

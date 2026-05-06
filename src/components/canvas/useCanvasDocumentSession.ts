@@ -46,6 +46,7 @@ interface UseCanvasDocumentSessionOptions {
   lastWriteRef: React.RefObject<number>;
   markLoaded: (hash?: string | null) => void;
   shouldSkipAutosave: () => boolean;
+  pauseAutosave?: boolean;
   markWriteStarted: () => void;
   shouldCreateSnapshot: (hash: string) => boolean;
 }
@@ -77,6 +78,7 @@ export function useCanvasDocumentSession({
   lastWriteRef,
   markLoaded,
   shouldSkipAutosave,
+  pauseAutosave = false,
   markWriteStarted,
   shouldCreateSnapshot,
 }: UseCanvasDocumentSessionOptions) {
@@ -233,6 +235,10 @@ export function useCanvasDocumentSession({
 
   useEffect(() => {
     if (!vault || !relativePath) return;
+    if (pauseAutosave) {
+      if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
+      return;
+    }
     if (shouldSkipAutosave()) {
       return;
     }
@@ -245,5 +251,5 @@ export function useCanvasDocumentSession({
     return () => {
       if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
     };
-  }, [edges, isDirtyRef, markDirty, nodes, relativePath, saveCanvas, shouldSkipAutosave, vault, viewport]);
+  }, [edges, isDirtyRef, markDirty, nodes, pauseAutosave, relativePath, saveCanvas, shouldSkipAutosave, vault, viewport]);
 }

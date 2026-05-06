@@ -382,7 +382,7 @@ export default function FileTree() {
     return () => {
       cancelled = true;
     };
-  }, [mode, selectedNode, selectedRelativePath, vault?.path]);
+  }, [mode, selectedNode?.isFolder, selectedRelativePath, vault?.path]);
 
   const selectedFile = selectedNode && !selectedNode.isFolder ? selectedNode : null;
 

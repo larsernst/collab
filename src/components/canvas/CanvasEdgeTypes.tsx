@@ -1,9 +1,7 @@
-import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
+import { createContext, useContext, useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react';
 import {
   BaseEdge,
   Position,
-  useEdges,
-  useNodes,
   type ConnectionLineComponentProps,
   type Edge as FlowEdge,
   type EdgeProps,
@@ -18,8 +16,11 @@ const CANVAS_EDGE_LANE = 30;
 const CANVAS_EDGE_SLOT_SPACING = 18;
 const CANVAS_EDGE_SLOT_PADDING = 26;
 const CANVAS_EDGE_REROUTE_MS = 220;
+const CANVAS_EDGE_REROUTE_LIMIT = 12;
 const DEFAULT_EDGE_STROKE = 'color-mix(in oklch, var(--primary) 78%, white 22%)';
 const EDGE_ANIMATION_STROKE = 'color-mix(in oklch, var(--primary) 90%, white 10%)';
+const SOLID_EDGE_ANIMATION_DASH = 28;
+const SOLID_EDGE_ANIMATION_GAP = 240;
 
 export const DEFAULT_CANVAS_EDGE_STYLE = {
   strokeWidth: 2,
@@ -64,6 +65,25 @@ interface PathPoint {
   y: number;
 }
 
+interface EdgeSiblingDescriptor {
+  key: string;
+  oppositeId: string;
+}
+
+interface EdgeSiblingLookup {
+  all: Map<string, EdgeSiblingDescriptor[]>;
+  explicit: Map<string, EdgeSiblingDescriptor[]>;
+}
+
+interface CanvasEdgeLayout {
+  edges: CanvasFlowEdge[];
+  nodeGeometry: Map<string, NodeGeometry>;
+  siblingLookup: EdgeSiblingLookup;
+  animateReroutes: boolean;
+}
+
+const CanvasEdgeLayoutContext = createContext<CanvasEdgeLayout | null>(null);
+
 function isHorizontalPosition(position: Position) {
   return position === Position.Left || position === Position.Right;
 }
@@ -97,10 +117,6 @@ function getEdgeDashArray(lineStyle: CanvasEdgeLineStyle) {
   if (lineStyle === 'dashed') return '10 8';
   if (lineStyle === 'dotted') return '2 7';
   return undefined;
-}
-
-function getSolidHighlightGradientId(edgeId: string) {
-  return `canvas-edge-solid-highlight-${edgeId}`;
 }
 
 function getCanvasArrowMarkerId(kind: 'start' | 'end') {
@@ -223,10 +239,6 @@ function easeOutCubic(value: number) {
   return 1 - (1 - value) ** 3;
 }
 
-function clamp01(value: number) {
-  return Math.max(0, Math.min(1, value));
-}
-
 export function fromFlowEdge(edge: CanvasFlowEdge): CanvasEdge {
   const data = getCanvasEdgeData(edge.data);
   return {
@@ -328,6 +340,41 @@ function getAnchorCoordinates(
   return { x: geometry.centerX, y: geometry.centerY + geometry.height / 2 };
 }
 
+function getSiblingLookupKey(nodeId: string, anchorPosition: Position) {
+  return `${nodeId}:${anchorPosition}`;
+}
+
+function sortSiblingDescriptors(
+  descriptors: EdgeSiblingDescriptor[],
+  nodeId: string,
+  anchorPosition: Position,
+  nodeGeometry: Map<string, NodeGeometry>,
+) {
+  const anchorNode = nodeGeometry.get(nodeId);
+  descriptors.sort((left, right) => {
+    const leftNode = nodeGeometry.get(left.oppositeId);
+    const rightNode = nodeGeometry.get(right.oppositeId);
+    const leftCenter = isHorizontalPosition(anchorPosition)
+      ? (leftNode?.centerY ?? 0)
+      : (leftNode?.centerX ?? 0);
+    const rightCenter = isHorizontalPosition(anchorPosition)
+      ? (rightNode?.centerY ?? 0)
+      : (rightNode?.centerX ?? 0);
+    if (leftCenter !== rightCenter) return leftCenter - rightCenter;
+    if (anchorNode && leftNode && rightNode) {
+      const leftDistance = isHorizontalPosition(anchorPosition)
+        ? Math.abs(leftNode.centerX - anchorNode.centerX)
+        : Math.abs(leftNode.centerY - anchorNode.centerY);
+      const rightDistance = isHorizontalPosition(anchorPosition)
+        ? Math.abs(rightNode.centerX - anchorNode.centerX)
+        : Math.abs(rightNode.centerY - anchorNode.centerY);
+      if (leftDistance !== rightDistance) return leftDistance - rightDistance;
+    }
+    if (left.oppositeId !== right.oppositeId) return left.oppositeId.localeCompare(right.oppositeId);
+    return left.key.localeCompare(right.key);
+  });
+}
+
 function inferEndpointPositionFromNodes(
   nodeId: string,
   oppositeId: string,
@@ -372,9 +419,15 @@ function getOrderedEndpointSiblings(
   nodeId: string,
   anchorPosition: Position,
   requireExplicitHandle: boolean,
+  siblingLookup?: EdgeSiblingLookup,
   pendingEdge?: Pick<CanvasFlowEdge, 'id' | 'source' | 'target' | 'sourceHandle' | 'targetHandle'>,
 ) {
-  const anchorNode = nodeGeometry.get(nodeId);
+  const lookup = requireExplicitHandle ? siblingLookup?.explicit : siblingLookup?.all;
+  const lookupKey = getSiblingLookupKey(nodeId, anchorPosition);
+  if (!pendingEdge && lookup?.has(lookupKey)) {
+    return lookup.get(lookupKey) ?? [];
+  }
+
   const getSiblingDescriptors = (candidate: Pick<CanvasFlowEdge, 'id' | 'source' | 'target' | 'sourceHandle' | 'targetHandle'>) => {
     const descriptors: Array<{ key: string; oppositeId: string }> = [];
     if (
@@ -406,28 +459,7 @@ function getOrderedEndpointSiblings(
     siblings.push(...getSiblingDescriptors(pendingEdge));
   }
 
-  siblings.sort((left, right) => {
-    const leftNode = nodeGeometry.get(left.oppositeId);
-    const rightNode = nodeGeometry.get(right.oppositeId);
-    const leftCenter = isHorizontalPosition(anchorPosition)
-      ? (leftNode?.centerY ?? 0)
-      : (leftNode?.centerX ?? 0);
-    const rightCenter = isHorizontalPosition(anchorPosition)
-      ? (rightNode?.centerY ?? 0)
-      : (rightNode?.centerX ?? 0);
-    if (leftCenter !== rightCenter) return leftCenter - rightCenter;
-    if (anchorNode && leftNode && rightNode) {
-      const leftDistance = isHorizontalPosition(anchorPosition)
-        ? Math.abs(leftNode.centerX - anchorNode.centerX)
-        : Math.abs(leftNode.centerY - anchorNode.centerY);
-      const rightDistance = isHorizontalPosition(anchorPosition)
-        ? Math.abs(rightNode.centerX - anchorNode.centerX)
-        : Math.abs(rightNode.centerY - anchorNode.centerY);
-      if (leftDistance !== rightDistance) return leftDistance - rightDistance;
-    }
-    if (left.oppositeId !== right.oppositeId) return left.oppositeId.localeCompare(right.oppositeId);
-    return left.key.localeCompare(right.key);
-  });
+  sortSiblingDescriptors(siblings, nodeId, anchorPosition, nodeGeometry);
 
   return siblings;
 }
@@ -486,6 +518,7 @@ export function getAnchoredEdgeGeometry({
   edge,
   edges,
   nodeGeometry,
+  siblingLookup,
   sourceX,
   sourceY,
   targetX,
@@ -496,6 +529,7 @@ export function getAnchoredEdgeGeometry({
   edge: Pick<CanvasFlowEdge, 'id' | 'source' | 'target' | 'sourceHandle' | 'targetHandle'>;
   edges: CanvasFlowEdge[];
   nodeGeometry: Map<string, NodeGeometry>;
+  siblingLookup?: EdgeSiblingLookup;
   sourceX: number;
   sourceY: number;
   targetX: number;
@@ -516,6 +550,7 @@ export function getAnchoredEdgeGeometry({
     edge.source,
     resolvedSourcePosition,
     !!edge.sourceHandle,
+    siblingLookup,
     edge,
   );
   const targetSiblings = getOrderedEndpointSiblings(
@@ -525,6 +560,7 @@ export function getAnchoredEdgeGeometry({
     edge.target,
     resolvedTargetPosition,
     !!edge.targetHandle,
+    siblingLookup,
     edge,
   );
   const sourceIndex = Math.max(0, sourceSiblings.findIndex((candidate) => candidate.key === `${edge.id}:source`));
@@ -621,14 +657,94 @@ function getNodeGeometryMap(nodes: FlowNode<CanvasNodeData>[]) {
   ]));
 }
 
-function StackedCanvasEdge(props: EdgeProps<CanvasFlowEdge>) {
-  const edges = useEdges<CanvasFlowEdge>();
-  const nodes = useNodes<FlowNode<CanvasNodeData>>();
-  const nodeGeometry = useMemo(() => getNodeGeometryMap(nodes), [nodes]);
-  const targetGeometry = useMemo(() => getAnchoredEdgeGeometry({
-    edge: props,
+function buildEdgeSiblingLookup(
+  edges: CanvasFlowEdge[],
+  nodeGeometry: Map<string, NodeGeometry>,
+): EdgeSiblingLookup {
+  const all = new Map<string, EdgeSiblingDescriptor[]>();
+  const explicit = new Map<string, EdgeSiblingDescriptor[]>();
+
+  const pushDescriptor = (
+    lookup: Map<string, EdgeSiblingDescriptor[]>,
+    nodeId: string,
+    anchorPosition: Position,
+    descriptor: EdgeSiblingDescriptor,
+  ) => {
+    const key = getSiblingLookupKey(nodeId, anchorPosition);
+    const current = lookup.get(key);
+    if (current) {
+      current.push(descriptor);
+      return;
+    }
+    lookup.set(key, [descriptor]);
+  };
+
+  for (const edge of edges) {
+    const sourcePosition = getEndpointPosition(edge, 'source', nodeGeometry, Position.Right);
+    const targetPosition = getEndpointPosition(edge, 'target', nodeGeometry, Position.Left);
+    const sourceDescriptor = { key: `${edge.id}:source`, oppositeId: edge.target };
+    const targetDescriptor = { key: `${edge.id}:target`, oppositeId: edge.source };
+
+    pushDescriptor(all, edge.source, sourcePosition, sourceDescriptor);
+    pushDescriptor(all, edge.target, targetPosition, targetDescriptor);
+
+    if (edge.sourceHandle) {
+      pushDescriptor(explicit, edge.source, sourcePosition, sourceDescriptor);
+    }
+    if (edge.targetHandle) {
+      pushDescriptor(explicit, edge.target, targetPosition, targetDescriptor);
+    }
+  }
+
+  for (const [key, descriptors] of all) {
+    const [nodeId, position] = key.split(':');
+    sortSiblingDescriptors(descriptors, nodeId, position as Position, nodeGeometry);
+  }
+  for (const [key, descriptors] of explicit) {
+    const [nodeId, position] = key.split(':');
+    sortSiblingDescriptors(descriptors, nodeId, position as Position, nodeGeometry);
+  }
+
+  return { all, explicit };
+}
+
+export function buildCanvasEdgeLayout(
+  nodes: FlowNode<CanvasNodeData>[],
+  edges: CanvasFlowEdge[],
+): CanvasEdgeLayout {
+  const nodeGeometry = getNodeGeometryMap(nodes);
+  return {
     edges,
     nodeGeometry,
+    siblingLookup: buildEdgeSiblingLookup(edges, nodeGeometry),
+    animateReroutes: edges.length <= CANVAS_EDGE_REROUTE_LIMIT && nodes.length <= 24,
+  };
+}
+
+export function CanvasEdgeLayoutProvider({
+  value,
+  children,
+}: {
+  value: CanvasEdgeLayout;
+  children: ReactNode;
+}) {
+  return (
+    <CanvasEdgeLayoutContext.Provider value={value}>
+      {children}
+    </CanvasEdgeLayoutContext.Provider>
+  );
+}
+
+function StackedCanvasEdge(props: EdgeProps<CanvasFlowEdge>) {
+  const layout = useContext(CanvasEdgeLayoutContext);
+  if (!layout) {
+    throw new Error('StackedCanvasEdge must be rendered within a CanvasEdgeLayoutProvider.');
+  }
+  const targetGeometry = useMemo(() => getAnchoredEdgeGeometry({
+    edge: props,
+    edges: layout.edges,
+    nodeGeometry: layout.nodeGeometry,
+    siblingLookup: layout.siblingLookup,
     sourceX: props.sourceX,
     sourceY: props.sourceY,
     targetX: props.targetX,
@@ -636,8 +752,7 @@ function StackedCanvasEdge(props: EdgeProps<CanvasFlowEdge>) {
     sourcePosition: props.sourcePosition,
     targetPosition: props.targetPosition,
   }), [
-    edges,
-    nodeGeometry,
+    layout,
     props.id,
     props.source,
     props.target,
@@ -663,6 +778,12 @@ function StackedCanvasEdge(props: EdgeProps<CanvasFlowEdge>) {
       return;
     }
 
+    if (!layout.animateReroutes) {
+      currentGeometryRef.current = next;
+      setDisplayGeometry(next);
+      return;
+    }
+
     let frameId = 0;
     const startedAt = performance.now();
 
@@ -678,51 +799,19 @@ function StackedCanvasEdge(props: EdgeProps<CanvasFlowEdge>) {
     return () => {
       cancelAnimationFrame(frameId);
     };
-  }, [targetGeometry]);
+  }, [layout.animateReroutes, targetGeometry]);
 
   const data = getCanvasEdgeData(props.data);
   const baseStrokeWidth = typeof props.style?.strokeWidth === 'number'
     ? props.style.strokeWidth
     : DEFAULT_CANVAS_EDGE_STYLE.strokeWidth;
   const interactionStrokeWidth = Math.max(baseStrokeWidth + 12, 16);
-  const gradientId = getSolidHighlightGradientId(props.id);
   const markerStartId = getCanvasArrowMarkerIdForEdge(props.id, 'start');
   const markerEndId = getCanvasArrowMarkerIdForEdge(props.id, 'end');
-  const [solidAnimationProgress, setSolidAnimationProgress] = useState(0);
-  const visibleStroke = data.animated && data.lineStyle === 'solid'
-    ? `url(#${gradientId})`
-    : DEFAULT_EDGE_STROKE;
+  const visibleStroke = DEFAULT_EDGE_STROKE;
   const selectedHighlightStroke = 'color-mix(in oklch, var(--primary) 48%, white 22%)';
   const visibleDashArray = getEdgeDashArray(data.lineStyle);
   const visibleStrokeLinecap = data.lineStyle === 'dotted' ? 'round' : 'butt';
-
-  useEffect(() => {
-    if (!data.animated || data.lineStyle !== 'solid') {
-      setSolidAnimationProgress(0);
-      return;
-    }
-
-    let frameId = 0;
-    const durationMs = 1600;
-    const startedAt = performance.now();
-
-    const tick = (now: number) => {
-      const elapsed = (now - startedAt) % durationMs;
-      const linearProgress = elapsed / durationMs;
-      setSolidAnimationProgress(data.animationReverse ? 1 - linearProgress : linearProgress);
-      frameId = requestAnimationFrame(tick);
-    };
-
-    frameId = requestAnimationFrame(tick);
-    return () => {
-      cancelAnimationFrame(frameId);
-    };
-  }, [data.animated, data.animationReverse, data.lineStyle]);
-
-  const solidHighlightLead = clamp01(solidAnimationProgress - 0.12);
-  const solidHighlightCoreStart = clamp01(solidAnimationProgress - 0.05);
-  const solidHighlightCoreEnd = clamp01(solidAnimationProgress + 0.05);
-  const solidHighlightTrail = clamp01(solidAnimationProgress + 0.12);
   const markerInset = 6;
   const sourceDirection = normalizeVector(
     displayGeometry.controlSourceX - displayGeometry.sourceX,
@@ -804,26 +893,6 @@ function StackedCanvasEdge(props: EdgeProps<CanvasFlowEdge>) {
           />
         </marker>
       </defs>
-      {data.animated && data.lineStyle === 'solid' ? (
-        <defs>
-          <linearGradient
-            id={gradientId}
-            gradientUnits="userSpaceOnUse"
-            x1={displayGeometry.sourceX - 140}
-            y1={displayGeometry.sourceY}
-            x2={displayGeometry.targetX + 140}
-            y2={displayGeometry.targetY}
-          >
-            <stop offset="0%" stopColor={DEFAULT_EDGE_STROKE} />
-            <stop offset={`${solidHighlightLead * 100}%`} stopColor={DEFAULT_EDGE_STROKE} />
-            <stop offset={`${solidHighlightCoreStart * 100}%`} stopColor={EDGE_ANIMATION_STROKE} stopOpacity="0.25" />
-            <stop offset={`${solidAnimationProgress * 100}%`} stopColor={EDGE_ANIMATION_STROKE} stopOpacity="1" />
-            <stop offset={`${solidHighlightCoreEnd * 100}%`} stopColor={EDGE_ANIMATION_STROKE} stopOpacity="0.25" />
-            <stop offset={`${solidHighlightTrail * 100}%`} stopColor={DEFAULT_EDGE_STROKE} />
-            <stop offset="100%" stopColor={DEFAULT_EDGE_STROKE} />
-          </linearGradient>
-        </defs>
-      ) : null}
       {props.selected ? (
         <path
           d={path}
@@ -869,6 +938,27 @@ function StackedCanvasEdge(props: EdgeProps<CanvasFlowEdge>) {
           />
         ) : null}
       </path>
+      {data.animated && data.lineStyle === 'solid' ? (
+        <path
+          d={path}
+          fill="none"
+          stroke={EDGE_ANIMATION_STROKE}
+          strokeWidth={baseStrokeWidth}
+          strokeLinecap="round"
+          strokeLinejoin="round"
+          strokeDasharray={`${SOLID_EDGE_ANIMATION_DASH} ${SOLID_EDGE_ANIMATION_GAP}`}
+          opacity={0.96}
+          pointerEvents="none"
+        >
+          <animate
+            attributeName="stroke-dashoffset"
+            from={data.animationReverse ? `-${SOLID_EDGE_ANIMATION_DASH + SOLID_EDGE_ANIMATION_GAP}` : `${SOLID_EDGE_ANIMATION_DASH + SOLID_EDGE_ANIMATION_GAP}`}
+            to="0"
+            dur="1200ms"
+            repeatCount="indefinite"
+          />
+        </path>
+      ) : null}
       <BaseEdge
         {...props}
         path={path}
@@ -898,9 +988,10 @@ export function StackedConnectionLine({
   toY,
   toPosition,
 }: ConnectionLineComponentProps<FlowNode<CanvasNodeData>>) {
-  const edges = useEdges<CanvasFlowEdge>();
-  const nodes = useNodes<FlowNode<CanvasNodeData>>();
-  const nodeGeometry = useMemo(() => getNodeGeometryMap(nodes), [nodes]);
+  const layout = useContext(CanvasEdgeLayoutContext);
+  if (!layout) {
+    throw new Error('StackedConnectionLine must be rendered within a CanvasEdgeLayoutProvider.');
+  }
   const previewEdge: Pick<CanvasFlowEdge, 'id' | 'source' | 'target' | 'sourceHandle' | 'targetHandle'> = {
     id: '__canvas-connection-preview__',
     source: fromNode.id,
@@ -910,8 +1001,9 @@ export function StackedConnectionLine({
   };
   const geometry = getAnchoredEdgeGeometry({
     edge: previewEdge,
-    edges,
-    nodeGeometry,
+    edges: layout.edges,
+    nodeGeometry: layout.nodeGeometry,
+    siblingLookup: layout.siblingLookup,
     sourceX: fromX,
     sourceY: fromY,
     targetX: toX,

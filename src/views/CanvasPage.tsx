@@ -25,6 +25,8 @@ import {
 } from 'lucide-react';
 import { nodeTypes, type CanvasNodeData } from '../components/canvas/CanvasNodeTypes';
 import {
+  buildCanvasEdgeLayout,
+  CanvasEdgeLayoutProvider,
   DEFAULT_CANVAS_EDGE_STYLE,
   edgeTypes,
   fromFlowEdge,
@@ -455,17 +457,21 @@ async function renderPdfPreview(dataUrl: string) {
 
 
 function CanvasBoard({ relativePath }: { relativePath: string | null }) {
-  const { vault, fileTree } = useVaultStore();
-  const { openTab, markDirty, markSaved, setSavedHash } = useEditorStore();
-  const { addConflict, myUserId, myUserName } = useCollabStore();
-  const {
-    setActiveView,
-    canvasWebCardDefaultMode,
-    canvasWebCardAutoLoad,
-    webPreviewsEnabled,
-    hoverWebLinkPreviewsEnabled,
-    backgroundWebPreviewPrefetchEnabled,
-  } = useUiStore();
+  const vault = useVaultStore((state) => state.vault);
+  const fileTree = useVaultStore((state) => state.fileTree);
+  const openTab = useEditorStore((state) => state.openTab);
+  const markDirty = useEditorStore((state) => state.markDirty);
+  const markSaved = useEditorStore((state) => state.markSaved);
+  const setSavedHash = useEditorStore((state) => state.setSavedHash);
+  const addConflict = useCollabStore((state) => state.addConflict);
+  const myUserId = useCollabStore((state) => state.myUserId);
+  const myUserName = useCollabStore((state) => state.myUserName);
+  const setActiveView = useUiStore((state) => state.setActiveView);
+  const canvasWebCardDefaultMode = useUiStore((state) => state.canvasWebCardDefaultMode);
+  const canvasWebCardAutoLoad = useUiStore((state) => state.canvasWebCardAutoLoad);
+  const webPreviewsEnabled = useUiStore((state) => state.webPreviewsEnabled);
+  const hoverWebLinkPreviewsEnabled = useUiStore((state) => state.hoverWebLinkPreviewsEnabled);
+  const backgroundWebPreviewPrefetchEnabled = useUiStore((state) => state.backgroundWebPreviewPrefetchEnabled);
   const reactFlow = useReactFlow<FlowNode<CanvasNodeData>, CanvasFlowEdge>();
   const viewportRef = useRef<HTMLDivElement | null>(null);
   const isMountedRef = useRef(true);
@@ -500,6 +506,7 @@ function CanvasBoard({ relativePath }: { relativePath: string | null }) {
     duplicateNodes: CanvasNode[];
     duplicateEdges: CanvasEdge[];
   } | null>(null);
+  const [isCanvasInteracting, setIsCanvasInteracting] = useState(false);
 
   const allFiles = useMemo(() => flattenFiles(fileTree).filter((node) => !node.isFolder), [fileTree]);
   const availableNotes = useMemo(() => allFiles.filter((file) => file.extension.toLowerCase() === 'md'), [allFiles]);
@@ -507,6 +514,30 @@ function CanvasBoard({ relativePath }: { relativePath: string | null }) {
   const selectedEdge = useMemo(() => edges.find((edge) => edge.selected), [edges]);
   const selectedNode = useMemo(() => nodes.find((node) => node.selected), [nodes]);
   const selectedNodes = useMemo(() => nodes.filter((node) => node.selected), [nodes]);
+  const hasEdgesMissingHandles = useMemo(
+    () => edges.some((edge) => !edge.sourceHandle || !edge.targetHandle),
+    [edges],
+  );
+  const edgeLayout = useMemo(() => buildCanvasEdgeLayout(nodes, edges), [nodes, edges]);
+  const selectedEdgeData = useMemo(
+    () => (selectedEdge ? getCanvasEdgeData(selectedEdge.data) : null),
+    [selectedEdge],
+  );
+  const selectedInspectorNode = useMemo(() => (
+    selectedNode ? {
+      id: selectedNode.id,
+      type: selectedNode.type ?? '',
+      title: selectedNode.data.title,
+      subtitle: selectedNode.data.subtitle,
+      content: selectedNode.data.content,
+      symbolGlyph: selectedNode.data.symbolGlyph,
+      symbolId: selectedNode.data.symbolId,
+      symbolLabel: selectedNode.data.symbolLabel,
+      linkedRelativePath: selectedNode.data.linkedRelativePath,
+      planning: selectedNode.data.planning,
+      orientation: selectedNode.data.orientation,
+    } : null
+  ), [selectedNode]);
   const zoomLabel = `${Math.round(viewport.zoom * 100)}%`;
 
   useEffect(() => {
@@ -676,6 +707,7 @@ function CanvasBoard({ relativePath }: { relativePath: string | null }) {
     lastWriteRef,
     markLoaded,
     shouldSkipAutosave,
+    pauseAutosave: isCanvasInteracting,
     markWriteStarted,
     shouldCreateSnapshot,
   });
@@ -685,7 +717,7 @@ function CanvasBoard({ relativePath }: { relativePath: string | null }) {
   }, [selectedEdge?.id]);
 
   useEffect(() => {
-    if (nodes.length === 0) return;
+    if (nodes.length === 0 || !hasEdgesMissingHandles) return;
 
     setEdges((prev) => {
       let changed = false;
@@ -707,7 +739,7 @@ function CanvasBoard({ relativePath }: { relativePath: string | null }) {
       });
       return changed ? next : prev;
     });
-  }, [nodes, setEdges]);
+  }, [hasEdgesMissingHandles, nodes, setEdges]);
 
   const addCanvasNode = useCallback((node: CanvasNode, pendingAutoConnectOverride?: PendingAutoConnect | null) => {
     const minimumSize = getMinimumCanvasNodeSize(node.type);
@@ -1018,6 +1050,7 @@ function CanvasBoard({ relativePath }: { relativePath: string | null }) {
   });
 
   const handleNodeDragStart = useCallback((event: unknown, node: FlowNode<CanvasNodeData>) => {
+    setIsCanvasInteracting(true);
     const altPressed = isAltModifiedEvent(event);
     if (!altPressed) {
       duplicateDragSessionRef.current = null;
@@ -1045,6 +1078,7 @@ function CanvasBoard({ relativePath }: { relativePath: string | null }) {
   }, [edges, nodes]);
 
   const handleNodeDragStop = useCallback((event: unknown, node: FlowNode<CanvasNodeData>) => {
+    setIsCanvasInteracting(false);
     const duplicateSession = duplicateDragSessionRef.current;
     if (!duplicateSession) {
       snapNodeToGrid(node.id);
@@ -1413,97 +1447,92 @@ function CanvasBoard({ relativePath }: { relativePath: string | null }) {
         onClose={handleInsertMenuClose}
       />
 
-      <ReactFlow<FlowNode<CanvasNodeData>, CanvasFlowEdge>
-        nodes={nodes}
-        edges={edges}
-        onNodesChange={onNodesChange}
-        onEdgesChange={onEdgesChange}
-        onNodeDragStart={handleNodeDragStart}
-        onNodeDragStop={handleNodeDragStop}
-        onConnect={handleConnect}
-        onConnectStart={handleConnectStart}
-        onConnectEnd={handleConnectEnd}
-        onReconnect={handleReconnect}
-        onPaneContextMenu={(event) => {
-          event.preventDefault();
-          pendingAutoConnectRef.current = null;
-          openInsertMenuAt(event.clientX, event.clientY, null);
-        }}
-        onEdgeDoubleClick={handleEdgeDoubleClick}
-        onMoveEnd={(_: MouseEvent | TouchEvent | null, nextViewport: Viewport) => setViewport(nextViewport)}
-        nodeTypes={nodeTypes}
-        edgeTypes={edgeTypes}
-        connectionMode={ConnectionMode.Loose}
-        selectionOnDrag
-        panOnDrag={[1]}
-        panOnScroll
-        zoomOnScroll={false}
-        deleteKeyCode={['Backspace', 'Delete']}
-        nodesDraggable
-        elementsSelectable
-        nodesConnectable
-        edgesReconnectable
-        connectionLineComponent={StackedConnectionLine}
+      <CanvasEdgeLayoutProvider value={edgeLayout}>
+        <ReactFlow<FlowNode<CanvasNodeData>, CanvasFlowEdge>
+          nodes={nodes}
+          edges={edges}
+          onNodesChange={onNodesChange}
+          onEdgesChange={onEdgesChange}
+          onNodeDragStart={handleNodeDragStart}
+          onNodeDragStop={handleNodeDragStop}
+          onConnect={handleConnect}
+          onConnectStart={handleConnectStart}
+          onConnectEnd={handleConnectEnd}
+          onReconnect={handleReconnect}
+          onPaneContextMenu={(event) => {
+            event.preventDefault();
+            pendingAutoConnectRef.current = null;
+            openInsertMenuAt(event.clientX, event.clientY, null);
+          }}
+          onEdgeDoubleClick={handleEdgeDoubleClick}
+          onMoveStart={() => setIsCanvasInteracting(true)}
+          onMoveEnd={(_: MouseEvent | TouchEvent | null, nextViewport: Viewport) => {
+            setIsCanvasInteracting(false);
+            setViewport(nextViewport);
+          }}
+          nodeTypes={nodeTypes}
+          edgeTypes={edgeTypes}
+          connectionMode={ConnectionMode.Loose}
+          selectionOnDrag
+          panOnDrag={[1]}
+          panOnScroll
+          zoomOnScroll={false}
+          deleteKeyCode={['Backspace', 'Delete']}
+          nodesDraggable
+          elementsSelectable
+          nodesConnectable
+          edgesReconnectable
+          connectionLineComponent={StackedConnectionLine}
         connectionRadius={36}
         reconnectRadius={36}
         minZoom={0.2}
         maxZoom={2.5}
+        onlyRenderVisibleElements
         proOptions={{ hideAttribution: true }}
         className="canvas-flow"
-        defaultEdgeOptions={{
-          type: 'stacked',
-          animated: false,
-          style: {
-            ...DEFAULT_CANVAS_EDGE_STYLE,
-            strokeLinecap: 'butt',
-          },
-        }}
-      >
-        <Background
-          gap={24}
-          size={1.5}
-          variant={BackgroundVariant.Dots}
-          color="color-mix(in oklch, var(--muted-foreground) 22%, transparent)"
-        />
-        <Panel position="top-right">
-          <CanvasEdgeInspector
-            selectedEdgeData={selectedEdge ? getCanvasEdgeData(selectedEdge.data) : null}
-            edgeLabelDraft={edgeLabelDraft}
-            onEdgeLabelChange={updateSelectedEdgeLabel}
-            onLineStyleChange={updateSelectedEdgeLineStyle}
-            onRoutingStyleChange={updateSelectedEdgeRoutingStyle}
-            onAnimationDirectionChange={updateSelectedEdgeAnimationDirection}
-            onAnimationChange={updateSelectedEdgeAnimation}
-            onMarkerStartChange={updateSelectedEdgeMarkerStart}
-            onMarkerEndChange={updateSelectedEdgeMarkerEnd}
-            onDeleteSelected={deleteSelection}
+          defaultEdgeOptions={{
+            type: 'stacked',
+            animated: false,
+            style: {
+              ...DEFAULT_CANVAS_EDGE_STYLE,
+              strokeLinecap: 'butt',
+            },
+          }}
+        >
+          <Background
+            gap={24}
+            size={1.5}
+            variant={BackgroundVariant.Dots}
+            color="color-mix(in oklch, var(--muted-foreground) 22%, transparent)"
           />
-        </Panel>
-        <Panel position="top-left">
-          <CanvasNodeInspector
-            selectedNode={selectedNode ? {
-              id: selectedNode.id,
-              type: selectedNode.type ?? '',
-              title: selectedNode.data.title,
-              subtitle: selectedNode.data.subtitle,
-              content: selectedNode.data.content,
-              symbolGlyph: selectedNode.data.symbolGlyph,
-              symbolId: selectedNode.data.symbolId,
-              symbolLabel: selectedNode.data.symbolLabel,
-              linkedRelativePath: selectedNode.data.linkedRelativePath,
-              planning: selectedNode.data.planning,
-              orientation: selectedNode.data.orientation,
-            } : null}
-            onTitleChange={updateSelectedPlanningNodeTitle}
-            onBodyChange={updateSelectedPlanningNodeBody}
-            onPickSymbol={() => setSymbolPickerState({ open: true, mode: 'edit', position: null })}
-            onLinkedPathChange={updateSelectedPlanningNodeLinkedPath}
-            onPlanningChange={updateSelectedPlanningNodeMeta}
-            onOrientationChange={updateSelectedPlanningNodeOrientation}
-            onDeleteSelected={deleteSelection}
-          />
-        </Panel>
-      </ReactFlow>
+          <Panel position="top-right">
+            <CanvasEdgeInspector
+              selectedEdgeData={selectedEdgeData}
+              edgeLabelDraft={edgeLabelDraft}
+              onEdgeLabelChange={updateSelectedEdgeLabel}
+              onLineStyleChange={updateSelectedEdgeLineStyle}
+              onRoutingStyleChange={updateSelectedEdgeRoutingStyle}
+              onAnimationDirectionChange={updateSelectedEdgeAnimationDirection}
+              onAnimationChange={updateSelectedEdgeAnimation}
+              onMarkerStartChange={updateSelectedEdgeMarkerStart}
+              onMarkerEndChange={updateSelectedEdgeMarkerEnd}
+              onDeleteSelected={deleteSelection}
+            />
+          </Panel>
+          <Panel position="top-left">
+            <CanvasNodeInspector
+              selectedNode={selectedInspectorNode}
+              onTitleChange={updateSelectedPlanningNodeTitle}
+              onBodyChange={updateSelectedPlanningNodeBody}
+              onPickSymbol={() => setSymbolPickerState({ open: true, mode: 'edit', position: null })}
+              onLinkedPathChange={updateSelectedPlanningNodeLinkedPath}
+              onPlanningChange={updateSelectedPlanningNodeMeta}
+              onOrientationChange={updateSelectedPlanningNodeOrientation}
+              onDeleteSelected={deleteSelection}
+            />
+          </Panel>
+        </ReactFlow>
+      </CanvasEdgeLayoutProvider>
       </div>
     </div>
   );

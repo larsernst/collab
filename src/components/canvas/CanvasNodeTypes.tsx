@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type ReactNode } from 'react';
+import { memo, useEffect, useRef, useState, type ReactNode } from 'react';
 import {
   CheckCircle2,
   CircleDot,
@@ -222,14 +222,16 @@ function PlanningNodeShell({
 
   return (
     <div className="group relative h-full w-full">
-      <NodeResizer
-        isVisible={!!selected}
-        minWidth={minWidth}
-        minHeight={minHeight}
-        lineClassName="!border-primary/30"
-        handleClassName="!border-primary/50 !bg-background !w-3 !h-3"
-        onResizeEnd={() => data.onSnapToGrid?.(id)}
-      />
+      {selected ? (
+        <NodeResizer
+          isVisible
+          minWidth={minWidth}
+          minHeight={minHeight}
+          lineClassName="!border-primary/30"
+          handleClassName="!border-primary/50 !bg-background !w-3 !h-3"
+          onResizeEnd={() => data.onSnapToGrid?.(id)}
+        />
+      ) : null}
       <CanvasCardFrame
         selected={selected}
         className={cn(
@@ -310,14 +312,16 @@ function PlanningNodeShell({
 function NoteCardNode({ id, data, selected }: { id: string; data: CanvasNodeData; selected?: boolean }) {
   return (
     <div className="group relative h-full w-full">
-      <NodeResizer
-        isVisible={!!selected}
-        minWidth={220}
-        minHeight={140}
-        lineClassName="!border-primary/30"
-        handleClassName="!border-primary/50 !bg-background !w-3 !h-3"
-        onResizeEnd={() => data.onSnapToGrid?.(id)}
-      />
+      {selected ? (
+        <NodeResizer
+          isVisible
+          minWidth={220}
+          minHeight={140}
+          lineClassName="!border-primary/30"
+          handleClassName="!border-primary/50 !bg-background !w-3 !h-3"
+          onResizeEnd={() => data.onSnapToGrid?.(id)}
+        />
+      ) : null}
       <CanvasCardFrame selected={selected}>
         <button
           onDoubleClick={() => data.relativePath && data.onOpen?.(data.relativePath)}
@@ -359,14 +363,16 @@ function FileCardNode({ id, data, selected }: { id: string; data: CanvasNodeData
 
   return (
     <div className="group relative h-full w-full">
-      <NodeResizer
-        isVisible={!!selected}
-        minWidth={220}
-        minHeight={140}
-        lineClassName="!border-primary/30"
-        handleClassName="!border-primary/50 !bg-background !w-3 !h-3"
-        onResizeEnd={() => data.onSnapToGrid?.(id)}
-      />
+      {selected ? (
+        <NodeResizer
+          isVisible
+          minWidth={220}
+          minHeight={140}
+          lineClassName="!border-primary/30"
+          handleClassName="!border-primary/50 !bg-background !w-3 !h-3"
+          onResizeEnd={() => data.onSnapToGrid?.(id)}
+        />
+      ) : null}
       <CanvasCardFrame selected={selected}>
         <button
           onDoubleClick={() => data.relativePath && data.onOpen?.(data.relativePath)}
@@ -410,14 +416,16 @@ function FileCardNode({ id, data, selected }: { id: string; data: CanvasNodeData
 function TextCardNode({ id, data, selected }: { id: string; data: CanvasNodeData; selected?: boolean }) {
   return (
     <div className="group relative h-full w-full">
-      <NodeResizer
-        isVisible={!!selected}
-        minWidth={200}
-        minHeight={120}
-        lineClassName="!border-primary/30"
-        handleClassName="!border-primary/50 !bg-background !w-3 !h-3"
-        onResizeEnd={() => data.onSnapToGrid?.(id)}
-      />
+      {selected ? (
+        <NodeResizer
+          isVisible
+          minWidth={200}
+          minHeight={120}
+          lineClassName="!border-primary/30"
+          handleClassName="!border-primary/50 !bg-background !w-3 !h-3"
+          onResizeEnd={() => data.onSnapToGrid?.(id)}
+        />
+      ) : null}
       <CanvasCardFrame selected={selected}>
         <div className="flex items-center gap-2 border-b border-border/60 px-3 py-2">
           <div className="flex size-7 items-center justify-center rounded-xl bg-primary/12 text-primary">
@@ -531,14 +539,16 @@ function WebCardNode({ id, data, selected }: { id: string; data: CanvasNodeData;
 
   return (
     <div className="group relative h-full w-full">
-      <NodeResizer
-        isVisible={!!selected}
-        minWidth={260}
-        minHeight={180}
-        lineClassName="!border-primary/30"
-        handleClassName="!border-primary/50 !bg-background !w-3 !h-3"
-        onResizeEnd={() => data.onSnapToGrid?.(id)}
-      />
+      {selected ? (
+        <NodeResizer
+          isVisible
+          minWidth={260}
+          minHeight={180}
+          lineClassName="!border-primary/30"
+          handleClassName="!border-primary/50 !bg-background !w-3 !h-3"
+          onResizeEnd={() => data.onSnapToGrid?.(id)}
+        />
+      ) : null}
       <CanvasCardFrame selected={selected}>
         <div className="flex h-full flex-col">
           <div className="flex items-center gap-2 border-b border-border/60 px-3 py-2">
@@ -747,14 +757,16 @@ function WebCardNode({ id, data, selected }: { id: string; data: CanvasNodeData;
 function SymbolCardNode({ id, data, selected }: { id: string; data: CanvasNodeData; selected?: boolean }) {
   return (
     <div className="group relative h-full w-full">
-      <NodeResizer
-        isVisible={!!selected}
-        minWidth={140}
-        minHeight={140}
-        lineClassName="!border-primary/30"
-        handleClassName="!border-primary/50 !bg-background !w-3 !h-3"
-        onResizeEnd={() => data.onSnapToGrid?.(id)}
-      />
+      {selected ? (
+        <NodeResizer
+          isVisible
+          minWidth={140}
+          minHeight={140}
+          lineClassName="!border-primary/30"
+          handleClassName="!border-primary/50 !bg-background !w-3 !h-3"
+          onResizeEnd={() => data.onSnapToGrid?.(id)}
+        />
+      ) : null}
       <CanvasCardFrame
         selected={selected}
         className="items-center justify-center bg-gradient-to-br from-primary/10 via-card/98 to-card/94 px-4 py-4 text-center"
@@ -789,14 +801,16 @@ function ProcessCardNode(props: { id: string; data: CanvasNodeData; selected?: b
 function DecisionCardNode({ id, data, selected }: { id: string; data: CanvasNodeData; selected?: boolean }) {
   return (
     <div className="group relative h-full w-full">
-      <NodeResizer
-        isVisible={!!selected}
-        minWidth={240}
-        minHeight={150}
-        lineClassName="!border-primary/30"
-        handleClassName="!border-primary/50 !bg-background !w-3 !h-3"
-        onResizeEnd={() => data.onSnapToGrid?.(id)}
-      />
+      {selected ? (
+        <NodeResizer
+          isVisible
+          minWidth={240}
+          minHeight={150}
+          lineClassName="!border-primary/30"
+          handleClassName="!border-primary/50 !bg-background !w-3 !h-3"
+          onResizeEnd={() => data.onSnapToGrid?.(id)}
+        />
+      ) : null}
       <div className="relative h-full w-full">
         <svg viewBox="0 0 100 100" preserveAspectRatio="none" className="absolute inset-0 h-full w-full overflow-visible">
           <polygon
@@ -824,14 +838,16 @@ function DecisionCardNode({ id, data, selected }: { id: string; data: CanvasNode
 function TerminatorCardNode({ id, data, selected }: { id: string; data: CanvasNodeData; selected?: boolean }) {
   return (
     <div className="group relative h-full w-full">
-      <NodeResizer
-        isVisible={!!selected}
-        minWidth={210}
-        minHeight={110}
-        lineClassName="!border-primary/30"
-        handleClassName="!border-primary/50 !bg-background !w-3 !h-3"
-        onResizeEnd={() => data.onSnapToGrid?.(id)}
-      />
+      {selected ? (
+        <NodeResizer
+          isVisible
+          minWidth={210}
+          minHeight={110}
+          lineClassName="!border-primary/30"
+          handleClassName="!border-primary/50 !bg-background !w-3 !h-3"
+          onResizeEnd={() => data.onSnapToGrid?.(id)}
+        />
+      ) : null}
       <div className="relative h-full w-full">
         <svg viewBox="0 0 100 44" preserveAspectRatio="none" className="absolute inset-0 h-full w-full overflow-visible">
           <rect
@@ -906,20 +922,36 @@ function CrossingCardNode(props: { id: string; data: CanvasNodeData; selected?: 
   return <PlanningNodeShell {...props} minWidth={96} minHeight={64} compact />;
 }
 
+const MemoNoteCardNode = memo(NoteCardNode);
+const MemoFileCardNode = memo(FileCardNode);
+const MemoTextCardNode = memo(TextCardNode);
+const MemoWebCardNode = memo(WebCardNode);
+const MemoSymbolCardNode = memo(SymbolCardNode);
+const MemoProcessCardNode = memo(ProcessCardNode);
+const MemoDecisionCardNode = memo(DecisionCardNode);
+const MemoTerminatorCardNode = memo(TerminatorCardNode);
+const MemoDocumentPlanningCardNode = memo(DocumentPlanningCardNode);
+const MemoMilestoneCardNode = memo(MilestoneCardNode);
+const MemoActorCardNode = memo(ActorCardNode);
+const MemoGroupCardNode = memo(GroupCardNode);
+const MemoSwimlaneCardNode = memo(SwimlaneCardNode);
+const MemoJunctionCardNode = memo(JunctionCardNode);
+const MemoCrossingCardNode = memo(CrossingCardNode);
+
 export const nodeTypes = {
-  noteCard: NoteCardNode,
-  fileCard: FileCardNode,
-  textCard: TextCardNode,
-  webCard: WebCardNode,
-  symbolCard: SymbolCardNode,
-  processCard: ProcessCardNode,
-  decisionCard: DecisionCardNode,
-  terminatorCard: TerminatorCardNode,
-  documentCard: DocumentPlanningCardNode,
-  milestoneCard: MilestoneCardNode,
-  actorCard: ActorCardNode,
-  groupCard: GroupCardNode,
-  swimlaneCard: SwimlaneCardNode,
-  junctionCard: JunctionCardNode,
-  crossingCard: CrossingCardNode,
+  noteCard: MemoNoteCardNode,
+  fileCard: MemoFileCardNode,
+  textCard: MemoTextCardNode,
+  webCard: MemoWebCardNode,
+  symbolCard: MemoSymbolCardNode,
+  processCard: MemoProcessCardNode,
+  decisionCard: MemoDecisionCardNode,
+  terminatorCard: MemoTerminatorCardNode,
+  documentCard: MemoDocumentPlanningCardNode,
+  milestoneCard: MemoMilestoneCardNode,
+  actorCard: MemoActorCardNode,
+  groupCard: MemoGroupCardNode,
+  swimlaneCard: MemoSwimlaneCardNode,
+  junctionCard: MemoJunctionCardNode,
+  crossingCard: MemoCrossingCardNode,
 };
