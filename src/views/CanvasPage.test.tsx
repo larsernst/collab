@@ -76,6 +76,7 @@ vi.mock('@xyflow/react', async () => {
     Handle: () => null,
     NodeResizer: () => null,
     Position: {},
+    ConnectionMode: { Loose: 'loose' },
     BackgroundVariant: { Dots: 'dots' },
     addEdge: vi.fn((edge, edges) => [...edges, edge]),
     applyNodeChanges: vi.fn((_changes, nodes) => nodes),
@@ -357,6 +358,100 @@ describe('CanvasPage save behavior', () => {
 
     await waitFor(() => {
       expect(screen.getByText(/2 cards and 1 link/i)).toBeTruthy();
+    });
+  });
+
+  it('uses selection drag, middle-mouse pan, and scroll panning', async () => {
+    render(<CanvasPage relativePath="Boards/test.canvas" />);
+
+    expect(await screen.findByText(/0 cards and 0 links/i)).toBeTruthy();
+
+    expect(canvasEvents.reactFlowProps).toEqual(
+      expect.objectContaining({
+        selectionOnDrag: true,
+        panOnDrag: [1],
+        panOnScroll: true,
+        zoomOnScroll: false,
+      }),
+    );
+  });
+
+  it('allows multiple parallel connections between the same nodes', async () => {
+    tauriMocks.readNote.mockResolvedValue({
+      content: JSON.stringify({
+        nodes: [
+          { id: 'node-a', type: 'text', content: 'A', position: { x: 0, y: 0 }, width: 280, height: 160 },
+          { id: 'node-b', type: 'text', content: 'B', position: { x: 320, y: 0 }, width: 280, height: 160 },
+        ],
+        edges: [],
+        viewport: { x: 0, y: 0, zoom: 1 },
+      }),
+      hash: 'hash-1',
+      modifiedAt: 1,
+    });
+
+    render(<CanvasPage relativePath="Boards/test.canvas" />);
+
+    expect(await screen.findByText(/2 cards and 0 links/i)).toBeTruthy();
+
+    act(() => {
+      (canvasEvents.reactFlowProps?.onConnect as ((connection: { source: string; target: string; sourceHandle: string; targetHandle: string }) => void) | undefined)?.({
+        source: 'node-a',
+        target: 'node-b',
+        sourceHandle: 'right-out',
+        targetHandle: 'left-in',
+      });
+      (canvasEvents.reactFlowProps?.onConnect as ((connection: { source: string; target: string; sourceHandle: string; targetHandle: string }) => void) | undefined)?.({
+        source: 'node-a',
+        target: 'node-b',
+        sourceHandle: 'right-out',
+        targetHandle: 'left-in',
+      });
+    });
+
+    await waitFor(() => {
+      expect(screen.getByText(/2 cards and 2 links/i)).toBeTruthy();
+    });
+  });
+
+  it('duplicates a node with alt-drag while leaving the original in place', async () => {
+    tauriMocks.readNote.mockResolvedValue({
+      content: JSON.stringify({
+        nodes: [
+          { id: 'node-a', type: 'text', content: 'A', position: { x: 0, y: 0 }, width: 280, height: 160 },
+        ],
+        edges: [],
+        viewport: { x: 0, y: 0, zoom: 1 },
+      }),
+      hash: 'hash-1',
+      modifiedAt: 1,
+    });
+
+    render(<CanvasPage relativePath="Boards/test.canvas" />);
+
+    expect(await screen.findByText(/1 card and 0 links/i)).toBeTruthy();
+
+    act(() => {
+      (canvasEvents.reactFlowProps?.onNodeDragStart as ((event: MouseEvent, node: Record<string, unknown>) => void) | undefined)?.(
+        { altKey: true } as MouseEvent,
+        {
+          id: 'node-a',
+          selected: false,
+          position: { x: 0, y: 0 },
+        },
+      );
+      (canvasEvents.reactFlowProps?.onNodeDragStop as ((event: MouseEvent, node: Record<string, unknown>) => void) | undefined)?.(
+        { altKey: true } as MouseEvent,
+        {
+          id: 'node-a',
+          selected: false,
+          position: { x: 180, y: 120 },
+        },
+      );
+    });
+
+    await waitFor(() => {
+      expect(screen.getByText(/2 cards and 0 links/i)).toBeTruthy();
     });
   });
 });

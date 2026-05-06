@@ -45,6 +45,9 @@ export interface CanvasNodeData extends Record<string, unknown> {
   extension?: string;
   content?: string;
   url?: string;
+  symbolGlyph?: string;
+  symbolId?: string;
+  symbolLabel?: string;
   nodeKind?: PlanningCanvasNode['type'];
   linkedRelativePath?: string;
   planning?: CanvasPlanningMetadata;
@@ -439,8 +442,9 @@ function TextCardNode({ id, data, selected }: { id: string; data: CanvasNodeData
 }
 
 function WebCardNode({ id, data, selected }: { id: string; data: CanvasNodeData; selected?: boolean }) {
+  const currentUrl = data.url ?? '';
   const effectiveMode = data.displayMode ?? 'preview';
-  const normalizedUrl = normalizeWebUrl(data.url ?? '');
+  const normalizedUrl = normalizeWebUrl(currentUrl);
   const canEmbed = normalizedUrl.startsWith('http://') || normalizedUrl.startsWith('https://');
   const canActuallyEmbed = canEmbed && data.embedAvailable !== false;
   const showingEmbedFallback = effectiveMode === 'embed' && !canActuallyEmbed && !!normalizedUrl;
@@ -451,7 +455,44 @@ function WebCardNode({ id, data, selected }: { id: string; data: CanvasNodeData;
   const showManualPreviewLoad = webPreviewsEnabled && !previewAutoLoadEnabled && !!normalizedUrl && !previewLoading && !previewLoaded;
   const [embedActivated, setEmbedActivated] = useState(false);
   const [iframeState, setIframeState] = useState<'idle' | 'loading' | 'loaded' | 'timed_out'>('idle');
+  const [urlDraft, setUrlDraft] = useState(currentUrl);
+  const urlCommitTimeoutRef = useRef<number | null>(null);
   const previousModeRef = useRef<CanvasWebDisplayMode>(effectiveMode);
+  const onWebUrlChange = data.onWebUrlChange;
+
+  useEffect(() => {
+    setUrlDraft(currentUrl);
+  }, [currentUrl, id]);
+
+  useEffect(() => () => {
+    if (urlCommitTimeoutRef.current !== null) {
+      window.clearTimeout(urlCommitTimeoutRef.current);
+    }
+  }, []);
+
+  const commitUrlDraft = (nextUrl: string) => {
+    if (urlCommitTimeoutRef.current !== null) {
+      window.clearTimeout(urlCommitTimeoutRef.current);
+      urlCommitTimeoutRef.current = null;
+    }
+    if (nextUrl === currentUrl) return;
+    onWebUrlChange?.(id, nextUrl);
+  };
+
+  useEffect(() => {
+    if (urlDraft === currentUrl) return;
+    urlCommitTimeoutRef.current = window.setTimeout(() => {
+      onWebUrlChange?.(id, urlDraft);
+      urlCommitTimeoutRef.current = null;
+    }, 220);
+
+    return () => {
+      if (urlCommitTimeoutRef.current !== null) {
+        window.clearTimeout(urlCommitTimeoutRef.current);
+        urlCommitTimeoutRef.current = null;
+      }
+    };
+  }, [currentUrl, id, onWebUrlChange, urlDraft]);
 
   useEffect(() => {
     if (effectiveMode === 'embed' && previousModeRef.current !== 'embed' && normalizedUrl) {
@@ -527,9 +568,15 @@ function WebCardNode({ id, data, selected }: { id: string; data: CanvasNodeData;
 
           <div className="flex items-center gap-2 border-b border-border/50 px-3 py-2">
             <Input
-              value={data.url ?? ''}
+              value={urlDraft}
               placeholder="example.com or https://example.com"
-              onChange={(event) => data.onWebUrlChange?.(id, event.target.value)}
+              onChange={(event) => setUrlDraft(event.target.value)}
+              onBlur={() => commitUrlDraft(urlDraft)}
+              onKeyDown={(event) => {
+                if (event.key !== 'Enter') return;
+                event.preventDefault();
+                commitUrlDraft(urlDraft);
+              }}
               onPointerDown={(event) => event.stopPropagation()}
               className="h-8 text-xs"
             />
@@ -697,6 +744,44 @@ function WebCardNode({ id, data, selected }: { id: string; data: CanvasNodeData;
   );
 }
 
+function SymbolCardNode({ id, data, selected }: { id: string; data: CanvasNodeData; selected?: boolean }) {
+  return (
+    <div className="group relative h-full w-full">
+      <NodeResizer
+        isVisible={!!selected}
+        minWidth={140}
+        minHeight={140}
+        lineClassName="!border-primary/30"
+        handleClassName="!border-primary/50 !bg-background !w-3 !h-3"
+        onResizeEnd={() => data.onSnapToGrid?.(id)}
+      />
+      <CanvasCardFrame
+        selected={selected}
+        className="items-center justify-center bg-gradient-to-br from-primary/10 via-card/98 to-card/94 px-4 py-4 text-center"
+      >
+        <div className="flex h-full w-full flex-col items-center justify-center gap-3">
+          <div
+            className="flex min-h-0 max-w-full items-center justify-center text-[4.25rem] leading-none text-primary"
+            style={{ fontFamily: "'Pure Nerd Font', PureNerdFont, monospace" }}
+            aria-label={data.symbolLabel ?? 'Canvas symbol'}
+          >
+            {data.symbolGlyph || '?'}
+          </div>
+          <div className="max-w-full">
+            <div className="truncate text-sm font-semibold text-foreground">
+              {data.title || data.symbolLabel || 'Symbol'}
+            </div>
+            <div className="truncate text-[11px] text-muted-foreground">
+              {data.symbolId || 'Nerd Font icon'}
+            </div>
+          </div>
+        </div>
+      </CanvasCardFrame>
+      <CardHandles />
+    </div>
+  );
+}
+
 function ProcessCardNode(props: { id: string; data: CanvasNodeData; selected?: boolean }) {
   return <PlanningNodeShell {...props} minWidth={220} minHeight={130} />;
 }
@@ -826,6 +911,7 @@ export const nodeTypes = {
   fileCard: FileCardNode,
   textCard: TextCardNode,
   webCard: WebCardNode,
+  symbolCard: SymbolCardNode,
   processCard: ProcessCardNode,
   decisionCard: DecisionCardNode,
   terminatorCard: TerminatorCardNode,

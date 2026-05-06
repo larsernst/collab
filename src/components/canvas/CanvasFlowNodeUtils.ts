@@ -89,6 +89,27 @@ export function toFlowNode(
     };
   }
 
+  if (node.type === 'symbol') {
+    return {
+      id: node.id,
+      type: 'symbolCard',
+      position: node.position,
+      selected: false,
+      data: {
+        title: node.title ?? '',
+        subtitle: node.iconLabel ?? 'Canvas symbol',
+        symbolGlyph: node.glyph,
+        symbolId: node.iconId,
+        symbolLabel: node.iconLabel,
+        onSnapToGrid: callbacks.onSnapToGrid,
+      },
+      style: {
+        width: node.width,
+        height: node.height,
+      },
+    };
+  }
+
   const isNote = node.type === 'note';
   const cardPreview = buildNodePreviewState(node, preview);
   return {
@@ -130,7 +151,7 @@ export function fromFlowNode(node: FlowNode<CanvasNodeData>): CanvasNode {
     ? nodeType.slice(0, -4)
     : nodeType;
 
-  if (planningType !== 'note' && planningType !== 'file' && planningType !== 'text' && planningType !== 'web') {
+  if (planningType !== 'note' && planningType !== 'file' && planningType !== 'text' && planningType !== 'web' && planningType !== 'symbol') {
     return {
       id: node.id,
       type: planningType as PlanningCanvasNode['type'],
@@ -167,6 +188,20 @@ export function fromFlowNode(node: FlowNode<CanvasNodeData>): CanvasNode {
       height,
       url: node.data.url ?? '',
       displayModeOverride: node.data.displayModeOverride ?? null,
+    };
+  }
+
+  if (nodeType === 'symbolCard') {
+    return {
+      id: node.id,
+      type: 'symbol',
+      position: node.position,
+      width,
+      height,
+      glyph: node.data.symbolGlyph ?? '',
+      iconId: node.data.symbolId || undefined,
+      iconLabel: node.data.symbolLabel || undefined,
+      title: node.data.title || undefined,
     };
   }
 

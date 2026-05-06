@@ -9,6 +9,7 @@ export type CanvasNodeType =
   | 'file'
   | 'text'
   | 'web'
+  | 'symbol'
   | 'process'
   | 'decision'
   | 'terminator'
@@ -61,6 +62,17 @@ export interface WebCanvasNode extends CanvasNodeBase {
   type: 'web';
   url: string;
   displayModeOverride?: CanvasWebDisplayMode | null;
+}
+
+export interface CanvasSymbolDefinition {
+  glyph: string;
+  iconId?: string;
+  iconLabel?: string;
+}
+
+export interface SymbolCanvasNode extends CanvasNodeBase, CanvasSymbolDefinition {
+  type: 'symbol';
+  title?: string;
 }
 
 export interface PlanningCanvasNodeBase extends CanvasNodeBase {
@@ -139,6 +151,7 @@ export type CanvasNode =
   | FileCanvasNode
   | TextCanvasNode
   | WebCanvasNode
+  | SymbolCanvasNode
   | PlanningCanvasNode;
 
 export type CanvasEdgeLineStyle = 'solid' | 'dashed' | 'dotted';

@@ -21,12 +21,16 @@ interface CanvasNodeInspectorProps {
     title?: string;
     subtitle?: string;
     content?: string;
+    symbolGlyph?: string;
+    symbolId?: string;
+    symbolLabel?: string;
     linkedRelativePath?: string;
     planning?: CanvasPlanningMetadata;
     orientation?: CanvasSwimlaneOrientation;
   } | null;
   onTitleChange: (title: string) => void;
   onBodyChange: (body: string) => void;
+  onPickSymbol: () => void;
   onLinkedPathChange: (relativePath: string) => void;
   onPlanningChange: (planning: CanvasPlanningMetadata) => void;
   onOrientationChange: (orientation: CanvasSwimlaneOrientation) => void;
@@ -40,13 +44,15 @@ export function CanvasNodeInspector({
   selectedNode,
   onTitleChange,
   onBodyChange,
+  onPickSymbol,
   onLinkedPathChange,
   onPlanningChange,
   onOrientationChange,
   onDeleteSelected,
 }: CanvasNodeInspectorProps) {
   const kind = selectedNode?.type;
-  const isPlanningNode = !!kind && !['noteCard', 'fileCard', 'textCard', 'webCard'].includes(kind);
+  const isPlanningNode = !!kind && !['noteCard', 'fileCard', 'textCard', 'webCard', 'symbolCard'].includes(kind);
+  const isSymbolNode = kind === 'symbolCard';
   const planningKind = kind?.replace(/Card$/, '') as PlanningCanvasNode['type'] | undefined;
   const planning = selectedNode?.planning ?? {};
 
@@ -58,18 +64,56 @@ export function CanvasNodeInspector({
       </div>
       {selectedNode ? (
         <>
+          {isSymbolNode ? (
+            <>
+              <div className="rounded-xl border border-border/60 bg-card/45 p-3">
+                <div className="mb-2 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
+                  Selected symbol
+                </div>
+                <div className="flex items-center gap-3">
+                  <div
+                    className="flex h-14 w-14 shrink-0 items-center justify-center rounded-2xl border border-border/60 bg-background/65 text-[28px] leading-none text-primary"
+                    style={{ fontFamily: "'Pure Nerd Font', PureNerdFont, monospace" }}
+                    aria-hidden="true"
+                  >
+                    {selectedNode.symbolGlyph || '?'}
+                  </div>
+                  <div className="min-w-0 flex-1">
+                    <div className="truncate text-sm font-medium text-foreground">
+                      {selectedNode.symbolLabel || selectedNode.title || 'Canvas symbol'}
+                    </div>
+                    <div className="truncate text-[11px] text-muted-foreground">
+                      {selectedNode.symbolId || 'Nerd Font icon'}
+                    </div>
+                  </div>
+                  <Button size="sm" variant="outline" onClick={onPickSymbol}>
+                    Change icon
+                  </Button>
+                </div>
+              </div>
+              <Input
+                value={selectedNode.title ?? ''}
+                onChange={(event) => onTitleChange(event.target.value)}
+                placeholder="Optional caption"
+                className="h-8"
+              />
+            </>
+          ) : (
           <Input
             value={selectedNode.title ?? ''}
             onChange={(event) => onTitleChange(event.target.value)}
             placeholder="Node title"
             className="h-8"
           />
-          <Textarea
-            value={selectedNode.content ?? ''}
-            onChange={(event) => onBodyChange(event.target.value)}
-            placeholder="Description, branch notes, or supporting context"
-            className="min-h-24 resize-y text-sm"
-          />
+          )}
+          {!isSymbolNode ? (
+            <Textarea
+              value={selectedNode.content ?? ''}
+              onChange={(event) => onBodyChange(event.target.value)}
+              placeholder="Description, branch notes, or supporting context"
+              className="min-h-24 resize-y text-sm"
+            />
+          ) : null}
           {isPlanningNode ? (
             <>
               <div className="rounded-xl border border-border/60 bg-card/45 px-3 py-2 text-xs">

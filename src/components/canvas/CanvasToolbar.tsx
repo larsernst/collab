@@ -12,6 +12,7 @@ import {
   Plus,
   RotateCcw,
   Route,
+  Shapes,
   Users,
 } from 'lucide-react';
 
@@ -37,6 +38,7 @@ interface CanvasToolbarProps {
   onAddFile: () => void;
   onAddText: () => void;
   onAddWeb: () => void;
+  onAddSymbol: () => void;
   onAddPlanningNode: (type: PlanningCanvasNode['type']) => void;
   onApplyPreset: (preset: CanvasPlanningPreset) => void;
   onZoomOut: () => void;
@@ -51,6 +53,7 @@ export function CanvasToolbar({
   onAddFile,
   onAddText,
   onAddWeb,
+  onAddSymbol,
   onAddPlanningNode,
   onApplyPreset,
   onZoomOut,
@@ -76,6 +79,10 @@ export function CanvasToolbar({
         <DocumentTopBarButton onClick={onAddWeb}>
           <Globe size={14} />
           Add web
+        </DocumentTopBarButton>
+        <DocumentTopBarButton onClick={onAddSymbol}>
+          <Shapes size={14} />
+          Add symbol
         </DocumentTopBarButton>
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
@@ -181,7 +188,7 @@ export function CanvasToolbar({
 
       <div className="hidden items-center gap-2 rounded-xl border border-border/60 bg-card/45 px-2.5 py-1 text-xs text-muted-foreground lg:flex">
         <MousePointer2 size={13} />
-        Drag the board to pan. Drag files from the sidebar to add them.
+        Drag to select. Use the middle mouse button to pan. Scroll to move.
       </div>
     </>
   );

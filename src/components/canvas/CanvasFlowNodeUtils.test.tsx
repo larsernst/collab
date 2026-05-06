@@ -60,6 +60,59 @@ describe('CanvasFlowNodeUtils', () => {
     });
   });
 
+  it('round-trips a symbol node through the flow mapping', () => {
+    const flowNode = toFlowNode(
+      {
+        id: 'symbol-1',
+        type: 'symbol',
+        glyph: '󰘧',
+        iconId: 'nf-md-star_four_points',
+        iconLabel: 'Star Four Points',
+        title: 'Important',
+        position: { x: 30, y: 40 },
+        width: 180,
+        height: 180,
+      },
+      undefined,
+      {
+        onOpen: vi.fn(),
+        onTextChange: vi.fn(),
+        onSnapToGrid: vi.fn(),
+        onWebUrlChange: vi.fn(),
+        onWebDisplayModeOverrideChange: vi.fn(),
+        onRequestWebPreview: vi.fn(),
+        onOpenUrl: vi.fn(),
+      },
+      'preview',
+      false,
+      false,
+    );
+
+    expect(flowNode).toMatchObject({
+      id: 'symbol-1',
+      type: 'symbolCard',
+      data: {
+        title: 'Important',
+        subtitle: 'Star Four Points',
+        symbolGlyph: '󰘧',
+        symbolId: 'nf-md-star_four_points',
+        symbolLabel: 'Star Four Points',
+      },
+    });
+
+    expect(fromFlowNode(flowNode as never)).toEqual({
+      id: 'symbol-1',
+      type: 'symbol',
+      glyph: '󰘧',
+      iconId: 'nf-md-star_four_points',
+      iconLabel: 'Star Four Points',
+      title: 'Important',
+      position: { x: 30, y: 40 },
+      width: 180,
+      height: 180,
+    });
+  });
+
   it('round-trips a planning flow node back into a persisted planning node', () => {
     expect(fromFlowNode({
       id: 'decision-1',

@@ -21,6 +21,7 @@ interface UseCanvasViewportControlsOptions {
   setPickerMode: (mode: CanvasPickerMode) => void;
   addTextNode: () => void;
   addWebNode: () => void;
+  duplicateSelection: () => void;
   deleteSelection: () => void;
 }
 
@@ -37,6 +38,7 @@ export function useCanvasViewportControls({
   setPickerMode,
   addTextNode,
   addWebNode,
+  duplicateSelection,
   deleteSelection,
 }: UseCanvasViewportControlsOptions) {
   const syncViewport = useCallback((nextViewport: Viewport, duration = 180) => {
@@ -80,6 +82,12 @@ export function useCanvasViewportControls({
       if (isEditableTarget(event.target) || event.altKey) return;
 
       const zoomModifier = event.ctrlKey || event.metaKey;
+
+      if (zoomModifier && (event.key === 'd' || event.key === 'D')) {
+        event.preventDefault();
+        duplicateSelection();
+        return;
+      }
 
       if (zoomModifier && (event.key === 'ArrowUp' || event.key === '+' || event.key === '=')) {
         event.preventDefault();
@@ -159,7 +167,7 @@ export function useCanvasViewportControls({
     return () => {
       document.removeEventListener('keydown', handleKeyDown, { capture: true } as EventListenerOptions);
     };
-  }, [addTextNode, addWebNode, adjustZoom, deleteSelection, fitCanvasView, panViewport, pickerMode, resetZoom, setPickerMode]);
+  }, [addTextNode, addWebNode, adjustZoom, deleteSelection, duplicateSelection, fitCanvasView, panViewport, pickerMode, resetZoom, setPickerMode]);
 
   return {
     adjustZoom,

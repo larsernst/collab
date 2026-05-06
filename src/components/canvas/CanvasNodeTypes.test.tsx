@@ -16,6 +16,7 @@ import { nodeTypes } from './CanvasNodeTypes';
 
 describe('CanvasNodeTypes', () => {
   afterEach(() => {
+    vi.useRealTimers();
     cleanup();
   });
 
@@ -84,5 +85,56 @@ describe('CanvasNodeTypes', () => {
 
     expect(screen.getByRole('button').className).toContain('text-foreground');
     expect(screen.getByText('Visible title').className).toContain('text-foreground');
+  });
+
+  it('renders the symbol card with the selected glyph and label', () => {
+    const SymbolCardNode = nodeTypes.symbolCard;
+
+    render(
+      <SymbolCardNode
+        id="symbol-1"
+        selected={false}
+        data={{
+          title: 'Pinned idea',
+          symbolGlyph: '󰘧',
+          symbolId: 'nf-md-star_four_points',
+          symbolLabel: 'Star Four Points',
+        }}
+      />,
+    );
+
+    expect(screen.getByText('Pinned idea')).toBeTruthy();
+    expect(screen.getByText('nf-md-star_four_points')).toBeTruthy();
+    expect(screen.getByLabelText('Star Four Points')).toBeTruthy();
+  });
+
+  it('keeps the web card input responsive while delaying canvas url updates', () => {
+    vi.useFakeTimers();
+    const onWebUrlChange = vi.fn();
+    const WebCardNode = nodeTypes.webCard;
+
+    render(
+      <WebCardNode
+        id="web-1"
+        selected={false}
+        data={{
+          title: 'Web card',
+          subtitle: 'Website',
+          url: '',
+          onWebUrlChange,
+        }}
+      />,
+    );
+
+    const input = screen.getByPlaceholderText('example.com or https://example.com') as HTMLInputElement;
+
+    fireEvent.change(input, { target: { value: 'https://example.com' } });
+
+    expect(input.value).toBe('https://example.com');
+    expect(onWebUrlChange).not.toHaveBeenCalled();
+
+    vi.advanceTimersByTime(220);
+
+    expect(onWebUrlChange).toHaveBeenCalledWith('web-1', 'https://example.com');
   });
 });

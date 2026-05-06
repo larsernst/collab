@@ -156,4 +156,43 @@ describe('useCanvasNodeCommands', () => {
       height: 180,
     }));
   });
+
+  it('creates a symbol node from the selected icon', () => {
+    const addCanvasNode = vi.fn();
+
+    const { result } = renderHook(() => useCanvasNodeCommands({
+      reactFlow: {
+        screenToFlowPosition: ({ x, y }) => ({ x, y }),
+      },
+      viewportRef: {
+        current: {
+          getBoundingClientRect: () => ({ left: 0, top: 0, width: 320, height: 220 }),
+        } as unknown as HTMLDivElement,
+      },
+      pickerMode: null,
+      setPickerMode: vi.fn(),
+      allFiles: [],
+      addCanvasNode,
+      addCanvasNodes: vi.fn(),
+      addCanvasEdges: vi.fn(),
+    }));
+
+    result.current.addSymbolNodeAt({
+      glyph: '󰘧',
+      iconId: 'nf-md-star_four_points',
+      iconLabel: 'Star Four Points',
+    });
+
+    expect(addCanvasNode).toHaveBeenCalledWith({
+      id: '11111111-1111-1111-1111-111111111111',
+      type: 'symbol',
+      glyph: '󰘧',
+      iconId: 'nf-md-star_four_points',
+      iconLabel: 'Star Four Points',
+      title: 'Star Four Points',
+      position: { x: 160, y: 110 },
+      width: 180,
+      height: 180,
+    }, undefined);
+  });
 });

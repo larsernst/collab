@@ -40,6 +40,7 @@ describe('CanvasToolbar', () => {
     const onAddFile = vi.fn();
     const onAddText = vi.fn();
     const onAddWeb = vi.fn();
+    const onAddSymbol = vi.fn();
 
     render(
       <CanvasToolbar
@@ -48,6 +49,7 @@ describe('CanvasToolbar', () => {
         onAddFile={onAddFile}
         onAddText={onAddText}
         onAddWeb={onAddWeb}
+        onAddSymbol={onAddSymbol}
         onAddPlanningNode={vi.fn()}
         onApplyPreset={vi.fn()}
         onZoomOut={vi.fn()}
@@ -61,11 +63,13 @@ describe('CanvasToolbar', () => {
     fireEvent.click(screen.getByRole('button', { name: /add file/i }));
     fireEvent.click(screen.getByRole('button', { name: /add text/i }));
     fireEvent.click(screen.getByRole('button', { name: /add web/i }));
+    fireEvent.click(screen.getByRole('button', { name: /add symbol/i }));
 
     expect(onAddNote).toHaveBeenCalled();
     expect(onAddFile).toHaveBeenCalled();
     expect(onAddText).toHaveBeenCalled();
     expect(onAddWeb).toHaveBeenCalled();
+    expect(onAddSymbol).toHaveBeenCalled();
   });
 
   it('fires zoom and fit actions from the toolbar', () => {
@@ -81,6 +85,7 @@ describe('CanvasToolbar', () => {
         onAddFile={vi.fn()}
         onAddText={vi.fn()}
         onAddWeb={vi.fn()}
+        onAddSymbol={vi.fn()}
         onAddPlanningNode={vi.fn()}
         onApplyPreset={vi.fn()}
         onZoomOut={onZoomOut}

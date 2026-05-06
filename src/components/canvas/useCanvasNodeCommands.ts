@@ -1,11 +1,13 @@
 import { useCallback } from 'react';
 
 import type {
+  CanvasSymbolDefinition,
   CanvasEdge,
   CanvasNode,
   FileCanvasNode,
   NoteCanvasNode,
   PlanningCanvasNode,
+  SymbolCanvasNode,
   TextCanvasNode,
   WebCanvasNode,
 } from '../../types/canvas';
@@ -19,6 +21,7 @@ import {
 
 const DEFAULT_NODE_SIZE = { width: 300, height: 180 };
 const DEFAULT_TEXT_NODE_SIZE = { width: 280, height: 160 };
+const DEFAULT_SYMBOL_NODE_SIZE = { width: 180, height: 180 };
 
 interface ReactFlowPositionApi {
   screenToFlowPosition: (position: { x: number; y: number }) => { x: number; y: number };
@@ -126,6 +129,30 @@ export function useCanvasNodeCommands({
     addWebNodeAt();
   }, [addWebNodeAt]);
 
+  const addSymbolNodeAt = useCallback((
+    symbol: CanvasSymbolDefinition,
+    position?: { x: number; y: number },
+    pendingAutoConnect?: PendingAutoConnect | null,
+  ) => {
+    const center = position ?? getViewportCenterPosition();
+    const node: SymbolCanvasNode = {
+      id: crypto.randomUUID(),
+      type: 'symbol',
+      glyph: symbol.glyph,
+      iconId: symbol.iconId,
+      iconLabel: symbol.iconLabel,
+      title: symbol.iconLabel,
+      position: center,
+      width: DEFAULT_SYMBOL_NODE_SIZE.width,
+      height: DEFAULT_SYMBOL_NODE_SIZE.height,
+    };
+    addCanvasNode(node, pendingAutoConnect);
+  }, [addCanvasNode, getViewportCenterPosition]);
+
+  const addSymbolNode = useCallback((symbol: CanvasSymbolDefinition) => {
+    addSymbolNodeAt(symbol);
+  }, [addSymbolNodeAt]);
+
   const addPlanningNodeAt = useCallback((type: PlanningCanvasNode['type'], position?: { x: number; y: number }) => {
     const center = position ?? getViewportCenterPosition();
     const defaults = getPlanningNodeDefaults(type);
@@ -190,6 +217,8 @@ export function useCanvasNodeCommands({
     addTextNodeAt,
     addWebNode,
     addWebNodeAt,
+    addSymbolNode,
+    addSymbolNodeAt,
     addPlanningNode,
     addPlanningNodeAt,
     applyPlanningPreset,

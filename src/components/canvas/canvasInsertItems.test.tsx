@@ -9,6 +9,7 @@ describe('canvasInsertItems', () => {
       'file',
       'text',
       'web',
+      'symbol',
       'process',
       'decision',
       'terminator',
