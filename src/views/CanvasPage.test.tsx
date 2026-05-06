@@ -79,7 +79,23 @@ vi.mock('@xyflow/react', async () => {
     ConnectionMode: { Loose: 'loose' },
     BackgroundVariant: { Dots: 'dots' },
     addEdge: vi.fn((edge, edges) => [...edges, edge]),
-    applyNodeChanges: vi.fn((_changes, nodes) => nodes),
+    applyNodeChanges: vi.fn((changes, nodes) => {
+      let nextNodes = [...nodes];
+      for (const change of changes as Array<Record<string, unknown>>) {
+        if (change.type === 'remove') {
+          nextNodes = nextNodes.filter((node) => node.id !== change.id);
+          continue;
+        }
+        if (change.type === 'select') {
+          nextNodes = nextNodes.map((node) => (
+            node.id === change.id
+              ? { ...node, selected: change.selected }
+              : node
+          ));
+        }
+      }
+      return nextNodes;
+    }),
     reconnectEdge: vi.fn((_oldEdge, _connection, edges) => edges),
     useNodesState: (initial: unknown[]) => react.useState(initial).concat([vi.fn()]),
     useEdgesState: (initial: unknown[]) => {
@@ -469,6 +485,51 @@ describe('CanvasPage save behavior', () => {
 
     await waitFor(() => {
       expect(screen.getByText(/2 cards and 0 links/i)).toBeTruthy();
+    });
+  });
+
+  it('removes edges attached to deleted selected nodes', async () => {
+    tauriMocks.readNote.mockResolvedValue({
+      content: JSON.stringify({
+        nodes: [
+          { id: 'node-a', type: 'text', content: 'A', position: { x: 0, y: 0 }, width: 280, height: 160 },
+          { id: 'node-b', type: 'text', content: 'B', position: { x: 320, y: 0 }, width: 280, height: 160 },
+        ],
+        edges: [
+          {
+            id: 'edge-ab',
+            source: 'node-a',
+            target: 'node-b',
+            sourceHandle: 'right-out',
+            targetHandle: 'left-in',
+            lineStyle: 'solid',
+            routingStyle: 'curved',
+            animated: false,
+            animationReverse: false,
+            markerStart: false,
+            markerEnd: false,
+          },
+        ],
+        viewport: { x: 0, y: 0, zoom: 1 },
+      }),
+      hash: 'hash-1',
+      modifiedAt: 1,
+    });
+
+    render(<CanvasPage relativePath="Boards/test.canvas" />);
+
+    expect(await screen.findByText(/2 cards and 1 link/i)).toBeTruthy();
+
+    act(() => {
+      (canvasEvents.reactFlowProps?.onNodesChange as ((changes: Array<{ id: string; type: string; selected?: boolean }>) => void) | undefined)?.([
+        { id: 'node-a', type: 'select', selected: true },
+      ]);
+    });
+
+    fireEvent.keyDown(document, { key: 'Delete' });
+
+    await waitFor(() => {
+      expect(screen.getByText(/1 card and 0 links/i)).toBeTruthy();
     });
   });
 });

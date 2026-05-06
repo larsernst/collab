@@ -182,10 +182,10 @@ function CardHandles() {
 
   return (
     <>
-      <Handle id="left-in" type="target" position={Position.Left} className={handleClassName} />
-      <Handle id="right-out" type="source" position={Position.Right} className={handleClassName} />
-      <Handle id="top-in" type="target" position={Position.Top} className={handleClassName} />
-      <Handle id="bottom-out" type="source" position={Position.Bottom} className={handleClassName} />
+      <Handle id="left-in" type="target" position={Position.Left} className={handleClassName} isConnectableStart isConnectableEnd />
+      <Handle id="right-out" type="source" position={Position.Right} className={handleClassName} isConnectableStart isConnectableEnd />
+      <Handle id="top-in" type="target" position={Position.Top} className={handleClassName} isConnectableStart isConnectableEnd />
+      <Handle id="bottom-out" type="source" position={Position.Bottom} className={handleClassName} isConnectableStart isConnectableEnd />
     </>
   );
 }

@@ -7,6 +7,9 @@ import { Checkbox } from '../ui/checkbox';
 import { Input } from '../ui/input';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../ui/select';
 
+const canvasInspectorSelectTriggerClassName = 'h-8 w-full rounded-xl border-border/60 bg-background/80 text-xs shadow-none';
+const canvasInspectorSelectContentClassName = 'min-w-[var(--radix-select-trigger-width)] rounded-xl ring-1 ring-border/60';
+
 interface CanvasEdgeInspectorProps {
   selectedEdgeData: CanvasEdgeData | null;
   edgeLabelDraft: string;
@@ -53,10 +56,10 @@ export function CanvasEdgeInspector({
                 value={selectedEdgeData.lineStyle}
                 onValueChange={(value) => onLineStyleChange(value as CanvasEdgeLineStyle)}
               >
-                <SelectTrigger size="sm" className="h-8 w-full bg-background/70 text-xs">
+                <SelectTrigger size="sm" className={canvasInspectorSelectTriggerClassName}>
                   <SelectValue />
                 </SelectTrigger>
-                <SelectContent align="end">
+                <SelectContent align="end" position="popper" className={canvasInspectorSelectContentClassName}>
                   <SelectItem value="solid">Solid</SelectItem>
                   <SelectItem value="dashed">Dashed</SelectItem>
                   <SelectItem value="dotted">Dotted</SelectItem>
@@ -69,10 +72,10 @@ export function CanvasEdgeInspector({
                 value={selectedEdgeData.routingStyle}
                 onValueChange={(value) => onRoutingStyleChange(value as CanvasEdgeRoutingStyle)}
               >
-                <SelectTrigger size="sm" className="h-8 w-full bg-background/70 text-xs">
+                <SelectTrigger size="sm" className={canvasInspectorSelectTriggerClassName}>
                   <SelectValue />
                 </SelectTrigger>
-                <SelectContent align="end">
+                <SelectContent align="end" position="popper" className={canvasInspectorSelectContentClassName}>
                   <SelectItem value="curved">Curved</SelectItem>
                   <SelectItem value="orthogonal">Orthogonal</SelectItem>
                 </SelectContent>
@@ -85,10 +88,10 @@ export function CanvasEdgeInspector({
                 onValueChange={(value) => onAnimationDirectionChange(value === 'reverse')}
                 disabled={!selectedEdgeData.animated}
               >
-                <SelectTrigger size="sm" className="h-8 w-full bg-background/70 text-xs">
+                <SelectTrigger size="sm" className={canvasInspectorSelectTriggerClassName}>
                   <SelectValue />
                 </SelectTrigger>
-                <SelectContent align="end">
+                <SelectContent align="end" position="popper" className={canvasInspectorSelectContentClassName}>
                   <SelectItem value="forward">Forward</SelectItem>
                   <SelectItem value="reverse">Reverse</SelectItem>
                 </SelectContent>

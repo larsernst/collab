@@ -1008,6 +1008,11 @@ function CanvasBoard({ relativePath }: { relativePath: string | null }) {
   }, [onEdgesChangeBase]);
 
   const deleteSelection = useCallback(() => {
+    const selectedNodeIds = new Set(
+      nodes
+        .filter((node) => node.selected)
+        .map((node) => node.id),
+    );
     const selectedJunctionIds = nodes
       .filter((node) => node.selected && node.type === 'junctionCard')
       .map((node) => node.id);
@@ -1025,13 +1030,18 @@ function CanvasBoard({ relativePath }: { relativePath: string | null }) {
           return ids;
         }, []),
       );
-      const remaining = prev.filter((edge) => !selectedEdgeIds.includes(edge.id) && !removedMergedEdgeIds.has(edge.id));
+      const remaining = prev.filter((edge) => (
+        !selectedEdgeIds.includes(edge.id)
+        && !removedMergedEdgeIds.has(edge.id)
+        && !selectedNodeIds.has(edge.source)
+        && !selectedNodeIds.has(edge.target)
+      ));
       return [
         ...remaining,
         ...mergeCandidates.map((candidate) => toFlowEdge(candidate.mergedEdge)),
       ];
     });
-  }, [setEdges, setNodes]);
+  }, [edges, nodes, setEdges, setNodes]);
 
   const {
     adjustZoom,

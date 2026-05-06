@@ -4,7 +4,7 @@ import type { Node as FlowNode } from '@xyflow/react';
 
 import type { CanvasNodeData } from './CanvasNodeTypes';
 import type { CanvasFlowEdge } from './CanvasEdgeTypes';
-import { useCanvasDocumentSession } from './useCanvasDocumentSession';
+import { sanitizeLoadedCanvasData, useCanvasDocumentSession } from './useCanvasDocumentSession';
 
 const eventState = vi.hoisted(() => ({
   modifiedHandler: null as null | ((event: { payload: { path: string } }) => void),
@@ -46,6 +46,30 @@ describe('useCanvasDocumentSession', () => {
   afterEach(() => {
     cleanup();
     vi.useRealTimers();
+  });
+
+  it('removes dangling edges from loaded canvas data', () => {
+    expect(sanitizeLoadedCanvasData({
+      nodes: [
+        { id: 'node-a', type: 'text', content: 'A', position: { x: 0, y: 0 }, width: 100, height: 100 },
+      ],
+      edges: [
+        { id: 'edge-ok', source: 'node-a', target: 'node-a' },
+        { id: 'edge-broken', source: 'node-a', target: 'missing-node' },
+      ],
+      viewport: { x: 0, y: 0, zoom: 1 },
+    })).toEqual({
+      changed: true,
+      canvas: {
+        nodes: [
+          { id: 'node-a', type: 'text', content: 'A', position: { x: 0, y: 0 }, width: 100, height: 100 },
+        ],
+        edges: [
+          { id: 'edge-ok', source: 'node-a', target: 'node-a' },
+        ],
+        viewport: { x: 0, y: 0, zoom: 1 },
+      },
+    });
   });
 
   it('loads the canvas document and resets preview state', async () => {
@@ -97,6 +121,89 @@ describe('useCanvasDocumentSession', () => {
     expect(markLoaded).toHaveBeenCalledWith('hash-1');
     expect(resetPreviewState).toHaveBeenCalled();
     expect(setViewport).toHaveBeenCalledWith({ x: 1, y: 2, zoom: 0.9 });
+  });
+
+  it('persists a repaired canvas when load removes dangling edges', async () => {
+    tauriMocks.readNote.mockResolvedValue({
+      content: JSON.stringify({
+        nodes: [
+          { id: 'node-a', type: 'text', content: 'A', position: { x: 0, y: 0 }, width: 100, height: 100 },
+        ],
+        edges: [
+          { id: 'edge-broken', source: 'node-a', target: 'missing-node' },
+        ],
+        viewport: { x: 1, y: 2, zoom: 0.9 },
+      }),
+      hash: 'hash-1',
+      modifiedAt: 1,
+    });
+    tauriMocks.writeNote.mockResolvedValue({
+      hash: 'hash-repaired',
+    });
+
+    const setSavedHash = vi.fn();
+    const markLoaded = vi.fn((hash?: string | null) => {
+      hashRef.current = hash ?? undefined;
+    });
+    const hashRef = { current: undefined as string | undefined };
+
+    renderHook(() => useCanvasDocumentSession({
+      reactFlow: { setViewport: vi.fn() },
+      vault: { id: 'vault-1', path: '/vault', name: 'Vault', isEncrypted: false, lastOpened: 1 },
+      relativePath: 'Boards/test.canvas',
+      nodes: [],
+      edges: [] as CanvasFlowEdge[],
+      viewport: { x: 0, y: 0, zoom: 1 },
+      setViewport: vi.fn(),
+      setNodes: vi.fn(),
+      setEdges: vi.fn(),
+      buildFlowNode: () => [] as FlowNode<CanvasNodeData>[],
+      toFlowEdge: (edge) => edge as never,
+      fromFlowNode: vi.fn(),
+      fromFlowEdge: vi.fn(),
+      resetPreviewState: vi.fn(),
+      markDirty: vi.fn(),
+      markSaved: vi.fn(),
+      setSavedHash,
+      addConflict: vi.fn(),
+      myUserId: 'user-1',
+      myUserName: 'User',
+      isMountedRef: { current: true },
+      isDirtyRef: { current: false },
+      hashRef,
+      lastWriteRef: { current: 0 },
+      markLoaded,
+      shouldSkipAutosave: () => true,
+      markWriteStarted: vi.fn(),
+      shouldCreateSnapshot: () => false,
+    }));
+
+    await waitFor(() => {
+      expect(tauriMocks.writeNote).toHaveBeenCalledWith(
+        '/vault',
+        'Boards/test.canvas',
+        JSON.stringify({
+          nodes: [
+            { id: 'node-a', type: 'text', content: 'A', position: { x: 0, y: 0 }, width: 100, height: 100 },
+          ],
+          edges: [],
+          viewport: { x: 1, y: 2, zoom: 0.9 },
+        }, null, 2),
+        'hash-1',
+        JSON.stringify({
+          nodes: [
+            { id: 'node-a', type: 'text', content: 'A', position: { x: 0, y: 0 }, width: 100, height: 100 },
+          ],
+          edges: [
+            { id: 'edge-broken', source: 'node-a', target: 'missing-node' },
+          ],
+          viewport: { x: 1, y: 2, zoom: 0.9 },
+        }),
+      );
+    });
+
+    expect(setSavedHash).toHaveBeenCalledWith('Boards/test.canvas', 'hash-repaired');
+    expect(markLoaded).toHaveBeenCalledWith('hash-repaired');
   });
 
   it('autosaves current canvas content and creates a snapshot on success', async () => {

@@ -15,6 +15,24 @@ const EMPTY_CANVAS: CanvasData = {
   viewport: { x: 0, y: 0, zoom: 1 },
 };
 
+export function sanitizeLoadedCanvasData(canvas: CanvasData) {
+  const nodeIds = new Set(canvas.nodes.map((node) => node.id));
+  const edges = canvas.edges.filter((edge) => nodeIds.has(edge.source) && nodeIds.has(edge.target));
+  const changed = edges.length !== canvas.edges.length;
+
+  if (!changed) {
+    return { canvas, changed: false };
+  }
+
+  return {
+    canvas: {
+      ...canvas,
+      edges,
+    },
+    changed: true,
+  };
+}
+
 interface ReactFlowViewportApi {
   setViewport: (viewport: Viewport, options?: { duration?: number }) => void | Promise<unknown>;
 }
@@ -99,7 +117,24 @@ export function useCanvasDocumentSession({
 
       if (content.trim()) {
         canvas = JSON.parse(content) as CanvasData;
-        savedCanvasContentRef.current = content;
+        const sanitized = sanitizeLoadedCanvasData(canvas);
+        canvas = sanitized.canvas;
+        const sanitizedContent = sanitized.changed ? JSON.stringify(canvas, null, 2) : content;
+
+        savedCanvasContentRef.current = sanitizedContent;
+
+        if (sanitized.changed) {
+          try {
+            const repairedResult = await tauriCommands.writeNote(
+              vault.path,
+              relativePath,
+              sanitizedContent,
+              currentHash ?? undefined,
+              content,
+            );
+            currentHash = repairedResult.hash;
+          } catch {}
+        }
       } else if (isInitial) {
         const blank = EMPTY_CANVAS;
         const result = await tauriCommands.writeNote(vault.path, relativePath, JSON.stringify(blank, null, 2));
