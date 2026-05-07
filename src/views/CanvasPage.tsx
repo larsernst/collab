@@ -214,6 +214,37 @@ function getPositionHandleId(position: 'left' | 'right' | 'top' | 'bottom') {
   return 'bottom-out';
 }
 
+function getOutgoingHandleIdForSide(side: 'left' | 'right' | 'top' | 'bottom') {
+  if (side === 'left') return 'left-out';
+  if (side === 'right') return 'right-out';
+  if (side === 'top') return 'top-out';
+  return 'bottom-out';
+}
+
+function getIncomingHandleIdForSide(side: 'left' | 'right' | 'top' | 'bottom') {
+  if (side === 'left') return 'left-in';
+  if (side === 'right') return 'right-in';
+  if (side === 'top') return 'top-in';
+  return 'bottom-in';
+}
+
+export function normalizeDirectedHandlePair<T extends {
+  sourceHandle?: string | null;
+  targetHandle?: string | null;
+}>(connection: T) {
+  const sourceSide = getHandleSide(connection.sourceHandle);
+  const targetSide = getHandleSide(connection.targetHandle);
+
+  return {
+    sourceHandle: connection.sourceHandle?.endsWith('-in')
+      ? (sourceSide ? getOutgoingHandleIdForSide(sourceSide) : connection.sourceHandle)
+      : (connection.sourceHandle ?? undefined),
+    targetHandle: connection.targetHandle?.endsWith('-out')
+      ? (targetSide ? getIncomingHandleIdForSide(targetSide) : connection.targetHandle)
+      : (connection.targetHandle ?? undefined),
+  };
+}
+
 function getFlowNodeCenter(node: Pick<FlowNode<CanvasNodeData>, 'position' | 'width' | 'height' | 'measured' | 'style'>) {
   const width = typeof node.width === 'number'
     ? node.width
@@ -518,6 +549,10 @@ function CanvasBoard({ relativePath }: { relativePath: string | null }) {
     () => edges.some((edge) => !edge.sourceHandle || !edge.targetHandle),
     [edges],
   );
+  const hasEdgesWithUndirectedHandles = useMemo(
+    () => edges.some((edge) => edge.sourceHandle?.endsWith('-in') || edge.targetHandle?.endsWith('-out')),
+    [edges],
+  );
   const edgeLayout = useMemo(() => buildCanvasEdgeLayout(nodes, edges), [nodes, edges]);
   const selectedEdgeData = useMemo(
     () => (selectedEdge ? getCanvasEdgeData(selectedEdge.data) : null),
@@ -717,13 +752,18 @@ function CanvasBoard({ relativePath }: { relativePath: string | null }) {
   }, [selectedEdge?.id]);
 
   useEffect(() => {
-    if (nodes.length === 0 || !hasEdgesMissingHandles) return;
+    if (nodes.length === 0 || (!hasEdgesMissingHandles && !hasEdgesWithUndirectedHandles)) return;
 
     setEdges((prev) => {
       let changed = false;
       const next = prev.map((edge) => {
-        if (edge.sourceHandle && edge.targetHandle) return edge;
-        const normalizedHandles = normalizeLooseConnectionHandles(edge, nodes);
+        const withLooseHandles = edge.sourceHandle && edge.targetHandle
+          ? {
+              sourceHandle: edge.sourceHandle ?? undefined,
+              targetHandle: edge.targetHandle ?? undefined,
+            }
+          : normalizeLooseConnectionHandles(edge, nodes);
+        const normalizedHandles = normalizeDirectedHandlePair(withLooseHandles);
         if (
           normalizedHandles.sourceHandle === (edge.sourceHandle ?? undefined)
           && normalizedHandles.targetHandle === (edge.targetHandle ?? undefined)
@@ -739,7 +779,7 @@ function CanvasBoard({ relativePath }: { relativePath: string | null }) {
       });
       return changed ? next : prev;
     });
-  }, [hasEdgesMissingHandles, nodes, setEdges]);
+  }, [hasEdgesMissingHandles, hasEdgesWithUndirectedHandles, nodes, setEdges]);
 
   const addCanvasNode = useCallback((node: CanvasNode, pendingAutoConnectOverride?: PendingAutoConnect | null) => {
     const minimumSize = getMinimumCanvasNodeSize(node.type);
@@ -881,7 +921,7 @@ function CanvasBoard({ relativePath }: { relativePath: string | null }) {
   });
 
   const handleConnect = useCallback((connection: Connection) => {
-    const normalizedHandles = normalizeLooseConnectionHandles(connection, nodes);
+    const normalizedHandles = normalizeDirectedHandlePair(normalizeLooseConnectionHandles(connection, nodes));
     setEdges((prev) => [
       ...prev,
       toFlowEdge({
@@ -983,13 +1023,13 @@ function CanvasBoard({ relativePath }: { relativePath: string | null }) {
   }, [openInsertMenuAt]);
 
   const handleReconnect = useCallback<OnReconnect<CanvasFlowEdge>>((oldEdge, newConnection) => {
-    const normalizedHandles = normalizeLooseConnectionHandles(newConnection, nodes);
+    const normalizedHandles = normalizeDirectedHandlePair(normalizeLooseConnectionHandles(newConnection, nodes));
     setEdges((prev) => (reconnectEdge(
       oldEdge,
       {
         ...newConnection,
-        sourceHandle: normalizedHandles.sourceHandle,
-        targetHandle: normalizedHandles.targetHandle,
+        sourceHandle: normalizedHandles.sourceHandle ?? null,
+        targetHandle: normalizedHandles.targetHandle ?? null,
       },
       prev,
     ) as CanvasFlowEdge[]).map((edge) => (

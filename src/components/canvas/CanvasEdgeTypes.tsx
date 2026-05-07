@@ -18,7 +18,7 @@ const CANVAS_EDGE_SLOT_PADDING = 26;
 const CANVAS_EDGE_REROUTE_MS = 220;
 const CANVAS_EDGE_REROUTE_LIMIT = 12;
 const DEFAULT_EDGE_STROKE = 'color-mix(in oklch, var(--primary) 78%, white 22%)';
-const EDGE_ANIMATION_STROKE = 'color-mix(in oklch, var(--primary) 90%, white 10%)';
+const EDGE_ANIMATION_STROKE = 'color-mix(in oklch, white 84%, var(--primary) 16%)';
 const SOLID_EDGE_ANIMATION_DASH = 28;
 const SOLID_EDGE_ANIMATION_GAP = 240;
 
@@ -351,25 +351,55 @@ function sortSiblingDescriptors(
   nodeGeometry: Map<string, NodeGeometry>,
 ) {
   const anchorNode = nodeGeometry.get(nodeId);
+
+  const getLocalMetrics = (node: NodeGeometry | undefined) => {
+    if (!anchorNode || !node) {
+      return {
+        angle: 0,
+        distance: Number.POSITIVE_INFINITY,
+      };
+    }
+
+    const deltaX = node.centerX - anchorNode.centerX;
+    const deltaY = node.centerY - anchorNode.centerY;
+
+    let outward = 0;
+    let tangent = 0;
+
+    switch (anchorPosition) {
+      case Position.Left:
+        outward = -deltaX;
+        tangent = deltaY;
+        break;
+      case Position.Right:
+        outward = deltaX;
+        tangent = deltaY;
+        break;
+      case Position.Top:
+        outward = -deltaY;
+        tangent = deltaX;
+        break;
+      case Position.Bottom:
+      default:
+        outward = deltaY;
+        tangent = deltaX;
+        break;
+    }
+
+    return {
+      angle: Math.atan2(tangent, outward),
+      distance: Math.hypot(deltaX, deltaY),
+    };
+  };
+
   descriptors.sort((left, right) => {
     const leftNode = nodeGeometry.get(left.oppositeId);
     const rightNode = nodeGeometry.get(right.oppositeId);
-    const leftCenter = isHorizontalPosition(anchorPosition)
-      ? (leftNode?.centerY ?? 0)
-      : (leftNode?.centerX ?? 0);
-    const rightCenter = isHorizontalPosition(anchorPosition)
-      ? (rightNode?.centerY ?? 0)
-      : (rightNode?.centerX ?? 0);
-    if (leftCenter !== rightCenter) return leftCenter - rightCenter;
-    if (anchorNode && leftNode && rightNode) {
-      const leftDistance = isHorizontalPosition(anchorPosition)
-        ? Math.abs(leftNode.centerX - anchorNode.centerX)
-        : Math.abs(leftNode.centerY - anchorNode.centerY);
-      const rightDistance = isHorizontalPosition(anchorPosition)
-        ? Math.abs(rightNode.centerX - anchorNode.centerX)
-        : Math.abs(rightNode.centerY - anchorNode.centerY);
-      if (leftDistance !== rightDistance) return leftDistance - rightDistance;
-    }
+    const leftMetrics = getLocalMetrics(leftNode);
+    const rightMetrics = getLocalMetrics(rightNode);
+
+    if (leftMetrics.angle !== rightMetrics.angle) return leftMetrics.angle - rightMetrics.angle;
+    if (leftMetrics.distance !== rightMetrics.distance) return leftMetrics.distance - rightMetrics.distance;
     if (left.oppositeId !== right.oppositeId) return left.oppositeId.localeCompare(right.oppositeId);
     return left.key.localeCompare(right.key);
   });
@@ -943,12 +973,15 @@ function StackedCanvasEdge(props: EdgeProps<CanvasFlowEdge>) {
           d={path}
           fill="none"
           stroke={EDGE_ANIMATION_STROKE}
-          strokeWidth={baseStrokeWidth}
+          strokeWidth={baseStrokeWidth + 0.8}
           strokeLinecap="round"
           strokeLinejoin="round"
           strokeDasharray={`${SOLID_EDGE_ANIMATION_DASH} ${SOLID_EDGE_ANIMATION_GAP}`}
-          opacity={0.96}
+          opacity={1}
           pointerEvents="none"
+          style={{
+            filter: 'drop-shadow(0 0 3px color-mix(in oklch, var(--primary) 32%, transparent))',
+          }}
         >
           <animate
             attributeName="stroke-dashoffset"

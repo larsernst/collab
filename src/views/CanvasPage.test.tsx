@@ -126,7 +126,7 @@ vi.mock('sonner', () => ({
   },
 }));
 
-import CanvasPage, { normalizeLooseConnectionHandles } from './CanvasPage';
+import CanvasPage, { normalizeDirectedHandlePair, normalizeLooseConnectionHandles } from './CanvasPage';
 
 function wait(ms: number) {
   return new Promise((resolve) => {
@@ -147,6 +147,24 @@ describe('normalizeLooseConnectionHandles', () => {
     ])).toEqual({
       sourceHandle: 'top-in',
       targetHandle: 'bottom-out',
+    });
+  });
+
+  it('remaps undirected saved handles onto renderable same-side source and target handles', () => {
+    expect(normalizeDirectedHandlePair({
+      sourceHandle: 'top-in',
+      targetHandle: 'left-in',
+    })).toEqual({
+      sourceHandle: 'top-out',
+      targetHandle: 'left-in',
+    });
+
+    expect(normalizeDirectedHandlePair({
+      sourceHandle: 'right-out',
+      targetHandle: 'bottom-out',
+    })).toEqual({
+      sourceHandle: 'right-out',
+      targetHandle: 'bottom-in',
     });
   });
 });

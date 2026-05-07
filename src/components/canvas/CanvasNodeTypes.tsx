@@ -179,12 +179,17 @@ function CardHandles() {
       ? '!opacity-100 scale-110 shadow-[0_0_0_8px_color-mix(in_oklch,var(--primary)_20%,transparent)]'
       : '!opacity-0 group-hover:!opacity-100 group-hover:scale-110 group-hover:shadow-[0_0_0_8px_color-mix(in_oklch,var(--primary)_20%,transparent)]',
   );
+  const passiveHandleClassName = `${handleClassName} !pointer-events-none !opacity-0`;
 
   return (
     <>
       <Handle id="left-in" type="target" position={Position.Left} className={handleClassName} isConnectableStart isConnectableEnd />
+      <Handle id="left-out" type="source" position={Position.Left} className={passiveHandleClassName} isConnectable={false} isConnectableStart={false} isConnectableEnd={false} />
+      <Handle id="right-in" type="target" position={Position.Right} className={passiveHandleClassName} isConnectable={false} isConnectableStart={false} isConnectableEnd={false} />
       <Handle id="right-out" type="source" position={Position.Right} className={handleClassName} isConnectableStart isConnectableEnd />
       <Handle id="top-in" type="target" position={Position.Top} className={handleClassName} isConnectableStart isConnectableEnd />
+      <Handle id="top-out" type="source" position={Position.Top} className={passiveHandleClassName} isConnectable={false} isConnectableStart={false} isConnectableEnd={false} />
+      <Handle id="bottom-in" type="target" position={Position.Bottom} className={passiveHandleClassName} isConnectable={false} isConnectableStart={false} isConnectableEnd={false} />
       <Handle id="bottom-out" type="source" position={Position.Bottom} className={handleClassName} isConnectableStart isConnectableEnd />
     </>
   );

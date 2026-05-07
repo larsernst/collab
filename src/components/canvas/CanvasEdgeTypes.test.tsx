@@ -346,6 +346,108 @@ describe('CanvasEdgeTypes', () => {
     expect(nearGeometry.sourceY).toBeLessThan(farGeometry.sourceY);
   });
 
+  it('orders same-level siblings correctly on a mirrored left-side target handle', () => {
+    const edges = [
+      toFlowEdge({
+        id: 'edge-far-left',
+        source: 'target-far-left',
+        sourceHandle: 'top-out',
+        target: 'junction',
+        targetHandle: 'left-in',
+      }),
+      toFlowEdge({
+        id: 'edge-near-left',
+        source: 'target-near-left',
+        sourceHandle: 'top-out',
+        target: 'junction',
+        targetHandle: 'left-in',
+      }),
+    ];
+
+    const nodeGeometry = new Map([
+      ['junction', { centerX: 900, centerY: 220, width: 56, height: 56 }],
+      ['target-far-left', { centerX: 200, centerY: 620, width: 220, height: 220 }],
+      ['target-near-left', { centerX: 520, centerY: 620, width: 220, height: 220 }],
+    ]);
+
+    const farGeometry = getAnchoredEdgeGeometry({
+      edge: edges[0],
+      edges,
+      nodeGeometry,
+      sourceX: 200,
+      sourceY: 510,
+      targetX: 872,
+      targetY: 220,
+      sourcePosition: Position.Top,
+      targetPosition: Position.Left,
+    });
+
+    const nearGeometry = getAnchoredEdgeGeometry({
+      edge: edges[1],
+      edges,
+      nodeGeometry,
+      sourceX: 520,
+      sourceY: 510,
+      targetX: 872,
+      targetY: 220,
+      sourcePosition: Position.Top,
+      targetPosition: Position.Left,
+    });
+
+    expect(farGeometry.targetY).toBeLessThan(nearGeometry.targetY);
+  });
+
+  it('orders same-level siblings correctly on a left-side target handle when the peers are above the anchor', () => {
+    const edges = [
+      toFlowEdge({
+        id: 'edge-far-left-above',
+        source: 'target-far-left-above',
+        sourceHandle: 'bottom-out',
+        target: 'junction',
+        targetHandle: 'left-in',
+      }),
+      toFlowEdge({
+        id: 'edge-near-left-above',
+        source: 'target-near-left-above',
+        sourceHandle: 'bottom-out',
+        target: 'junction',
+        targetHandle: 'left-in',
+      }),
+    ];
+
+    const nodeGeometry = new Map([
+      ['junction', { centerX: 900, centerY: 420, width: 56, height: 56 }],
+      ['target-far-left-above', { centerX: 200, centerY: 120, width: 220, height: 220 }],
+      ['target-near-left-above', { centerX: 520, centerY: 120, width: 220, height: 220 }],
+    ]);
+
+    const farGeometry = getAnchoredEdgeGeometry({
+      edge: edges[0],
+      edges,
+      nodeGeometry,
+      sourceX: 200,
+      sourceY: 230,
+      targetX: 872,
+      targetY: 420,
+      sourcePosition: Position.Bottom,
+      targetPosition: Position.Left,
+    });
+
+    const nearGeometry = getAnchoredEdgeGeometry({
+      edge: edges[1],
+      edges,
+      nodeGeometry,
+      sourceX: 520,
+      sourceY: 230,
+      targetX: 872,
+      targetY: 420,
+      sourcePosition: Position.Bottom,
+      targetPosition: Position.Left,
+    });
+
+    expect(nearGeometry.targetY).toBeLessThan(farGeometry.targetY);
+  });
+
   it('routes bottom-to-right orthogonal edges with a single elbow', () => {
     const path = buildOrthogonalCanvasEdgePath({
       sourceX: 200,
