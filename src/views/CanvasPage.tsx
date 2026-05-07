@@ -1533,8 +1533,8 @@ function CanvasBoard({ relativePath }: { relativePath: string | null }) {
           nodesConnectable
           edgesReconnectable
           connectionLineComponent={StackedConnectionLine}
-        connectionRadius={36}
-        reconnectRadius={36}
+        connectionRadius={44}
+        reconnectRadius={44}
         minZoom={0.2}
         maxZoom={2.5}
         onlyRenderVisibleElements

@@ -174,10 +174,11 @@ function getPlanningNodeIcon(kind: PlanningCanvasNode['type']) {
 function CardHandles() {
   const connectionInProgress = useStore((state) => state.connection.inProgress);
   const handleClassName = cn(
-    '!h-4 !w-4 !border-2 !border-background !bg-primary/90 shadow-[0_0_0_6px_color-mix(in_oklch,var(--primary)_16%,transparent)] transition-[transform,box-shadow,opacity] duration-150',
+    '!h-6 !w-6 !border-0 !bg-transparent shadow-none transition-[transform,box-shadow,opacity] duration-150',
+    'before:absolute before:left-1/2 before:top-1/2 before:h-3.5 before:w-3.5 before:-translate-x-1/2 before:-translate-y-1/2 before:rounded-full before:border-2 before:border-background before:bg-primary/90 before:shadow-[0_0_0_6px_color-mix(in_oklch,var(--primary)_16%,transparent)] before:content-[\'\']',
     connectionInProgress
-      ? '!opacity-100 scale-110 shadow-[0_0_0_8px_color-mix(in_oklch,var(--primary)_20%,transparent)]'
-      : '!opacity-0 group-hover:!opacity-100 group-hover:scale-110 group-hover:shadow-[0_0_0_8px_color-mix(in_oklch,var(--primary)_20%,transparent)]',
+      ? '!opacity-100 scale-110 before:shadow-[0_0_0_8px_color-mix(in_oklch,var(--primary)_20%,transparent)]'
+      : '!opacity-0 group-hover:!opacity-100 group-hover:scale-110 group-hover:before:shadow-[0_0_0_8px_color-mix(in_oklch,var(--primary)_20%,transparent)]',
   );
   const passiveHandleClassName = `${handleClassName} !pointer-events-none !opacity-0`;
 
