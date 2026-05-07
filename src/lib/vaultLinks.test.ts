@@ -120,9 +120,9 @@ describe('vaultLinks', () => {
     expect(buildVaultLinkInsertText('Docs/spec.pdf', 'Notes/alpha.md', FILES)).toBe('[spec](../Docs/spec.pdf)');
   });
 
-  it('keeps unique notes as stem wikilinks and falls back to full paths for duplicates', () => {
-    expect(buildVaultLinkInsertText('Notes/beta.md', 'Docs/spec.pdf', FILES)).toBe('[[beta]]');
-    expect(buildVaultLinkInsertText('Docs/alpha.md', 'Notes/alpha.md', FILES)).toBe('[[Docs/alpha.md]]');
+  it('builds note slash-links with full vault paths and readable aliases', () => {
+    expect(buildVaultLinkInsertText('Notes/beta.md', 'Docs/spec.pdf', FILES)).toBe('[[Notes/beta.md|beta]]');
+    expect(buildVaultLinkInsertText('Docs/alpha.md', 'Notes/alpha.md', FILES)).toBe('[[Docs/alpha.md|alpha]]');
   });
 
   it('keeps unique note autocomplete items as stems and duplicate notes as full paths', () => {

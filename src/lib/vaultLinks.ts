@@ -102,16 +102,14 @@ export function getVaultDocumentTitle(relativePath: string) {
   return relativePath.split('/').pop()?.replace(/\.[^.]+$/, '') ?? relativePath;
 }
 
-function isUniqueNoteTitle(relativePath: string, fileTree: NoteFile[]) {
+function getVaultWikilinkInsertTarget(relativePath: string, fileTree: NoteFile[]) {
   const title = getVaultDocumentTitle(relativePath).toLowerCase();
-  return flattenVaultFiles(fileTree).filter((file) => (
+  const isUniqueNoteTitle = flattenVaultFiles(fileTree).filter((file) => (
     getVaultDocumentTabType(file.relativePath) === 'note'
     && getVaultDocumentTitle(file.relativePath).toLowerCase() === title
   )).length === 1;
-}
 
-function getVaultWikilinkInsertTarget(relativePath: string, fileTree: NoteFile[]) {
-  return isUniqueNoteTitle(relativePath, fileTree)
+  return isUniqueNoteTitle
     ? getVaultDocumentTitle(relativePath)
     : relativePath;
 }
@@ -119,11 +117,12 @@ function getVaultWikilinkInsertTarget(relativePath: string, fileTree: NoteFile[]
 export function buildVaultLinkInsertText(
   relativePath: string,
   currentDocumentRelativePath: string,
-  fileTree: NoteFile[],
+  _fileTree: NoteFile[],
 ) {
   const type = getVaultDocumentTabType(relativePath);
   if (type === 'note') {
-    return `[[${getVaultWikilinkInsertTarget(relativePath, fileTree)}]]`;
+    const label = getVaultDocumentTitle(relativePath);
+    return `[[${relativePath}|${label}]]`;
   }
 
   const label = getVaultDocumentTitle(relativePath);

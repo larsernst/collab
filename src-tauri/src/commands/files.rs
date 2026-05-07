@@ -686,6 +686,15 @@ fn resolve_vault_wikilink_reference(
         return Some(entry.relative_path.clone());
     }
 
+    if !normalized.contains('/') {
+        if let Some(entry) = lookup
+            .iter()
+            .find(|entry| entry.is_note && entry.name.eq_ignore_ascii_case(&normalized))
+        {
+            return Some(entry.relative_path.clone());
+        }
+    }
+
     if !normalized.contains('/') && Path::new(&normalized).extension().is_none() {
         if let Some(entry) = lookup
             .iter()
@@ -2871,6 +2880,34 @@ mod tests {
         assert!(references.iter().any(|entry|
             entry.source_relative_path == "Board.canvas"
             && entry.reference_kind == "canvas-file-node"
+        ));
+    }
+
+    #[test]
+    fn list_file_references_reports_note_wikilinks_with_md_extension() {
+        let vault = TempVault::new().expect("temp vault should exist");
+        vault
+            .write_text("Notes/target.md", "# target\n")
+            .expect("target note should exist");
+        vault
+            .write_text(
+                "Notes/source.md",
+                "[[target.md]]\n[[target.md|Target Alias]]\n",
+            )
+            .expect("source note should exist");
+
+        let references = list_file_references_inner(&vault.path_string(), "Notes/target.md", None)
+            .expect("references should list");
+
+        assert!(references.iter().any(|entry|
+            entry.source_relative_path == "Notes/source.md"
+            && entry.reference_kind == "note-wikilink"
+            && entry.display_label.as_deref() == Some("target.md")
+        ));
+        assert!(references.iter().any(|entry|
+            entry.source_relative_path == "Notes/source.md"
+            && entry.reference_kind == "note-wikilink"
+            && entry.display_label.as_deref() == Some("Target Alias")
         ));
     }
 
