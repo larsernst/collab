@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { buildTaskCheckboxToggleChange } from './livePreview';
+import { buildTaskCheckboxToggleChange, renderInlineTableCellHtml } from './livePreview';
 
 describe('livePreview task checkbox toggles', () => {
   it('toggles unchecked tasks without forcing a new selection', () => {
@@ -21,5 +21,10 @@ describe('livePreview task checkbox toggles', () => {
         insert: '[ ]',
       },
     });
+  });
+
+  it('renders inline markdown inside table cells', () => {
+    expect(renderInlineTableCellHtml('**bold** and `code`')).toContain('<strong>bold</strong>');
+    expect(renderInlineTableCellHtml('**bold** and `code`')).toContain('<code>code</code>');
   });
 });

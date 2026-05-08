@@ -17,6 +17,15 @@ type ClipboardLike = {
   readText: () => Promise<string>;
 };
 
+type FormattingShortcutEventLike = {
+  key: string;
+  ctrlKey: boolean;
+  metaKey: boolean;
+  altKey: boolean;
+  shiftKey: boolean;
+  preventDefault: () => void;
+};
+
 export function cutEditorSelection(view: EditorView, clipboard: ClipboardLike = navigator.clipboard) {
   const { from, to } = view.state.selection.main;
   const text = view.state.sliceDoc(from, to);
@@ -70,6 +79,32 @@ export function wrapStrikethroughSelection(view: EditorView) {
   const { from, to } = view.state.selection.main;
   const sel = view.state.sliceDoc(from, to) || 'strikethrough';
   insertAroundSelection(view, '~~', '~~', sel);
+}
+
+export function handleFormattingShortcutKeydown(
+  event: FormattingShortcutEventLike,
+  view: EditorView,
+) {
+  if ((!(event.ctrlKey || event.metaKey)) || event.altKey) return false;
+
+  const key = event.key.toLowerCase();
+  if (key === 'b') {
+    event.preventDefault();
+    wrapBoldSelection(view);
+    return true;
+  }
+  if (key === 'i') {
+    event.preventDefault();
+    wrapItalicSelection(view);
+    return true;
+  }
+  if (key === 'x' && event.shiftKey) {
+    event.preventDefault();
+    wrapStrikethroughSelection(view);
+    return true;
+  }
+
+  return false;
 }
 
 type Props = {

@@ -4,6 +4,7 @@ import {
   addTagsLineEvent,
   copyEditorSelection,
   cutEditorSelection,
+  handleFormattingShortcutKeydown,
   pasteClipboardAtCursor,
   selectAllInEditor,
   wrapBoldSelection,
@@ -112,5 +113,23 @@ describe('MarkdownEditorContextMenu helpers', () => {
     addTagsLineEvent(target as never);
 
     expect(listener).toHaveBeenCalledTimes(1);
+  });
+
+  it('handles Ctrl+I before native behavior and applies italic formatting', () => {
+    const view = createMockView('hello', 0, 5);
+    const preventDefault = vi.fn();
+
+    const handled = handleFormattingShortcutKeydown({
+      key: 'i',
+      ctrlKey: true,
+      metaKey: false,
+      altKey: false,
+      shiftKey: false,
+      preventDefault,
+    }, view as never);
+
+    expect(handled).toBe(true);
+    expect(preventDefault).toHaveBeenCalledTimes(1);
+    expect(view.getText()).toBe('_hello_');
   });
 });

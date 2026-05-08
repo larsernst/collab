@@ -137,6 +137,7 @@ pub struct PdfViewerState {
     pub last_zoom: Option<f32>,
     pub last_layout_mode: Option<String>,
     pub last_rotation: Option<u16>,
+    pub last_bookmarks_open: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]

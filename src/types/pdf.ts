@@ -53,6 +53,7 @@ export interface PdfViewerState {
   lastZoom?: number | null;
   lastLayoutMode?: 'single' | 'scroll' | 'spread' | null;
   lastRotation?: number | null;
+  lastBookmarksOpen?: boolean | null;
 }
 
 export interface PdfSidecarState {

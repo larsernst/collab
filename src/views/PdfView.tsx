@@ -58,6 +58,12 @@ import {
 } from '../lib/pdfWorkspace';
 import { PdfSendTargetDialog, type PdfSendTarget } from '../components/pdf/PdfSendTargetDialog';
 import { expandPdfHighlightRects, flattenPdfFiles } from './pdfViewUtils';
+import {
+  buildPdfViewerState,
+  buildPdfPageRenderCacheKey,
+  resolvePdfBookmarksOpen,
+  type PdfPageRenderCacheEntry,
+} from './pdfViewSession';
 
 const workerUrl = new URL('pdfjs-dist/legacy/build/pdf.worker.mjs', import.meta.url).toString();
 GlobalWorkerOptions.workerSrc = workerUrl;
@@ -95,6 +101,8 @@ const EMPTY_PDF_STATE: PdfSidecarState = {
   pageComments: [],
   viewerState: null,
 };
+
+const pdfPageRenderCache = new Map<string, PdfPageRenderCacheEntry>();
 
 interface WebKitGestureEvent extends Event {
   scale: number;
@@ -198,6 +206,7 @@ function selectionToRegionRect(selection: RegionSelectionState | null) {
 }
 
 interface PdfPageCanvasProps {
+  documentCacheKey: string;
   documentProxy: PDFDocumentProxy;
   pageNumber: number;
   scale: number;
@@ -224,6 +233,7 @@ interface PdfPageCanvasProps {
 }
 
 function PdfPageCanvas({
+  documentCacheKey,
   documentProxy,
   pageNumber,
   scale,
@@ -258,6 +268,10 @@ function PdfPageCanvas({
   const placeholderHeight = estimatedSize ? Math.max(160, scale * estimatedSize.height * PDF_CSS_SCALE) : 480;
   const [displaySize, setDisplaySize] = useState<{ width: number; height: number } | null>(null);
   const [renderSize, setRenderSize] = useState<{ width: number; height: number } | null>(null);
+  const cacheKey = useMemo(
+    () => buildPdfPageRenderCacheKey(documentCacheKey, pageNumber, scale, rotation),
+    [documentCacheKey, pageNumber, rotation, scale],
+  );
 
   useEffect(() => {
     registerSurface(pageNumber, containerRef.current, canvasRef.current);
@@ -308,6 +322,47 @@ function PdfPageCanvas({
     if (!shouldRender && !hasRenderedRef.current) {
       setRendering(false);
       return;
+    }
+
+    const cachedRender = pdfPageRenderCache.get(cacheKey);
+    if (cachedRender) {
+      const canvas = canvasRef.current;
+      const textLayer = textLayerRef.current;
+      const image = new Image();
+
+      image.onload = () => {
+        if (cancelled || !canvasRef.current || !textLayerRef.current) return;
+        const context = canvas.getContext('2d');
+        if (!context) return;
+
+        setDisplaySize({ width: cachedRender.displayWidth, height: cachedRender.displayHeight });
+        setRenderSize({ width: cachedRender.renderWidth, height: cachedRender.renderHeight });
+        canvas.width = Math.max(1, image.naturalWidth);
+        canvas.height = Math.max(1, image.naturalHeight);
+        canvas.style.width = `${cachedRender.renderWidth}px`;
+        canvas.style.height = `${cachedRender.renderHeight}px`;
+        context.setTransform(1, 0, 0, 1, 0, 0);
+        context.clearRect(0, 0, canvas.width, canvas.height);
+        context.drawImage(image, 0, 0, canvas.width, canvas.height);
+
+        textLayer.replaceChildren();
+        textLayer.innerHTML = cachedRender.textLayerHtml;
+        textLayer.style.width = `${cachedRender.renderWidth}px`;
+        textLayer.style.height = `${cachedRender.renderHeight}px`;
+        textLayer.style.setProperty('--user-unit', '1');
+
+        onMeasured(pageNumber, cachedRender.baseWidth, cachedRender.baseHeight);
+        hasRenderedRef.current = true;
+        setHasRendered(true);
+        setRendering(false);
+        setRenderError(null);
+        registerSurface(pageNumber, containerRef.current, canvasRef.current);
+      };
+
+      image.src = cachedRender.dataUrl;
+      return () => {
+        cancelled = true;
+      };
     }
 
     if (!hasRenderedRef.current) setRendering(true);
@@ -379,6 +434,17 @@ function PdfPageCanvas({
               throw error;
             }),
           ]);
+
+          pdfPageRenderCache.set(cacheKey, {
+            dataUrl: canvas.toDataURL('image/png'),
+            textLayerHtml: textLayer.innerHTML,
+            displayWidth: displayViewport.width,
+            displayHeight: displayViewport.height,
+            renderWidth: renderViewport.width,
+            renderHeight: renderViewport.height,
+            baseWidth: baseViewport.width,
+            baseHeight: baseViewport.height,
+          });
         });
         if (!cancelled) {
           hasRenderedRef.current = true;
@@ -408,7 +474,7 @@ function PdfPageCanvas({
       textLayerTaskRef.current?.cancel();
       textLayerTaskRef.current = null;
     };
-  }, [documentProxy, onMeasured, pageNumber, registerSurface, rotation, scale, shouldRender]);
+  }, [cacheKey, documentProxy, onMeasured, pageNumber, registerSurface, rotation, scale, shouldRender]);
 
   const visibleWidth = displaySize?.width ?? placeholderWidth;
   const visibleHeight = displaySize?.height ?? placeholderHeight;
@@ -582,6 +648,20 @@ export default function PdfView({ relativePath }: Props) {
   const [regionSelection, setRegionSelection] = useState<RegionSelectionState | null>(null);
   const [interactionMode, setInteractionMode] = useState<'none' | 'snapshot' | 'annotation'>('none');
   const [pendingSendAction, setPendingSendAction] = useState<PendingSendAction | null>(null);
+  const documentCacheKey = useMemo(() => {
+    const maybeFingerprints = (documentProxy as PDFDocumentProxy & { fingerprints?: string[] } | null)?.fingerprints;
+    return maybeFingerprints?.[0] ?? relativePath;
+  }, [documentProxy, relativePath]);
+  const latestViewerStateRef = useRef(
+    buildPdfViewerState({
+      pageNumber: 1,
+      zoomMode: 'fit-width',
+      zoom: 1,
+      layoutMode: 'single',
+      rotation: 0,
+      bookmarksOpen: true,
+    }),
+  );
 
   const allFiles = useMemo(() => flattenPdfFiles(fileTree).filter((node) => !node.isFolder), [fileTree]);
   const availableNotes = useMemo(() => allFiles.filter((file) => file.extension.toLowerCase() === 'md'), [allFiles]);
@@ -622,6 +702,7 @@ export default function PdfView({ relativePath }: Props) {
     setSelectedTextAnnotationId(null);
     setSelectedPageCommentId(null);
     setAnnotationManipulation(null);
+    setBookmarksOpen(true);
     setRegionSelection(null);
     setInteractionMode('none');
 
@@ -650,6 +731,7 @@ export default function PdfView({ relativePath }: Props) {
           textAnnotations: sidecar.textAnnotations ?? [],
           pageComments: sidecar.pageComments ?? [],
         });
+        setBookmarksOpen(resolvePdfBookmarksOpen(sidecar.viewerState));
         setSidecarLoaded(true);
         setDocumentProxy(pdf);
         setPageCount(pdf.numPages);
@@ -684,20 +766,28 @@ export default function PdfView({ relativePath }: Props) {
 
   useEffect(() => {
     if (!vault || !relativePath || !sidecarLoaded) return;
+    latestViewerStateRef.current = buildPdfViewerState({
+      pageNumber,
+      zoomMode,
+      zoom,
+      layoutMode,
+      rotation,
+      bookmarksOpen,
+    });
     const timeout = window.setTimeout(() => {
       void tauriCommands.writePdfSidecarState(vault.path, relativePath, {
         ...pdfState,
-        viewerState: {
-          lastPage: pageNumber,
-          lastZoomMode: zoomMode,
-          lastZoom: zoom,
-          lastLayoutMode: layoutMode,
-          lastRotation: rotation,
-        },
+        viewerState: latestViewerStateRef.current,
       }).catch(() => {});
     }, 250);
-    return () => window.clearTimeout(timeout);
-  }, [layoutMode, pageNumber, pdfState, relativePath, rotation, sidecarLoaded, vault, zoom, zoomMode]);
+    return () => {
+      window.clearTimeout(timeout);
+      void tauriCommands.writePdfSidecarState(vault.path, relativePath, {
+        ...pdfState,
+        viewerState: latestViewerStateRef.current,
+      }).catch(() => {});
+    };
+  }, [bookmarksOpen, layoutMode, pageNumber, pdfState, relativePath, rotation, sidecarLoaded, vault, zoom, zoomMode]);
 
   const activePageSize = pageSizes[pageNumber] ?? pageSizes[1] ?? null;
   const rotatedPageSize = useMemo(
@@ -2062,6 +2152,7 @@ export default function PdfView({ relativePath }: Props) {
               {renderedPages.map((renderedPage) => (
                 <PdfPageCanvas
                   key={renderedPage}
+                  documentCacheKey={documentCacheKey}
                   documentProxy={documentProxy}
                   pageNumber={renderedPage}
                   scale={effectiveScale}

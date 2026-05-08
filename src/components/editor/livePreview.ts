@@ -27,6 +27,16 @@ import { StateField, RangeSetBuilder, EditorState } from '@codemirror/state';
 import { LanguageDescription } from '@codemirror/language';
 import { languages } from '@codemirror/language-data';
 import { classHighlighter, highlightCode } from '@lezer/highlight';
+import MarkdownIt from 'markdown-it';
+// @ts-ignore – no bundled types
+import texmath from 'markdown-it-texmath';
+// @ts-ignore – no bundled types
+import sub from 'markdown-it-sub';
+// @ts-ignore – no bundled types
+import sup from 'markdown-it-sup';
+// @ts-ignore – no bundled types
+import mark from 'markdown-it-mark';
+import DOMPurify from 'dompurify';
 import * as React from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import katex from 'katex';
@@ -65,6 +75,59 @@ export function buildTaskCheckboxToggleChange(markerFrom: number, markerTo: numb
       insert: checked ? '[ ]' : '[x]',
     },
   };
+}
+
+function buildInlineTableMd() {
+  const instance = new MarkdownIt({
+    html: true,
+    linkify: true,
+    typographer: true,
+  });
+
+  instance.use(texmath, {
+    engine: katex,
+    delimiters: 'dollars',
+    katexOptions: {
+      throwOnError: false,
+      output: 'html',
+      trust: true,
+      strict: false,
+    },
+  });
+  instance.use(sub);
+  instance.use(sup);
+  instance.use(mark);
+  return instance;
+}
+
+const inlineTableMd = buildInlineTableMd();
+
+function preprocessInlineTableMarkdown(src: string) {
+  return src
+    .replace(/\\\[([\s\S]+?)\\\]/g, (_: string, m: string) => `$$${m}$$`)
+    .replace(/\\\((.+?)\\\)/g, (_: string, m: string) => `$${m}$`)
+    .replace(
+      /\[\[([^\]|]+?)(?:\|([^\]]+?))?\]\]/g,
+      (_: string, path: string, label: string | undefined) => {
+        const display = label ?? path;
+        const safePath = path.replace(/"/g, '&quot;');
+        return `<span class="wikilink" data-path="${safePath}">${inlineTableMd.utils.escapeHtml(display)}</span>`;
+      },
+    );
+}
+
+export function renderInlineTableCellHtml(value: string) {
+  const rendered = inlineTableMd.renderInline(preprocessInlineTableMarkdown(value));
+  return DOMPurify.sanitize(rendered, {
+    ADD_ATTR: ['data-path', 'class'],
+    FORCE_BODY: true,
+  }) as unknown as string;
+}
+
+function createInlineTableCellFragment(value: string) {
+  const template = document.createElement('template');
+  template.innerHTML = renderInlineTableCellHtml(value);
+  return template.content;
 }
 
 // ─── Widgets ──────────────────────────────────────────────────────────────────
@@ -279,7 +342,7 @@ class TableWidget extends WidgetType {
       const tr = document.createElement('tr');
       for (let i = 0; i < this.headers.length; i++) {
         const th = document.createElement('th');
-        th.textContent = this.headers[i];
+        th.replaceChildren(createInlineTableCellFragment(this.headers[i]));
         if (this.aligns[i]) th.style.textAlign = this.aligns[i];
         tr.appendChild(th);
       }
@@ -294,7 +357,7 @@ class TableWidget extends WidgetType {
         const colCount = Math.max(this.headers.length, row.length);
         for (let i = 0; i < colCount; i++) {
           const td = document.createElement('td');
-          td.textContent = row[i] ?? '';
+          td.replaceChildren(createInlineTableCellFragment(row[i] ?? ''));
           if (this.aligns[i]) td.style.textAlign = this.aligns[i];
           tr.appendChild(td);
         }

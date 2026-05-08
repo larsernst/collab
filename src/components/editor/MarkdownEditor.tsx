@@ -33,6 +33,9 @@ import { useMarkdownEditorHandle } from './useMarkdownEditorHandle';
 import type { MarkdownEditorViewState } from './useMarkdownEditorHandle';
 import { captureEditorViewState, restoreEditorViewState } from './useMarkdownEditorHandle';
 import { MarkdownEditorContextMenu } from './MarkdownEditorContextMenu';
+import {
+  handleFormattingShortcutKeydown,
+} from './MarkdownEditorContextMenu';
 
 export interface MarkdownEditorHandle {
   /** Wrap selection with `before`/`after`; if no selection, insert `before + placeholder + after` and select placeholder. */
@@ -333,43 +336,30 @@ export const MarkdownEditor = forwardRef<MarkdownEditorHandle, MarkdownEditorPro
       getCodeBlockAtCursor: getCodeBlockRangeAtCursor,
     });
 
+    useEffect(() => {
+      const handleDocumentKeydown = (event: KeyboardEvent) => {
+        const view = viewRef.current;
+        const container = containerRef.current;
+        if (!view || !container) return;
+
+        const active = document.activeElement;
+        if (!(active instanceof Node) || !container.contains(active)) return;
+
+        if (handleFormattingShortcutKeydown(event, view)) {
+          event.stopPropagation();
+        }
+      };
+
+      document.addEventListener('keydown', handleDocumentKeydown, { capture: true });
+      return () => {
+        document.removeEventListener('keydown', handleDocumentKeydown, { capture: true });
+      };
+    }, []);
+
     // ─── Build editor ─────────────────────────────────────────────────────
 
     useEffect(() => {
       if (!containerRef.current) return;
-
-      const wrapBold = (view: EditorView) => {
-        const { from, to } = view.state.selection.main;
-        const selected = view.state.sliceDoc(from, to) || 'bold text';
-        const insertion = `**${selected}**`;
-        view.dispatch({
-          changes: { from, to, insert: insertion },
-          selection: { anchor: from + 2, head: from + 2 + (to > from ? to - from : 9) },
-        });
-        return true;
-      };
-
-      const wrapItalic = (view: EditorView) => {
-        const { from, to } = view.state.selection.main;
-        const selected = view.state.sliceDoc(from, to) || 'italic text';
-        const insertion = `_${selected}_`;
-        view.dispatch({
-          changes: { from, to, insert: insertion },
-          selection: { anchor: from + 1, head: from + 1 + (to > from ? to - from : 11) },
-        });
-        return true;
-      };
-
-      const wrapStrikethrough = (view: EditorView) => {
-        const { from, to } = view.state.selection.main;
-        const selected = view.state.sliceDoc(from, to) || 'strikethrough';
-        const insertion = `~~${selected}~~`;
-        view.dispatch({
-          changes: { from, to, insert: insertion },
-          selection: { anchor: from + 2, head: from + 2 + (to > from ? to - from : 13) },
-        });
-        return true;
-      };
 
       // ── Link click handler ────────────────────────────────────────────────
       // Uses mousedown (not click) so we can return true and prevent CM6 from
@@ -398,13 +388,13 @@ export const MarkdownEditor = forwardRef<MarkdownEditorHandle, MarkdownEditorPro
 
           return false;
         },
+        keydown(event: KeyboardEvent, view: EditorView) {
+          return handleFormattingShortcutKeydown(event, view);
+        },
       });
 
       const saveKeymap = keymap.of([
         { key: 'Mod-s', run: (view: EditorView) => { onSaveRef.current(view.state.doc.toString()); return true; } },
-        { key: 'Mod-b', run: wrapBold },
-        { key: 'Mod-i', run: wrapItalic },
-        { key: 'Mod-Shift-x', run: wrapStrikethrough },
         { key: 'Mod-Alt-s', run: openToolbarAction('icon') },
         { key: 'Mod-Alt-t', run: openToolbarAction('table') },
         { key: 'Mod-Alt-l', run: openToolbarAction('link') },
