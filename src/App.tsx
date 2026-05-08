@@ -1,4 +1,4 @@
-import { useEffect } from 'react';
+import { useEffect, useState } from 'react';
 import './App.css';
 import { TooltipProvider } from './components/ui/tooltip';
 import { useVaultStore } from './store/vaultStore';
@@ -14,6 +14,8 @@ import { tauriCommands } from './lib/tauri';
 import { subscribeMediaQueryChange } from './lib/browserCompat';
 import { useUpdateStore } from './store/updateStore';
 import { toast } from 'sonner';
+import NotePrintView from './views/NotePrintView';
+import { NOTE_PDF_EXPORT_EVENT } from './lib/notePdfExport';
 
 /** Theme-base CSS overrides applied on top of the default dark palette */
 const THEME_VARS: Record<string, Record<string, string>> = {
@@ -84,6 +86,8 @@ const THEME_VARS: Record<string, Record<string, string>> = {
 };
 
 export default function App() {
+  const exportNoteRelativePath = new URLSearchParams(window.location.search).get('print-note');
+  const [activePrintNotePath, setActivePrintNotePath] = useState<string | null>(exportNoteRelativePath);
   const { vault, isVaultLocked, openVault, lastOpenedVaultPath } = useVaultStore();
   const { sessionVaultPath, setSessionVaultPath, resetSession } = useEditorStore();
   const {
@@ -261,17 +265,42 @@ export default function App() {
     openVault(lastOpenedVaultPath).catch(() => {});
   }, [restorePreviousSession, vault, isVaultLocked, lastOpenedVaultPath, sessionVaultPath, openVault]);
 
+  useEffect(() => {
+    const handleExportRequest = (event: Event) => {
+      const customEvent = event as CustomEvent<{ relativePath?: string }>;
+      const relativePath = customEvent.detail?.relativePath;
+      if (!relativePath) return;
+      setActivePrintNotePath(relativePath);
+    };
+
+    window.addEventListener(NOTE_PDF_EXPORT_EVENT, handleExportRequest as EventListener);
+    return () => {
+      window.removeEventListener(NOTE_PDF_EXPORT_EVENT, handleExportRequest as EventListener);
+    };
+  }, []);
+
   return (
     <TooltipProvider delayDuration={300}>
-      {vault
-        ? isVaultLocked
-          ? <VaultUnlockModal />
-          : <AppShell />
-        : <VaultPicker />
-      }
-      {isSettingsOpen && <SettingsModal />}
-      {isVaultManagerOpen && <VaultManagerModal />}
-      <Toaster richColors position="bottom-right" />
+      <div className={activePrintNotePath ? 'app-print-hidden' : undefined}>
+        {vault
+          ? isVaultLocked
+            ? <VaultUnlockModal />
+            : <AppShell />
+          : (activePrintNotePath && lastOpenedVaultPath
+              ? <div className="flex h-screen items-center justify-center text-sm text-muted-foreground">Preparing export…</div>
+              : <VaultPicker />)}
+        {isSettingsOpen && <SettingsModal />}
+        {isVaultManagerOpen && <VaultManagerModal />}
+        <Toaster richColors position="bottom-right" />
+      </div>
+      {activePrintNotePath && vault && !isVaultLocked && (
+        <div className="note-print-overlay-host">
+          <NotePrintView
+            relativePath={activePrintNotePath}
+            onClose={() => setActivePrintNotePath(null)}
+          />
+        </div>
+      )}
     </TooltipProvider>
   );
 }

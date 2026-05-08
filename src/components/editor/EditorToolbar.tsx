@@ -23,6 +23,7 @@ import {
   NotebookPen,
   MessageSquareQuote,
   ScrollText,
+  Printer,
 } from 'lucide-react';
 import { Tooltip, TooltipContent, TooltipTrigger } from '../ui/tooltip';
 import { useEffect, useState, type MouseEvent, type RefObject } from 'react';
@@ -57,6 +58,7 @@ import { open } from '@tauri-apps/plugin-dialog';
 import { renderMarkdownCodeBlock } from './codeBlockUtils';
 import { EDITOR_TOOLBAR_ACTION_EVENT, type EditorToolbarAction } from '../../lib/editorToolbarActions';
 import { buildCalloutSnippet } from './noteAuthoring';
+import { requestNotePdfExport } from '../../lib/notePdfExport';
 
 interface EditorToolbarProps {
   relativePath: string;
@@ -633,6 +635,13 @@ export function EditorToolbar({ relativePath, editorRef }: EditorToolbarProps) {
                 icon={<NotebookPen size={13} />}
                 label="Note snippets"
                 onClick={() => setSnippetsDialogOpen(true)}
+              />
+              <TBtn
+                icon={<Printer size={13} />}
+                label="Export note as PDF"
+                onClick={() => {
+                  requestNotePdfExport(relativePath);
+                }}
               />
               <TagsBtn />
             </div>

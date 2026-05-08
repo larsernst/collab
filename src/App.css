@@ -1147,3 +1147,122 @@
 .split-zones-enter {
   animation: zone-fade-in var(--motion-fast) var(--motion-ease-standard) both;
 }
+
+.app-print-hidden {
+  min-height: 100vh;
+}
+
+.note-print-overlay-host {
+  position: fixed;
+  inset: 0;
+  z-index: 70;
+  overflow: auto;
+  background: color-mix(in oklab, var(--background) 92%, black 8%);
+}
+
+.note-print-shell {
+  min-height: 100vh;
+  background:
+    radial-gradient(circle at top, color-mix(in oklab, var(--primary) 10%, transparent), transparent 38%),
+    linear-gradient(180deg, color-mix(in oklab, var(--background) 92%, white 8%), var(--background));
+  color: var(--foreground);
+}
+
+.note-print-toolbar {
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 0.9rem 1.2rem;
+  border-bottom: 1px solid color-mix(in oklab, var(--border) 78%, transparent);
+  background: color-mix(in oklab, var(--background) 86%, transparent);
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+}
+
+.note-print-page {
+  display: flex;
+  justify-content: center;
+  padding: 1.5rem;
+}
+
+.note-print-document {
+  width: min(210mm, 100%);
+  min-height: 297mm;
+  padding: 18mm 16mm 20mm;
+  border: 1px solid color-mix(in oklab, var(--border) 72%, transparent);
+  border-radius: 22px;
+  background: white;
+  color: #111827;
+  box-shadow: 0 18px 48px rgba(15, 23, 42, 0.14);
+}
+
+.note-print-header {
+  margin-bottom: 1.5rem;
+  padding-bottom: 0.9rem;
+  border-bottom: 1px solid rgba(15, 23, 42, 0.1);
+}
+
+.note-print-header h1 {
+  margin: 0;
+  font-size: 1.7rem;
+  line-height: 1.2;
+  font-weight: 700;
+}
+
+.note-print-header div {
+  margin-top: 0.35rem;
+  font-size: 0.78rem;
+  color: #6b7280;
+}
+
+.note-print-markdown {
+  font-size: 0.98rem;
+  line-height: 1.7;
+}
+
+.note-print-state {
+  display: flex;
+  min-height: 100vh;
+  align-items: center;
+  justify-content: center;
+  padding: 2rem;
+  text-align: center;
+}
+
+@media print {
+  .app-print-hidden {
+    display: none !important;
+  }
+
+  .note-print-overlay-host {
+    position: static;
+    inset: auto;
+    overflow: visible;
+    background: white;
+  }
+
+  .note-print-shell {
+    background: white;
+  }
+
+  .note-print-toolbar {
+    display: none;
+  }
+
+  .note-print-page {
+    padding: 0;
+  }
+
+  .note-print-document {
+    width: auto;
+    min-height: auto;
+    padding: 0;
+    border: 0;
+    border-radius: 0;
+    box-shadow: none;
+  }
+}
