@@ -3,12 +3,14 @@ import { useDraggable, useDroppable } from '@dnd-kit/core';
 import { CSS } from '@dnd-kit/utilities';
 import { cn } from '../../lib/utils';
 import { useGridStore, type GridCell as GridCellType, type GridCellContent } from '../../store/gridStore';
+import { useVaultStore } from '../../store/vaultStore';
 import CellContentPicker from './CellContentPicker';
 import NoteView from '../../views/NoteView';
 import GraphPage from '../../views/GraphPage';
 import CanvasPage from '../../views/CanvasPage';
 import KanbanPage from '../../views/KanbanPage';
 import SettingsPage from '../../views/SettingsPage';
+import { flattenVaultFiles, getVaultDocumentTabType, getVaultDocumentTitle } from '../../lib/vaultLinks';
 
 const CONTENT_ICONS: Partial<Record<string, React.ReactNode>> = {
   note:     <FileText size={11} />,
@@ -25,6 +27,7 @@ interface Props {
 
 export default function GridCell({ cell, onContainerRef }: Props) {
   const { setCellContent, clearCell } = useGridStore();
+  const fileTree = useVaultStore((state) => state.fileTree);
 
   // ── dnd-kit: make the grip handle draggable ──────────────────────────────
   const { attributes, listeners, setNodeRef: setDragRef, isDragging, transform } = useDraggable({
@@ -49,6 +52,20 @@ export default function GridCell({ cell, onContainerRef }: Props) {
     setCellContent(cell.id, content);
   };
 
+  const getWorkspaceContentFromRelativePath = (relativePath: string): GridCellContent | null => {
+    const file = flattenVaultFiles(fileTree).find((entry) => entry.relativePath === relativePath);
+    if (!file) return null;
+
+    const type = getVaultDocumentTabType(relativePath);
+    if (type !== 'note' && type !== 'canvas' && type !== 'kanban') return null;
+
+    return {
+      type,
+      relativePath,
+      title: getVaultDocumentTitle(relativePath),
+    };
+  };
+
   const renderContent = () => {
     const { type, relativePath } = cell.content;
 
@@ -64,8 +81,12 @@ export default function GridCell({ cell, onContainerRef }: Props) {
         />
       );
     }
-    if (type === 'canvas')   return <CanvasPage relativePath={null} />;
-    if (type === 'kanban')   return <KanbanPage relativePath={null} />;
+    if (type === 'canvas' && relativePath) {
+      return <CanvasPage relativePath={relativePath} />;
+    }
+    if (type === 'kanban' && relativePath) {
+      return <KanbanPage relativePath={relativePath} />;
+    }
     if (type === 'settings') return <SettingsPage />;
 
     return (
@@ -132,9 +153,9 @@ export default function GridCell({ cell, onContainerRef }: Props) {
           </CellContentPicker>
           {type !== 'empty' && (
             <button
-              onClick={() => clearCell(cell.id)}
-              className="p-0.5 rounded text-muted-foreground/50 hover:text-destructive hover:bg-destructive/10 transition-colors"
-              title="Clear cell"
+            onClick={() => clearCell(cell.id)}
+            className="p-0.5 rounded text-muted-foreground/50 hover:text-destructive hover:bg-destructive/10 transition-colors"
+            title="Clear cell"
             >
               <X size={12} />
             </button>
@@ -144,7 +165,26 @@ export default function GridCell({ cell, onContainerRef }: Props) {
 
       {/* Content */}
       <div className="flex-1 min-h-0 overflow-hidden">
-        {renderContent()}
+        <div
+          className="h-full"
+          onDragOver={(event) => {
+            const relativePath = event.dataTransfer.getData('application/x-collab-vault-file') || event.dataTransfer.getData('text/plain');
+            if (!relativePath || !getWorkspaceContentFromRelativePath(relativePath)) return;
+            event.preventDefault();
+            event.stopPropagation();
+            event.dataTransfer.dropEffect = 'copy';
+          }}
+          onDrop={(event) => {
+            const relativePath = event.dataTransfer.getData('application/x-collab-vault-file') || event.dataTransfer.getData('text/plain');
+            const content = relativePath ? getWorkspaceContentFromRelativePath(relativePath) : null;
+            if (!content) return;
+            event.preventDefault();
+            event.stopPropagation();
+            setCellContent(cell.id, content);
+          }}
+        >
+          {renderContent()}
+        </div>
       </div>
     </div>
   );

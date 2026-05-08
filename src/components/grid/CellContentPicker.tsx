@@ -3,12 +3,12 @@ import { GitFork, Layout, LayoutDashboard, Settings, FileText, Search } from 'lu
 import { Popover, PopoverContent, PopoverTrigger } from '../ui/popover';
 import { Tooltip, TooltipContent, TooltipTrigger } from '../ui/tooltip';
 import { useNoteIndexStore } from '../../store/noteIndexStore';
+import { useVaultStore } from '../../store/vaultStore';
 import type { GridCellContent, CellContentType } from '../../store/gridStore';
+import { flattenVaultFiles, getVaultDocumentTabType, getVaultDocumentTitle } from '../../lib/vaultLinks';
 
 const VIEW_OPTIONS: { type: CellContentType; label: string; icon: React.ReactNode }[] = [
   { type: 'graph',    label: 'Graph',    icon: <GitFork size={14} /> },
-  { type: 'canvas',  label: 'Canvas',   icon: <Layout size={14} /> },
-  { type: 'kanban',  label: 'Kanban',   icon: <LayoutDashboard size={14} /> },
   { type: 'settings',label: 'Settings', icon: <Settings size={14} /> },
 ];
 
@@ -21,6 +21,10 @@ export default function CellContentPicker({ children, onSelect }: Props) {
   const [search, setSearch] = useState('');
   const [open, setOpen] = useState(false);
   const { notes } = useNoteIndexStore();
+  const fileTree = useVaultStore((state) => state.fileTree);
+  const flatFiles = flattenVaultFiles(fileTree);
+  const canvasBoards = flatFiles.filter((file) => getVaultDocumentTabType(file.relativePath) === 'canvas');
+  const kanbanBoards = flatFiles.filter((file) => getVaultDocumentTabType(file.relativePath) === 'kanban');
 
   const filteredNotes = search.trim()
     ? notes
@@ -31,6 +35,18 @@ export default function CellContentPicker({ children, onSelect }: Props) {
         )
         .slice(0, 12)
     : notes.slice(0, 10);
+
+  const query = search.trim().toLowerCase();
+  const filteredCanvasBoards = (query
+    ? canvasBoards.filter((file) =>
+        file.name.toLowerCase().includes(query) || file.relativePath.toLowerCase().includes(query))
+    : canvasBoards
+  ).slice(0, 8);
+  const filteredKanbanBoards = (query
+    ? kanbanBoards.filter((file) =>
+        file.name.toLowerCase().includes(query) || file.relativePath.toLowerCase().includes(query))
+    : kanbanBoards
+  ).slice(0, 8);
 
   const select = (content: GridCellContent) => {
     onSelect(content);
@@ -78,6 +94,42 @@ export default function CellContentPicker({ children, onSelect }: Props) {
             />
           </div>
           <div className="max-h-52 overflow-y-auto space-y-0.5">
+            {filteredCanvasBoards.map((file) => (
+              <button
+                key={`canvas:${file.relativePath}`}
+                onClick={() =>
+                  select({
+                    type: 'canvas',
+                    relativePath: file.relativePath,
+                    title: getVaultDocumentTitle(file.relativePath),
+                  })
+                }
+                className="w-full flex items-center gap-2 px-2 py-1.5 rounded text-xs hover:bg-accent/60 text-left transition-colors min-w-0"
+              >
+                <Layout size={11} className="text-blue-400/70 shrink-0" />
+                <span className="truncate text-foreground/80">
+                  {getVaultDocumentTitle(file.relativePath)}
+                </span>
+              </button>
+            ))}
+            {filteredKanbanBoards.map((file) => (
+              <button
+                key={`kanban:${file.relativePath}`}
+                onClick={() =>
+                  select({
+                    type: 'kanban',
+                    relativePath: file.relativePath,
+                    title: getVaultDocumentTitle(file.relativePath),
+                  })
+                }
+                className="w-full flex items-center gap-2 px-2 py-1.5 rounded text-xs hover:bg-accent/60 text-left transition-colors min-w-0"
+              >
+                <LayoutDashboard size={11} className="text-emerald-400/70 shrink-0" />
+                <span className="truncate text-foreground/80">
+                  {getVaultDocumentTitle(file.relativePath)}
+                </span>
+              </button>
+            ))}
             {filteredNotes.length > 0 ? (
               filteredNotes.map((note) => (
                 <button
@@ -98,7 +150,9 @@ export default function CellContentPicker({ children, onSelect }: Props) {
                 </button>
               ))
             ) : (
-              <p className="text-xs text-muted-foreground text-center py-4">No notes found</p>
+              filteredCanvasBoards.length === 0 && filteredKanbanBoards.length === 0 && (
+                <p className="text-xs text-muted-foreground text-center py-4">No matching content found</p>
+              )
             )}
           </div>
         </div>

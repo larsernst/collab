@@ -666,6 +666,7 @@ function FileTreeNode({
               e.stopPropagation();
               setDraggingPath(node.relativePath);
               e.dataTransfer.setData('text/plain', node.relativePath);
+              e.dataTransfer.setData('application/x-collab-vault-file', node.relativePath);
               e.dataTransfer.effectAllowed = 'move';
             }}
             onDragEnd={() => {
