@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { getDocument, GlobalWorkerOptions, PixelsPerInch, RenderingCancelledException, TextLayer } from 'pdfjs-dist';
-import type { PDFDocumentProxy, RenderTask } from 'pdfjs-dist';
+import { getDocument, GlobalWorkerOptions, PixelsPerInch, RenderingCancelledException, TextLayer } from 'pdfjs-dist/legacy/build/pdf.mjs';
+import type { PDFDocumentProxy, RenderTask } from 'pdfjs-dist/legacy/build/pdf.mjs';
 import {
   Bookmark,
   BookmarkPlus,
@@ -59,7 +59,7 @@ import {
 import { PdfSendTargetDialog, type PdfSendTarget } from '../components/pdf/PdfSendTargetDialog';
 import { expandPdfHighlightRects, flattenPdfFiles } from './pdfViewUtils';
 
-const workerUrl = new URL('pdfjs-dist/build/pdf.worker.mjs', import.meta.url).toString();
+const workerUrl = new URL('pdfjs-dist/legacy/build/pdf.worker.mjs', import.meta.url).toString();
 GlobalWorkerOptions.workerSrc = workerUrl;
 
 const ZOOM_MIN = 0.5;

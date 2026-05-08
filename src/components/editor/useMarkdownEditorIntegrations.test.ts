@@ -1,9 +1,13 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
+  getClipboardFileUriPaths,
+  getClipboardEventImageSources,
+  getClipboardHtmlImageSources,
   handleEditorDocumentLinkMouseDown,
   handleEditorImageShiftClick,
   handleNativeEditorDrop,
+  importClipboardImagesIntoEditor,
   importDroppedImagesIntoEditor,
   resolveHoverPreviewState,
 } from './useMarkdownEditorIntegrations';
@@ -129,6 +133,109 @@ describe('useMarkdownEditorIntegrations helpers', () => {
     expect(dispatch).toHaveBeenCalledWith({
       changes: { from: 5, to: 5, insert: '![](Pictures/example.png)' },
       selection: { anchor: 30 },
+    });
+    expect(focus).toHaveBeenCalled();
+  });
+
+  it('extracts image files from clipboard data', () => {
+    const imageFile = new File(['png'], 'capture.png', { type: 'image/png' });
+    const textFile = new File(['text'], 'note.txt', { type: 'text/plain' });
+    const clipboardData = {
+      files: [imageFile, textFile],
+      items: [],
+    } as unknown as DataTransfer;
+
+    expect(getClipboardEventImageSources(clipboardData)).toEqual([
+      {
+        kind: 'blob',
+        blob: imageFile,
+        mime: 'image/png',
+        suggestedFileName: 'capture.png',
+      },
+    ]);
+  });
+
+  it('extracts local file paths from clipboard uri text', () => {
+    const clipboardData = {
+      getData: (type: string) => {
+        if (type === 'text/plain') return 'file:///tmp/Capture%20One.png';
+        return '';
+      },
+    } as unknown as DataTransfer;
+
+    expect(getClipboardFileUriPaths(clipboardData)).toEqual(['/tmp/Capture One.png']);
+  });
+
+  it('extracts embedded data-url images from clipboard html', () => {
+    expect(
+      getClipboardHtmlImageSources('<p><img src="data:image/png;base64,abc123" /><img src="https://example.com/a.png" /></p>'),
+    ).toEqual([
+      {
+        kind: 'dataUrl',
+        dataUrl: 'data:image/png;base64,abc123',
+        suggestedFileName: 'clipboard-image.png',
+      },
+    ]);
+  });
+
+  it('imports clipboard images into the editor and inserts markdown links', async () => {
+    const dispatch = vi.fn();
+    const focus = vi.fn();
+    const saveGeneratedImage = vi
+      .fn()
+      .mockResolvedValueOnce('Pictures/clipboard-image.png')
+      .mockResolvedValueOnce('Pictures/clipboard-image-2.webp');
+    const view = {
+      dispatch,
+      focus,
+    } as unknown as import('@codemirror/view').EditorView;
+    const expectedInsert = '![Notes/a.md](Pictures/clipboard-image.png)\n![Notes/a.md](Pictures/clipboard-image-2.webp)';
+
+    const success = await importClipboardImagesIntoEditor({
+      clipboardImages: [
+        {
+          kind: 'dataUrl',
+          dataUrl: 'data:image/png;base64,abc123',
+          suggestedFileName: 'clipboard-image.png',
+        },
+        {
+          kind: 'dataUrl',
+          dataUrl: 'data:image/webp;base64,def456',
+          suggestedFileName: 'clipboard-image-2.webp',
+        },
+      ],
+      insertPos: 12,
+      view,
+      vaultPath: '/vault',
+      currentDocumentRelativePath: 'Notes/a.md',
+      buildImageMarkdown: (relativePath, currentDocumentRelativePath) => `![${currentDocumentRelativePath}](${relativePath})`,
+      saveGeneratedImage,
+    });
+
+    expect(success).toBe(true);
+    expect(saveGeneratedImage).toHaveBeenNthCalledWith(
+      1,
+      '/vault',
+      'Pictures/clipboard-image.png',
+      'data:image/png;base64,abc123',
+      false,
+      'clipboard-image.png',
+    );
+    expect(saveGeneratedImage).toHaveBeenNthCalledWith(
+      2,
+      '/vault',
+      'Pictures/clipboard-image-2.webp',
+      'data:image/webp;base64,def456',
+      false,
+      'clipboard-image-2.webp',
+    );
+    expect(dispatch).toHaveBeenCalledWith({
+      changes: {
+        from: 12,
+        to: 12,
+        insert: expectedInsert,
+      },
+      selection: { anchor: 12 + expectedInsert.length },
     });
     expect(focus).toHaveBeenCalled();
   });

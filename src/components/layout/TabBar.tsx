@@ -63,14 +63,12 @@ export default function TabBar() {
                 type: tab.type,
               });
               e.dataTransfer.setData('text/plain', tab.relativePath);
+              e.dataTransfer.setData('application/x-collab-tab', JSON.stringify({
+                relativePath: tab.relativePath,
+                title: tab.title,
+                type: tab.type,
+              }));
               e.dataTransfer.effectAllowed = 'move';
-              const ghost = document.createElement('div');
-              ghost.textContent = tab.title;
-              ghost.style.cssText =
-                'position:fixed;top:-100px;left:-100px;padding:4px 8px;background:var(--primary);color:var(--primary-foreground);border-radius:6px;font-size:12px;white-space:nowrap;pointer-events:none;';
-              document.body.appendChild(ghost);
-              e.dataTransfer.setDragImage(ghost, 0, 0);
-              requestAnimationFrame(() => document.body.removeChild(ghost));
             }}
             onDragOver={(e) => {
               if (!dragSrcRef.current || dragSrcRef.current === tab.relativePath) return;

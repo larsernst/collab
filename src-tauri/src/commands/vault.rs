@@ -50,14 +50,35 @@ fn upsert_recent_in_list(recents: &mut Vec<VaultMeta>, meta: &VaultMeta) {
     recents.truncate(20);
 }
 
-fn filter_existing_recents(recents: Vec<VaultMeta>) -> Vec<VaultMeta> {
+fn is_flatpak_runtime() -> bool {
+    #[cfg(target_os = "linux")]
+    {
+        std::env::var_os("FLATPAK_ID").is_some()
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        false
+    }
+}
+
+fn filter_existing_recents_with_options(
+    recents: Vec<VaultMeta>,
+    keep_unverified_paths: bool,
+) -> Vec<VaultMeta> {
     recents
         .into_iter()
         .filter(|meta| {
             let path = std::path::Path::new(&meta.path);
-            path.exists() && path.is_dir()
+            match std::fs::metadata(path) {
+                Ok(metadata) => metadata.is_dir(),
+                Err(_) => keep_unverified_paths,
+            }
         })
         .collect()
+}
+
+fn filter_existing_recents(recents: Vec<VaultMeta>) -> Vec<VaultMeta> {
+    filter_existing_recents_with_options(recents, is_flatpak_runtime())
 }
 
 fn read_recents() -> Result<Vec<VaultMeta>, String> {
@@ -437,7 +458,7 @@ pub async fn show_open_vault_dialog(app: AppHandle) -> Result<Option<String>, St
 mod tests {
     use super::{
         build_created_vault_config, create_vault_on_disk_with_recents,
-        ensure_open_vault_meta_with_recents, filter_existing_recents,
+        ensure_open_vault_meta_with_recents, filter_existing_recents_with_options,
         read_recents_from_path, read_vault_config_pub, rename_vault_on_disk_with_recents,
         upsert_recent_in_list, write_recents_to_path, write_vault_config_pub,
     };
@@ -533,14 +554,32 @@ mod tests {
         vault.create_dir("existing-vault").expect("existing vault dir should be created");
         vault.write_text("plain-file.txt", "x").expect("plain file should exist");
 
-        let filtered = filter_existing_recents(vec![
+        let filtered = filter_existing_recents_with_options(vec![
             sample_meta(vault.resolve("existing-vault").to_string_lossy().to_string(), 1),
             sample_meta(vault.resolve("missing-vault").to_string_lossy().to_string(), 2),
             sample_meta(vault.resolve("plain-file.txt").to_string_lossy().to_string(), 3),
-        ]);
+        ], false);
 
         assert_eq!(filtered.len(), 1);
         assert!(filtered[0].path.ends_with("existing-vault"));
+    }
+
+    #[test]
+    fn filter_existing_recents_keeps_unverified_paths_when_requested() {
+        let vault = TempVault::new().expect("temp vault should exist");
+        vault.create_dir("existing-vault").expect("existing vault dir should be created");
+        vault.write_text("plain-file.txt", "x").expect("plain file should exist");
+
+        let filtered = filter_existing_recents_with_options(vec![
+            sample_meta(vault.resolve("existing-vault").to_string_lossy().to_string(), 1),
+            sample_meta(vault.resolve("missing-vault").to_string_lossy().to_string(), 2),
+            sample_meta(vault.resolve("plain-file.txt").to_string_lossy().to_string(), 3),
+        ], true);
+
+        assert_eq!(filtered.len(), 2);
+        assert!(filtered.iter().any(|meta| meta.path.ends_with("existing-vault")));
+        assert!(filtered.iter().any(|meta| meta.path.ends_with("missing-vault")));
+        assert!(!filtered.iter().any(|meta| meta.path.ends_with("plain-file.txt")));
     }
 
     #[test]

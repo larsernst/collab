@@ -36,6 +36,54 @@ type NativeDropState = {
   lastDropAt: number;
 };
 
+type ClipboardImageSource =
+  | {
+      kind: 'blob';
+      blob: Blob;
+      mime: string;
+      suggestedFileName: string;
+    }
+  | {
+      kind: 'dataUrl';
+      dataUrl: string;
+      suggestedFileName: string;
+    };
+
+export function getLocalPathsFromUriList(text: string): string[] {
+  return text
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => line && !line.startsWith('#'))
+    .map((line) => {
+      try {
+        return line.startsWith('file://') ? decodeURIComponent(line.slice(7)) : '';
+      } catch {
+        return '';
+      }
+    })
+    .filter((path) => path.length > 0);
+}
+
+export function getClipboardFileUriPaths(clipboardData: DataTransfer | null | undefined): string[] {
+  if (!clipboardData) return [];
+
+  const uriListPaths = getLocalPathsFromUriList(clipboardData.getData('text/uri-list') ?? '');
+  if (uriListPaths.length > 0) return uriListPaths;
+
+  return getLocalPathsFromUriList(clipboardData.getData('text/plain') ?? '');
+}
+
+async function getNavigatorClipboardFileUriPaths(): Promise<string[]> {
+  const readText = navigator.clipboard?.readText?.bind(navigator.clipboard);
+  if (!readText) return [];
+
+  try {
+    return getLocalPathsFromUriList(await readText());
+  } catch {
+    return [];
+  }
+}
+
 type NativeDropArgs = {
   paths: string[];
   clientX: number;
@@ -87,6 +135,115 @@ export function resolveHoverPreviewState(
   return { url: null, pdfRelativePath: null, rect: null };
 }
 
+function extensionForClipboardMime(mime: string) {
+  switch (mime.toLowerCase()) {
+    case 'image/png': return 'png';
+    case 'image/jpeg': return 'jpg';
+    case 'image/webp': return 'webp';
+    case 'image/gif': return 'gif';
+    case 'image/svg+xml': return 'svg';
+    case 'image/bmp': return 'bmp';
+    case 'image/x-icon':
+    case 'image/vnd.microsoft.icon': return 'ico';
+    case 'image/avif': return 'avif';
+    default: return 'png';
+  }
+}
+
+function buildClipboardSuggestedFileName(mime: string, index = 0) {
+  const ext = extensionForClipboardMime(mime);
+  return index > 0 ? `clipboard-image-${index + 1}.${ext}` : `clipboard-image.${ext}`;
+}
+
+async function blobToDataUrl(blob: Blob) {
+  return await new Promise<string>((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onerror = () => reject(reader.error ?? new Error('Failed to read clipboard image'));
+    reader.onload = () => {
+      if (typeof reader.result === 'string') resolve(reader.result);
+      else reject(new Error('Clipboard image did not produce a data URL'));
+    };
+    reader.readAsDataURL(blob);
+  });
+}
+
+export function getClipboardEventImageSources(clipboardData: DataTransfer | null | undefined): ClipboardImageSource[] {
+  if (!clipboardData) return [];
+
+  const files = Array.from(clipboardData.files ?? []);
+  if (files.length > 0) {
+    return files
+      .filter((file) => file.type.startsWith('image/'))
+      .map((file, index) => ({
+        kind: 'blob' as const,
+        blob: file,
+        mime: file.type || 'image/png',
+        suggestedFileName: file.name || buildClipboardSuggestedFileName(file.type || 'image/png', index),
+      }));
+  }
+
+  const items = Array.from(clipboardData.items ?? []);
+  return items.reduce<ClipboardImageSource[]>((sources, item, index) => {
+    if (item.kind !== 'file' || !item.type.startsWith('image/')) return sources;
+    const file = item.getAsFile();
+    if (!file) return sources;
+    sources.push({
+      kind: 'blob',
+      blob: file,
+      mime: file.type || item.type || 'image/png',
+      suggestedFileName: file.name || buildClipboardSuggestedFileName(file.type || item.type || 'image/png', index),
+    });
+    return sources;
+  }, []);
+}
+
+export function getClipboardHtmlImageSources(html: string): ClipboardImageSource[] {
+  if (!html.trim()) return [];
+  const parser = new DOMParser();
+  const doc = parser.parseFromString(html, 'text/html');
+  const images = Array.from(doc.querySelectorAll('img[src]'));
+  const sources: ClipboardImageSource[] = [];
+
+  images.forEach((image, index) => {
+    const src = image.getAttribute('src')?.trim() ?? '';
+    const match = src.match(/^data:(image\/[^;,]+);base64,/i);
+    if (!match) return;
+    const mime = match[1] || 'image/png';
+    sources.push({
+      kind: 'dataUrl',
+      dataUrl: src,
+      suggestedFileName: buildClipboardSuggestedFileName(mime, index),
+    });
+  });
+
+  return sources;
+}
+
+async function getNavigatorClipboardImageSources(): Promise<ClipboardImageSource[]> {
+  const read = navigator.clipboard?.read?.bind(navigator.clipboard);
+  if (!read) return [];
+
+  try {
+    const items = await read();
+    const sources: ClipboardImageSource[] = [];
+    for (let index = 0; index < items.length; index += 1) {
+      const item = items[index];
+      const imageType = item.types.find((type) => type.startsWith('image/'));
+      if (!imageType) continue;
+      const blob = await item.getType(imageType);
+      sources.push({
+        kind: 'blob',
+        blob,
+        mime: imageType,
+        suggestedFileName: buildClipboardSuggestedFileName(imageType, index),
+      });
+    }
+    return sources;
+  } catch {
+    return [];
+  }
+}
+
 export async function importDroppedImagesIntoEditor({
   sourcePaths,
   dropPos,
@@ -118,6 +275,60 @@ export async function importDroppedImagesIntoEditor({
     return true;
   } catch (err) {
     onError(`Failed to import image: ${String(err)}`);
+    return false;
+  }
+}
+
+type ImportClipboardImagesArgs = {
+  clipboardImages: ClipboardImageSource[];
+  insertPos: number;
+  view: EditorView;
+  vaultPath: string | null;
+  currentDocumentRelativePath: string;
+  buildImageMarkdown: (relativePath: string, currentDocumentRelativePath: string) => string;
+  saveGeneratedImage?: typeof tauriCommands.saveGeneratedImage;
+  onError?: (message: string) => void;
+};
+
+export async function importClipboardImagesIntoEditor({
+  clipboardImages,
+  insertPos,
+  view,
+  vaultPath,
+  currentDocumentRelativePath,
+  buildImageMarkdown,
+  saveGeneratedImage = tauriCommands.saveGeneratedImage,
+  onError = (message) => toast.error(message),
+}: ImportClipboardImagesArgs) {
+  if (!vaultPath || clipboardImages.length === 0) return false;
+
+  try {
+    const insertedPaths: string[] = [];
+    for (const image of clipboardImages) {
+      const dataUrl = image.kind === 'dataUrl'
+        ? image.dataUrl
+        : await blobToDataUrl(image.blob);
+      const imported = await saveGeneratedImage(
+        vaultPath,
+        `Pictures/${image.suggestedFileName}`,
+        dataUrl,
+        false,
+        image.suggestedFileName,
+      );
+      insertedPaths.push(imported);
+    }
+
+    const insertText = insertedPaths
+      .map((relativePath) => buildImageMarkdown(relativePath, currentDocumentRelativePath))
+      .join('\n');
+    view.dispatch({
+      changes: { from: insertPos, to: insertPos, insert: insertText },
+      selection: { anchor: insertPos + insertText.length },
+    });
+    view.focus();
+    return true;
+  } catch (err) {
+    onError(`Failed to import clipboard image: ${String(err)}`);
     return false;
   }
 }
@@ -290,6 +501,84 @@ export function useMarkdownEditorIntegrations({
     );
 
     const handleDrop = (event: DragEvent) => { void handleImageDrop(event); };
+    const handlePaste = (event: ClipboardEvent) => {
+      const insertPos = view.state.selection.main.from;
+      const clipboardFileUriPaths = getClipboardFileUriPaths(event.clipboardData);
+      const imageUriPaths = clipboardFileUriPaths.filter(isImageLikePath);
+      if (imageUriPaths.length > 0) {
+        event.preventDefault();
+        importDroppedImages(imageUriPaths, insertPos);
+        return;
+      }
+
+      const directImages = getClipboardEventImageSources(event.clipboardData);
+      if (directImages.length > 0) {
+        event.preventDefault();
+        const vaultPath = useVaultStore.getState().vault?.path ?? null;
+        void importClipboardImagesIntoEditor({
+          clipboardImages: directImages,
+          insertPos,
+          view,
+          vaultPath,
+          currentDocumentRelativePath,
+          buildImageMarkdown,
+        });
+        return;
+      }
+
+      const htmlImages = getClipboardHtmlImageSources(event.clipboardData?.getData('text/html') ?? '');
+      if (htmlImages.length > 0) {
+        event.preventDefault();
+        const vaultPath = useVaultStore.getState().vault?.path ?? null;
+        void importClipboardImagesIntoEditor({
+          clipboardImages: htmlImages,
+          insertPos,
+          view,
+          vaultPath,
+          currentDocumentRelativePath,
+          buildImageMarkdown,
+        });
+        return;
+      }
+
+      const clipboardText = event.clipboardData?.getData('text/plain') ?? '';
+      if (clipboardText) return;
+
+      event.preventDefault();
+      const vaultPath = useVaultStore.getState().vault?.path ?? null;
+      void (async () => {
+        const navigatorClipboardImages = await getNavigatorClipboardImageSources();
+        if (navigatorClipboardImages.length > 0) {
+          await importClipboardImagesIntoEditor({
+            clipboardImages: navigatorClipboardImages,
+            insertPos,
+            view,
+            vaultPath,
+            currentDocumentRelativePath,
+            buildImageMarkdown,
+          });
+          return;
+        }
+
+        const navigatorClipboardUriPaths = await getNavigatorClipboardFileUriPaths();
+        const navigatorImageUriPaths = navigatorClipboardUriPaths.filter(isImageLikePath);
+        if (navigatorImageUriPaths.length > 0) {
+          importDroppedImages(navigatorImageUriPaths, insertPos);
+          return;
+        }
+
+        const navigatorClipboardText = navigator.clipboard?.readText
+          ? await navigator.clipboard.readText().catch(() => '')
+          : '';
+        if (!navigatorClipboardText) return;
+
+        view.dispatch({
+          changes: { from: insertPos, to: view.state.selection.main.to, insert: navigatorClipboardText },
+          selection: { anchor: insertPos + navigatorClipboardText.length },
+        });
+        view.focus();
+      })();
+    };
     const handlePreviewHover = (event: MouseEvent) => {
       const next = resolveHoverPreviewState(event, hoverWebLinkPreviewsEnabled, currentDocumentRelativePath);
       const nextUrl = webPreviewsEnabled ? next.url : null;
@@ -307,12 +596,14 @@ export function useMarkdownEditorIntegrations({
     };
 
     editorDom.addEventListener('drop', handleDrop);
+    editorDom.addEventListener('paste', handlePaste, true);
     editorDom.addEventListener('mousemove', handlePreviewHover);
     editorDom.addEventListener('mouseleave', handlePreviewLeave);
     editorDom.addEventListener('mousedown', handleMouseDown, true);
 
     return () => {
       editorDom.removeEventListener('drop', handleDrop);
+      editorDom.removeEventListener('paste', handlePaste, true);
       editorDom.removeEventListener('mousemove', handlePreviewHover);
       editorDom.removeEventListener('mouseleave', handlePreviewLeave);
       editorDom.removeEventListener('mousedown', handleMouseDown, true);
