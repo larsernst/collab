@@ -18,6 +18,17 @@ interface VaultState {
   removeRecentVault: (path: string) => Promise<void>;
 }
 
+function isLikelyFlatpakVaultAccessError(error: unknown) {
+  const message = String(error ?? '').toLowerCase();
+  return (
+    message.includes('cannot open vault path')
+    && (
+      message.includes('no such file or directory')
+      || message.includes('os error 2')
+    )
+  );
+}
+
 export const useVaultStore = create<VaultState>()(
   persist(
     (set, get) => ({
@@ -28,19 +39,34 @@ export const useVaultStore = create<VaultState>()(
       lastOpenedVaultPath: null,
       isLoading: false,
       openVault: async (path) => {
-        set({ isLoading: true });
-        try {
+        const attemptOpenVault = async (vaultPath: string) => {
           await tauriCommands.unwatchVault().catch(() => {});
-          const vault = await tauriCommands.openVault(path);
+          const vault = await tauriCommands.openVault(vaultPath);
           if (vault.isEncrypted) {
             // Don't load the file tree yet — wait for the password to be entered.
-            set({ vault, isVaultLocked: true, fileTree: [], isLoading: false, lastOpenedVaultPath: path });
-          } else {
-            const fileTree = await tauriCommands.listVaultFiles(path);
-            await tauriCommands.watchVault(path);
-            set({ vault, isVaultLocked: false, fileTree, isLoading: false, lastOpenedVaultPath: path });
+            set({ vault, isVaultLocked: true, fileTree: [], isLoading: false, lastOpenedVaultPath: vaultPath });
+            return;
           }
+
+          const fileTree = await tauriCommands.listVaultFiles(vault.path);
+          await tauriCommands.watchVault(vault.path);
+          set({ vault, isVaultLocked: false, fileTree, isLoading: false, lastOpenedVaultPath: vaultPath });
+        };
+
+        set({ isLoading: true });
+        try {
+          await attemptOpenVault(path);
         } catch (e) {
+          if (await tauriCommands.isFlatpak().catch(() => false) && isLikelyFlatpakVaultAccessError(e)) {
+            const reauthorizedPath = await tauriCommands.showOpenVaultDialog().catch(() => null);
+            if (!reauthorizedPath) {
+              set({ isLoading: false });
+              return;
+            }
+            await attemptOpenVault(reauthorizedPath);
+            return;
+          }
+
           set({ isLoading: false });
           throw e;
         }

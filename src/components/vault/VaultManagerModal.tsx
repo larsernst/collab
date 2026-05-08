@@ -137,7 +137,7 @@ function VaultRow({ meta, isCurrent, onOpen, onRemove, onExport, onRenameComplet
   return (
     <div
       className={cn(
-        'group flex max-w-[min(100%,42rem)] items-center gap-3 px-3 py-3 rounded-lg border transition-all app-motion-base',
+        'group flex w-full items-start gap-3 rounded-lg border px-3 py-3 transition-all app-motion-base',
         isCurrent
           ? 'border-primary/30 bg-primary/6'
           : 'border-transparent hover:border-border/50 hover:bg-accent/30',
@@ -152,7 +152,7 @@ function VaultRow({ meta, isCurrent, onOpen, onRemove, onExport, onRenameComplet
       </div>
 
       {/* Name + path */}
-      <div className="flex-1 min-w-0">
+      <div className="min-w-0 flex-1">
         {renaming ? (
           <Input
             ref={renameRef}
@@ -176,7 +176,7 @@ function VaultRow({ meta, isCurrent, onOpen, onRemove, onExport, onRenameComplet
           </div>
         )}
         <div className="mt-0.5 flex min-w-0 items-center gap-1.5 text-[11px] text-muted-foreground">
-          <span className="min-w-0 flex-1 truncate opacity-70">{meta.path}</span>
+          <span className="min-w-0 max-w-[22rem] flex-1 truncate opacity-70">{meta.path}</span>
           <span className="shrink-0 opacity-50">·</span>
           <span className="shrink-0 flex items-center gap-1">
             <Clock size={9} />
@@ -186,7 +186,7 @@ function VaultRow({ meta, isCurrent, onOpen, onRemove, onExport, onRenameComplet
       </div>
 
       {/* Actions */}
-      <div className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity app-motion-fast shrink-0">
+      <div className="ml-2 flex shrink-0 items-center gap-0.5 self-center border-l border-border/35 pl-3 opacity-0 transition-opacity app-motion-fast group-hover:opacity-100">
         {!isCurrent && (
           <button
             onClick={onOpen}
@@ -284,51 +284,55 @@ function VaultsTab({
   };
 
   return (
-    <div className="flex flex-col gap-3 h-full">
-      {/* Action bar */}
-      <div className="flex gap-2 shrink-0">
-        <Button
-          size="sm"
-          variant="outline"
-          className="gap-1.5 text-xs h-8"
-          onClick={() => setCreating((v) => !v)}
-        >
-          <Plus size={13} />
-          New Vault
-        </Button>
-        <Button
-          size="sm"
-          variant="outline"
-          className="gap-1.5 text-xs h-8"
-          onClick={handleImport}
-        >
-          <Upload size={13} />
-          Import Folder
-        </Button>
-      </div>
+    <div className="flex h-full w-full justify-start">
+      <div className="flex h-full w-full max-w-[34rem] flex-col gap-3 pr-6">
+        {/* Action bar */}
+        <div className="flex gap-2 shrink-0">
+          <Button
+            size="sm"
+            variant="outline"
+            className="gap-1.5 text-xs h-8"
+            onClick={() => setCreating((v) => !v)}
+          >
+            <Plus size={13} />
+            New Vault
+          </Button>
+          <Button
+            size="sm"
+            variant="outline"
+            className="gap-1.5 text-xs h-8"
+            onClick={handleImport}
+          >
+            <Upload size={13} />
+            Import Folder
+          </Button>
+        </div>
 
-      {/* Create form */}
-      {creating && <CreateVaultForm onDone={() => setCreating(false)} />}
+        {/* Create form */}
+        {creating && <CreateVaultForm onDone={() => setCreating(false)} />}
 
-      {/* Vault list */}
-      <div className="flex-1 overflow-y-auto space-y-2 min-h-0 pr-3">
-        {vaults.length === 0 && !creating && (
-          <div className="flex flex-col items-center justify-center py-12 gap-2 text-muted-foreground">
-            <Vault size={32} className="opacity-20" />
-            <p className="text-sm">No vaults yet. Create or import one.</p>
+        {/* Vault list */}
+        <div className="flex-1 overflow-y-auto min-h-0">
+          {vaults.length === 0 && !creating && (
+            <div className="flex flex-col items-center justify-center py-12 gap-2 text-muted-foreground">
+              <Vault size={32} className="opacity-20" />
+              <p className="text-sm">No vaults yet. Create or import one.</p>
+            </div>
+          )}
+          <div className="flex flex-col gap-2">
+            {vaults.map((meta) => (
+              <VaultRow
+                key={meta.path}
+                meta={meta}
+                isCurrent={vault?.path === meta.path}
+                onOpen={() => handleOpen(meta.path)}
+                onRemove={() => onRequestRemove(meta)}
+                onExport={() => handleExport(meta)}
+                onRenameComplete={(newName) => handleRename(meta, newName)}
+              />
+            ))}
           </div>
-        )}
-        {vaults.map((meta) => (
-          <VaultRow
-            key={meta.path}
-            meta={meta}
-            isCurrent={vault?.path === meta.path}
-            onOpen={() => handleOpen(meta.path)}
-            onRemove={() => onRequestRemove(meta)}
-            onExport={() => handleExport(meta)}
-            onRenameComplete={(newName) => handleRename(meta, newName)}
-          />
-        ))}
+        </div>
       </div>
     </div>
   );
@@ -833,7 +837,7 @@ export default function VaultManagerModal() {
 
         <div className="flex h-[520px]">
           {/* Tab sidebar */}
-          <nav className="w-48 shrink-0 border-r border-border/40 p-2 flex flex-col gap-0.5">
+          <nav className="w-44 shrink-0 border-r border-border/40 p-2 flex flex-col gap-0.5">
             {TABS.map(({ id, label, icon }) => (
               <button
                 key={id}
