@@ -1,6 +1,7 @@
-import { cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { tauriCommands } from '../../lib/tauri';
 import { useCollabStore } from '../../store/collabStore';
 import { useEditorStore } from '../../store/editorStore';
 import { useUiStore } from '../../store/uiStore';
@@ -76,8 +77,21 @@ vi.mock('../ui/tooltip', () => ({
 
 import FileTree from './FileTree';
 
+function createDataTransfer() {
+  const store = new Map<string, string>();
+  return {
+    effectAllowed: 'move',
+    dropEffect: 'move',
+    setData: vi.fn((type: string, value: string) => {
+      store.set(type, value);
+    }),
+    getData: vi.fn((type: string) => store.get(type) ?? ''),
+  };
+}
+
 describe('FileTree folder collapse state', () => {
   beforeEach(() => {
+    vi.clearAllMocks();
     localStorage.clear();
 
     useVaultStore.setState({
@@ -229,5 +243,107 @@ describe('FileTree folder collapse state', () => {
     fireEvent.click(screen.getByText('View version history'));
 
     expect(screen.getByTestId('version-history-modal').textContent).toBe('Docs/plan.md');
+  });
+
+  it('moves a file directly without showing preview when there are no rewrites or open tabs', async () => {
+    vi.mocked(tauriCommands.previewRenameMove).mockResolvedValue({
+      oldRelativePath: 'Docs/plan.md',
+      newRelativePath: 'plan.md',
+      itemKind: 'file',
+      operation: 'move',
+      nestedItemCount: 1,
+      affectedReferencePaths: [],
+      blockedReason: null,
+    });
+    vi.mocked(tauriCommands.renameNote).mockResolvedValue();
+
+    useVaultStore.setState({
+      ...useVaultStore.getState(),
+      fileTree: [
+        {
+          relativePath: 'Docs',
+          name: 'Docs',
+          extension: '',
+          modifiedAt: 1,
+          size: 0,
+          isFolder: true,
+          children: [
+            {
+              relativePath: 'Docs/plan.md',
+              name: 'plan.md',
+              extension: 'md',
+              modifiedAt: 1,
+              size: 10,
+              isFolder: false,
+            },
+          ],
+        },
+      ],
+    });
+
+    render(<FileTree />);
+
+    const row = screen.getByText('plan.md').closest('[draggable="true"]');
+    expect(row).toBeTruthy();
+    const dataTransfer = createDataTransfer();
+
+    fireEvent.dragStart(row!, { dataTransfer });
+    fireEvent.dragOver(row!, { dataTransfer });
+    fireEvent.drop(row!, { dataTransfer });
+
+    await waitFor(() => {
+      expect(tauriCommands.renameNote).toHaveBeenCalledWith('/vault', 'Docs/plan.md', 'plan.md');
+    });
+  });
+
+  it('keeps the preview flow when moving would rewrite references', async () => {
+    vi.mocked(tauriCommands.previewRenameMove).mockResolvedValue({
+      oldRelativePath: 'Docs/plan.md',
+      newRelativePath: 'plan.md',
+      itemKind: 'file',
+      operation: 'move',
+      nestedItemCount: 1,
+      affectedReferencePaths: ['Notes/link.md'],
+      blockedReason: null,
+    });
+
+    useVaultStore.setState({
+      ...useVaultStore.getState(),
+      fileTree: [
+        {
+          relativePath: 'Docs',
+          name: 'Docs',
+          extension: '',
+          modifiedAt: 1,
+          size: 0,
+          isFolder: true,
+          children: [
+            {
+              relativePath: 'Docs/plan.md',
+              name: 'plan.md',
+              extension: 'md',
+              modifiedAt: 1,
+              size: 10,
+              isFolder: false,
+            },
+          ],
+        },
+      ],
+    });
+
+    render(<FileTree />);
+
+    const row = screen.getByText('plan.md').closest('[draggable="true"]');
+    expect(row).toBeTruthy();
+    const dataTransfer = createDataTransfer();
+
+    fireEvent.dragStart(row!, { dataTransfer });
+    fireEvent.dragOver(row!, { dataTransfer });
+    fireEvent.drop(row!, { dataTransfer });
+
+    await waitFor(() => {
+      expect(tauriCommands.previewRenameMove).toHaveBeenCalled();
+    });
+    expect(tauriCommands.renameNote).not.toHaveBeenCalled();
   });
 });

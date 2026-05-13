@@ -18,6 +18,28 @@ interface VaultState {
   removeRecentVault: (path: string) => Promise<void>;
 }
 
+function compareNoteFilesAlphabetically(left: NoteFile, right: NoteFile) {
+  if (left.isFolder !== right.isFolder) return left.isFolder ? -1 : 1;
+  const nameOrder = left.name.localeCompare(right.name, undefined, {
+    sensitivity: 'base',
+    numeric: true,
+  });
+  if (nameOrder !== 0) return nameOrder;
+  return left.relativePath.localeCompare(right.relativePath, undefined, {
+    sensitivity: 'base',
+    numeric: true,
+  });
+}
+
+export function sortFileTreeAlphabetically(nodes: NoteFile[]): NoteFile[] {
+  return [...nodes]
+    .map((node) => ({
+      ...node,
+      children: node.children ? sortFileTreeAlphabetically(node.children) : node.children,
+    }))
+    .sort(compareNoteFilesAlphabetically);
+}
+
 function isLikelyFlatpakVaultAccessError(error: unknown) {
   const message = String(error ?? '').toLowerCase();
   return (
@@ -48,7 +70,7 @@ export const useVaultStore = create<VaultState>()(
             return;
           }
 
-          const fileTree = await tauriCommands.listVaultFiles(vault.path);
+          const fileTree = sortFileTreeAlphabetically(await tauriCommands.listVaultFiles(vault.path));
           await tauriCommands.watchVault(vault.path);
           set({ vault, isVaultLocked: false, fileTree, isLoading: false, lastOpenedVaultPath: vaultPath });
         };
@@ -75,14 +97,14 @@ export const useVaultStore = create<VaultState>()(
         const { vault } = get();
         if (!vault) return;
         await tauriCommands.unlockVault(vault.path, password);
-        const fileTree = await tauriCommands.listVaultFiles(vault.path);
+        const fileTree = sortFileTreeAlphabetically(await tauriCommands.listVaultFiles(vault.path));
         await tauriCommands.watchVault(vault.path);
         set({ isVaultLocked: false, fileTree });
       },
       refreshFileTree: async () => {
         const { vault } = get();
         if (!vault) return;
-        const fileTree = await tauriCommands.listVaultFiles(vault.path);
+        const fileTree = sortFileTreeAlphabetically(await tauriCommands.listVaultFiles(vault.path));
         set({ fileTree });
       },
       closeVault: () => {

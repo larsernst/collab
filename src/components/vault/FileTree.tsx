@@ -109,6 +109,18 @@ export default function FileTree() {
     ? flatten(fileTree).find((entry) => entry.relativePath === selectedRelativePath) ?? null
     : null;
 
+  const getAffectedOpenTabs = useCallback((oldRelativePath: string) => (
+    useEditorStore.getState().openTabs
+      .filter((tab) => tab.relativePath === oldRelativePath || tab.relativePath.startsWith(`${oldRelativePath}/`))
+      .map((tab) => tab.relativePath)
+  ), []);
+
+  const shouldSkipMovePreview = useCallback((preview: PathChangePreview, affectedOpenTabs: string[]) => (
+    !preview.blockedReason
+    && preview.affectedReferencePaths.length === 0
+    && affectedOpenTabs.length === 0
+  ), []);
+
   // ── Drag-and-drop state ────────────────────────────────────────────────────
   const [draggingPath, setDraggingPath] = useState<string | null>(null);
   const [dropTargetPath, setDropTargetPath] = useState<string | null | '__root__'>('__root__');
@@ -275,16 +287,22 @@ export default function FileTree() {
 
     try {
       const preview = await tauriCommands.previewRenameMove(vault.path, fromPath, newPath);
+      const applyMove = async () => {
+        await tauriCommands.renameNote(vault.path, fromPath, newPath);
+        renameTab(fromPath, newPath, fileName.replace(/\.[^.]+$/, ''));
+        await refreshFileTree();
+      };
+      const affectedOpenTabs = getAffectedOpenTabs(fromPath);
+      if (shouldSkipMovePreview(preview, affectedOpenTabs)) {
+        await applyMove();
+        return;
+      }
       setPreviewState({
         preview,
-        apply: async () => {
-          await tauriCommands.renameNote(vault.path, fromPath, newPath);
-          renameTab(fromPath, newPath, fileName.replace(/\.[^.]+$/, ''));
-          await refreshFileTree();
-        },
+        apply: applyMove,
       });
     } catch (e) { toast.error('Failed to preview move: ' + e); }
-  }, [vault, refreshFileTree, renameTab]);
+  }, [getAffectedOpenTabs, refreshFileTree, renameTab, shouldSkipMovePreview, vault]);
 
   useEffect(() => {
     if (!vault) return;
@@ -429,9 +447,7 @@ export default function FileTree() {
         preview={previewState?.preview ?? null}
         affectedOpenTabs={
           previewState
-            ? useEditorStore.getState().openTabs
-                .filter((tab) => tab.relativePath === previewState.preview.oldRelativePath || tab.relativePath.startsWith(`${previewState.preview.oldRelativePath}/`))
-                .map((tab) => tab.relativePath)
+            ? getAffectedOpenTabs(previewState.preview.oldRelativePath)
             : []
         }
         onConfirm={() => {
@@ -691,6 +707,8 @@ function FileTreeNode({
                     });
                   }
                 }
+              } else {
+                setDropTargetPath('__root__');
               }
             }}
             onDragLeave={(e) => {
@@ -703,6 +721,8 @@ function FileTreeNode({
               e.stopPropagation();
               if (draggingPath && node.isFolder && dropTargetPath === node.relativePath) {
                 onMove(draggingPath, node.relativePath);
+              } else if (draggingPath && !node.isFolder && dropTargetPath === '__root__') {
+                onMove(draggingPath, '__root__');
               }
               setDraggingPath(null);
               setDropTargetPath(null);
