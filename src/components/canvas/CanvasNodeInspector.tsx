@@ -1,4 +1,6 @@
-import { Box, Trash2 } from 'lucide-react';
+import { useMemo, useState } from 'react';
+import { format } from 'date-fns';
+import { Box, Calendar, Tag, Trash2, Users } from 'lucide-react';
 
 import type {
   CanvasNodePriority,
@@ -7,8 +9,12 @@ import type {
   CanvasSwimlaneOrientation,
   PlanningCanvasNode,
 } from '../../types/canvas';
+import type { KnownUser } from '../../types/vault';
+import { formatDate } from '../../store/uiStore';
 import { Button } from '../ui/button';
 import { Input } from '../ui/input';
+import { Popover, PopoverContent, PopoverTrigger } from '../ui/popover';
+import { Calendar as CalendarUI } from '../ui/calendar';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../ui/select';
 import { Textarea } from '../ui/textarea';
 import { getPlanningNodeLabel } from './canvasPlanning';
@@ -24,13 +30,18 @@ interface CanvasNodeInspectorProps {
     symbolGlyph?: string;
     symbolId?: string;
     symbolLabel?: string;
+    relativePath?: string;
     linkedRelativePath?: string;
     planning?: CanvasPlanningMetadata;
     orientation?: CanvasSwimlaneOrientation;
   } | null;
+  knownUsers: KnownUser[];
+  availableTags: string[];
+  dateFormat: Parameters<typeof formatDate>[1];
   onTitleChange: (title: string) => void;
   onBodyChange: (body: string) => void;
   onPickSymbol: () => void;
+  onPickLinkedPath: () => void;
   onLinkedPathChange: (relativePath: string) => void;
   onPlanningChange: (planning: CanvasPlanningMetadata) => void;
   onOrientationChange: (orientation: CanvasSwimlaneOrientation) => void;
@@ -39,12 +50,18 @@ interface CanvasNodeInspectorProps {
 
 const statusOptions: CanvasPlanningStatus[] = ['not_started', 'in_progress', 'blocked', 'done'];
 const priorityOptions: CanvasNodePriority[] = ['low', 'medium', 'high', 'critical'];
+const canvasInspectorSelectTriggerClassName = 'h-8 w-full rounded-xl border-border/60 bg-background/80 text-xs shadow-none';
+const canvasInspectorSelectContentClassName = 'min-w-[var(--radix-select-trigger-width)] rounded-xl ring-1 ring-border/60';
 
 export function CanvasNodeInspector({
   selectedNode,
+  knownUsers,
+  availableTags,
+  dateFormat,
   onTitleChange,
   onBodyChange,
   onPickSymbol,
+  onPickLinkedPath,
   onLinkedPathChange,
   onPlanningChange,
   onOrientationChange,
@@ -53,8 +70,36 @@ export function CanvasNodeInspector({
   const kind = selectedNode?.type;
   const isPlanningNode = !!kind && !['noteCard', 'fileCard', 'textCard', 'webCard', 'symbolCard'].includes(kind);
   const isSymbolNode = kind === 'symbolCard';
+  const isFileBackedNode = kind === 'noteCard' || kind === 'fileCard';
+  const isDescriptivePlanningNode = isPlanningNode && kind !== 'junctionCard' && kind !== 'crossingCard';
   const planningKind = kind?.replace(/Card$/, '') as PlanningCanvasNode['type'] | undefined;
   const planning = selectedNode?.planning ?? {};
+  const [dueDateOpen, setDueDateOpen] = useState(false);
+  const [tagInput, setTagInput] = useState('');
+  const [tagInputFocused, setTagInputFocused] = useState(false);
+  const selectedTags = planning.tags ?? [];
+  const suggestedTags = useMemo(
+    () => availableTags
+      .filter((tag) => !selectedTags.includes(tag))
+      .filter((tag) => !tagInput || tag.toLowerCase().includes(tagInput.toLowerCase()))
+      .sort((a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' })),
+    [availableTags, selectedTags, tagInput],
+  );
+
+  const addPlanningTag = (tag: string) => {
+    const trimmed = tag.trim().replace(/,$/, '');
+    if (!trimmed || selectedTags.includes(trimmed)) {
+      setTagInput('');
+      return;
+    }
+    onPlanningChange({ ...planning, tags: [...selectedTags, trimmed] });
+    setTagInput('');
+    setTagInputFocused(false);
+  };
+
+  const removePlanningTag = (tag: string) => {
+    onPlanningChange({ ...planning, tags: selectedTags.filter((entry) => entry !== tag) });
+  };
 
   return (
     <div className="pointer-events-auto flex max-w-[min(420px,calc(100vw-220px))] flex-col gap-2 rounded-2xl border border-border/60 bg-popover/90 p-2.5 shadow-xl backdrop-blur-xs-webkit app-fade-scale-in">
@@ -98,19 +143,24 @@ export function CanvasNodeInspector({
                 className="h-8"
               />
             </>
-          ) : (
-          <Input
-            value={selectedNode.title ?? ''}
-            onChange={(event) => onTitleChange(event.target.value)}
-            placeholder="Node title"
-            className="h-8"
-          />
+          ) : isFileBackedNode ? (
+            <div className="rounded-xl border border-border/60 bg-card/45 px-3 py-2 text-xs">
+              <div className="font-medium text-foreground">{selectedNode.title}</div>
+              <div className="truncate text-muted-foreground">{selectedNode.relativePath ?? selectedNode.subtitle}</div>
+            </div>
+          ) : kind === 'textCard' || kind === 'webCard' ? null : (
+            <Input
+              value={selectedNode.title ?? ''}
+              onChange={(event) => onTitleChange(event.target.value)}
+              placeholder="Node title"
+              className="h-8"
+            />
           )}
-          {!isSymbolNode ? (
+          {isFileBackedNode || isDescriptivePlanningNode ? (
             <Textarea
               value={selectedNode.content ?? ''}
               onChange={(event) => onBodyChange(event.target.value)}
-              placeholder="Description, branch notes, or supporting context"
+              placeholder={isFileBackedNode ? 'Add a canvas-local description' : 'Description, branch notes, or supporting context'}
               className="min-h-24 resize-y text-sm"
             />
           ) : null}
@@ -121,12 +171,17 @@ export function CanvasNodeInspector({
                 <div className="text-muted-foreground">Planning metadata stays local to this canvas for v1.</div>
               </div>
               {planningKind && supportsLinkedPath(planningKind) ? (
-                <Input
-                  value={selectedNode.linkedRelativePath ?? ''}
-                  onChange={(event) => onLinkedPathChange(event.target.value)}
-                  placeholder="Optional linked vault path"
-                  className="h-8"
-                />
+                <div className="flex gap-2">
+                  <Input
+                    value={selectedNode.linkedRelativePath ?? ''}
+                    onChange={(event) => onLinkedPathChange(event.target.value)}
+                    placeholder="Optional linked vault path"
+                    className="h-8"
+                  />
+                  <Button type="button" size="sm" variant="outline" className="shrink-0" onClick={onPickLinkedPath}>
+                    Select file
+                  </Button>
+                </div>
               ) : null}
               {planningKind && supportsPlanningMetadata(planningKind) ? (
                 <>
@@ -137,10 +192,10 @@ export function CanvasNodeInspector({
                         value={planning.status ?? 'not_started'}
                         onValueChange={(value) => onPlanningChange({ ...planning, status: value as CanvasPlanningStatus })}
                       >
-                        <SelectTrigger size="sm" className="h-8 w-full bg-background/70 text-xs">
+                        <SelectTrigger size="sm" className={canvasInspectorSelectTriggerClassName}>
                           <SelectValue />
                         </SelectTrigger>
-                        <SelectContent align="end">
+                        <SelectContent align="end" position="popper" className={canvasInspectorSelectContentClassName}>
                           {statusOptions.map((status) => (
                             <SelectItem key={status} value={status}>
                               {status.replace(/_/g, ' ')}
@@ -155,13 +210,24 @@ export function CanvasNodeInspector({
                         value={planning.priority ?? 'medium'}
                         onValueChange={(value) => onPlanningChange({ ...planning, priority: value as CanvasNodePriority })}
                       >
-                        <SelectTrigger size="sm" className="h-8 w-full bg-background/70 text-xs">
+                        <SelectTrigger size="sm" className={canvasInspectorSelectTriggerClassName}>
                           <SelectValue />
                         </SelectTrigger>
-                        <SelectContent align="end">
+                        <SelectContent align="end" position="popper" className={canvasInspectorSelectContentClassName}>
                           {priorityOptions.map((priority) => (
                             <SelectItem key={priority} value={priority}>
-                              {priority}
+                              <span className="flex items-center gap-2">
+                                <span
+                                  className={
+                                    priority === 'critical' || priority === 'high'
+                                      ? 'inline-block size-2 rounded-full bg-red-400'
+                                      : priority === 'medium'
+                                        ? 'inline-block size-2 rounded-full bg-yellow-400'
+                                        : 'inline-block size-2 rounded-full bg-green-400'
+                                  }
+                                />
+                                {priority}
+                              </span>
                             </SelectItem>
                           ))}
                         </SelectContent>
@@ -169,18 +235,60 @@ export function CanvasNodeInspector({
                     </div>
                   </div>
                   <div className="grid grid-cols-2 gap-2">
-                    <Input
-                      value={planning.ownerLabel ?? ''}
-                      onChange={(event) => onPlanningChange({ ...planning, ownerLabel: event.target.value })}
-                      placeholder="Owner"
-                      className="h-8"
-                    />
-                    <Input
-                      value={planning.dueDate ?? ''}
-                      onChange={(event) => onPlanningChange({ ...planning, dueDate: event.target.value })}
-                      placeholder="Due date"
-                      className="h-8"
-                    />
+                    <div className="rounded-xl border border-border/60 bg-card/45 p-2">
+                      <div className="mb-1 flex items-center gap-1 text-[11px] font-medium text-muted-foreground">
+                        <Users size={11} />
+                        Owner
+                      </div>
+                      <Select
+                        value={planning.ownerLabel ?? '__none__'}
+                        onValueChange={(value) => onPlanningChange({ ...planning, ownerLabel: value === '__none__' ? undefined : value })}
+                      >
+                        <SelectTrigger size="sm" className={canvasInspectorSelectTriggerClassName}>
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent align="end" position="popper" className={canvasInspectorSelectContentClassName}>
+                          <SelectItem value="__none__">No owner</SelectItem>
+                          {knownUsers.map((user) => (
+                            <SelectItem key={user.userId} value={user.userName}>
+                              <span className="flex items-center gap-2">
+                                <span className="inline-block size-2 rounded-full" style={{ backgroundColor: user.userColor }} />
+                                {user.userName}
+                              </span>
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    </div>
+                    <div className="rounded-xl border border-border/60 bg-card/45 p-2">
+                      <div className="mb-1 flex items-center gap-1 text-[11px] font-medium text-muted-foreground">
+                        <Calendar size={11} />
+                        Due date
+                      </div>
+                      <Popover open={dueDateOpen} onOpenChange={setDueDateOpen}>
+                        <PopoverTrigger asChild>
+                          <button
+                            type="button"
+                            className="flex h-8 w-full items-center gap-1.5 rounded-xl border border-border/60 bg-background/80 px-2.5 text-left text-xs text-foreground shadow-none transition-colors hover:border-border"
+                          >
+                            <Calendar size={10} className="shrink-0 text-muted-foreground" />
+                            {planning.dueDate
+                              ? formatDate(new Date(`${planning.dueDate}T12:00:00`), dateFormat)
+                              : 'Pick a date'}
+                          </button>
+                        </PopoverTrigger>
+                        <PopoverContent align="end" className="w-auto p-0" sideOffset={4}>
+                          <CalendarUI
+                            mode="single"
+                            selected={planning.dueDate ? new Date(`${planning.dueDate}T12:00:00`) : undefined}
+                            onSelect={(date) => {
+                              onPlanningChange({ ...planning, dueDate: date ? format(date, 'yyyy-MM-dd') : undefined });
+                              setDueDateOpen(false);
+                            }}
+                          />
+                        </PopoverContent>
+                      </Popover>
+                    </div>
                   </div>
                   <div className="grid grid-cols-2 gap-2">
                     <Input
@@ -189,18 +297,56 @@ export function CanvasNodeInspector({
                       placeholder="Milestone label"
                       className="h-8"
                     />
-                    <Input
-                      value={(planning.tags ?? []).join(', ')}
-                      onChange={(event) => onPlanningChange({
-                        ...planning,
-                        tags: event.target.value
-                          .split(',')
-                          .map((tag) => tag.trim())
-                          .filter(Boolean),
-                      })}
-                      placeholder="tag-one, tag-two"
-                      className="h-8"
-                    />
+                    <div className="rounded-xl border border-border/60 bg-card/45 p-2">
+                      <div className="mb-1 flex items-center gap-1 text-[11px] font-medium text-muted-foreground">
+                        <Tag size={11} />
+                        Tags
+                      </div>
+                      <div className="flex flex-wrap gap-1.5">
+                        {selectedTags.map((tag) => (
+                          <button
+                            key={tag}
+                            type="button"
+                            onClick={() => removePlanningTag(tag)}
+                            className="rounded-full bg-primary/15 px-2 py-0.5 text-[11px] text-primary transition-colors hover:bg-primary/25"
+                          >
+                            {tag} ×
+                          </button>
+                        ))}
+                      </div>
+                      <div className="relative mt-2">
+                        <Input
+                          value={tagInput}
+                          onChange={(event) => setTagInput(event.target.value)}
+                          onFocus={() => setTagInputFocused(true)}
+                          onBlur={() => setTimeout(() => setTagInputFocused(false), 150)}
+                          onKeyDown={(event) => {
+                            if (event.key === 'Enter' || event.key === ',') {
+                              event.preventDefault();
+                              addPlanningTag(tagInput);
+                            }
+                            if (event.key === 'Escape') setTagInputFocused(false);
+                          }}
+                          placeholder="Type tag, press Enter"
+                          className="h-8"
+                        />
+                        {tagInputFocused && suggestedTags.length > 0 ? (
+                          <div className="absolute left-0 right-0 top-full z-50 mt-1 max-h-40 overflow-y-auto rounded-md border border-border/50 bg-popover shadow-lg">
+                            {suggestedTags.map((tag) => (
+                              <button
+                                key={tag}
+                                type="button"
+                                onMouseDown={(event) => event.preventDefault()}
+                                onClick={() => addPlanningTag(tag)}
+                                className="w-full px-2.5 py-1.5 text-left text-xs text-foreground/80 transition-colors hover:bg-accent/60"
+                              >
+                                {tag}
+                              </button>
+                            ))}
+                          </div>
+                        ) : null}
+                      </div>
+                    </div>
                   </div>
                 </>
               ) : null}
@@ -208,10 +354,10 @@ export function CanvasNodeInspector({
                 <div className="rounded-xl border border-border/60 bg-card/45 p-2">
                   <div className="mb-1 text-[11px] font-medium text-muted-foreground">Orientation</div>
                   <Select value={selectedNode.orientation ?? 'horizontal'} onValueChange={(value) => onOrientationChange(value as CanvasSwimlaneOrientation)}>
-                    <SelectTrigger size="sm" className="h-8 w-full bg-background/70 text-xs">
+                    <SelectTrigger size="sm" className={canvasInspectorSelectTriggerClassName}>
                       <SelectValue />
                     </SelectTrigger>
-                    <SelectContent align="end">
+                    <SelectContent align="end" position="popper" className={canvasInspectorSelectContentClassName}>
                       <SelectItem value="horizontal">Horizontal</SelectItem>
                       <SelectItem value="vertical">Vertical</SelectItem>
                     </SelectContent>

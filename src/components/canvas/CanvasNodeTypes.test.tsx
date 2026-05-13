@@ -67,6 +67,45 @@ describe('CanvasNodeTypes', () => {
     expect(onOpen).toHaveBeenCalledWith('Notes/test.md');
   });
 
+  it('prefers a canvas-local note description over the note preview body', () => {
+    const NoteCardNode = nodeTypes.noteCard;
+
+    render(
+      <NoteCardNode
+        id="note-3"
+        selected={false}
+        data={{
+          title: 'Note',
+          subtitle: 'Notes',
+          relativePath: 'Notes/test.md',
+          excerpt: 'preview',
+          content: 'Canvas-local description',
+        }}
+      />,
+    );
+
+    expect(screen.getByText('Canvas-local description')).toBeTruthy();
+    expect(screen.getByText('preview')).toBeTruthy();
+  });
+
+  it('renders a process due-date badge when present', () => {
+    const ProcessCardNode = nodeTypes.processCard;
+
+    render(
+      <ProcessCardNode
+        id="process-1"
+        selected={false}
+        data={{
+          title: 'Deploy',
+          nodeKind: 'process',
+          planning: { dueDate: '2026-05-20' },
+        }}
+      />,
+    );
+
+    expect(screen.getByText('2026-05-20')).toBeTruthy();
+  });
+
   it('keeps note card titles on the foreground color without requiring hover', () => {
     const NoteCardNode = nodeTypes.noteCard;
 

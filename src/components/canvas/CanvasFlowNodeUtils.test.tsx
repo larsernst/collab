@@ -9,6 +9,7 @@ describe('CanvasFlowNodeUtils', () => {
         id: 'note-1',
         type: 'note',
         relativePath: 'Notes/alpha.md',
+        description: 'Canvas summary',
         position: { x: 10, y: 20 },
         width: 300,
         height: 180,
@@ -35,8 +36,31 @@ describe('CanvasFlowNodeUtils', () => {
       data: {
         title: 'alpha',
         relativePath: 'Notes/alpha.md',
+        content: 'Canvas summary',
         excerpt: 'preview body',
       },
+    });
+  });
+
+  it('round-trips a file-backed description through the flow mapping', () => {
+    expect(fromFlowNode({
+      id: 'file-1',
+      type: 'fileCard',
+      position: { x: 5, y: 6 },
+      width: 280,
+      height: 160,
+      data: {
+        relativePath: 'Docs/spec.pdf',
+        content: 'Reference PDF',
+      },
+    } as never)).toEqual({
+      id: 'file-1',
+      type: 'file',
+      position: { x: 5, y: 6 },
+      width: 280,
+      height: 160,
+      relativePath: 'Docs/spec.pdf',
+      description: 'Reference PDF',
     });
   });
 

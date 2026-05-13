@@ -8,7 +8,6 @@ import {
 } from '@codemirror/view';
 import { syntaxHighlighting } from '@codemirror/language';
 import { createLivePreviewPlugin } from './livePreview';
-import { openUrl, openPath } from '@tauri-apps/plugin-opener';
 import 'katex/dist/katex.min.css';
 import { parseFenceInfoLanguage, type ParsedCodeBlockAtCursor } from './codeBlockUtils';
 import { dispatchEditorToolbarAction } from '../../lib/editorToolbarActions';
@@ -36,6 +35,7 @@ import { MarkdownEditorContextMenu } from './MarkdownEditorContextMenu';
 import {
   handleFormattingShortcutKeydown,
 } from './MarkdownEditorContextMenu';
+import { openNonVaultMarkdownPreviewLink } from './markdownLinkOpen';
 
 export interface MarkdownEditorHandle {
   /** Wrap selection with `before`/`after`; if no selection, insert `before + placeholder + after` and select placeholder. */
@@ -381,9 +381,7 @@ export const MarkdownEditor = forwardRef<MarkdownEditorHandle, MarkdownEditorPro
           if (linkEl) {
             const url = linkEl.dataset.url;
             if (!url) return true;
-            if (/^https?:\/\//i.test(url)) void openUrl(url);
-            else void openPath(url);
-            return true;
+            return openNonVaultMarkdownPreviewLink(url);
           }
 
           return false;

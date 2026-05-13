@@ -1,5 +1,6 @@
 import { memo, useEffect, useRef, useState, type ReactNode } from 'react';
 import {
+  Calendar,
   CheckCircle2,
   CircleDot,
   Diamond,
@@ -122,19 +123,34 @@ function PlanningStatusBadges({
 
   return (
     <div className="mt-2 flex flex-wrap gap-1.5">
-          {planning?.status ? (
+      {planning?.status ? (
         <Badge variant="secondary" className="rounded-full bg-primary/10 text-[10px] uppercase tracking-wide text-primary">
           {planning.status.replace(/_/g, ' ')}
         </Badge>
       ) : null}
       {planning?.priority ? (
-        <Badge variant="outline" className="rounded-full text-[10px] uppercase tracking-wide">
+        <Badge
+          variant="outline"
+          className={cn(
+            'rounded-full text-[10px] uppercase tracking-wide',
+            planning.priority === 'critical' && 'border-red-500/30 bg-red-500/15 text-red-400',
+            planning.priority === 'high' && 'border-red-500/30 bg-red-500/15 text-red-400',
+            planning.priority === 'medium' && 'border-yellow-500/30 bg-yellow-500/15 text-yellow-400',
+            planning.priority === 'low' && 'border-green-500/30 bg-green-500/15 text-green-400',
+          )}
+        >
           {planning.priority}
         </Badge>
       ) : null}
       {planning?.ownerLabel ? (
         <Badge variant="outline" className="rounded-full text-[10px]">
           {planning.ownerLabel}
+        </Badge>
+      ) : null}
+      {planning?.dueDate ? (
+        <Badge variant="outline" className="rounded-full text-[10px]">
+          <Calendar size={10} className="mr-1" />
+          {planning.dueDate}
         </Badge>
       ) : null}
       {tags.slice(0, 3).map((tag) => (
@@ -344,6 +360,11 @@ function NoteCardNode({ id, data, selected }: { id: string; data: CanvasNodeData
             </div>
           </div>
           <div className="min-h-0 flex-1 overflow-hidden px-3 py-3 text-sm text-muted-foreground">
+            {data.content ? (
+              <div className="mb-3 line-clamp-3 whitespace-pre-wrap rounded-xl border border-border/50 bg-background/55 px-2.5 py-2 text-[12px] leading-relaxed text-foreground/85">
+                {data.content}
+              </div>
+            ) : null}
             {data.markdownContent ? (
               <MarkdownPreview
                 content={data.markdownContent}
@@ -402,7 +423,7 @@ function FileCardNode({ id, data, selected }: { id: string; data: CanvasNodeData
           ) : (
             <div className="flex min-h-0 flex-1 flex-col justify-between px-3 py-3">
               <div className="line-clamp-6 whitespace-pre-wrap text-sm leading-relaxed text-muted-foreground">
-                {data.excerpt || 'Double-click to open this file.'}
+                {data.content || data.excerpt || 'Double-click to open this file.'}
               </div>
               <div className="mt-3 flex items-center gap-2 text-[11px] text-muted-foreground/80">
                 <span className="rounded-md border border-border/60 bg-background/60 px-1.5 py-0.5 uppercase tracking-wide">

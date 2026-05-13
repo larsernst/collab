@@ -46,11 +46,13 @@ export interface CanvasPlanningMetadata {
 export interface NoteCanvasNode extends CanvasNodeBase {
   type: 'note';
   relativePath: string;
+  description?: string;
 }
 
 export interface FileCanvasNode extends CanvasNodeBase {
   type: 'file';
   relativePath: string;
+  description?: string;
 }
 
 export interface TextCanvasNode extends CanvasNodeBase {

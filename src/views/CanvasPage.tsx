@@ -82,6 +82,9 @@ import type {
 import type { NoteFile } from '../types/vault';
 import { useDocumentSessionState } from '../lib/documentSession';
 import type { OnConnectStartParams, FinalConnectionState } from '@xyflow/react';
+import { useNoteIndexStore } from '../store/noteIndexStore';
+import { useCollabContext } from '../components/collaboration/CollabProvider';
+import type { KnownUser } from '../types/vault';
 
 const pdfWorkerUrl = new URL('pdfjs-dist/build/pdf.worker.mjs', import.meta.url).toString();
 GlobalWorkerOptions.workerSrc = pdfWorkerUrl;
@@ -503,7 +506,9 @@ function CanvasBoard({ relativePath }: { relativePath: string | null }) {
   const webPreviewsEnabled = useUiStore((state) => state.webPreviewsEnabled);
   const hoverWebLinkPreviewsEnabled = useUiStore((state) => state.hoverWebLinkPreviewsEnabled);
   const backgroundWebPreviewPrefetchEnabled = useUiStore((state) => state.backgroundWebPreviewPrefetchEnabled);
+  const dateFormat = useUiStore((state) => state.dateFormat);
   const reactFlow = useReactFlow<FlowNode<CanvasNodeData>, CanvasFlowEdge>();
+  const collabTransport = useCollabContext();
   const viewportRef = useRef<HTMLDivElement | null>(null);
   const isMountedRef = useRef(true);
   const isDirtyRef = useRef(false);
@@ -538,8 +543,14 @@ function CanvasBoard({ relativePath }: { relativePath: string | null }) {
     duplicateEdges: CanvasEdge[];
   } | null>(null);
   const [isCanvasInteracting, setIsCanvasInteracting] = useState(false);
+  const [knownUsers, setKnownUsers] = useState<KnownUser[]>([]);
+  const indexedNotes = useNoteIndexStore((state) => state.notes);
 
   const allFiles = useMemo(() => flattenFiles(fileTree).filter((node) => !node.isFolder), [fileTree]);
+  const availableTags = useMemo(
+    () => [...new Set(indexedNotes.flatMap((note) => note.tags).map((tag) => tag.trim()).filter(Boolean))].sort((a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' })),
+    [indexedNotes],
+  );
   const availableNotes = useMemo(() => allFiles.filter((file) => file.extension.toLowerCase() === 'md'), [allFiles]);
   const availableFiles = useMemo(() => allFiles.filter((file) => file.extension.toLowerCase() !== 'md'), [allFiles]);
   const selectedEdge = useMemo(() => edges.find((edge) => edge.selected), [edges]);
@@ -568,6 +579,7 @@ function CanvasBoard({ relativePath }: { relativePath: string | null }) {
       symbolGlyph: selectedNode.data.symbolGlyph,
       symbolId: selectedNode.data.symbolId,
       symbolLabel: selectedNode.data.symbolLabel,
+      relativePath: selectedNode.data.relativePath,
       linkedRelativePath: selectedNode.data.linkedRelativePath,
       planning: selectedNode.data.planning,
       orientation: selectedNode.data.orientation,
@@ -581,6 +593,15 @@ function CanvasBoard({ relativePath }: { relativePath: string | null }) {
       isMountedRef.current = false;
     };
   }, []);
+
+  useEffect(() => {
+    if (!vault || !collabTransport) return;
+    collabTransport.readVaultConfig()
+      .then((config) => {
+        if (isMountedRef.current) setKnownUsers(config.knownUsers ?? []);
+      })
+      .catch(() => {});
+  }, [collabTransport, vault?.path]);
 
   const openRelativePath = useCallback((path: string) => {
     const extension = path.split('.').pop()?.toLowerCase() ?? '';
@@ -1227,7 +1248,9 @@ function CanvasBoard({ relativePath }: { relativePath: string | null }) {
 
   const updateSelectedPlanningNodeBody = useCallback((content: string) => {
     const selectedNodeType = selectedNode?.type ?? '';
-    if (!selectedNode || !isPlanningNodeType(selectedNodeType.replace(/Card$/, '') as PlanningCanvasNode['type'])) return;
+    const isEditablePlanningNode = isPlanningNodeType(selectedNodeType.replace(/Card$/, '') as PlanningCanvasNode['type']);
+    const isFileBackedNode = selectedNodeType === 'noteCard' || selectedNodeType === 'fileCard';
+    if (!selectedNode || (!isEditablePlanningNode && !isFileBackedNode)) return;
     updateSelectedPlanningNode((node) => ({
       ...node,
       data: { ...node.data, content },
@@ -1242,6 +1265,11 @@ function CanvasBoard({ relativePath }: { relativePath: string | null }) {
       data: { ...node.data, linkedRelativePath },
     }));
   }, [selectedNode, updateSelectedPlanningNode]);
+
+  const openLinkedPathPicker = useCallback(() => {
+    if (!selectedNode) return;
+    setPickerMode('linked-path');
+  }, [selectedNode]);
 
   const updateSelectedPlanningNodeMeta = useCallback((planning: CanvasPlanningMetadata) => {
     const selectedNodeType = selectedNode?.type ?? '';
@@ -1448,7 +1476,7 @@ function CanvasBoard({ relativePath }: { relativePath: string | null }) {
       <CanvasPickerDialog
         open={pickerMode !== null}
         mode={pickerMode}
-        files={pickerMode === 'note' ? availableNotes : availableFiles}
+        files={pickerMode === 'note' ? availableNotes : pickerMode === 'linked-path' ? allFiles : availableFiles}
         onOpenChange={(open) => {
           if (!open) {
             logAutoConnect('picker-open-change', {
@@ -1463,6 +1491,11 @@ function CanvasBoard({ relativePath }: { relativePath: string | null }) {
           }
         }}
         onSelect={(file) => {
+          if (pickerMode === 'linked-path') {
+            updateSelectedPlanningNodeLinkedPath(file.relativePath);
+            setPickerMode(null);
+            return;
+          }
           const pendingAutoConnect = insertSession?.autoConnect
             ? { ...insertSession.autoConnect }
             : pendingAutoConnectRef.current
@@ -1572,9 +1605,13 @@ function CanvasBoard({ relativePath }: { relativePath: string | null }) {
           <Panel position="top-left">
             <CanvasNodeInspector
               selectedNode={selectedInspectorNode}
+              knownUsers={knownUsers}
+              availableTags={availableTags}
+              dateFormat={dateFormat}
               onTitleChange={updateSelectedPlanningNodeTitle}
               onBodyChange={updateSelectedPlanningNodeBody}
               onPickSymbol={() => setSymbolPickerState({ open: true, mode: 'edit', position: null })}
+              onPickLinkedPath={openLinkedPathPicker}
               onLinkedPathChange={updateSelectedPlanningNodeLinkedPath}
               onPlanningChange={updateSelectedPlanningNodeMeta}
               onOrientationChange={updateSelectedPlanningNodeOrientation}

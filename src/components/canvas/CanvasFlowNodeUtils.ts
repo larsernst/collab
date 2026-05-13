@@ -213,6 +213,7 @@ export function fromFlowNode(node: FlowNode<CanvasNodeData>): CanvasNode {
       width,
       height,
       relativePath: node.data.relativePath ?? '',
+      description: node.data.content || undefined,
     };
   }
 
@@ -223,5 +224,6 @@ export function fromFlowNode(node: FlowNode<CanvasNodeData>): CanvasNode {
     width,
     height,
     relativePath: node.data.relativePath ?? '',
+    description: node.data.content || undefined,
   };
 }

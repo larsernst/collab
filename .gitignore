@@ -32,3 +32,4 @@ flatpak-build/
 flatpak-repo/
 *.flatpak
 flatpak-distribution-plan.md
+.directory

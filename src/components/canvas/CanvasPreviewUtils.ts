@@ -82,6 +82,7 @@ export function buildNodePreviewState(
   return {
     title,
     subtitle,
+    content: ('description' in node ? node.description : undefined) ?? '',
     excerpt: preview?.excerpt,
     imageSrc: preview?.imageSrc ?? null,
     markdownContent: preview?.markdownContent,

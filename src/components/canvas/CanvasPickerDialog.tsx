@@ -13,7 +13,7 @@ import type { NoteFile } from '../../types/vault';
 
 const IMAGE_EXTENSIONS = new Set(['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg', 'bmp', 'ico', 'avif']);
 
-export type CanvasPickerMode = 'note' | 'file' | null;
+export type CanvasPickerMode = 'note' | 'file' | 'linked-path' | null;
 
 function getNameWithoutExtension(name: string): string {
   return name.replace(/\.[^.]+$/, '');
@@ -40,7 +40,11 @@ export function CanvasPickerDialog({
   onOpenChange: (open: boolean) => void;
   onSelect: (file: NoteFile) => void;
 }) {
-  const title = mode === 'note' ? 'Add note to canvas' : 'Add file to canvas';
+  const title = mode === 'note'
+    ? 'Add note to canvas'
+    : mode === 'linked-path'
+      ? 'Select linked vault file'
+      : 'Add file to canvas';
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
