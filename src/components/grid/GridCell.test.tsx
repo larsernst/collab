@@ -7,6 +7,8 @@ import { useVaultStore } from '../../store/vaultStore';
 
 const canvasPageMock = vi.fn();
 const kanbanPageMock = vi.fn();
+const imageViewMock = vi.fn();
+const pdfViewMock = vi.fn();
 
 vi.mock('../../views/CanvasPage', () => ({
   default: (props: { relativePath: string }) => {
@@ -19,6 +21,20 @@ vi.mock('../../views/KanbanPage', () => ({
   default: (props: { relativePath: string }) => {
     kanbanPageMock(props);
     return <div data-testid="kanban-page">{props.relativePath}</div>;
+  },
+}));
+
+vi.mock('../../views/ImageView', () => ({
+  default: (props: { relativePath: string }) => {
+    imageViewMock(props);
+    return <div data-testid="image-view">{props.relativePath}</div>;
+  },
+}));
+
+vi.mock('../../views/PdfView', () => ({
+  default: (props: { relativePath: string }) => {
+    pdfViewMock(props);
+    return <div data-testid="pdf-view">{props.relativePath}</div>;
   },
 }));
 
@@ -75,6 +91,22 @@ describe('GridCell', () => {
               relativePath: 'Boards/tasks.kanban',
               name: 'tasks.kanban',
               extension: 'kanban',
+              modifiedAt: 0,
+              size: 1,
+              isFolder: false,
+            },
+            {
+              relativePath: 'Boards/spec.pdf',
+              name: 'spec.pdf',
+              extension: 'pdf',
+              modifiedAt: 0,
+              size: 1,
+              isFolder: false,
+            },
+            {
+              relativePath: 'Boards/diagram.png',
+              name: 'diagram.png',
+              extension: 'png',
               modifiedAt: 0,
               size: 1,
               isFolder: false,
@@ -154,6 +186,75 @@ describe('GridCell', () => {
       type: 'canvas',
       relativePath: 'Boards/network.canvas',
       title: 'network',
+    });
+  });
+
+  it('renders image cells with their asset path', () => {
+    const cell: GridCellType = {
+      id: 'cell-4',
+      content: {
+        type: 'image',
+        relativePath: 'Boards/diagram.png',
+        title: 'diagram',
+      },
+    };
+
+    render(<GridCell cell={cell} />);
+
+    expect(imageViewMock).toHaveBeenCalledWith(
+      expect.objectContaining({ relativePath: 'Boards/diagram.png' }),
+    );
+    expect(screen.getByTestId('image-view').textContent).toContain('Boards/diagram.png');
+  });
+
+  it('renders pdf cells with their document path', () => {
+    const cell: GridCellType = {
+      id: 'cell-5',
+      content: {
+        type: 'pdf',
+        relativePath: 'Boards/spec.pdf',
+        title: 'spec',
+      },
+    };
+
+    render(<GridCell cell={cell} />);
+
+    expect(pdfViewMock).toHaveBeenCalledWith(
+      expect.objectContaining({ relativePath: 'Boards/spec.pdf' }),
+    );
+    expect(screen.getByTestId('pdf-view').textContent).toContain('Boards/spec.pdf');
+  });
+
+  it('accepts dragged vault pdf files into a cell', () => {
+    const setCellContent = vi.fn();
+    useGridStore.setState((state) => ({
+      ...state,
+      setCellContent,
+    }));
+
+    const cell: GridCellType = {
+      id: 'cell-6',
+      content: {
+        type: 'empty',
+        relativePath: null,
+        title: '',
+      },
+    };
+
+    const { container } = render(<GridCell cell={cell} />);
+    const dropZone = container.querySelector('.h-full');
+    expect(dropZone).not.toBeNull();
+
+    fireEvent.drop(dropZone as Element, {
+      dataTransfer: {
+        getData: (type: string) => (type === 'application/x-collab-vault-file' ? 'Boards/spec.pdf' : ''),
+      },
+    });
+
+    expect(setCellContent).toHaveBeenCalledWith('cell-6', {
+      type: 'pdf',
+      relativePath: 'Boards/spec.pdf',
+      title: 'spec',
     });
   });
 });

@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { GitFork, Layout, LayoutDashboard, Settings, FileText, Search } from 'lucide-react';
+import { GitFork, Layout, LayoutDashboard, Settings, FileText, Search, Image as ImageIcon } from 'lucide-react';
 import { Popover, PopoverContent, PopoverTrigger } from '../ui/popover';
 import { Tooltip, TooltipContent, TooltipTrigger } from '../ui/tooltip';
 import { useNoteIndexStore } from '../../store/noteIndexStore';
@@ -25,6 +25,8 @@ export default function CellContentPicker({ children, onSelect }: Props) {
   const flatFiles = flattenVaultFiles(fileTree);
   const canvasBoards = flatFiles.filter((file) => getVaultDocumentTabType(file.relativePath) === 'canvas');
   const kanbanBoards = flatFiles.filter((file) => getVaultDocumentTabType(file.relativePath) === 'kanban');
+  const imageFiles = flatFiles.filter((file) => getVaultDocumentTabType(file.relativePath) === 'image');
+  const pdfFiles = flatFiles.filter((file) => getVaultDocumentTabType(file.relativePath) === 'pdf');
 
   const filteredNotes = search.trim()
     ? notes
@@ -46,6 +48,16 @@ export default function CellContentPicker({ children, onSelect }: Props) {
     ? kanbanBoards.filter((file) =>
         file.name.toLowerCase().includes(query) || file.relativePath.toLowerCase().includes(query))
     : kanbanBoards
+  ).slice(0, 8);
+  const filteredImageFiles = (query
+    ? imageFiles.filter((file) =>
+        file.name.toLowerCase().includes(query) || file.relativePath.toLowerCase().includes(query))
+    : imageFiles
+  ).slice(0, 8);
+  const filteredPdfFiles = (query
+    ? pdfFiles.filter((file) =>
+        file.name.toLowerCase().includes(query) || file.relativePath.toLowerCase().includes(query))
+    : pdfFiles
   ).slice(0, 8);
 
   const select = (content: GridCellContent) => {
@@ -130,6 +142,42 @@ export default function CellContentPicker({ children, onSelect }: Props) {
                 </span>
               </button>
             ))}
+            {filteredPdfFiles.map((file) => (
+              <button
+                key={`pdf:${file.relativePath}`}
+                onClick={() =>
+                  select({
+                    type: 'pdf',
+                    relativePath: file.relativePath,
+                    title: getVaultDocumentTitle(file.relativePath),
+                  })
+                }
+                className="w-full flex items-center gap-2 px-2 py-1.5 rounded text-xs hover:bg-accent/60 text-left transition-colors min-w-0"
+              >
+                <FileText size={11} className="text-rose-400/70 shrink-0" />
+                <span className="truncate text-foreground/80">
+                  {getVaultDocumentTitle(file.relativePath)}
+                </span>
+              </button>
+            ))}
+            {filteredImageFiles.map((file) => (
+              <button
+                key={`image:${file.relativePath}`}
+                onClick={() =>
+                  select({
+                    type: 'image',
+                    relativePath: file.relativePath,
+                    title: getVaultDocumentTitle(file.relativePath),
+                  })
+                }
+                className="w-full flex items-center gap-2 px-2 py-1.5 rounded text-xs hover:bg-accent/60 text-left transition-colors min-w-0"
+              >
+                <ImageIcon size={11} className="text-amber-400/70 shrink-0" />
+                <span className="truncate text-foreground/80">
+                  {getVaultDocumentTitle(file.relativePath)}
+                </span>
+              </button>
+            ))}
             {filteredNotes.length > 0 ? (
               filteredNotes.map((note) => (
                 <button
@@ -150,7 +198,10 @@ export default function CellContentPicker({ children, onSelect }: Props) {
                 </button>
               ))
             ) : (
-              filteredCanvasBoards.length === 0 && filteredKanbanBoards.length === 0 && (
+              filteredCanvasBoards.length === 0
+              && filteredKanbanBoards.length === 0
+              && filteredPdfFiles.length === 0
+              && filteredImageFiles.length === 0 && (
                 <p className="text-xs text-muted-foreground text-center py-4">No matching content found</p>
               )
             )}

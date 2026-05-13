@@ -45,6 +45,22 @@ describe('CellContentPicker', () => {
               size: 1,
               isFolder: false,
             },
+            {
+              relativePath: 'Boards/spec.pdf',
+              name: 'spec.pdf',
+              extension: 'pdf',
+              modifiedAt: 0,
+              size: 1,
+              isFolder: false,
+            },
+            {
+              relativePath: 'Boards/diagram.png',
+              name: 'diagram.png',
+              extension: 'png',
+              modifiedAt: 0,
+              size: 1,
+              isFolder: false,
+            },
           ],
         },
       ],
@@ -54,7 +70,7 @@ describe('CellContentPicker', () => {
     });
   });
 
-  it('selects real canvas and kanban board paths', () => {
+  it('selects real canvas, kanban, pdf, and image paths', () => {
     const onSelect = vi.fn();
 
     render(
@@ -77,6 +93,22 @@ describe('CellContentPicker', () => {
       type: 'kanban',
       relativePath: 'Boards/tasks.kanban',
       title: 'tasks',
+    });
+
+    fireEvent.click(screen.getByRole('button', { name: 'Open picker' }));
+    fireEvent.click(screen.getByRole('button', { name: 'spec' }));
+    expect(onSelect).toHaveBeenCalledWith({
+      type: 'pdf',
+      relativePath: 'Boards/spec.pdf',
+      title: 'spec',
+    });
+
+    fireEvent.click(screen.getByRole('button', { name: 'Open picker' }));
+    fireEvent.click(screen.getByRole('button', { name: 'diagram' }));
+    expect(onSelect).toHaveBeenCalledWith({
+      type: 'image',
+      relativePath: 'Boards/diagram.png',
+      title: 'diagram',
     });
   });
 });
