@@ -211,10 +211,17 @@ export default function App() {
     ]).then(([appImageResult, disableBlurResult]) => {
       const isAppImage = appImageResult.status === 'fulfilled' ? appImageResult.value : false;
       const shouldDisableBlur = disableBlurResult.status === 'fulfilled' ? disableBlurResult.value : false;
+      const isWindowsWebView = navigator.userAgent.toLowerCase().includes('windows');
       if (isAppImage || shouldDisableBlur) {
         document.documentElement.dataset.appimage = '';
       } else {
         delete document.documentElement.dataset.appimage;
+      }
+
+      if (isWindowsWebView) {
+        document.documentElement.dataset.windowsWebview = '';
+      } else {
+        delete document.documentElement.dataset.windowsWebview;
       }
     });
   }, []);

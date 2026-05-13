@@ -2018,7 +2018,7 @@ export default function PdfView({ relativePath }: Props) {
         </div>
 
         {bookmarksOpen && (
-          <aside className="absolute right-5 top-5 z-10 w-72 rounded-2xl border border-border/60 bg-popover/92 p-3 shadow-2xl shadow-black/25 backdrop-blur-sm">
+          <aside className="absolute right-5 top-5 z-10 w-72 rounded-2xl border border-border/60 bg-popover/92 p-3 shadow-2xl shadow-black/25 backdrop-blur-sm-webkit">
             <div className="mb-3 flex items-center justify-between gap-3">
               <div>
                 <div className="text-sm font-medium">Bookmarks</div>

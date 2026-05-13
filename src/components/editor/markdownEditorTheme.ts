@@ -131,7 +131,6 @@ export function buildMarkdownEditorTheme(dark: boolean, fontFamily: string, font
         borderRadius: '8px',
         boxShadow: '0 8px 24px rgba(0,0,0,0.35)',
         overflow: 'hidden',
-        backdropFilter: 'blur(12px)',
         backgroundColor: 'color-mix(in oklch, var(--popover) 92%, transparent)',
       },
       '.cm-tooltip-autocomplete': {

@@ -295,6 +295,11 @@
   -webkit-backdrop-filter: blur(8px);
 }
 
+.backdrop-blur-md-webkit {
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+}
+
 .backdrop-blur-2px-webkit {
   backdrop-filter: blur(2px);
   -webkit-backdrop-filter: blur(2px);
@@ -321,6 +326,32 @@
   -webkit-backdrop-filter: none !important;
 }
 
+/* Windows WebView2 still has rough edges with large nested backdrop-filter
+   stacks. Keep the translucent surfaces, but drop the blur pass entirely so
+   dialogs, panels, and overlays stay visually stable there. */
+[data-windows-webview] .glass,
+[data-windows-webview] .glass-panel,
+[data-windows-webview] .glass-strong,
+[data-windows-webview] .backdrop-blur-xs-webkit,
+[data-windows-webview] .backdrop-blur-sm-webkit,
+[data-windows-webview] .backdrop-blur-md-webkit,
+[data-windows-webview] .backdrop-blur-2px-webkit {
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+}
+[data-windows-webview] .glass {
+  background: color-mix(in oklch, var(--card) 92%, var(--background));
+}
+[data-windows-webview] .glass-panel,
+[data-windows-webview] .glass-strong {
+  background: color-mix(in oklch, var(--popover) 94%, var(--background));
+}
+[data-windows-webview] [data-slot="dialog-overlay"],
+[data-windows-webview] [data-slot="sheet-overlay"] {
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+}
+
 /* Linux WebKitGTK is noticeably slower at compositing large fullscreen blur
    layers than Chromium. Keep the translucent look, but drop expensive blur on
    the heaviest surfaces: startup vault screens and dialog overlays/content. */
@@ -338,6 +369,7 @@
 [data-linux-webkit] .glass-strong,
 [data-linux-webkit] .backdrop-blur-xs-webkit,
 [data-linux-webkit] .backdrop-blur-sm-webkit,
+[data-linux-webkit] .backdrop-blur-md-webkit,
 [data-linux-webkit] .backdrop-blur-2px-webkit {
   backdrop-filter: none !important;
   -webkit-backdrop-filter: none !important;
@@ -351,6 +383,17 @@
 }
 [data-linux-webkit] [data-slot="dialog-overlay"] {
   background: oklch(0 0 0 / 0.62);
+}
+[data-linux-webkit] .cm-search-panel,
+[data-linux-webkit] .cm-tooltip,
+[data-linux-webkit] [data-color-preview-popover='true'],
+[data-linux-webkit] .note-print-toolbar,
+[data-windows-webview] .cm-search-panel,
+[data-windows-webview] .cm-tooltip,
+[data-windows-webview] [data-color-preview-popover='true'],
+[data-windows-webview] .note-print-toolbar {
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
 }
 
 /* ─── Glow utilities ────────────────────────────────────────────────────── */
@@ -465,9 +508,14 @@
       color-mix(in oklch, var(--background) 90%, var(--primary) 10%),
       color-mix(in oklch, var(--background) 97%, transparent)
     );
-  backdrop-filter: blur(14px);
-  -webkit-backdrop-filter: blur(14px);
   box-shadow: 0 12px 24px oklch(0 0 0 / 0.12);
+}
+
+.cm-search-panel,
+.cm-tooltip,
+[data-color-preview-popover='true'] {
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
 }
 
 .cm-search-panel-row {
@@ -1179,8 +1227,8 @@
   padding: 0.9rem 1.2rem;
   border-bottom: 1px solid color-mix(in oklab, var(--border) 78%, transparent);
   background: color-mix(in oklab, var(--background) 86%, transparent);
-  backdrop-filter: blur(14px);
-  -webkit-backdrop-filter: blur(14px);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
 }
 
 .note-print-page {

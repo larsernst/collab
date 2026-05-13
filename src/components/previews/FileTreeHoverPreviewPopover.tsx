@@ -99,7 +99,7 @@ export function FileTreeHoverPreviewPopover({
       style={{ top, left }}
     >
       <div
-        className="app-fade-scale-in overflow-hidden rounded-2xl border border-border/60 bg-popover/96 shadow-2xl ring-1 ring-foreground/10 backdrop-blur-sm"
+        className="app-fade-scale-in overflow-hidden rounded-2xl border border-border/60 bg-popover/96 shadow-2xl ring-1 ring-foreground/10 backdrop-blur-sm-webkit"
         style={{
           transformOrigin: opensOnRight ? 'left center' : 'right center',
         }}

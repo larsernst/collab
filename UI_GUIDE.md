@@ -70,6 +70,13 @@ Expected behavior:
 - raised surfaces should use border, blur, or shadow gently
 - avoid flat, high-contrast boxes unless the element is intentionally urgent or destructive
 
+### Blur and translucency
+
+- All app blur should go through the shared surface utilities in `src/App.css`.
+- Prefer `glass`, `glass-panel`, `glass-strong`, or the shared `backdrop-blur-*-webkit` helpers.
+- Do not introduce raw `backdrop-blur-*` Tailwind classes, inline `backdropFilter` styles, or one-off blur values inside components unless the shared blur system is being extended for everyone.
+- Blur must remain optional per-platform. New surfaces should still look correct when blur is disabled by compatibility fallbacks on Windows, AppImage, or Linux WebKit.
+
 ### Borders and radii
 
 - Rounded corners are part of the app language.

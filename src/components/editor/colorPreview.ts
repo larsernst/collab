@@ -288,7 +288,6 @@ function openColorPreviewPopover(
   popover.style.border = '1px solid color-mix(in oklch, var(--border) 70%, transparent)';
   popover.style.background = 'color-mix(in oklch, var(--popover) 96%, transparent)';
   popover.style.boxShadow = '0 18px 42px rgba(0,0,0,0.3)';
-  popover.style.backdropFilter = 'blur(12px)';
   popover.style.display = 'flex';
   popover.style.flexDirection = 'column';
   popover.style.gap = '4px';

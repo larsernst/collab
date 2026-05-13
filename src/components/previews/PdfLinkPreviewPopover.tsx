@@ -63,7 +63,7 @@ export function PdfLinkPreviewPopover({ anchorRect, relativePath, enabled }: Pdf
       className="pointer-events-none fixed z-[120] w-[280px]"
       style={{ top, left }}
     >
-      <div className="overflow-hidden rounded-2xl border border-border/60 bg-popover/96 shadow-2xl ring-1 ring-foreground/10 backdrop-blur-sm">
+      <div className="overflow-hidden rounded-2xl border border-border/60 bg-popover/96 shadow-2xl ring-1 ring-foreground/10 backdrop-blur-sm-webkit">
         <div className="flex items-center gap-2 border-b border-border/50 px-3 py-2.5">
           <div className="flex size-8 items-center justify-center rounded-xl bg-primary/12 text-primary">
             {loading ? <Loader2 size={14} className="animate-spin" /> : <FileText size={14} />}

@@ -680,7 +680,7 @@ export default function ImageView({ relativePath }: Props) {
       >
         {mode === 'additive' && selectedItem?.type === 'text' && (
           <div className="pointer-events-none absolute inset-x-0 top-4 z-20 flex justify-center px-4">
-            <div className="pointer-events-auto w-full max-w-xl rounded-xl border border-border/60 bg-background/88 p-3 shadow-2xl shadow-black/25 backdrop-blur-sm">
+            <div className="pointer-events-auto w-full max-w-xl rounded-xl border border-border/60 bg-background/88 p-3 shadow-2xl shadow-black/25 backdrop-blur-sm-webkit">
               <textarea
                 value={selectedItem.text}
                 onChange={(event) => {

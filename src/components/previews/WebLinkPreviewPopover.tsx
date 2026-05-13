@@ -32,7 +32,7 @@ export function WebLinkPreviewPopover({ anchorRect, url, enabled }: WebLinkPrevi
       className="pointer-events-none fixed z-[120] w-80"
       style={{ top, left }}
     >
-      <div className="overflow-hidden rounded-2xl border border-border/60 bg-popover/96 shadow-2xl ring-1 ring-foreground/10 backdrop-blur-sm">
+      <div className="overflow-hidden rounded-2xl border border-border/60 bg-popover/96 shadow-2xl ring-1 ring-foreground/10 backdrop-blur-sm-webkit">
         {preview?.imageUrl ? (
           <div className="h-28 w-full border-b border-border/50 bg-muted/20">
             <img src={preview.imageUrl} alt="" className="h-full w-full object-cover" draggable={false} />
