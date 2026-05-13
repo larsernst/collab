@@ -501,10 +501,13 @@ function PermissionsTab() {
                           }}
                           disabled={isBusy || isSelf}
                         >
-                          <SelectTrigger className="h-7 min-w-28 text-xs bg-background/60">
+                          <SelectTrigger
+                            size="sm"
+                            className="min-w-28 border-border/40 bg-background/60 text-xs hover:border-border/70"
+                          >
                             <SelectValue />
                           </SelectTrigger>
-                          <SelectContent>
+                          <SelectContent position="popper" align="end">
                             {currentRole === null && <SelectItem value="none">No access</SelectItem>}
                             {availableRoles.map((r) => (
                               <SelectItem key={r} value={r}>{ROLE_LABELS[r]}</SelectItem>

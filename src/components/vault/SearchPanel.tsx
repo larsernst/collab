@@ -6,6 +6,7 @@ import { useEditorStore } from '../../store/editorStore';
 import { useUiStore } from '../../store/uiStore';
 import { tauriCommands } from '../../lib/tauri';
 import type { SearchResult } from '../../types/note';
+import { cn } from '../../lib/utils';
 
 export default function SearchPanel() {
   const [query, setQuery] = useState('');
@@ -48,14 +49,17 @@ export default function SearchPanel() {
               openTab(r.relativePath, r.title, 'note');
               setActiveView('editor');
             }}
-            className="w-full text-left px-2 py-1.5 rounded hover:bg-accent text-sm"
+            className={cn(
+              'w-full rounded-xl border border-border/40 bg-card/20 px-2.5 py-2 text-left text-sm transition-colors app-motion-fast',
+              'hover:border-border hover:bg-accent/30',
+            )}
           >
             <div className="font-medium truncate">{r.title}</div>
             <div className="text-xs text-muted-foreground truncate">{r.excerpt}</div>
           </button>
         ))}
         {query.length >= 2 && results.length === 0 && (
-          <p className="text-xs text-muted-foreground px-2">No results found</p>
+          <p className="rounded-lg border border-border/40 bg-card/20 px-3 py-2 text-xs text-muted-foreground">No results found</p>
         )}
       </div>
     </div>

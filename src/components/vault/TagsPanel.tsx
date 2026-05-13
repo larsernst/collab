@@ -6,6 +6,7 @@ import { useUiStore } from '../../store/uiStore';
 import { useVaultStore } from '../../store/vaultStore';
 import { tauriCommands } from '../../lib/tauri';
 import { addTagToContent, removeTagFromContent, getTagsFromContent } from '../../lib/frontmatter';
+import { Button } from '../ui/button';
 import { Input } from '../ui/input';
 import { toast } from 'sonner';
 import type { NoteMetadata } from '../../types/note';
@@ -138,14 +139,17 @@ export default function TagsPanel() {
             className="h-7 text-xs flex-1"
             disabled={!activeTabPath}
           />
-          <button
+          <Button
+            type="button"
+            variant="outline"
+            size="icon-sm"
             onClick={handleNewTag}
             disabled={!newTag.trim() || !activeTabPath}
-            className="flex h-7 w-7 shrink-0 items-center justify-center rounded border border-border bg-background text-muted-foreground hover:bg-accent hover:text-accent-foreground disabled:opacity-40 transition-colors"
+            className="h-7 w-7 shrink-0"
             title="Add tag to current note"
           >
             <Plus size={12} />
-          </button>
+          </Button>
         </div>
       </div>
 

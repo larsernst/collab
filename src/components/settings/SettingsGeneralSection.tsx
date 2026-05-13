@@ -111,7 +111,7 @@ export default function SettingsGeneralSection({
         />
       </OptionRow>
 
-      <div className={cn('mt-3 rounded-lg border border-border/40 bg-accent/10 p-3 text-xs text-muted-foreground')}>
+      <div className={cn('mt-3 rounded-xl border border-border/35 bg-card/55 p-3 text-xs text-muted-foreground shadow-sm')}>
         {webPreviewsEnabled
           ? 'Web previews are enabled globally. Hover previews and background prefetch can be tuned independently.'
           : 'Web previews are disabled globally, so canvas web cards and link hover previews will not fetch metadata.'}

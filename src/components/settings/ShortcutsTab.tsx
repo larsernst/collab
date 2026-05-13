@@ -226,9 +226,9 @@ export default function ShortcutsTab() {
                 </button>
 
                 {!isCollapsed && (
-                  <div className="mt-2 divide-y divide-border/30">
+                  <div className="mt-2 overflow-hidden rounded-xl border border-border/35 bg-card/45 shadow-sm divide-y divide-border/25">
                     {group.rows.map((row) => (
-                      <div key={row.label} className="flex items-center justify-between py-2">
+                      <div key={row.label} className="flex items-center justify-between px-3 py-2.5">
                         <span className="text-sm text-foreground/80">{row.label}</span>
                         <div className="flex items-center gap-2">
                           {row.keys.map((combo, ci) => (

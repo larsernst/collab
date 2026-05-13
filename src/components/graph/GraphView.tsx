@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import * as d3 from 'd3';
 import type { NoteMetadata } from '../../types/note';
+import { Input } from '../ui/input';
 
 interface GraphViewProps {
   notes: NoteMetadata[];
@@ -375,14 +376,14 @@ export default function GraphView({ notes, onNodeClick }: GraphViewProps) {
 
   return (
     <div className="relative w-full h-full bg-background">
-      <div className="absolute top-4 left-4 z-10 flex items-center gap-2">
-        <input
+      <div className="absolute top-4 left-4 z-10 flex items-center gap-2 rounded-xl border border-border/60 bg-background/88 px-2.5 py-2 shadow-lg shadow-black/5 backdrop-blur-xs-webkit">
+        <Input
           value={searchQuery}
           onChange={(e) => setSearchQuery(e.target.value)}
           placeholder="Filter nodes..."
-          className="h-8 px-3 text-sm rounded-md border border-border bg-background text-foreground placeholder:text-muted-foreground outline-none focus:ring-1 focus:ring-ring"
+          className="w-56 bg-background/80"
         />
-        <span className="text-xs text-muted-foreground">
+        <span className="rounded-md border border-border/50 bg-card/40 px-2 py-1 text-xs text-muted-foreground">
           {notes.length} notes
         </span>
       </div>

@@ -14,6 +14,7 @@ import {
 import { formatDate } from '../../store/uiStore';
 import type { KanbanBoard, KanbanCard } from '../../types/kanban';
 import { cn } from '../../lib/utils';
+import { Button } from '../ui/button';
 import { Calendar as CalendarUI } from '../ui/calendar';
 import { Popover, PopoverContent, PopoverTrigger } from '../ui/popover';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../ui/select';
@@ -74,6 +75,10 @@ export function CardDialogSidebar({
 }: Props) {
   const recurrence = draft.recurrence;
   const recurrenceEnabled = Boolean(draft.startDate || draft.dueDate);
+  const pickerButtonClass = cn(
+    'h-8 w-full justify-start gap-1.5 rounded-lg border border-border/40 bg-background/55 px-2.5 text-left text-xs transition-colors hover:border-border/70',
+  );
+  const quietActionClass = 'mt-1 h-6 px-0 text-[10px] text-muted-foreground/60 hover:text-muted-foreground';
 
   return (
     <div className="w-52 shrink-0 border-l border-border/30 overflow-y-auto px-4 py-3 flex flex-col gap-4">
@@ -101,16 +106,16 @@ export function CardDialogSidebar({
         <label className="section-label flex items-center gap-1"><Calendar size={11} /> Start date</label>
         <Popover open={startDateOpen} onOpenChange={setStartDateOpen}>
           <PopoverTrigger asChild>
-            <button className={cn(
-              'w-full flex items-center gap-1.5 px-2.5 py-1.5 rounded border text-xs text-left transition-colors',
-              'bg-muted/25 border-border/30 hover:border-border/60 focus:outline-none',
-              draft.startDate ? 'text-foreground' : 'text-muted-foreground/50',
-            )}>
+            <Button
+              type="button"
+              variant="outline"
+              className={cn(pickerButtonClass, draft.startDate ? 'text-foreground' : 'text-muted-foreground/50')}
+            >
               <Calendar size={10} className="shrink-0" />
               {draft.startDate
                 ? formatDate(new Date(draft.startDate + 'T12:00:00'), selectedDateFormat)
                 : 'Pick a date'}
-            </button>
+            </Button>
           </PopoverTrigger>
           <PopoverContent align="end" className="w-auto p-0" sideOffset={4}>
             <CalendarUI
@@ -124,9 +129,9 @@ export function CardDialogSidebar({
           </PopoverContent>
         </Popover>
         {draft.startDate && (
-          <button onClick={() => patchDraft({ startDate: undefined })} className="text-[10px] text-muted-foreground/50 hover:text-muted-foreground transition-colors mt-0.5">
+          <Button type="button" variant="ghost" size="sm" onClick={() => patchDraft({ startDate: undefined })} className={quietActionClass}>
             Clear
-          </button>
+          </Button>
         )}
         {!draft.startDate && !draft.dueDate && (
           <p className="text-[10px] text-muted-foreground/40 mt-0.5">No date — hidden from Calendar & Timeline</p>
@@ -137,16 +142,16 @@ export function CardDialogSidebar({
         <label className="section-label flex items-center gap-1"><Calendar size={11} /> Due date</label>
         <Popover open={dueDateOpen} onOpenChange={setDueDateOpen}>
           <PopoverTrigger asChild>
-            <button className={cn(
-              'w-full flex items-center gap-1.5 px-2.5 py-1.5 rounded border text-xs text-left transition-colors',
-              'bg-muted/25 border-border/30 hover:border-border/60 focus:outline-none',
-              draft.dueDate ? 'text-foreground' : 'text-muted-foreground/50',
-            )}>
+            <Button
+              type="button"
+              variant="outline"
+              className={cn(pickerButtonClass, draft.dueDate ? 'text-foreground' : 'text-muted-foreground/50')}
+            >
               <Calendar size={10} className="shrink-0" />
               {draft.dueDate
                 ? formatDate(new Date(draft.dueDate + 'T12:00:00'), selectedDateFormat)
                 : 'Pick a date'}
-            </button>
+            </Button>
           </PopoverTrigger>
           <PopoverContent align="end" className="w-auto p-0" sideOffset={4}>
             <CalendarUI
@@ -160,9 +165,9 @@ export function CardDialogSidebar({
           </PopoverContent>
         </Popover>
         {draft.dueDate && (
-          <button onClick={() => patchDraft({ dueDate: undefined })} className="text-[10px] text-muted-foreground/50 hover:text-muted-foreground transition-colors mt-0.5">
+          <Button type="button" variant="ghost" size="sm" onClick={() => patchDraft({ dueDate: undefined })} className={quietActionClass}>
             Clear date
-          </button>
+          </Button>
         )}
       </section>
 
@@ -195,10 +200,13 @@ export function CardDialogSidebar({
       <section>
         <label className="section-label flex items-center gap-1"><Columns2 size={11} /> Column</label>
         <Select value={currentColumnId} onValueChange={moveToColumn}>
-          <SelectTrigger className="h-7 text-xs">
+          <SelectTrigger
+            size="sm"
+            className="w-full justify-between border-border/40 bg-background/55 text-xs hover:border-border/70"
+          >
             <SelectValue />
           </SelectTrigger>
-          <SelectContent>
+          <SelectContent position="popper" align="end">
             {board.columns.map((column) => (
               <SelectItem key={column.id} value={column.id} className="text-xs">
                 <span className="flex items-center gap-1.5">

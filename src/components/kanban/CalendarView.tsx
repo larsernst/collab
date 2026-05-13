@@ -8,6 +8,7 @@ import CardDialog from './CardDialog';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '../ui/dialog';
 import { Popover, PopoverContent, PopoverTrigger } from '../ui/popover';
 import { Calendar } from '../ui/calendar';
+import { Button } from '../ui/button';
 import {
   DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem,
 } from '../ui/dropdown-menu';
@@ -674,38 +675,48 @@ export default function CalendarView() {
 
         {/* Navigation */}
         <div className="flex items-center gap-1">
-          <button
+          <Button
             onClick={() => navigate(-1)}
-            className="w-7 h-7 flex items-center justify-center rounded text-muted-foreground hover:text-foreground hover:bg-accent/50 transition-colors"
+            variant="ghost"
+            size="icon"
+            className="h-7 w-7 text-muted-foreground hover:bg-accent/50 hover:text-foreground"
           >
             <ChevronLeft size={14} />
-          </button>
+          </Button>
           <span className="text-sm font-semibold text-foreground min-w-[160px] text-center">
             {headerTitle()}
           </span>
-          <button
+          <Button
             onClick={() => navigate(1)}
-            className="w-7 h-7 flex items-center justify-center rounded text-muted-foreground hover:text-foreground hover:bg-accent/50 transition-colors"
+            variant="ghost"
+            size="icon"
+            className="h-7 w-7 text-muted-foreground hover:bg-accent/50 hover:text-foreground"
           >
             <ChevronRight size={14} />
-          </button>
+          </Button>
         </div>
 
         {/* Today button + date picker */}
         <div className="flex items-center gap-1">
           {!isTodayInView() && (
-            <button
+            <Button
               onClick={goToday}
-              className="text-xs px-2 py-1 text-muted-foreground hover:text-foreground hover:bg-accent/50 rounded transition-colors"
+              variant="outline"
+              size="sm"
+              className="h-7 border-border/40 bg-background/55 px-2.5 text-[11px] text-muted-foreground hover:bg-accent/50 hover:text-foreground"
             >
               Today
-            </button>
+            </Button>
           )}
           <Popover open={pickerOpen} onOpenChange={setPickerOpen}>
             <PopoverTrigger asChild>
-              <button className="w-7 h-7 flex items-center justify-center rounded text-muted-foreground hover:text-foreground hover:bg-accent/50 transition-colors">
+              <Button
+                variant="ghost"
+                size="icon"
+                className="h-7 w-7 text-muted-foreground hover:bg-accent/50 hover:text-foreground"
+              >
                 <CalendarIcon size={13} />
-              </button>
+              </Button>
             </PopoverTrigger>
             <PopoverContent className="w-auto p-0" align="start">
               <Calendar
@@ -721,10 +732,14 @@ export default function CalendarView() {
         {/* Sort */}
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
-            <button className="flex items-center gap-1.5 h-7 px-2.5 rounded-md border border-border/40 bg-background text-[11px] text-muted-foreground hover:text-foreground hover:bg-accent/50 transition-colors">
+            <Button
+              variant="outline"
+              size="sm"
+              className="h-7 border-border/40 bg-background/55 px-2.5 text-[11px] text-muted-foreground hover:bg-accent/50 hover:text-foreground"
+            >
               {SORT_LABELS[sortOrder]}
               <ChevronsUpDown size={10} className="opacity-50" />
-            </button>
+            </Button>
           </DropdownMenuTrigger>
           <DropdownMenuContent align="start" className="min-w-[140px]">
             {(Object.keys(SORT_LABELS) as CalendarSort[]).map(s => (
@@ -741,17 +756,19 @@ export default function CalendarView() {
         </DropdownMenu>
 
         {viewMode === 'year' && (
-          <button
+          <Button
             onClick={() => setYearSummaryIncludesHiddenColumns((current) => !current)}
+            variant="outline"
+            size="sm"
             className={cn(
-              'flex items-center gap-1.5 h-7 px-2.5 rounded-md border text-[11px] transition-colors',
+              'h-7 px-2.5 text-[11px] transition-colors',
               yearSummaryIncludesHiddenColumns
                 ? 'border-primary/30 bg-primary/10 text-foreground'
-                : 'border-border/40 bg-background text-muted-foreground hover:text-foreground hover:bg-accent/50',
+                : 'border-border/40 bg-background/55 text-muted-foreground hover:bg-accent/50 hover:text-foreground',
             )}
           >
             {yearSummaryIncludesHiddenColumns ? 'Including hidden columns' : 'Ignoring hidden columns'}
-          </button>
+          </Button>
         )}
 
         {/* Assignee filter */}
@@ -775,12 +792,14 @@ export default function CalendarView() {
               </button>
             ))}
             {filterUser && (
-              <button
+              <Button
                 onClick={() => setFilterUser(null)}
-                className="text-[10px] text-muted-foreground/50 hover:text-muted-foreground ml-1 transition-colors"
+                variant="ghost"
+                size="sm"
+                className="ml-1 h-6 px-2 text-[10px] text-muted-foreground/60 hover:text-muted-foreground"
               >
                 Clear
-              </button>
+              </Button>
             )}
           </div>
         )}

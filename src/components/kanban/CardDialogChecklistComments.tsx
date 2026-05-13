@@ -11,8 +11,11 @@ import {
 
 import { cn } from '../../lib/utils';
 import type { KanbanBoard, KanbanCard } from '../../types/kanban';
+import { Button } from '../ui/button';
 import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from '../ui/command';
+import { Input } from '../ui/input';
 import { Popover, PopoverContent, PopoverTrigger } from '../ui/popover';
+import { Textarea } from '../ui/textarea';
 
 type Props = {
   draft: KanbanCard;
@@ -61,6 +64,8 @@ export function CardDialogChecklistComments({
   addComment,
   deleteComment,
 }: Props) {
+  const secondaryFieldClass = 'border-border/40 bg-background/55 text-foreground placeholder:text-muted-foreground/50';
+
   return (
     <>
       <section>
@@ -130,28 +135,28 @@ export function CardDialogChecklistComments({
         </div>
 
         <div className="flex gap-1.5">
-          <input
+          <Input
             value={checklistInput}
             onChange={(e) => setChecklistInput(e.target.value)}
             onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); addChecklistItem(); } }}
             placeholder="Add subtask…"
-            className="flex-1 bg-muted/25 border border-border/30 rounded text-xs text-foreground px-2.5 py-1.5 focus:outline-none focus:ring-1 focus:ring-primary/40 placeholder:text-muted-foreground/40"
+            className={cn('h-8 flex-1 text-xs', secondaryFieldClass)}
           />
-          <button
-            onClick={addChecklistItem}
-            className="text-xs px-2.5 py-1.5 bg-primary/15 hover:bg-primary/25 text-primary rounded transition-colors shrink-0"
-          >
+          <Button type="button" variant="outline" size="sm" onClick={addChecklistItem} className="text-xs shrink-0">
             Add
-          </button>
+          </Button>
 
           <Popover open={cardPickerOpen} onOpenChange={setCardPickerOpen}>
             <PopoverTrigger asChild>
-              <button
-                className="text-xs px-2 py-1.5 bg-muted/30 hover:bg-muted/50 text-muted-foreground hover:text-foreground rounded transition-colors shrink-0"
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                className="px-2 shrink-0"
                 title="Link a board card as subtask"
               >
                 <LayoutDashboard size={12} />
-              </button>
+              </Button>
             </PopoverTrigger>
             <PopoverContent align="end" className="w-72 p-0">
               <Command>
@@ -234,20 +239,20 @@ export function CardDialogChecklistComments({
           >
             {myUserName[0]?.toUpperCase()}
           </div>
-          <div className="flex-1">
-            <textarea
-              value={commentInput}
-              onChange={(e) => setCommentInput(e.target.value)}
-              onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); addComment(); } }}
-              placeholder="Add comment… (Enter to post)"
-              rows={2}
-              className="w-full bg-muted/25 border border-border/30 rounded text-xs text-foreground p-2 resize-none focus:outline-none focus:ring-1 focus:ring-primary/40 placeholder:text-muted-foreground/40"
-            />
-            {commentInput.trim() && (
-              <button onClick={addComment} className="mt-1 flex items-center gap-1 text-xs px-2.5 py-1 bg-primary/15 hover:bg-primary/25 text-primary rounded transition-colors">
-                <Send size={10} /> Post
-              </button>
-            )}
+            <div className="flex-1">
+              <Textarea
+                value={commentInput}
+                onChange={(e) => setCommentInput(e.target.value)}
+                onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); addComment(); } }}
+                placeholder="Add comment… (Enter to post)"
+                rows={2}
+                className={cn('min-h-16 resize-none text-xs', secondaryFieldClass)}
+              />
+              {commentInput.trim() && (
+                <Button type="button" variant="outline" size="sm" onClick={addComment} className="mt-1 h-7 gap-1 text-xs">
+                  <Send size={10} /> Post
+                </Button>
+              )}
           </div>
         </div>
       </section>

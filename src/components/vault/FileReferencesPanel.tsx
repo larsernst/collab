@@ -66,15 +66,15 @@ export default function FileReferencesPanel({
       </div>
 
       {loading ? (
-        <div className="rounded-lg border border-border/40 bg-muted/20 px-3 py-2 text-[11px] text-muted-foreground">
+        <div className="rounded-xl border border-border/40 bg-card/20 px-3 py-2 text-[11px] text-muted-foreground">
           Loading references…
         </div>
       ) : error ? (
-        <div className="rounded-lg border border-destructive/30 bg-destructive/5 px-3 py-2 text-[11px] text-destructive">
+        <div className="rounded-xl border border-destructive/30 bg-destructive/6 px-3 py-2 text-[11px] text-destructive">
           {error}
         </div>
       ) : references.length === 0 ? (
-        <div className="rounded-lg border border-border/40 bg-muted/20 px-3 py-2 text-[11px] text-muted-foreground">
+        <div className="rounded-xl border border-border/40 bg-card/20 px-3 py-2 text-[11px] text-muted-foreground">
           No references found for this file.
         </div>
       ) : (

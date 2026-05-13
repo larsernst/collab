@@ -62,6 +62,13 @@ export default function SettingsEditorSection({
   showColorPreviewFormats,
   setShowColorPreviewFormats,
 }: Props) {
+  const settingsChoiceClass = (selected: boolean) => cn(
+    'w-full flex items-center justify-between rounded-xl border px-3 py-2.5 text-left transition-all app-motion-fast',
+    selected
+      ? 'border-primary/45 bg-primary/8 shadow-sm shadow-primary/10'
+      : 'border-border/40 bg-card/25 hover:border-border hover:bg-accent/25',
+  );
+
   return (
     <div>
       <SectionLabel>Editor Font Family</SectionLabel>
@@ -71,12 +78,7 @@ export default function SettingsEditorSection({
             <button
               key={key}
               onClick={() => setEditorFont(key)}
-              className={cn(
-                'w-full flex items-center justify-between px-3 py-2.5 rounded-lg border text-left transition-all',
-                editorFont === key
-                  ? 'border-primary/50 bg-primary/8'
-                  : 'border-border/40 hover:border-border hover:bg-accent/30',
-              )}
+              className={settingsChoiceClass(editorFont === key)}
             >
               <div>
                 <p className="text-sm font-medium">{value.label}</p>
@@ -103,7 +105,7 @@ export default function SettingsEditorSection({
       </OptionRow>
 
       <div
-        className="mt-3 p-3 rounded-lg bg-accent/20 border border-border/30 text-muted-foreground"
+        className="mt-3 rounded-xl border border-border/30 bg-card/25 p-3 text-muted-foreground"
         style={{ fontSize: `${editorFontSize}px`, fontFamily: EDITOR_FONTS[editorFont]?.css ?? EDITOR_FONTS.codingMono.css }}
       >
         Preview: const arrow = () =&gt; value; // editor-only typography
@@ -190,10 +192,10 @@ export default function SettingsEditorSection({
           onClick={() => setShowColorPreviewFormats((value) => !value)}
           disabled={!showInlineColorPreviews}
           className={cn(
-            'w-full flex items-center justify-between rounded-lg border px-3 py-2.5 text-left transition-all',
+            'w-full flex items-center justify-between rounded-xl border px-3 py-2.5 text-left transition-all app-motion-fast',
             showInlineColorPreviews
-              ? 'border-border/40 hover:border-border hover:bg-accent/30'
-              : 'cursor-not-allowed border-border/30 opacity-50',
+              ? 'border-border/40 bg-card/25 hover:border-border hover:bg-accent/25'
+              : 'cursor-not-allowed border-border/30 bg-card/15 opacity-50',
           )}
         >
           <div>
@@ -219,10 +221,7 @@ export default function SettingsEditorSection({
                 onClick={() => setColorPreviewFormatEnabled(format, !colorPreviewFormats[format])}
                 disabled={!showInlineColorPreviews}
                 className={cn(
-                  'w-full flex items-center justify-between px-3 py-2.5 rounded-lg border text-left transition-all',
-                  colorPreviewFormats[format]
-                    ? 'border-primary/50 bg-primary/8'
-                    : 'border-border/40 hover:border-border hover:bg-accent/30',
+                  settingsChoiceClass(colorPreviewFormats[format]),
                   !showInlineColorPreviews && 'cursor-not-allowed opacity-50 hover:border-border/40 hover:bg-transparent',
                 )}
               >

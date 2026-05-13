@@ -5,6 +5,7 @@ import { useKanbanContext } from '../../views/KanbanPage';
 import { useUiStore, formatDate } from '../../store/uiStore';
 import type { KanbanCard } from '../../types/kanban';
 import CardDialog from './CardDialog';
+import { Button } from '../ui/button';
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -296,24 +297,30 @@ export default function TimelineView() {
       {/* ── Nav header ────────────────────────────────────────────────────── */}
       <div className="flex items-center gap-3 px-4 py-2 border-b border-border/30 shrink-0 flex-wrap">
         <div className="flex items-center gap-1">
-          <button
+          <Button
             onClick={() => setRangeStart(s => addDays(s, -30))}
-            className="w-7 h-7 flex items-center justify-center rounded text-muted-foreground hover:text-foreground hover:bg-accent/50 transition-colors"
+            variant="ghost"
+            size="icon"
+            className="h-7 w-7 text-muted-foreground hover:bg-accent/50 hover:text-foreground"
           >
             <ChevronLeft size={14} />
-          </button>
-          <button
+          </Button>
+          <Button
             onClick={() => setRangeStart(s => addDays(s, 30))}
-            className="w-7 h-7 flex items-center justify-center rounded text-muted-foreground hover:text-foreground hover:bg-accent/50 transition-colors"
+            variant="ghost"
+            size="icon"
+            className="h-7 w-7 text-muted-foreground hover:bg-accent/50 hover:text-foreground"
           >
             <ChevronRight size={14} />
-          </button>
-          <button
+          </Button>
+          <Button
             onClick={() => setRangeStart(addDays(today, -7))}
-            className="ml-1 text-xs px-2 py-1 text-muted-foreground hover:text-foreground hover:bg-accent/50 rounded transition-colors"
+            variant="outline"
+            size="sm"
+            className="ml-1 h-7 border-border/40 bg-background/55 px-2.5 text-[11px] text-muted-foreground hover:bg-accent/50 hover:text-foreground"
           >
             Today
-          </button>
+          </Button>
         </div>
 
         <span className="text-xs text-muted-foreground">
@@ -341,12 +348,14 @@ export default function TimelineView() {
               </button>
             ))}
             {filterUser && (
-              <button
+              <Button
                 onClick={() => setFilterUser(null)}
-                className="text-[10px] text-muted-foreground/50 hover:text-muted-foreground ml-1 transition-colors"
+                variant="ghost"
+                size="sm"
+                className="ml-1 h-6 px-2 text-[10px] text-muted-foreground/60 hover:text-muted-foreground"
               >
                 Clear
-              </button>
+              </Button>
             )}
           </div>
         )}

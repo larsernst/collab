@@ -68,7 +68,7 @@ export default function SettingsDisplaySection({
         />
       </OptionRow>
 
-      <div className="mt-3 rounded-lg border border-border/40 bg-accent/10 p-3 text-xs text-muted-foreground">
+      <div className="mt-3 rounded-xl border border-border/35 bg-card/55 p-3 text-xs text-muted-foreground shadow-sm">
         <div className="flex items-center gap-2 text-foreground">
           <Sparkles size={13} className="text-primary" />
           Motion respects your system reduced-motion preference automatically.

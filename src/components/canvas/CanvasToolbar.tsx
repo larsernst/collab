@@ -162,14 +162,13 @@ export function CanvasToolbar({
         <DocumentTopBarIconButton onClick={onZoomOut} title="Zoom out">
           <Minus size={15} />
         </DocumentTopBarIconButton>
-        <button
-          type="button"
+        <DocumentTopBarButton
           onClick={onResetZoom}
-          className="min-w-[78px] rounded-md px-2 text-center text-xs font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground"
+          className="min-w-[78px] justify-center px-2 text-center font-medium text-muted-foreground"
           title="Reset zoom to 100%"
         >
           {zoomLabel}
-        </button>
+        </DocumentTopBarButton>
         <DocumentTopBarIconButton onClick={onZoomIn} title="Zoom in">
           <PlusIcon size={15} />
         </DocumentTopBarIconButton>

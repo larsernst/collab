@@ -40,6 +40,13 @@ export default function SettingsAppearanceSection({
   interfaceFontSize,
   setInterfaceFontSize,
 }: Props) {
+  const settingsChoiceClass = (selected: boolean) => cn(
+    'w-full flex items-center justify-between rounded-xl border px-3 py-2.5 text-left transition-all app-motion-fast',
+    selected
+      ? 'border-primary/45 bg-primary/8 shadow-sm shadow-primary/10'
+      : 'border-border/40 bg-card/25 hover:border-border hover:bg-accent/25',
+  );
+
   return (
     <div>
       <SectionLabel>Base Theme</SectionLabel>
@@ -49,10 +56,8 @@ export default function SettingsAppearanceSection({
             key={themeOption.id}
             onClick={() => setTheme(themeOption.id)}
             className={cn(
-              'relative flex items-start gap-3 p-3 rounded-lg border text-left transition-all',
-              theme === themeOption.id
-                ? 'border-primary/50 bg-primary/8'
-                : 'border-border/40 hover:border-border hover:bg-accent/30',
+              'relative flex items-start gap-3 rounded-xl p-3 text-left',
+              settingsChoiceClass(theme === themeOption.id),
             )}
           >
             <span className={cn('mt-0.5', theme === themeOption.id ? 'text-primary' : 'text-muted-foreground')}>
@@ -112,12 +117,7 @@ export default function SettingsAppearanceSection({
             <button
               key={key}
               onClick={() => setInterfaceFont(key)}
-              className={cn(
-                'w-full flex items-center justify-between px-3 py-2.5 rounded-lg border text-left transition-all',
-                interfaceFont === key
-                  ? 'border-primary/50 bg-primary/8'
-                  : 'border-border/40 hover:border-border hover:bg-accent/30',
-              )}
+              className={settingsChoiceClass(interfaceFont === key)}
             >
               <div>
                 <p className="text-sm font-medium">{value.label}</p>
@@ -144,7 +144,7 @@ export default function SettingsAppearanceSection({
       </OptionRow>
 
       <div
-        className="mt-3 p-3 rounded-lg bg-accent/20 border border-border/30 text-muted-foreground"
+        className="mt-3 rounded-xl border border-border/30 bg-card/25 p-3 text-muted-foreground"
         style={{ fontSize: `${interfaceFontSize}px`, fontFamily: INTERFACE_FONTS[interfaceFont]?.css ?? INTERFACE_FONTS.geist.css }}
       >
         Preview: Interface typography now changes independently from the editor.

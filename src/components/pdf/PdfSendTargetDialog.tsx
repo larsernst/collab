@@ -10,6 +10,7 @@ import {
   DialogTitle,
 } from '../ui/dialog';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../ui/select';
+import { cn } from '../../lib/utils';
 import type { NoteFile } from '../../types/vault';
 
 export type PdfSendTarget =
@@ -67,6 +68,13 @@ export function PdfSendTargetDialog({
     }
   };
 
+  const targetOptionClass = (selected: boolean) => cn(
+    'w-full rounded-xl border px-3 py-2.5 text-left text-sm transition-colors app-motion-fast',
+    selected
+      ? 'border-primary/45 bg-primary/10 text-foreground shadow-sm shadow-primary/10'
+      : 'border-border/60 bg-card/35 text-muted-foreground hover:border-border hover:bg-accent/35 hover:text-foreground',
+  );
+
   return (
     <Dialog open={open} onOpenChange={(next) => { if (!next) onClose(); }}>
       <DialogContent className="sm:max-w-md">
@@ -81,34 +89,33 @@ export function PdfSendTargetDialog({
           {currentNotePath && (
             <button
               type="button"
-              className={`w-full rounded-xl border px-3 py-2 text-left text-sm transition-colors ${
-                targetKind === 'note-current'
-                  ? 'border-primary bg-primary/10 text-foreground'
-                  : 'border-border/60 bg-muted/20 text-muted-foreground hover:bg-accent hover:text-accent-foreground'
-              }`}
+              className={targetOptionClass(targetKind === 'note-current')}
               onClick={() => setTargetKind('note-current')}
             >
               Current note
-              <div className="mt-1 text-xs opacity-80">{currentNotePath}</div>
+              <div className="mt-1 text-xs text-muted-foreground">{currentNotePath}</div>
             </button>
           )}
 
           {currentCanvasPath && (
             <button
               type="button"
-              className={`w-full rounded-xl border px-3 py-2 text-left text-sm transition-colors ${
-                targetKind === 'canvas-current'
-                  ? 'border-primary bg-primary/10 text-foreground'
-                  : 'border-border/60 bg-muted/20 text-muted-foreground hover:bg-accent hover:text-accent-foreground'
-              }`}
+              className={targetOptionClass(targetKind === 'canvas-current')}
               onClick={() => setTargetKind('canvas-current')}
             >
               Current canvas
-              <div className="mt-1 text-xs opacity-80">{currentCanvasPath}</div>
+              <div className="mt-1 text-xs text-muted-foreground">{currentCanvasPath}</div>
             </button>
           )}
 
-          <div className={`rounded-xl border px-3 py-3 ${targetKind === 'note-other' ? 'border-primary bg-primary/5' : 'border-border/60 bg-muted/20'}`}>
+          <div
+            className={cn(
+              'rounded-xl border px-3 py-3 transition-colors app-motion-fast',
+              targetKind === 'note-other'
+                ? 'border-primary/45 bg-primary/6 shadow-sm shadow-primary/10'
+                : 'border-border/60 bg-card/35',
+            )}
+          >
             <button
               type="button"
               className="w-full text-left text-sm font-medium text-foreground"
@@ -117,7 +124,7 @@ export function PdfSendTargetDialog({
               Another note
             </button>
             <Select value={notePath} onValueChange={setNotePath}>
-              <SelectTrigger className="mt-2 w-full justify-between bg-background">
+              <SelectTrigger className="mt-2 w-full justify-between bg-background/80">
                 <SelectValue placeholder="Choose a note" />
               </SelectTrigger>
               <SelectContent>

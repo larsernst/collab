@@ -36,10 +36,10 @@ export default function SettingsCalendarSection({
               key={key}
               onClick={() => setDateFormat(key)}
               className={cn(
-                'w-full flex items-center justify-between px-3 py-2.5 rounded-lg border text-left transition-all',
+                'w-full flex items-center justify-between rounded-xl border px-3 py-2.5 text-left transition-all app-motion-fast',
                 dateFormat === key
-                  ? 'border-primary/50 bg-primary/8'
-                  : 'border-border/40 hover:border-border hover:bg-accent/30',
+                  ? 'border-primary/45 bg-primary/8 shadow-sm shadow-primary/10'
+                  : 'border-border/40 bg-card/25 hover:border-border hover:bg-accent/25',
               )}
             >
               <div>
@@ -64,10 +64,10 @@ export default function SettingsCalendarSection({
             key={day}
             onClick={() => setWeekStart(day)}
             className={cn(
-              'flex-1 py-2.5 rounded-lg border text-sm font-medium transition-all',
+              'flex-1 rounded-xl border py-2.5 text-sm font-medium transition-all app-motion-fast',
               weekStart === day
-                ? 'border-primary/50 bg-primary/8 text-primary'
-                : 'border-border/40 hover:border-border hover:bg-accent/30 text-muted-foreground hover:text-foreground',
+                ? 'border-primary/45 bg-primary/8 text-primary shadow-sm shadow-primary/10'
+                : 'border-border/40 bg-card/25 text-muted-foreground hover:border-border hover:bg-accent/25 hover:text-foreground',
             )}
           >
             {day === 1 ? 'Monday' : 'Sunday'}
@@ -78,7 +78,7 @@ export default function SettingsCalendarSection({
       <Separator className="bg-border/40 my-4" />
 
       <SectionLabel>Preview</SectionLabel>
-      <div className="rounded-lg border border-border/40 bg-accent/10 p-3 text-sm text-muted-foreground">
+      <div className="rounded-xl border border-border/40 bg-card/25 p-3 text-sm text-muted-foreground">
         <p>Today: <span className="text-foreground font-medium">{formatDate(new Date(), dateFormat)}</span></p>
         <p className="mt-1.5">Week starts on: <span className="text-foreground font-medium">{weekStart === 1 ? 'Monday' : 'Sunday'}</span></p>
       </div>

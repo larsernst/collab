@@ -48,7 +48,7 @@ export default function SettingsCanvasSection({
         />
       </OptionRow>
 
-      <div className={cn('mt-3 rounded-lg border border-border/40 bg-accent/10 p-3 text-xs text-muted-foreground')}>
+      <div className={cn('mt-3 rounded-xl border border-border/35 bg-card/55 p-3 text-xs text-muted-foreground shadow-sm')}>
         {!webPreviewsEnabled
           ? <>Web previews are currently disabled globally, so canvas web cards and link hover previews will not fetch metadata.</>
           : <>When auto-load is off, web cards show a manual <span className="text-foreground font-medium">Load preview</span> action instead of fetching immediately.</>}

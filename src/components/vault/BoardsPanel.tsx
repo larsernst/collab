@@ -332,10 +332,10 @@ export default function BoardsPanel({ kind }: Props) {
               <div className="flex flex-col gap-1.5">
                 <label className="text-xs font-medium text-muted-foreground">Template</label>
                 <Select value={createTemplate} onValueChange={setCreateTemplate}>
-                  <SelectTrigger className="w-full">
+                  <SelectTrigger size="sm" className="w-full justify-between border-border/40 bg-background/55 text-xs hover:border-border/70">
                     <SelectValue placeholder="Choose a template" />
                   </SelectTrigger>
-                  <SelectContent>
+                  <SelectContent position="popper" align="start">
                     <SelectItem value="__blank__">Blank board</SelectItem>
                     {visibleTemplateChoices.map((template) => (
                       <SelectItem key={`${template.source}::${template.name}`} value={`${template.source}::${template.name}`}>
@@ -407,24 +407,28 @@ export default function BoardsPanel({ kind }: Props) {
           {kind === 'kanban' && (
             <Tooltip>
               <TooltipTrigger asChild>
-                <button
+                <Button
                   onClick={() => setTemplatesOpen(true)}
-                  className="w-6 h-6 flex items-center justify-center rounded text-muted-foreground hover:text-foreground hover:bg-accent/60 transition-colors"
+                  variant="ghost"
+                  size="icon"
+                  className="h-7 w-7 text-muted-foreground hover:bg-accent/60 hover:text-foreground"
                 >
                   <Library size={13} />
-                </button>
+                </Button>
               </TooltipTrigger>
               <TooltipContent side="bottom" className="text-xs">Manage templates</TooltipContent>
             </Tooltip>
           )}
           <Tooltip>
             <TooltipTrigger asChild>
-              <button
+              <Button
                 onClick={() => setCreating(true)}
-                className="w-6 h-6 flex items-center justify-center rounded text-muted-foreground hover:text-foreground hover:bg-accent/60 transition-colors"
-                >
-                  <Plus size={13} />
-                </button>
+                variant="ghost"
+                size="icon"
+                className="h-7 w-7 text-muted-foreground hover:bg-accent/60 hover:text-foreground"
+              >
+                <Plus size={13} />
+              </Button>
               </TooltipTrigger>
             <TooltipContent side="bottom" className="text-xs">New {label} board</TooltipContent>
           </Tooltip>
@@ -437,12 +441,14 @@ export default function BoardsPanel({ kind }: Props) {
           <div className="px-4 py-6 text-center text-xs text-muted-foreground/50">
             <Icon size={24} className="mx-auto mb-2 opacity-30" />
             <p>No {label.toLowerCase()} boards yet.</p>
-            <button
+            <Button
               onClick={() => setCreating(true)}
-              className="mt-2 text-primary/70 hover:text-primary transition-colors underline underline-offset-2"
+              variant="ghost"
+              size="sm"
+              className="mt-2 h-7 px-2.5 text-primary/80 hover:text-primary"
             >
               Create your first board
-            </button>
+            </Button>
           </div>
         ) : (
           boards.map((board) => {
@@ -457,10 +463,10 @@ export default function BoardsPanel({ kind }: Props) {
                   <div
                     onClick={() => handleOpen(board)}
                     className={cn(
-                      'group flex items-start gap-2 px-3 py-2 mx-1 rounded-sm cursor-pointer transition-colors select-none',
+                      'group mx-2 flex items-start gap-2 rounded-xl border px-3 py-2.5 cursor-pointer select-none transition-colors',
                       isActive
-                        ? 'bg-primary/15 text-foreground'
-                        : 'text-foreground/70 hover:text-foreground hover:bg-accent/50'
+                        ? 'border-primary/25 bg-primary/10 text-foreground shadow-sm'
+                        : 'border-border/35 bg-card/45 text-foreground/75 hover:border-border/55 hover:bg-accent/35 hover:text-foreground'
                     )}
                   >
                     <Icon size={13} className={cn('mt-0.5 shrink-0', color)} />
@@ -477,16 +483,18 @@ export default function BoardsPanel({ kind }: Props) {
                     </div>
                     <DropdownMenu>
                       <DropdownMenuTrigger asChild>
-                        <button
+                        <Button
                           onClick={(event) => event.stopPropagation()}
+                          variant="ghost"
+                          size="icon"
                           className={cn(
-                            'w-6 h-6 -mr-1 rounded flex items-center justify-center text-muted-foreground/60 hover:text-foreground hover:bg-accent/70 transition-colors opacity-0 group-hover:opacity-100 group-focus-within:opacity-100',
+                            '-mr-1 h-7 w-7 text-muted-foreground/60 opacity-0 transition-colors hover:bg-accent/70 hover:text-foreground group-hover:opacity-100 group-focus-within:opacity-100',
                             isActive && 'opacity-100',
                           )}
                           aria-label={`Board actions for ${board.name}`}
                         >
                           <MoreHorizontal size={13} />
-                        </button>
+                        </Button>
                       </DropdownMenuTrigger>
                       <DropdownMenuContent align="end" className="w-48">
                         {renderBoardActions(board)}
