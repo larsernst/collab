@@ -24,7 +24,7 @@ Build a local Flatpak bundle:
 This script will:
 
 1. add the Flathub remote if needed
-2. install the GNOME 48 runtime/SDK and the Node/Rust SDK extensions
+2. install the GNOME 50 runtime/SDK and the Node/Rust SDK extensions
 3. stage a filtered source tree under `.flatpak-builder/source-tree` so local builds do not copy `node_modules`, `dist`, `src-tauri/target`, or other large artifacts into the Flatpak source mirror
 4. build the app with `flatpak-builder`
 5. export a local repository
