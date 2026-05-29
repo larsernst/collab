@@ -36,6 +36,7 @@ import { asciiArrowLigatures, handleTabKey } from './indentationPlugins';
 import { useVaultStore } from '../../store/vaultStore';
 import { getVaultWikilinkAutocompleteItems } from '../../lib/vaultLinks';
 import { createMarkdownSearchPanel } from './MarkdownSearchPanel';
+import { createMathBlockShortcutExtension } from './mathBlockCommands';
 
 export type MarkdownEditorCompartments = {
   theme: Compartment;
@@ -141,6 +142,7 @@ export function createMarkdownEditorState({
         autocompletion({
           override: [slashCommandOverride, ...wikiAutocompleteOverride],
         }),
+        createMathBlockShortcutExtension(),
         keymap.of([
           { key: 'Tab', run: handleTabKey, shift: indentLess },
           ...defaultKeymap,

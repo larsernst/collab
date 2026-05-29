@@ -11,6 +11,12 @@ import type { RenderCtx } from './commandBarActions';
 import { detectMode, flattenFiles } from './commandBarUtils';
 import { completeInsertQuery } from './snippets';
 
+type CommandBarShortcutEvent = Pick<KeyboardEvent, 'altKey' | 'ctrlKey' | 'key' | 'metaKey'>;
+
+export function isCommandBarToggleShortcut(event: CommandBarShortcutEvent) {
+  return (event.ctrlKey || event.metaKey) && !event.altKey && (event.key === 'k' || event.key === 'p');
+}
+
 export function useCommandBarShell() {
   const [open, setOpen] = useState(false);
   const [input, setInput] = useState('');
@@ -23,7 +29,7 @@ export function useCommandBarShell() {
 
   useEffect(() => {
     const handler = (event: KeyboardEvent) => {
-      if ((event.ctrlKey || event.metaKey) && (event.key === 'k' || event.key === 'p')) {
+      if (isCommandBarToggleShortcut(event)) {
         event.preventDefault();
         setOpen((current) => !current);
       }

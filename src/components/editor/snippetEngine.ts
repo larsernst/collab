@@ -1,5 +1,6 @@
 import {
   EditorSelection,
+  Prec,
   RangeSetBuilder,
   StateEffect,
   StateField,
@@ -25,6 +26,10 @@ const PLACEHOLDER_RE = /<placeholder:([^>]+)>|<cursor>/g;
 
 const setSnippetSessionEffect = StateEffect.define<SnippetSession | null>();
 const clearSnippetSessionEffect = StateEffect.define<null>();
+
+function rangesTouch(fromA: number, toA: number, fromB: number, toB: number) {
+  return fromA <= toB && toA >= fromB;
+}
 
 export function parseSnippetTemplate(template: string): ParsedSnippet {
   let text = '';
@@ -69,6 +74,7 @@ const snippetSessionField = StateField.define<SnippetSession | null>({
     }
     if (!next) return null;
     if (tr.docChanged && !setExplicitly) {
+      const previous = value;
       next = {
         ...next,
         placeholders: next.placeholders.map((range) => ({
@@ -77,6 +83,16 @@ const snippetSessionField = StateField.define<SnippetSession | null>({
         })),
         finalCursor: next.finalCursor === null ? null : tr.changes.mapPos(next.finalCursor, -1),
       };
+
+      const previousActive = previous?.placeholders[previous.index];
+      const nextActive = next.placeholders[next.index];
+      if (previousActive && nextActive) {
+        tr.changes.iterChanges((fromA, toA, _fromB, toB) => {
+          if (!rangesTouch(fromA, toA, previousActive.from, previousActive.to)) return;
+          nextActive.from = Math.min(nextActive.from, tr.changes.mapPos(previousActive.from, -1));
+          nextActive.to = Math.max(nextActive.to, toB);
+        });
+      }
     }
     return next;
   },
@@ -107,7 +123,9 @@ function moveSnippetSelection(view: EditorView, direction: 1 | -1) {
   if (!session) return false;
   const current = session.placeholders[session.index];
   const selection = view.state.selection.main;
-  if (!current || selection.from !== current.from || selection.to !== current.to) {
+  const selectionIsCurrentPlaceholder = current && selection.from === current.from && selection.to === current.to;
+  const selectionIsInsideCurrentPlaceholder = current && selection.empty && selection.from >= current.from && selection.from <= current.to;
+  if (!selectionIsCurrentPlaceholder && !selectionIsInsideCurrentPlaceholder) {
     return false;
   }
 
@@ -140,10 +158,10 @@ function moveSnippetSelection(view: EditorView, direction: 1 | -1) {
 export function createSnippetSessionExtension(): Extension {
   return [
     snippetSessionField,
-    keymap.of([
+    Prec.high(keymap.of([
       { key: 'Tab', run: (view) => moveSnippetSelection(view, 1) },
       { key: 'Shift-Tab', run: (view) => moveSnippetSelection(view, -1) },
-    ]),
+    ])),
   ];
 }
 
