@@ -6,6 +6,11 @@ export type MathSolveResult =
 
 export type MathSolveMode = 'exact' | 'approximate';
 
+export type MathInputAnalysis =
+  | { kind: 'empty' }
+  | { kind: 'expression'; variables: string[] }
+  | { kind: 'equation'; variables: string[]; defaultVariable: string | null };
+
 function parseMathSource(source: string) {
   const normalized = source
     .trim()
@@ -33,7 +38,6 @@ function toApproximateText(expression: string) {
 }
 
 function chooseSolveVariable(variables: string[]) {
-  if (variables.includes('x')) return 'x';
   return variables.length === 1 ? variables[0] : null;
 }
 
@@ -50,7 +54,30 @@ function formatEquationSolution(variable: string, solution: string, mode: MathSo
   return `${variable} ${mode === 'approximate' ? '\\approx' : '\\in'} \\left\\{${parts.join(', ')}\\right\\}`;
 }
 
-export function solveMathInput(source: string, mode: MathSolveMode = 'exact'): MathSolveResult | null {
+export function analyzeMathInput(source: string): MathInputAnalysis {
+  const expression = parseMathSource(source);
+  if (!expression) return { kind: 'empty' };
+
+  const expressionText = expression.toString();
+  const variables = expression.variables();
+  const isEquation = expressionText.includes('=');
+
+  if (isEquation) {
+    return {
+      kind: 'equation',
+      variables,
+      defaultVariable: chooseSolveVariable(variables),
+    };
+  }
+
+  return { kind: 'expression', variables };
+}
+
+export function solveMathInput(
+  source: string,
+  mode: MathSolveMode = 'exact',
+  solveVariable?: string,
+): MathSolveResult | null {
   const expression = parseMathSource(source);
   if (!expression) return null;
 
@@ -59,7 +86,7 @@ export function solveMathInput(source: string, mode: MathSolveMode = 'exact'): M
   const isEquation = expressionText.includes('=');
 
   if (isEquation) {
-    const variable = chooseSolveVariable(variables);
+    const variable = solveVariable ?? chooseSolveVariable(variables);
     if (!variable) return null;
 
     const solution = expression.solveFor(variable).toString();

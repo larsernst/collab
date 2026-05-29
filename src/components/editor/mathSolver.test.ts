@@ -1,8 +1,16 @@
 import { describe, expect, it } from 'vitest';
 
-import { solveMathInput } from './mathSolver';
+import { analyzeMathInput, solveMathInput } from './mathSolver';
 
 describe('solveMathInput', () => {
+  it('analyzes ambiguous multi-variable equations', () => {
+    expect(analyzeMathInput('a*x+b=0')).toEqual({
+      kind: 'equation',
+      variables: ['a', 'b', 'x'],
+      defaultVariable: null,
+    });
+  });
+
   it('evaluates arithmetic expressions', () => {
     expect(solveMathInput('2+2')).toEqual({ kind: 'expression', latex: '4' });
   });
@@ -26,6 +34,14 @@ describe('solveMathInput', () => {
       kind: 'equation',
       variable: 'x',
       latex: 'x = 2',
+    });
+  });
+
+  it('solves a multi-variable equation for a selected variable', () => {
+    expect(solveMathInput('a*x+b=0', 'exact', 'x')).toEqual({
+      kind: 'equation',
+      variable: 'x',
+      latex: 'x = - \\frac{1}{{a}^{1}} \\cdot b',
     });
   });
 

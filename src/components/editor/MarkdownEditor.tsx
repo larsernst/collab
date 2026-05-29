@@ -1,4 +1,5 @@
 import { forwardRef, useEffect, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { EditorState } from '@codemirror/state';
 import { useUiStore, EDITOR_FONTS } from '../../store/uiStore';
 import {
@@ -36,6 +37,12 @@ import {
   handleFormattingShortcutKeydown,
 } from './MarkdownEditorContextMenu';
 import { openNonVaultMarkdownPreviewLink } from './markdownLinkOpen';
+import {
+  MATH_SOLVER_ACTION_EVENT,
+  type MathSolverActionDetail,
+} from './mathBlockCommands';
+import { solveMathInput } from './mathSolver';
+import type { MathSolveMode } from './mathSolver';
 
 export interface MarkdownEditorHandle {
   /** Wrap selection with `before`/`after`; if no selection, insert `before + placeholder + after` and select placeholder. */
@@ -64,6 +71,8 @@ interface MarkdownEditorProps {
   initialViewState?: MarkdownEditorViewState | null;
   onViewStateChange?: (editorViewState: MarkdownEditorViewState) => void;
 }
+
+type MathSolverActionState = MathSolverActionDetail;
 
 const IMAGE_DROP_EXTENSIONS = new Set(['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg', 'bmp', 'ico', 'avif']);
 
@@ -257,6 +266,117 @@ function openToolbarAction(action: 'icon' | 'table' | 'link' | 'image' | 'taskLi
   };
 }
 
+function buildMathSolverInsertion(mode: MathSolveMode, result: NonNullable<ReturnType<typeof solveMathInput>>) {
+  if (result.kind === 'equation') return `\n\\Rightarrow ${result.latex}`;
+  return mode === 'approximate' ? ` \\approx ${result.latex}` : ` = ${result.latex}`;
+}
+
+function MathSolverActionPopover({
+  action,
+  onSelect,
+  onClose,
+}: {
+  action: MathSolverActionState | null;
+  onSelect: (variable: string) => void;
+  onClose: () => void;
+}) {
+  const [activeIndex, setActiveIndex] = useState(0);
+  const firstButtonRef = useRef<HTMLButtonElement | null>(null);
+
+  useEffect(() => {
+    setActiveIndex(0);
+    window.requestAnimationFrame(() => {
+      firstButtonRef.current?.focus();
+    });
+  }, [action]);
+
+  if (!action || !action.anchorRect || typeof document === 'undefined') return null;
+
+  const width = 260;
+  const left = Math.min(
+    Math.max(12, action.anchorRect.left),
+    Math.max(12, window.innerWidth - width - 12),
+  );
+  const top = Math.min(action.anchorRect.bottom + 10, window.innerHeight - 24 - 170);
+
+  return createPortal(
+    <div className="fixed z-[130] w-[260px]" style={{ left, top }}>
+      <div
+        className="overflow-hidden rounded-lg border border-border/60 bg-popover/96 p-2 shadow-2xl ring-1 ring-foreground/10 backdrop-blur-sm-webkit"
+        role="dialog"
+        aria-label={action.mode === 'approximate' ? 'Choose variable to approximate' : 'Choose variable to solve'}
+        onKeyDown={(event) => {
+          if (event.key === 'Escape') {
+            event.preventDefault();
+            onClose();
+            return;
+          }
+          if (event.key === 'ArrowRight' || event.key === 'ArrowDown') {
+            event.preventDefault();
+            setActiveIndex((index) => (index + 1) % action.variables.length);
+            return;
+          }
+          if (event.key === 'ArrowLeft' || event.key === 'ArrowUp') {
+            event.preventDefault();
+            setActiveIndex((index) => (index - 1 + action.variables.length) % action.variables.length);
+            return;
+          }
+          if (event.key === 'Home') {
+            event.preventDefault();
+            setActiveIndex(0);
+            return;
+          }
+          if (event.key === 'End') {
+            event.preventDefault();
+            setActiveIndex(action.variables.length - 1);
+            return;
+          }
+          if (event.key === 'Enter') {
+            event.preventDefault();
+            onSelect(action.variables[activeIndex]);
+          }
+        }}
+      >
+        <div className="px-2 pb-1.5">
+          <div className="text-xs font-medium text-foreground">
+            {action.mode === 'approximate' ? 'Approximate for' : 'Solve for'}
+          </div>
+          <div className="mt-0.5 truncate text-[11px] text-muted-foreground">{action.source}</div>
+        </div>
+        <div className="flex flex-wrap gap-1.5">
+          {action.variables.map((variable, index) => (
+            <button
+              key={variable}
+              ref={index === 0 ? firstButtonRef : undefined}
+              type="button"
+              tabIndex={index === activeIndex ? 0 : -1}
+              aria-selected={index === activeIndex}
+              onClick={() => onSelect(variable)}
+              onFocus={() => setActiveIndex(index)}
+              className={[
+                'rounded-md border px-2.5 py-1.5 font-mono text-xs text-foreground transition-colors app-motion-fast',
+                index === activeIndex
+                  ? 'border-primary/65 bg-primary/16 ring-1 ring-primary/35'
+                  : 'border-border/50 bg-background/55 hover:border-primary/50 hover:bg-primary/12',
+              ].join(' ')}
+            >
+              {variable}
+            </button>
+          ))}
+        </div>
+        <button
+          type="button"
+          onClick={onClose}
+          className="mt-2 w-full rounded-md px-2 py-1 text-xs text-muted-foreground transition-colors app-motion-fast hover:bg-accent/35 hover:text-foreground"
+        >
+          Cancel
+        </button>
+      </div>
+    </div>,
+    document.body,
+  );
+}
+
 // ─── Component ───────────────────────────────────────────────────────────────
 
 export const MarkdownEditor = forwardRef<MarkdownEditorHandle, MarkdownEditorProps>(
@@ -267,6 +387,7 @@ export const MarkdownEditor = forwardRef<MarkdownEditorHandle, MarkdownEditorPro
     const [hoveredUrl, setHoveredUrl] = useState<string | null>(null);
     const [hoveredPdfRelativePath, setHoveredPdfRelativePath] = useState<string | null>(null);
     const [hoverRect, setHoverRect] = useState<DOMRect | null>(null);
+    const [mathSolverAction, setMathSolverAction] = useState<MathSolverActionState | null>(null);
     const contentRef = useRef(content);
     const onChangeRef = useRef(onChange);
     const onSaveRef = useRef(onSave);
@@ -355,6 +476,38 @@ export const MarkdownEditor = forwardRef<MarkdownEditorHandle, MarkdownEditorPro
         document.removeEventListener('keydown', handleDocumentKeydown, { capture: true });
       };
     }, []);
+
+    useEffect(() => {
+      const handleMathSolverAction = (event: Event) => {
+        const detail = (event as CustomEvent<MathSolverActionDetail>).detail;
+        if (!detail) return;
+        setMathSolverAction(detail);
+      };
+      window.addEventListener(MATH_SOLVER_ACTION_EVENT, handleMathSolverAction);
+      return () => window.removeEventListener(MATH_SOLVER_ACTION_EVENT, handleMathSolverAction);
+    }, []);
+
+    const applyMathSolverAction = (variable: string) => {
+      const action = mathSolverAction;
+      const view = viewRef.current;
+      if (!action || !view) return;
+
+      const result = solveMathInput(action.source, action.mode, variable);
+      if (!result) {
+        setMathSolverAction(null);
+        view.focus();
+        return;
+      }
+
+      const insert = buildMathSolverInsertion(action.mode, result);
+      view.dispatch({
+        changes: { from: action.range.to, insert },
+        selection: { anchor: action.range.to + insert.length },
+        scrollIntoView: true,
+      });
+      setMathSolverAction(null);
+      view.focus();
+    };
 
     // ─── Build editor ─────────────────────────────────────────────────────
 
@@ -529,6 +682,14 @@ export const MarkdownEditor = forwardRef<MarkdownEditorHandle, MarkdownEditorPro
           anchorRect={hoverRect}
           relativePath={hoveredPdfRelativePath}
           enabled={hoverWebLinkPreviewsEnabled}
+        />
+        <MathSolverActionPopover
+          action={mathSolverAction}
+          onSelect={applyMathSolverAction}
+          onClose={() => {
+            setMathSolverAction(null);
+            viewRef.current?.focus();
+          }}
         />
       </>
     );

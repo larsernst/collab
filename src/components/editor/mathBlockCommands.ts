@@ -2,7 +2,7 @@ import { EditorSelection, type Extension } from '@codemirror/state';
 import { EditorView, keymap } from '@codemirror/view';
 
 import { insertSnippetTemplate } from './snippetEngine';
-import { solveMathInput, type MathSolveMode } from './mathSolver';
+import { analyzeMathInput, solveMathInput, type MathSolveMode } from './mathSolver';
 
 export type MathBlockRange = {
   from: number;
@@ -15,6 +15,16 @@ export type MathBlockRange = {
 type MathSnippetCommand = {
   key: string;
   run: (view: EditorView) => boolean;
+};
+
+export const MATH_SOLVER_ACTION_EVENT = 'editor:math-solver-action';
+
+export type MathSolverActionDetail = {
+  source: string;
+  mode: MathSolveMode;
+  variables: string[];
+  range: { from: number; to: number };
+  anchorRect: { left: number; right: number; top: number; bottom: number } | null;
 };
 
 function isMathDelimiterLine(text: string) {
@@ -120,6 +130,14 @@ function selectedMathText(view: EditorView, range: { from: number; to: number })
   return range.from < range.to ? view.state.sliceDoc(range.from, range.to) : '';
 }
 
+function getAnchorRectAtPosition(view: EditorView, position: number) {
+  try {
+    return view.coordsAtPos(position);
+  } catch {
+    return null;
+  }
+}
+
 function insertMathTemplate(
   view: EditorView,
   buildTemplate: (selected: string) => string,
@@ -208,6 +226,20 @@ export function solveActiveMathInput(view: EditorView, mode: MathSolveMode = 'ex
   const range = getMathSolveRange(view, block);
   const source = selectedMathText(view, range);
   if (!source.trim()) return true;
+
+  const analysis = analyzeMathInput(source);
+  if (analysis.kind === 'equation' && !analysis.defaultVariable && analysis.variables.length > 1) {
+    window.dispatchEvent(new CustomEvent<MathSolverActionDetail>(MATH_SOLVER_ACTION_EVENT, {
+      detail: {
+        source,
+        mode,
+        variables: analysis.variables,
+        range,
+        anchorRect: getAnchorRectAtPosition(view, range.to),
+      },
+    }));
+    return true;
+  }
 
   const result = solveMathInput(source, mode);
   if (!result) return true;

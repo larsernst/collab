@@ -11,6 +11,7 @@ import {
   insertMathSubscript,
   insertMathSum,
   insertMathSuperscript,
+  MATH_SOLVER_ACTION_EVENT,
   selectMathBlockContents,
   solveActiveMathInput,
 } from './mathBlockCommands';
@@ -144,5 +145,25 @@ describe('mathBlockCommands', () => {
 
     expect(solveActiveMathInput(view)).toBe(true);
     expect(view.state.doc.toString()).toBe('$$\nx+1=3\n\\Rightarrow x = 2\n$$');
+  });
+
+  it('opens a variable chooser for multi-variable equations', () => {
+    const view = createView('$$\na*x+b=0\n$$', 11);
+    let detail: unknown = null;
+    const handler = (event: Event) => {
+      detail = (event as CustomEvent).detail;
+    };
+    window.addEventListener(MATH_SOLVER_ACTION_EVENT, handler);
+
+    expect(solveActiveMathInput(view)).toBe(true);
+
+    window.removeEventListener(MATH_SOLVER_ACTION_EVENT, handler);
+    expect(view.state.doc.toString()).toBe('$$\na*x+b=0\n$$');
+    expect(detail).toMatchObject({
+      source: 'a*x+b=0',
+      mode: 'exact',
+      variables: ['a', 'b', 'x'],
+      range: { from: 3, to: 10 },
+    });
   });
 });
