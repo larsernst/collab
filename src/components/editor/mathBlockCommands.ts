@@ -2,6 +2,7 @@ import { EditorSelection, type Extension } from '@codemirror/state';
 import { EditorView, keymap } from '@codemirror/view';
 
 import { insertSnippetTemplate } from './snippetEngine';
+import { solveMathInput, type MathSolveMode } from './mathSolver';
 
 export type MathBlockRange = {
   from: number;
@@ -92,6 +93,29 @@ function getMathCommandRange(view: EditorView, block: MathBlockRange) {
   return getMathTokenBeforeCursor(view, block) ?? range;
 }
 
+function trimRange(view: EditorView, range: { from: number; to: number }) {
+  let from = range.from;
+  let to = range.to;
+  while (from < to && /\s/.test(view.state.sliceDoc(from, from + 1))) from += 1;
+  while (to > from && /\s/.test(view.state.sliceDoc(to - 1, to))) to -= 1;
+  return { from, to };
+}
+
+function getMathSolveRange(view: EditorView, block: MathBlockRange) {
+  const selectionRange = clampRangeToMathInner(view, block);
+  if (selectionRange.from < selectionRange.to) return trimRange(view, selectionRange);
+
+  const cursor = view.state.selection.main.from;
+  const line = view.state.doc.lineAt(cursor);
+  const lineRange = trimRange(view, {
+    from: Math.max(line.from, block.innerFrom),
+    to: Math.min(line.to, block.innerTo),
+  });
+  if (lineRange.from < lineRange.to) return lineRange;
+
+  return trimRange(view, { from: block.innerFrom, to: block.innerTo });
+}
+
 function selectedMathText(view: EditorView, range: { from: number; to: number }) {
   return range.from < range.to ? view.state.sliceDoc(range.from, range.to) : '';
 }
@@ -177,8 +201,35 @@ export function selectMathBlockContents(view: EditorView) {
   return true;
 }
 
+export function solveActiveMathInput(view: EditorView, mode: MathSolveMode = 'exact') {
+  const block = getActiveMathBlock(view);
+  if (!block) return false;
+
+  const range = getMathSolveRange(view, block);
+  const source = selectedMathText(view, range);
+  if (!source.trim()) return true;
+
+  const result = solveMathInput(source, mode);
+  if (!result) return true;
+
+  const insert = result.kind === 'equation'
+    ? `\n\\Rightarrow ${result.latex}`
+    : mode === 'approximate'
+      ? ` \\approx ${result.latex}`
+      : ` = ${result.latex}`;
+  view.dispatch({
+    changes: { from: range.to, insert },
+    selection: { anchor: range.to + insert.length },
+    scrollIntoView: true,
+  });
+  view.focus();
+  return true;
+}
+
 export function createMathBlockShortcutExtension(): Extension {
   const commands: MathSnippetCommand[] = [
+    { key: 'Mod-Enter', run: solveActiveMathInput },
+    { key: 'Mod-Alt-Enter', run: (view) => solveActiveMathInput(view, 'approximate') },
     { key: 'Mod-Alt-f', run: insertMathFraction },
     { key: 'Mod-Alt-r', run: insertMathRoot },
     { key: 'Mod-Alt-p', run: insertMathSuperscript },

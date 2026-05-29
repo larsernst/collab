@@ -12,6 +12,7 @@ import {
   insertMathSum,
   insertMathSuperscript,
   selectMathBlockContents,
+  solveActiveMathInput,
 } from './mathBlockCommands';
 import { createSnippetSessionExtension } from './snippetEngine';
 
@@ -122,5 +123,26 @@ describe('mathBlockCommands', () => {
 
     expect(selectMathBlockContents(view)).toBe(true);
     expect(view.state.sliceDoc(view.state.selection.main.from, view.state.selection.main.to)).toBe('x + 1');
+  });
+
+  it('appends an evaluated expression result on Ctrl+Enter command', () => {
+    const view = createView('$$\n2+2\n$$', 6);
+
+    expect(solveActiveMathInput(view)).toBe(true);
+    expect(view.state.doc.toString()).toBe('$$\n2+2 = 4\n$$');
+  });
+
+  it('appends an approximated expression result for approximate command', () => {
+    const view = createView('$$\n\\frac{1}{2}\n$$', 13);
+
+    expect(solveActiveMathInput(view, 'approximate')).toBe(true);
+    expect(view.state.doc.toString()).toBe('$$\n\\frac{1}{2} \\approx 0.5\n$$');
+  });
+
+  it('appends an equation solution on Ctrl+Enter command', () => {
+    const view = createView('$$\nx+1=3\n$$', 8);
+
+    expect(solveActiveMathInput(view)).toBe(true);
+    expect(view.state.doc.toString()).toBe('$$\nx+1=3\n\\Rightarrow x = 2\n$$');
   });
 });

@@ -75,6 +75,8 @@ const GROUPS: Group[] = [
       { label: 'Open task list editor', keys: [['Ctrl', 'Alt', 'K']] },
       { label: 'Open math block editor', keys: [['Ctrl', 'Alt', 'M']] },
       { label: 'Open code block editor', keys: [['Ctrl', 'Alt', 'C']] },
+      { label: 'Evaluate or solve math', keys: [['Ctrl', 'Enter']] },
+      { label: 'Approximate math', keys: [['Ctrl', 'Alt', 'Enter']] },
       { label: 'Math fraction', keys: [['Ctrl', 'Alt', 'F']] },
       { label: 'Math square root', keys: [['Ctrl', 'Alt', 'R']] },
       { label: 'Math superscript', keys: [['Ctrl', 'Alt', 'P']] },
