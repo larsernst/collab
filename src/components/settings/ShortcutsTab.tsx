@@ -85,6 +85,8 @@ const GROUPS: Group[] = [
       { label: 'Math integral', keys: [['Ctrl', 'Alt', 'E']] },
       { label: 'Math matrix', keys: [['Ctrl', 'Alt', 'X']] },
       { label: 'Select math block contents', keys: [['Ctrl', 'Alt', 'A']] },
+      { label: 'Add 2D math plot', keys: [['Ctrl', 'Alt', '2']] },
+      { label: 'Add 3D math plot', keys: [['Ctrl', 'Alt', '3']] },
     ],
   },
   {

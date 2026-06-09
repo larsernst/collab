@@ -3,6 +3,7 @@ import { EditorView, keymap } from '@codemirror/view';
 
 import { insertSnippetTemplate } from './snippetEngine';
 import { analyzeMathInput, solveMathInput, type MathSolveMode } from './mathSolver';
+import { buildDefaultPlotDirective, type MathPlotKind } from './mathPlotSpec';
 
 export type MathBlockRange = {
   from: number;
@@ -208,6 +209,35 @@ export function insertMathMatrix(view: EditorView) {
   ));
 }
 
+export function insertOrUpdateMathPlotDirective(view: EditorView, kind: MathPlotKind) {
+  const block = getActiveMathBlock(view);
+  if (!block) return false;
+
+  const prefix = kind === '2d' ? '%plot2d' : '%plot3d';
+  const directive = buildDefaultPlotDirective(kind, block.text);
+  const startLine = view.state.doc.lineAt(block.innerFrom).number;
+  const endLine = view.state.doc.lineAt(block.innerTo).number;
+
+  for (let lineNumber = startLine; lineNumber <= endLine; lineNumber += 1) {
+    const line = view.state.doc.line(lineNumber);
+    if (line.text.trim().startsWith(prefix)) {
+      insertSnippetTemplate(view, directive, { from: line.from, to: line.to });
+      return true;
+    }
+  }
+
+  insertSnippetTemplate(view, `${directive}\n`, { from: block.innerFrom, to: block.innerFrom });
+  return true;
+}
+
+export function insertMathPlot2D(view: EditorView) {
+  return insertOrUpdateMathPlotDirective(view, '2d');
+}
+
+export function insertMathPlot3D(view: EditorView) {
+  return insertOrUpdateMathPlotDirective(view, '3d');
+}
+
 export function selectMathBlockContents(view: EditorView) {
   const block = getActiveMathBlock(view);
   if (!block) return false;
@@ -270,6 +300,8 @@ export function createMathBlockShortcutExtension(): Extension {
     { key: 'Mod-Alt-e', run: insertMathIntegral },
     { key: 'Mod-Alt-x', run: insertMathMatrix },
     { key: 'Mod-Alt-a', run: selectMathBlockContents },
+    { key: 'Mod-Alt-2', run: insertMathPlot2D },
+    { key: 'Mod-Alt-3', run: insertMathPlot3D },
   ];
 
   return keymap.of(commands);

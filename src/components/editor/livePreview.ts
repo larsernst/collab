@@ -66,6 +66,9 @@ import { Checkbox } from '../ui/checkbox';
 import { resolveNoteAssetTarget, isLikelyImagePath, type NoteAssetTarget } from '../../lib/noteAssets';
 import { useVaultStore } from '../../store/vaultStore';
 import { tauriCommands } from '../../lib/tauri';
+import { MathPlot2D } from './MathPlot2D';
+import { MathPlot3D } from './MathPlot3D';
+import { parseMathPlots } from './mathPlotSpec';
 
 export function buildTaskCheckboxToggleChange(markerFrom: number, markerTo: number, checked: boolean) {
   return {
@@ -140,15 +143,50 @@ class MathWidget extends WidgetType {
   toDOM() {
     const el = document.createElement(this.display ? 'div' : 'span');
     el.className = this.display ? 'cm-lp-math-block' : 'cm-lp-math-inline';
+    const parsed = this.display ? parseMathPlots(this.src) : null;
+    const mathSource = parsed?.mathSource ?? this.src;
     try {
-      katex.render(this.src.trim(), el, { displayMode: this.display, throwOnError: false });
+      katex.render(mathSource.trim(), el, { displayMode: this.display, throwOnError: false });
     } catch {
-      el.textContent = this.display ? `$$\n${this.src}\n$$` : `$${this.src}$`;
+      el.textContent = this.display ? `$$\n${mathSource}\n$$` : `$${this.src}$`;
+    }
+
+    if (parsed && (parsed.plots.length > 0 || parsed.errors.length > 0)) {
+      const plotMount = document.createElement('div');
+      plotMount.className = 'cm-lp-math-plots';
+      el.appendChild(plotMount);
+      const root = createRoot(plotMount);
+      root.render(React.createElement(MathPlotPreviewStack, { parsed }));
+      (el as HTMLElement & { __cmReactRoot?: Root }).__cmReactRoot = root;
     }
     return el;
   }
 
+  destroy(dom: HTMLElement) {
+    (dom as HTMLElement & { __cmReactRoot?: Root }).__cmReactRoot?.unmount();
+  }
+
   ignoreEvent() { return false; }
+}
+
+function MathPlotPreviewStack({ parsed }: { parsed: ReturnType<typeof parseMathPlots> }) {
+  return (
+    React.createElement('div', { className: 'mt-3 space-y-3 text-left' },
+      ...parsed.errors.map((error, index) => React.createElement(
+        'div',
+        {
+          key: `error-${index}`,
+          className: 'rounded-md border border-destructive/35 bg-destructive/8 px-3 py-2 text-xs text-destructive',
+        },
+        error,
+      )),
+      ...parsed.plots.map((plot, index) => (
+        plot.kind === '2d'
+          ? React.createElement(MathPlot2D, { key: `plot-${index}`, spec: plot })
+          : React.createElement(MathPlot3D, { key: `plot-${index}`, spec: plot })
+      )),
+    )
+  );
 }
 
 function getCodeLanguageIcon(language: string) {

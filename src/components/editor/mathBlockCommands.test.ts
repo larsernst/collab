@@ -7,6 +7,8 @@ import {
   insertMathFraction,
   insertMathIntegral,
   insertMathMatrix,
+  insertMathPlot2D,
+  insertMathPlot3D,
   insertMathRoot,
   insertMathSubscript,
   insertMathSum,
@@ -124,6 +126,20 @@ describe('mathBlockCommands', () => {
 
     expect(selectMathBlockContents(view)).toBe(true);
     expect(view.state.sliceDoc(view.state.selection.main.from, view.state.selection.main.to)).toBe('x + 1');
+  });
+
+  it('inserts 2D plot directives near the top of a math block', () => {
+    const view = createView('$$\ny=\\sin(x)\n$$', 6);
+
+    expect(insertMathPlot2D(view)).toBe(true);
+    expect(view.state.doc.toString()).toBe('$$\n%plot2d x=-10..10, samples=600\ny=\\sin(x)\n$$');
+  });
+
+  it('inserts 3D plot directives and updates existing directives', () => {
+    const view = createView('$$\n%plot3d z=old, x=-1..1, y=-1..1\nz=x^2+y^2\n$$', 45);
+
+    expect(insertMathPlot3D(view)).toBe(true);
+    expect(view.state.doc.toString()).toBe('$$\n%plot3d x=-5..5, y=-5..5, samples=60\nz=x^2+y^2\n$$');
   });
 
   it('appends an evaluated expression result on Ctrl+Enter command', () => {
