@@ -9,6 +9,9 @@
     "build": "tsc && vite build",
     "preview": "vite preview",
     "test": "vitest run",
+    "admin:build": "vite build --config apps/admin-web/vite.config.ts && tsc --noEmit -p apps/admin-web/tsconfig.json",
+    "admin:test": "vitest run --config apps/admin-web/vite.config.ts",
+    "admin:dev": "vite --config apps/admin-web/vite.config.ts",
     "test:watch": "vitest",
     "tauri": "tauri"
   },

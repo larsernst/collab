@@ -26,6 +26,8 @@ services:
       COLLAB_PORT: 8787
       COLLAB_DATABASE_URL: postgres://${POSTGRES_USER:-collab}:${POSTGRES_PASSWORD:-collab-development-only}@postgres:5432/${POSTGRES_DB:-collab}
       COLLAB_BLOB_DIR: /data/blobs
+      COLLAB_ADMIN_WEB_DIR: /app/admin-web
+      COLLAB_BROWSER_SECURE_COOKIES: ${COLLAB_BROWSER_SECURE_COOKIES:-false}
       COLLAB_LOG_FORMAT: ${COLLAB_LOG_FORMAT:-json}
       COLLAB_LOG: ${COLLAB_LOG:-collab_server=info,tower_http=info}
     depends_on:

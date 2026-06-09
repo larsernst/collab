@@ -1,16 +1,25 @@
-use crate::{config::ServerConfig, database, storage::BlobStorage};
+use crate::{api, config::ServerConfig, database, storage::BlobStorage};
 use axum::{
     extract::{Request, State},
     http::{HeaderName, HeaderValue, StatusCode},
     middleware::{self, Next},
     response::{IntoResponse, Response},
-    routing::get,
+    routing::{get, patch, post},
     Json, Router,
 };
 use collab_protocol::{DataResponse, HealthState, HealthStatus, PROTOCOL_VERSION};
 use sqlx::PgPool;
-use std::sync::Arc;
-use tower_http::trace::TraceLayer;
+use std::{
+    collections::HashMap,
+    sync::Arc,
+    time::{Duration, Instant},
+};
+use tokio::sync::Mutex;
+use tower_http::{
+    services::{ServeDir, ServeFile},
+    set_header::SetResponseHeaderLayer,
+    trace::TraceLayer,
+};
 use uuid::Uuid;
 
 const REQUEST_ID_HEADER: &str = "x-request-id";
@@ -20,6 +29,8 @@ pub struct AppState {
     pub config: ServerConfig,
     pub database: PgPool,
     pub blobs: Arc<dyn BlobStorage>,
+    pub login_limiter: LoginRateLimiter,
+    pub started_at: Instant,
 }
 
 impl AppState {
@@ -28,17 +39,69 @@ impl AppState {
             config,
             database,
             blobs,
+            login_limiter: LoginRateLimiter::default(),
+            started_at: Instant::now(),
         }
     }
 }
 
 pub fn build_router(state: AppState) -> Router {
+    let admin_index = state.config.admin_web_dir.join("index.html");
+    let admin_assets =
+        ServeDir::new(&state.config.admin_web_dir).fallback(ServeFile::new(admin_index));
     Router::new()
         .route("/health/live", get(liveness))
         .route("/health/ready", get(readiness))
+        .route("/api/v1/auth/bootstrap-status", get(api::bootstrap_status))
+        .route("/api/v1/auth/bootstrap", post(api::bootstrap))
+        .route("/api/v1/auth/login", post(api::login))
+        .route("/api/v1/auth/logout", post(api::logout))
+        .route("/api/v1/users/me", get(api::me))
+        .route("/api/v1/admin/overview", get(api::overview))
+        .route("/api/v1/admin/users", get(api::list_users).post(api::create_user))
+        .route("/api/v1/admin/users/{user_id}", patch(api::update_user))
+        .route(
+            "/api/v1/admin/users/{user_id}/revoke-sessions",
+            post(api::revoke_user_sessions),
+        )
+        .route("/api/v1/admin/audit-events", get(api::audit_events))
+        .nest_service("/admin", admin_assets)
+        .layer(SetResponseHeaderLayer::if_not_present(
+            HeaderName::from_static("content-security-policy"),
+            HeaderValue::from_static(
+                "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'",
+            ),
+        ))
+        .layer(SetResponseHeaderLayer::if_not_present(
+            HeaderName::from_static("x-content-type-options"),
+            HeaderValue::from_static("nosniff"),
+        ))
         .layer(middleware::from_fn(request_id))
         .layer(TraceLayer::new_for_http())
         .with_state(state)
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct LoginRateLimiter {
+    attempts: Arc<Mutex<HashMap<String, Vec<Instant>>>>,
+}
+
+impl LoginRateLimiter {
+    pub async fn allow(&self, key: &str) -> bool {
+        let now = Instant::now();
+        let mut attempts = self.attempts.lock().await;
+        let entries = attempts.entry(key.to_owned()).or_default();
+        entries.retain(|attempt| now.duration_since(*attempt) < Duration::from_secs(60));
+        if entries.len() >= 5 {
+            return false;
+        }
+        entries.push(now);
+        true
+    }
+
+    pub async fn clear(&self, key: &str) {
+        self.attempts.lock().await.remove(key);
+    }
 }
 
 async fn liveness() -> Json<DataResponse<HealthStatus>> {
@@ -90,7 +153,7 @@ async fn request_id(mut request: Request, next: Next) -> Response {
 
 #[cfg(test)]
 mod tests {
-    use super::{build_router, AppState};
+    use super::{build_router, AppState, LoginRateLimiter};
     use crate::{config::ServerConfig, storage::FileSystemBlobStorage};
     use axum::{
         body::Body,
@@ -158,5 +221,16 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(response.headers()["x-request-id"], "caller-request");
+    }
+
+    #[tokio::test]
+    async fn login_rate_limiter_blocks_the_sixth_attempt_and_can_reset() {
+        let limiter = LoginRateLimiter::default();
+        for _ in 0..5 {
+            assert!(limiter.allow("alice").await);
+        }
+        assert!(!limiter.allow("alice").await);
+        limiter.clear("alice").await;
+        assert!(limiter.allow("alice").await);
     }
 }

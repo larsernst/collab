@@ -17,6 +17,8 @@ curl http://127.0.0.1:8788/health/ready
 ```
 
 The gateway listens on `127.0.0.1:8788` by default. PostgreSQL is not published to the host.
+The administration interface is available at `http://127.0.0.1:8788/admin/`.
+On a fresh database it opens the one-time first-administrator bootstrap flow.
 
 The server image uses `cargo-chef` to keep compiled Rust dependencies in a
 separate Docker layer. Normal source changes rebuild the application crate but
@@ -59,6 +61,9 @@ Supported environment variables:
 - `COLLAB_PORT`
 - `COLLAB_DATABASE_URL`
 - `COLLAB_BLOB_DIR`
+- `COLLAB_ADMIN_WEB_DIR`
+- `COLLAB_BROWSER_SECURE_COOKIES`: use `true` behind production HTTPS
+- `COLLAB_SESSION_TTL_HOURS`
 - `COLLAB_LOG`
 - `COLLAB_LOG_FORMAT`: `pretty` or `json`
 
@@ -69,6 +74,8 @@ cargo test --workspace
 cargo check --workspace
 pnpm test
 pnpm exec tsc --noEmit
+pnpm admin:test
+pnpm admin:build
 docker compose config
 ./scripts/server-smoke.sh
 ```
@@ -77,8 +84,13 @@ PostgreSQL migration tests run when `COLLAB_TEST_DATABASE_URL` is set:
 
 ```bash
 COLLAB_TEST_DATABASE_URL=postgres://collab:collab@127.0.0.1:5432/collab_test \
-  cargo test -p collab-server database::tests
+  cargo test -p collab-server
 ```
+
+The live database test covers migration idempotency plus the browser bootstrap,
+login, administrator authorization, CSRF, disabled-user, and session-revocation
+lifecycle. Use a disposable test database because the lifecycle test truncates
+the Phase 2 identity tables before running.
 
 ## Health Endpoints
 

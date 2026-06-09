@@ -1,5 +1,15 @@
 # Admin Web Interface
 
+## Implementation Status
+
+The initial Phase 2 administration slice is implemented. It includes bootstrap,
+browser login/logout, the dashboard shell, user creation, disabling, session
+revocation, read-only vault inventory, and redacted audit views.
+
+Still pending in Phase 2: invitations, password self-service and dedicated reset
+controls, richer storage/operational summaries, browser automation,
+accessibility auditing, and the native login flow.
+
 ## Purpose
 
 The self-hosted server includes a small browser-based administration interface.

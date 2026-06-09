@@ -19,6 +19,9 @@ pub struct ServerConfig {
     pub port: u16,
     pub database_url: String,
     pub blob_dir: PathBuf,
+    pub admin_web_dir: PathBuf,
+    pub browser_secure_cookies: bool,
+    pub session_ttl_hours: i64,
     pub log_filter: String,
     pub log_format: LogFormat,
 }
@@ -30,6 +33,9 @@ impl Default for ServerConfig {
             port: 8787,
             database_url: "postgres://collab:collab@127.0.0.1:5432/collab".into(),
             blob_dir: PathBuf::from("server-data/blobs"),
+            admin_web_dir: PathBuf::from("apps/admin-web/dist"),
+            browser_secure_cookies: false,
+            session_ttl_hours: 12,
             log_filter: "collab_server=info,tower_http=info".into(),
             log_format: LogFormat::Pretty,
         }
@@ -74,6 +80,19 @@ impl ServerConfig {
         if let Ok(value) = env::var("COLLAB_BLOB_DIR") {
             self.blob_dir = value.into();
         }
+        if let Ok(value) = env::var("COLLAB_ADMIN_WEB_DIR") {
+            self.admin_web_dir = value.into();
+        }
+        if let Ok(value) = env::var("COLLAB_BROWSER_SECURE_COOKIES") {
+            self.browser_secure_cookies = value
+                .parse()
+                .map_err(|_| ConfigError::Invalid("COLLAB_BROWSER_SECURE_COOKIES"))?;
+        }
+        if let Ok(value) = env::var("COLLAB_SESSION_TTL_HOURS") {
+            self.session_ttl_hours = value
+                .parse()
+                .map_err(|_| ConfigError::Invalid("COLLAB_SESSION_TTL_HOURS"))?;
+        }
         if let Ok(value) = env::var("COLLAB_LOG") {
             self.log_filter = value;
         }
@@ -98,6 +117,12 @@ impl ServerConfig {
         }
         if self.blob_dir.as_os_str().is_empty() {
             return Err(ConfigError::Invalid("COLLAB_BLOB_DIR"));
+        }
+        if self.admin_web_dir.as_os_str().is_empty() {
+            return Err(ConfigError::Invalid("COLLAB_ADMIN_WEB_DIR"));
+        }
+        if self.session_ttl_hours <= 0 || self.session_ttl_hours > 24 * 30 {
+            return Err(ConfigError::Invalid("COLLAB_SESSION_TTL_HOURS"));
         }
         Ok(())
     }

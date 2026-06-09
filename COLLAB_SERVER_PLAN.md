@@ -14,7 +14,7 @@ This document is the source of truth for implementation progress. Update task ch
 | --- | --- | --- |
 | 0. Architecture and prerequisites | Complete | 100% |
 | 1. Server foundation and Compose | Complete | 100% |
-| 2. Authentication and administration | Not started | 0% |
+| 2. Authentication and administration | In progress | 45% |
 | 3. Hosted vault storage and permissions | Not started | 0% |
 | 4. Native hosted-vault client | Not started | 0% |
 | 5. Live collaboration | Not started | 0% |
@@ -150,26 +150,26 @@ surface before hosted vault mutations are exposed.
 
 ### Tasks
 
-- [ ] Implement the user, credential, session, invitation, and audit-event tables.
-- [ ] Add one-time first-administrator bootstrap.
+- [x] Implement the user, credential, session, invitation, and audit-event tables.
+- [x] Add one-time first-administrator bootstrap.
 - [ ] Add admin-created users and expiring invitation links.
-- [ ] Hash passwords using Argon2id with configurable secure defaults.
+- [x] Hash passwords using Argon2id with configurable secure defaults.
 - [ ] Implement login, token refresh, logout, and session revocation.
 - [ ] Implement password change and administrator password reset.
-- [ ] Implement disabled-user behavior.
-- [ ] Add login rate limiting and basic abuse protection.
-- [ ] Add authenticated `/api/v1/auth`, `/api/v1/users`, and administration endpoints.
-- [ ] Ensure client-supplied user IDs are never trusted for authorization.
-- [ ] Add audit events for authentication and user-administration actions.
-- [ ] Add a server-hosted admin web interface using the Collab visual language.
-- [ ] Add secure browser authentication for the admin interface using hardened HTTP-only cookies and CSRF protection.
+- [x] Implement disabled-user behavior.
+- [x] Add login rate limiting and basic abuse protection.
+- [x] Add authenticated `/api/v1/auth`, `/api/v1/users`, and administration endpoints.
+- [x] Ensure client-supplied user IDs are never trusted for authorization.
+- [x] Add audit events for authentication and user-administration actions.
+- [x] Add a server-hosted admin web interface using the Collab visual language.
+- [x] Add secure browser authentication for the admin interface using hardened HTTP-only cookies and CSRF protection.
 - [ ] Add an admin dashboard with:
   - Server health, version, uptime, and storage summary.
   - User, active-session, invitation, and hosted-vault counts.
   - Recent redacted audit events and operational warnings.
   - Read-only hosted-vault inventory ready for Phase 3 management actions.
 - [ ] Add web user-management flows for create, invite, disable, reset password, revoke sessions, and inspect user activity.
-- [ ] Add authenticated administration summary and audit-event endpoints.
+- [x] Add authenticated administration summary and audit-event endpoints.
 - [ ] Add frontend tests, accessibility checks, and browser-level admin-flow tests.
 - [ ] Define native credential storage using the operating system credential store.
 - [ ] Add a minimal native login and server-connection flow.
@@ -182,7 +182,7 @@ surface before hosted vault mutations are exposed.
 - [ ] Security-focused integration tests cover all authentication flows.
 - [ ] An administrator can securely bootstrap and manage users through the web interface.
 - [ ] The dashboard exposes useful health, audit, and vault summaries without exposing raw secrets or unrestricted server logs.
-- [ ] Non-admin users cannot access admin pages or administration APIs.
+- [x] Non-admin users cannot access admin pages or administration APIs.
 
 ---
 
@@ -392,3 +392,4 @@ Add one entry whenever a meaningful server milestone lands.
 | 2026-06-09 | Phase 0 | Accepted authentication, storage, CRDT, offline-sync, domain, protocol, security, migration, workspace, and verification decisions | Checked contracts against current Rust/TypeScript models and local vault behavior | Begin Phase 1 workspace and server foundation |
 | 2026-06-09 | Phase 1 | Added the Rust workspace, shared core/protocol crates, standalone server, PostgreSQL migrations, blob storage, cached server image, Compose stack, Caddy gateway, health checks, and development docs | `cargo test --workspace` (114 tests), live PostgreSQL migration test, `cargo check --workspace`, `pnpm test` (594 tests), TypeScript check, Compose health/persistence recreation checks, and `./scripts/server-smoke.sh` | Begin Phase 2 authentication and administration |
 | 2026-06-09 | Phase 2 planning | Added a server-hosted Collab-style admin web interface for user management, health, audit data, and phased vault administration | Reviewed authentication, authorization, logging, and Phase 3 API boundaries | Implement authentication and the admin web foundation together |
+| 2026-06-09 | Phase 2 | Implemented the first secure administration slice: identity/session/audit schema, Argon2id credentials, one-time bootstrap, browser login/logout, CSRF, login rate limiting, disabled-user/session revocation behavior, admin APIs, and a server-hosted Collab-style dashboard | Focused Rust and admin-web tests, live PostgreSQL bootstrap/login/admin/CSRF/revocation lifecycle, production admin build, Compose image build, and live Caddy API flow | Add invitations, rotating native refresh tokens, password self-service, operational/storage summaries, browser automation/accessibility coverage, and native login |

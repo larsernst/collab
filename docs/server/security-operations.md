@@ -48,6 +48,9 @@ The first version does not defend against a malicious server operator. Hosted va
   request headers, cookies, tokens, password material, or invitation secrets.
 - Every administration mutation emits an audit event containing the acting user,
   action, target identifiers, result, request ID, and sanitized metadata.
+- Browser session and CSRF secrets are generated from operating-system
+  randomness and stored in PostgreSQL only as SHA-256 digests.
+- Passwords are stored only as Argon2id hashes with per-password salts.
 
 ## Database Migrations
 

@@ -81,6 +81,8 @@ Initial error families:
 
 Authentication and administration:
 
+- `GET /api/v1/auth/bootstrap-status`
+- `POST /api/v1/auth/bootstrap`
 - `POST /api/v1/auth/login`
 - `POST /api/v1/auth/refresh`
 - `POST /api/v1/auth/logout`
@@ -88,6 +90,7 @@ Authentication and administration:
 - `GET /api/v1/users/me`
 - `GET|POST /api/v1/admin/users`
 - `PATCH /api/v1/admin/users/{userId}`
+- `POST /api/v1/admin/users/{userId}/revoke-sessions`
 - `POST /api/v1/admin/invitations`
 - `GET /api/v1/admin/overview`
 - `GET /api/v1/admin/audit-events`
