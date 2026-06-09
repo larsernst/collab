@@ -5,10 +5,11 @@ use crate::models::template::{
     TemplateSource,
 };
 use crate::state::AppState;
+use collab_core::normalize_relative_path as normalize_core_relative_path;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
-use std::path::{Component, Path, PathBuf};
+use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 use tauri::State;
 
@@ -65,24 +66,7 @@ fn app_config_dir() -> Result<PathBuf, String> {
 }
 
 fn normalize_relative_path(relative_path: &str) -> Result<PathBuf, String> {
-    let mut out = PathBuf::new();
-
-    for component in Path::new(relative_path).components() {
-        match component {
-            Component::Normal(part) => out.push(part),
-            Component::CurDir => {}
-            Component::ParentDir => {
-                if !out.pop() {
-                    return Err("Path escapes the vault root".into());
-                }
-            }
-            Component::RootDir | Component::Prefix(_) => {
-                return Err("Path must be relative to the vault root".into());
-            }
-        }
-    }
-
-    Ok(out)
+    normalize_core_relative_path(relative_path).map_err(|error| error.to_string())
 }
 
 fn resolve_vault_path(vault_path: &str, relative_path: &str) -> Result<PathBuf, String> {

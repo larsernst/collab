@@ -1,8 +1,8 @@
 # Server Workspace and Verification
 
-## Planned Rust Workspace
+## Rust Workspace
 
-The repository root will become the Cargo workspace root during Phase 1:
+The repository root is the Cargo workspace root:
 
 ```text
 Cargo.toml
@@ -50,7 +50,12 @@ cargo test --workspace
 cargo check --workspace
 docker compose config
 docker compose up --build --wait
+./scripts/server-smoke.sh
 ```
+
+`Dockerfile.server` uses `cargo-chef` to cache compiled dependencies separately
+from application source. The first image build warms the cache. Later source-only
+changes reuse the dependency layer; Cargo manifest and lockfile changes rebuild it.
 
 The server crate must add:
 

@@ -1,0 +1,26 @@
+[package]
+name = "collab-server"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+async-trait.workspace = true
+axum.workspace = true
+collab-core = { path = "../collab-core" }
+collab-protocol = { path = "../collab-protocol" }
+serde.workspace = true
+serde_json.workspace = true
+sqlx.workspace = true
+tempfile.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tower-http.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+uuid.workspace = true
+
+[dev-dependencies]
+http-body-util.workspace = true
+tower.workspace = true

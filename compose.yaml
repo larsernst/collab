@@ -1,0 +1,62 @@
+name: collab-server
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-collab}
+      POSTGRES_USER: ${POSTGRES_USER:-collab}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-collab-development-only}
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - backups:/backups
+    restart: unless-stopped
+
+  collab-server:
+    build:
+      context: .
+      dockerfile: Dockerfile.server
+    environment:
+      COLLAB_HOST: 0.0.0.0
+      COLLAB_PORT: 8787
+      COLLAB_DATABASE_URL: postgres://${POSTGRES_USER:-collab}:${POSTGRES_PASSWORD:-collab-development-only}@postgres:5432/${POSTGRES_DB:-collab}
+      COLLAB_BLOB_DIR: /data/blobs
+      COLLAB_LOG_FORMAT: ${COLLAB_LOG_FORMAT:-json}
+      COLLAB_LOG: ${COLLAB_LOG:-collab_server=info,tower_http=info}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "--silent", "http://127.0.0.1:8787/health/ready"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+    volumes:
+      - blob-data:/data/blobs
+      - backups:/backups
+    restart: unless-stopped
+
+  gateway:
+    image: caddy:2.10-alpine
+    depends_on:
+      collab-server:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:${COLLAB_HTTP_PORT:-8788}:80"
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    restart: unless-stopped
+
+volumes:
+  postgres-data:
+  blob-data:
+  backups:
+  caddy-data:
+  caddy-config:

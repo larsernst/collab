@@ -1,0 +1,9 @@
+{
+	auto_https off
+	admin off
+}
+
+:80 {
+	encode zstd gzip
+	reverse_proxy collab-server:8787
+}

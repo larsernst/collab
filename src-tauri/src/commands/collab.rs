@@ -4,7 +4,7 @@ use crate::models::note::WriteResult;
 use crate::models::presence::PresenceEntry;
 use crate::models::vault::{KnownUser, MemberRole, VaultConfig, VaultMember};
 use crate::state::AppState;
-use sha2::{Digest, Sha256};
+use collab_core::sha256_text;
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tauri::{AppHandle, Emitter, State};
@@ -39,9 +39,7 @@ fn path_key(relative_path: &str) -> String {
 }
 
 fn compute_hash(content: &str) -> String {
-    let mut hasher = Sha256::new();
-    hasher.update(content.as_bytes());
-    hex::encode(hasher.finalize())
+    sha256_text(content)
 }
 
 fn persist_chat_message(vault_path: &str, message: &ChatMessage) -> Result<(), String> {

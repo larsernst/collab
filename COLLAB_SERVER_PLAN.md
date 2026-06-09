@@ -13,7 +13,7 @@ This document is the source of truth for implementation progress. Update task ch
 | Phase | Status | Completion |
 | --- | --- | --- |
 | 0. Architecture and prerequisites | Complete | 100% |
-| 1. Server foundation and Compose | Not started | 0% |
+| 1. Server foundation and Compose | Complete | 100% |
 | 2. Authentication and administration | Not started | 0% |
 | 3. Hosted vault storage and permissions | Not started | 0% |
 | 4. Native hosted-vault client | Not started | 0% |
@@ -42,8 +42,8 @@ These capabilities already exist and should be reused or preserved:
 
 These server capabilities do not currently exist:
 
-- [ ] Standalone collaboration server process.
-- [ ] Docker Compose server deployment.
+- [x] Standalone collaboration server process.
+- [x] Docker Compose server deployment.
 - [ ] Server-authenticated users and sessions.
 - [ ] Server-enforced hosted-vault permissions.
 - [ ] Canonical hosted-vault storage.
@@ -113,30 +113,30 @@ Approved Phase 0 architecture:
 
 ### Tasks
 
-- [ ] Convert the Rust backend into a workspace without breaking Tauri builds.
-- [ ] Add a reusable `collab-core` crate for shared vault rules and models.
-- [ ] Add a standalone `collab-server` Rust binary.
-- [ ] Add structured configuration from environment variables and config files.
-- [ ] Add structured logging and request correlation IDs.
-- [ ] Add liveness and readiness endpoints.
-- [ ] Add PostgreSQL connection management and migrations.
-- [ ] Add persistent local blob storage behind a storage trait.
-- [ ] Add a development `compose.yaml` with:
+- [x] Convert the Rust backend into a workspace without breaking Tauri builds.
+- [x] Add a reusable `collab-core` crate for shared vault rules and models.
+- [x] Add a standalone `collab-server` Rust binary.
+- [x] Add structured configuration from environment variables and config files.
+- [x] Add structured logging and request correlation IDs.
+- [x] Add liveness and readiness endpoints.
+- [x] Add PostgreSQL connection management and migrations.
+- [x] Add persistent local blob storage behind a storage trait.
+- [x] Add a development `compose.yaml` with:
   - `collab-server`
   - `postgres`
   - `gateway`
   - Persistent data and backup volumes
-- [ ] Add Caddy routing and local TLS/development HTTP configuration.
-- [ ] Add graceful startup, shutdown, and migration behavior.
-- [ ] Add server integration-test infrastructure.
-- [ ] Document local server development and Compose operation.
+- [x] Add Caddy routing and local TLS/development HTTP configuration.
+- [x] Add graceful startup, shutdown, and migration behavior.
+- [x] Add server integration-test infrastructure.
+- [x] Document local server development and Compose operation.
 
 ### Completion Gate
 
-- [ ] `docker compose up` starts a healthy server and PostgreSQL from a clean checkout.
-- [ ] Database migrations run safely and idempotently.
-- [ ] Server data survives container recreation.
-- [ ] Tauri local-vault behavior and existing tests remain green.
+- [x] `docker compose up` starts a healthy server and PostgreSQL from a clean checkout.
+- [x] Database migrations run safely and idempotently.
+- [x] Server data survives container recreation.
+- [x] Tauri local-vault behavior and existing tests remain green.
 
 ---
 
@@ -347,7 +347,8 @@ pnpm exec tsc --noEmit
 cd src-tauri && cargo test
 cd src-tauri && cargo check
 docker compose config
-docker compose up
+docker compose up --build --wait
+./scripts/server-smoke.sh
 ```
 
 Add server-specific unit, integration, protocol, and Compose smoke-test commands once the server workspace exists.
@@ -373,3 +374,4 @@ Add one entry whenever a meaningful server milestone lands.
 | --- | --- | --- | --- | --- |
 | 2026-06-09 | Planning | Created phased implementation tracker | Repository architecture reviewed | Begin Phase 0 decisions and contracts |
 | 2026-06-09 | Phase 0 | Accepted authentication, storage, CRDT, offline-sync, domain, protocol, security, migration, workspace, and verification decisions | Checked contracts against current Rust/TypeScript models and local vault behavior | Begin Phase 1 workspace and server foundation |
+| 2026-06-09 | Phase 1 | Added the Rust workspace, shared core/protocol crates, standalone server, PostgreSQL migrations, blob storage, cached server image, Compose stack, Caddy gateway, health checks, and development docs | `cargo test --workspace` (114 tests), live PostgreSQL migration test, `cargo check --workspace`, `pnpm test` (594 tests), TypeScript check, Compose health/persistence recreation checks, and `./scripts/server-smoke.sh` | Begin Phase 2 authentication and administration |

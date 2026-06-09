@@ -1,9 +1,9 @@
 use crate::crypto;
 use crate::models::note::{NoteMetadata, SearchResult};
 use crate::state::AppState;
+use collab_core::sha256_text;
 use fuzzy_matcher::skim::SkimMatcherV2;
 use fuzzy_matcher::FuzzyMatcher;
-use sha2::{Digest, Sha256};
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tauri::State;
@@ -21,9 +21,7 @@ fn should_skip_walk_entry(name: &str, is_dir: bool) -> bool {
 }
 
 fn compute_hash(content: &str) -> String {
-    let mut hasher = Sha256::new();
-    hasher.update(content.as_bytes());
-    hex::encode(hasher.finalize())
+    sha256_text(content)
 }
 
 fn system_time_to_ms(t: SystemTime) -> u64 {

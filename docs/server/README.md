@@ -10,6 +10,7 @@ The collaboration server is a separate Rust service that becomes authoritative f
 - [REST and WebSocket Protocol](./protocol.md)
 - [Security, Operations, and Compatibility](./security-operations.md)
 - [Workspace and Verification](./workspace-verification.md)
+- [Server Development and Compose](./development.md)
 - [ADR 0001: Authentication and Sessions](./adr/0001-authentication-and-sessions.md)
 - [ADR 0002: Hosted Vault Storage](./adr/0002-hosted-vault-storage.md)
 - [ADR 0003: CRDT Persistence](./adr/0003-crdt-persistence.md)

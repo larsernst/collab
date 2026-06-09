@@ -2,9 +2,9 @@ use crate::crypto;
 use crate::models::note::{ConflictInfo, NoteContent, NoteFile, WriteResult};
 use crate::state::AppState;
 use base64::Engine as _;
+use collab_core::{normalize_relative_path as normalize_core_relative_path, sha256_text};
 use regex::{Captures, Regex};
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 use std::path::{Component, Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 use tauri::State;
@@ -172,9 +172,7 @@ fn should_skip_walk_entry(name: &str, is_dir: bool) -> bool {
 }
 
 fn compute_hash(content: &str) -> String {
-    let mut hasher = Sha256::new();
-    hasher.update(content.as_bytes());
-    hex::encode(hasher.finalize())
+    sha256_text(content)
 }
 
 fn system_time_to_ms(t: SystemTime) -> u64 {
@@ -189,24 +187,10 @@ fn is_allowed_extension(ext: &str) -> bool {
 }
 
 fn normalize_relative_path(relative_path: &str) -> Result<PathBuf, String> {
-    let mut out = PathBuf::new();
-
-    for component in Path::new(relative_path).components() {
-        match component {
-            Component::Normal(part) => out.push(part),
-            Component::CurDir => {}
-            Component::ParentDir => {
-                if !out.pop() {
-                    return Err("Path escapes the vault root".into());
-                }
-            }
-            Component::RootDir | Component::Prefix(_) => {
-                return Err("Asset path must be relative to the vault root".into());
-            }
-        }
-    }
-
-    Ok(out)
+    normalize_core_relative_path(relative_path).map_err(|error| match error {
+        collab_core::PathError::MustBeRelative => "Asset path must be relative to the vault root".into(),
+        other => other.to_string(),
+    })
 }
 
 fn resolve_vault_path(vault_path: &str, relative_path: &str) -> Result<PathBuf, String> {
