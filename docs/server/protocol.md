@@ -89,6 +89,15 @@ Authentication and administration:
 - `GET|POST /api/v1/admin/users`
 - `PATCH /api/v1/admin/users/{userId}`
 - `POST /api/v1/admin/invitations`
+- `GET /api/v1/admin/overview`
+- `GET /api/v1/admin/audit-events`
+- `GET /api/v1/admin/operational-warnings`
+- `GET /api/v1/admin/vaults`
+
+Browser administration uses the same administration resources but authenticates
+with a hardened same-origin browser session and CSRF protection. Native clients
+continue to use token-based sessions. Administration collection endpoints are
+cursor-paginated and return only typed, redacted data.
 
 Vault management:
 

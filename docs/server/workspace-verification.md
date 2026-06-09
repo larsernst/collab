@@ -6,6 +6,8 @@ The repository root is the Cargo workspace root:
 
 ```text
 Cargo.toml
+apps/
+  admin-web/         Focused browser administration interface; no Tauri dependencies
 crates/
   collab-core/       Pure shared domain rules, path handling, formats, and reference logic
   collab-protocol/   Shared API/WebSocket DTOs, error codes, and protocol versions
@@ -23,6 +25,10 @@ src-tauri       -> collab-core + collab-protocol
 ```
 
 `collab-core` must not depend on Tauri, Axum, SQLx, PostgreSQL, or a concrete blob backend. Server authorization and persistence remain in `collab-server`.
+
+The Phase 2 admin web application may reuse extracted design tokens and browser-safe
+UI primitives from the desktop frontend, but it must not import Tauri APIs or
+become a general-purpose hosted-vault editor.
 
 ## Extraction Policy
 
@@ -65,6 +71,14 @@ The server crate must add:
 - Blob-storage contract tests.
 - Migration tests from every supported schema fixture.
 - Compose smoke tests from an empty environment.
+
+Phase 2 admin web changes must add:
+
+- Frontend component and state tests.
+- Browser-level bootstrap, authentication, and user-management tests.
+- Accessibility checks for core administration flows.
+- Server integration tests for admin authorization, browser sessions, CSRF
+  protection, audit redaction, and session revocation.
 
 ## Change Acceptance
 

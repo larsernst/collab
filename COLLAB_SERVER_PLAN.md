@@ -62,7 +62,8 @@ These server capabilities do not currently exist:
 - PostgreSQL stores users, sessions, memberships, manifests, and collaboration metadata.
 - Binary assets initially use persistent local filesystem storage behind a blob-storage abstraction.
 - The server API uses opaque vault and file IDs and never accepts arbitrary server filesystem paths.
-- GitHub-built container images and a possible web app are outside the initial server implementation.
+- The server includes a focused Collab-style admin web interface; it is separate from any future general-purpose vault web app.
+- GitHub-built container images and a possible general-purpose vault web app are outside the initial server implementation.
 
 Approved Phase 0 architecture:
 
@@ -142,9 +143,10 @@ Approved Phase 0 architecture:
 
 ## Phase 2: Authentication and Administration
 
-**Objective:** Establish trustworthy server identities before hosted vault mutations are exposed.
+**Objective:** Establish trustworthy server identities and a secure web administration
+surface before hosted vault mutations are exposed.
 
-**Estimated effort:** 3-5 weeks.
+**Estimated effort:** 4-7 weeks.
 
 ### Tasks
 
@@ -159,6 +161,16 @@ Approved Phase 0 architecture:
 - [ ] Add authenticated `/api/v1/auth`, `/api/v1/users`, and administration endpoints.
 - [ ] Ensure client-supplied user IDs are never trusted for authorization.
 - [ ] Add audit events for authentication and user-administration actions.
+- [ ] Add a server-hosted admin web interface using the Collab visual language.
+- [ ] Add secure browser authentication for the admin interface using hardened HTTP-only cookies and CSRF protection.
+- [ ] Add an admin dashboard with:
+  - Server health, version, uptime, and storage summary.
+  - User, active-session, invitation, and hosted-vault counts.
+  - Recent redacted audit events and operational warnings.
+  - Read-only hosted-vault inventory ready for Phase 3 management actions.
+- [ ] Add web user-management flows for create, invite, disable, reset password, revoke sessions, and inspect user activity.
+- [ ] Add authenticated administration summary and audit-event endpoints.
+- [ ] Add frontend tests, accessibility checks, and browser-level admin-flow tests.
 - [ ] Define native credential storage using the operating system credential store.
 - [ ] Add a minimal native login and server-connection flow.
 
@@ -168,6 +180,9 @@ Approved Phase 0 architecture:
 - [ ] Revoked, expired, disabled, and forged sessions cannot access protected endpoints.
 - [ ] Authentication secrets do not appear in logs or application state persistence.
 - [ ] Security-focused integration tests cover all authentication flows.
+- [ ] An administrator can securely bootstrap and manage users through the web interface.
+- [ ] The dashboard exposes useful health, audit, and vault summaries without exposing raw secrets or unrestricted server logs.
+- [ ] Non-admin users cannot access admin pages or administration APIs.
 
 ---
 
@@ -191,6 +206,7 @@ Approved Phase 0 architecture:
 - [ ] Implement reference-impact previews and reference rewrites.
 - [ ] Implement snapshots, history listing, comparison inputs, and restore.
 - [ ] Implement vault activity events.
+- [ ] Expand the admin web interface from read-only vault inventory to vault details, member management, archive/delete controls, storage usage, and activity views.
 - [ ] Implement hosted search and note indexing.
 - [ ] Implement local-vault ZIP import into hosted storage.
 - [ ] Implement hosted-vault export compatible with the existing local layout.
@@ -375,3 +391,4 @@ Add one entry whenever a meaningful server milestone lands.
 | 2026-06-09 | Planning | Created phased implementation tracker | Repository architecture reviewed | Begin Phase 0 decisions and contracts |
 | 2026-06-09 | Phase 0 | Accepted authentication, storage, CRDT, offline-sync, domain, protocol, security, migration, workspace, and verification decisions | Checked contracts against current Rust/TypeScript models and local vault behavior | Begin Phase 1 workspace and server foundation |
 | 2026-06-09 | Phase 1 | Added the Rust workspace, shared core/protocol crates, standalone server, PostgreSQL migrations, blob storage, cached server image, Compose stack, Caddy gateway, health checks, and development docs | `cargo test --workspace` (114 tests), live PostgreSQL migration test, `cargo check --workspace`, `pnpm test` (594 tests), TypeScript check, Compose health/persistence recreation checks, and `./scripts/server-smoke.sh` | Begin Phase 2 authentication and administration |
+| 2026-06-09 | Phase 2 planning | Added a server-hosted Collab-style admin web interface for user management, health, audit data, and phased vault administration | Reviewed authentication, authorization, logging, and Phase 3 API boundaries | Implement authentication and the admin web foundation together |

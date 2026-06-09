@@ -34,6 +34,21 @@ The first version does not defend against a malicious server operator. Hosted va
 - Logs redact authorization headers, cookies, passwords, refresh tokens, WebSocket tickets, and invitation secrets.
 - Configuration is validated before migrations or network listeners start.
 
+## Admin Web Interface
+
+- The administration interface is served on the same origin below `/admin/`.
+- Browser admin sessions use `Secure`, `HttpOnly`, and appropriate `SameSite`
+  cookies plus CSRF protection for state-changing requests.
+- A strict Content Security Policy limits scripts, connections, frames, and
+  remote content.
+- Admin authorization is enforced by the server for every page-data request and
+  mutation; hiding controls in the browser is never an authorization boundary.
+- The interface consumes typed, redacted audit events and operational summaries.
+  It never exposes raw container logs, environment variables, stack traces,
+  request headers, cookies, tokens, password material, or invitation secrets.
+- Every administration mutation emits an audit event containing the acting user,
+  action, target identifiers, result, request ID, and sanitized metadata.
+
 ## Database Migrations
 
 - Use ordered, immutable SQL migrations in the server crate.
