@@ -1,0 +1,11 @@
+.git
+.github
+.flatpak-builder
+dist
+dist-builds
+flatpak
+node_modules
+server-data
+target
+src-tauri/target
+*.log
