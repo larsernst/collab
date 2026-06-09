@@ -1,8 +1,18 @@
 # collab
 
-Local-first vault-based knowledge work for Markdown notes, canvases, Kanban boards, PDFs, images, and shared-folder collaboration.
+Local-first vault-based knowledge work for Markdown notes, canvases, Kanban boards,
+PDFs, images, and collaboration.
 
-`collab` is a Tauri 2 desktop app built with React 19, TypeScript, Rust, and CodeMirror 6. It is designed around local files first: your vault stays on disk, the app builds structure around it, and collaboration works through shared vault metadata instead of a hosted backend.
+`collab` is a Tauri 2 desktop app built with React 19, TypeScript, Rust, and
+CodeMirror 6. Local vaults remain first-class and stay on disk. Existing
+shared-folder collaboration works through vault metadata, while a self-hosted
+collaboration server is being built for authenticated users, hosted vaults,
+server-backed permissions, and future live/offline synchronization.
+
+The server foundation is complete. Authentication and administration are in
+progress and currently include PostgreSQL-backed identities, Argon2id
+credentials, secure browser sessions, audit events, and a Collab-style admin web
+interface.
 
 ## Highlights
 
@@ -13,6 +23,8 @@ Local-first vault-based knowledge work for Markdown notes, canvases, Kanban boar
 - Dedicated PDF reader with single-page, long-scroll, and side-by-side layouts plus fit and custom zoom modes
 - Dedicated image viewer/editor with additive annotation overlays and permanent crop/rotate/resize/export flows
 - Shared-folder collaboration with presence, chat, per-file history snapshots, permissions, and conflict dialogs
+- Self-hosted Docker Compose server foundation with PostgreSQL, persistent blob storage, Caddy, health checks, and migrations
+- Server administration web interface with first-admin bootstrap, login, dashboard, user management, session revocation, and audit views
 - Vault encryption with Argon2id + AES-256-GCM
 - Theming, font, motion, calendar, zoom, and web preview settings
 - Native desktop packaging through Tauri, including Flatpak support and in-app updates where supported
@@ -30,7 +42,10 @@ Local-first vault-based knowledge work for Markdown notes, canvases, Kanban boar
 | Graph view | D3 |
 | PDF rendering | `pdfjs-dist` |
 | State | Zustand |
-| Backend | Rust |
+| Desktop backend | Rust, Tauri commands |
+| Collaboration server | Rust, Axum, SQLx, PostgreSQL |
+| Admin web | React 19, Vite |
+| Deployment | Docker Compose, Caddy |
 
 ## Current Features
 
@@ -101,6 +116,23 @@ Local-first vault-based knowledge work for Markdown notes, canvases, Kanban boar
 - Vault member roles: viewer, editor, admin
 - Conflict dialogs for concurrent edits
 
+### Self-Hosted Server And Administration
+
+- Standalone Rust collaboration server with structured configuration and logging
+- Docker Compose stack containing PostgreSQL, the collaboration server, and Caddy
+- Persistent PostgreSQL, blob-storage, backup, and gateway volumes
+- Liveness and readiness endpoints plus automatic SQL migrations
+- Content-addressed filesystem blob storage behind a storage abstraction
+- PostgreSQL-backed users, credentials, browser sessions, invitations, and audit events
+- Argon2id password hashing, one-time administrator bootstrap, CSRF protection, and login rate limiting
+- Collab-style admin web interface served at `/admin/`
+- Dashboard, user creation, disabling, session revocation, and redacted audit views
+
+Hosted vault storage, native hosted-vault login, invitations, rotating native
+refresh tokens, and live/offline synchronization remain under active
+development. Progress is tracked in
+[COLLAB_SERVER_PLAN.md](./COLLAB_SERVER_PLAN.md).
+
 ### Vault Management And Security
 
 - Create, open, rename, export, and switch vaults
@@ -125,6 +157,14 @@ Local-first vault-based knowledge work for Markdown notes, canvases, Kanban boar
 ## Project Structure
 
 ```text
+apps/
+  admin-web/         Focused browser administration interface
+
+crates/
+  collab-core/       Shared hashing and relative-path rules
+  collab-protocol/   Shared server DTOs, error codes, and protocol versions
+  collab-server/     Axum server, authentication, migrations, and blob storage
+
 src/
   components/
     collaboration/   Presence, chat, history, conflict UI
@@ -178,34 +218,155 @@ src-tauri/src/commands/
   ui.rs
   update.rs
   web.rs
-```
 
-## Development
-
-```bash
-pnpm install
-pnpm tauri dev
-```
-
-Useful commands:
-
-```bash
-pnpm dev
-pnpm exec tsc --noEmit
-cd src-tauri && cargo check
-pnpm tauri build
-pnpm dlx shadcn@latest add <component>
-./flatpak/build-local.sh
+compose.yaml          Local server/PostgreSQL/Caddy stack
+Dockerfile.server     Cached multi-stage server and admin-web image
 ```
 
 ## Requirements
 
 - Node.js 20+
-- `pnpm`
+- `pnpm` 10+
 - Rust stable toolchain
 - Tauri 2 system dependencies for your platform
+- Docker with Docker Compose for the collaboration server
+- `curl` for server smoke tests
 
-Linux packaging and install notes live in [docs/linux-install.md](/home/azazel/Code Projects/collab/docs/linux-install.md).
+Linux packaging and install notes live in
+[docs/linux-install.md](./docs/linux-install.md).
+
+## Build Instructions
+
+Install JavaScript dependencies once:
+
+```bash
+pnpm install
+```
+
+### Desktop App
+
+Run the complete desktop app in development:
+
+```bash
+pnpm tauri dev
+```
+
+Build a production desktop bundle:
+
+```bash
+pnpm tauri build
+```
+
+Run only the browser frontend without the Tauri shell:
+
+```bash
+pnpm dev
+```
+
+### Admin Web Interface
+
+Run the focused server administration interface locally:
+
+```bash
+pnpm admin:dev
+```
+
+Build and type-check its production bundle:
+
+```bash
+pnpm admin:build
+```
+
+The development server proxies API requests to a collaboration server listening
+on `127.0.0.1:8787`.
+
+### Collaboration Server With Docker Compose
+
+Start PostgreSQL, the collaboration server, and Caddy:
+
+```bash
+docker compose up --build --wait
+```
+
+The local gateway listens on `http://127.0.0.1:8788`:
+
+- Admin interface: `http://127.0.0.1:8788/admin/`
+- Liveness: `http://127.0.0.1:8788/health/live`
+- Readiness: `http://127.0.0.1:8788/health/ready`
+
+Stop the containers while preserving data:
+
+```bash
+docker compose down
+```
+
+Delete the development containers and their persistent volumes:
+
+```bash
+docker compose down --volumes
+```
+
+The server image uses `cargo-chef` to cache Rust dependencies, and the admin-web
+image stage caches JavaScript dependency installation separately from source
+changes.
+
+### Flatpak
+
+Build the local Flatpak package:
+
+```bash
+./flatpak/build-local.sh
+```
+
+### Verification
+
+Run the full project verification set:
+
+```bash
+pnpm test
+pnpm exec tsc --noEmit
+pnpm admin:test
+pnpm admin:build
+cargo test --workspace
+cargo check --workspace
+docker compose config
+./scripts/server-smoke.sh
+```
+
+The live PostgreSQL server tests require a disposable database:
+
+```bash
+COLLAB_TEST_DATABASE_URL=postgres://collab:password@127.0.0.1:5432/collab_test \
+  cargo test -p collab-server
+```
+
+The authentication lifecycle test truncates the Phase 2 identity tables, so do
+not point it at a database containing valuable data.
+
+## Useful Documents
+
+### Project And Contribution Guides
+
+- [CODEBASE.md](./CODEBASE.md) - detailed architecture, component, IPC, and feature map
+- [UI_GUIDE.md](./UI_GUIDE.md) - visual language and interaction patterns
+- [REMAINING_STABILIZATION_STEPS.md](./REMAINING_STABILIZATION_STEPS.md) - outstanding stabilization work
+
+### Collaboration Server
+
+- [COLLAB_SERVER_PLAN.md](./COLLAB_SERVER_PLAN.md) - phased server implementation tracker
+- [Server architecture index](./docs/server/README.md) - entry point for server architecture documents
+- [Server development and Compose](./docs/server/development.md) - local operation, configuration, and verification
+- [Admin web interface](./docs/server/admin-web.md) - scope, security model, and testing expectations
+- [REST and WebSocket protocol](./docs/server/protocol.md) - versioned API and synchronization contracts
+- [Hosted vault domain model](./docs/server/hosted-vault-domain.md) - identities, permissions, revisions, and vault structure
+- [Security, operations, and compatibility](./docs/server/security-operations.md) - threat model, migrations, secrets, and backups
+- [Workspace and verification](./docs/server/workspace-verification.md) - crate boundaries and acceptance checks
+
+### Packaging And Installation
+
+- [Linux installation](./docs/linux-install.md)
+- [Flatpak guide](./docs/flatpak.md)
+- [Flatpak distribution plan](./docs/flatpak-distribution-plan.md)
 
 ## Notes For Contributors
 
@@ -214,5 +375,3 @@ Linux packaging and install notes live in [docs/linux-install.md](/home/azazel/C
 - Normal file listing/indexing excludes `.collab/` and generated dependency/build directories
 - `write_note` uses optimistic locking via `expected_hash`
 - Shared document-style viewers should follow the `DocumentTopBar` pattern
-
-For deeper project conventions, see [AGENTS.md](/home/azazel/Code Projects/collab/AGENTS.md).
