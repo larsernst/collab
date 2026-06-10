@@ -109,3 +109,21 @@ export interface HostedVaultActivityEvent {
   targetId: string | null;
   createdAt: string;
 }
+
+export interface HostedVaultStorage {
+  activeBytes: number;
+  trashBytes: number;
+  retainedRevisionBytes: number;
+  uniqueBlobBytes: number;
+  activeFiles: number;
+  trashedFiles: number;
+  revisionCount: number;
+  snapshotCount: number;
+}
+
+export interface HostedVaultImportResult {
+  importedFiles: number;
+  importedFolders: number;
+  importedBytes: number;
+  resultManifestSequence: number;
+}

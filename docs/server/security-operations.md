@@ -86,8 +86,10 @@ Configurable limits apply to:
 
 The initial hosted asset endpoint enforces `COLLAB_MAX_FILE_BYTES` after base64
 decoding and verifies the supplied SHA-256 digest before committing metadata.
-Request-body and concurrent-upload limits remain required before production
-exposure.
+The HTTP JSON body limit is derived from `COLLAB_MAX_FILE_BYTES` with base64
+and envelope overhead so valid asset and ZIP imports are accepted without
+falling through Axum's smaller default body limit. Concurrent-upload limits
+remain required before production exposure.
 
 Future streaming archive import should extract into an isolated staging
 location, validate every entry, and commit metadata only after validation
@@ -95,8 +97,11 @@ succeeds.
 
 The initial hosted ZIP endpoint validates entries in memory before commit,
 rejects symlinks and unsafe portable paths, limits archives to 1,000 entries,
-limits individual files with `COLLAB_MAX_FILE_BYTES`, and limits expanded
-content to four times that value.
+limits individual files with `COLLAB_MAX_FILE_BYTES`, compressed archives with
+`COLLAB_MAX_IMPORT_BYTES`, and total expanded content with
+`COLLAB_MAX_IMPORT_EXPANDED_BYTES`. Defaults are 256 MiB per file, 512 MiB
+compressed, and 2 GiB expanded. Operators must keep these limits aligned with
+available container memory until import becomes streaming/staged.
 
 ## Compatibility Policy
 

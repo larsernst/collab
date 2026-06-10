@@ -3,6 +3,7 @@ import {
   Boxes,
   CircleAlert,
   Database,
+  Download,
   Gauge,
   KeyRound,
   LogOut,
@@ -12,6 +13,7 @@ import {
   Settings,
   ShieldCheck,
   SunMoon,
+  Upload,
   Users,
 } from 'lucide-react';
 import { FormEvent, useCallback, useEffect, useState } from 'react';
@@ -23,6 +25,7 @@ import type {
   HostedVaultActivityEvent,
   HostedVaultAdminDetail,
   HostedVaultMember,
+  HostedVaultStorage,
   HostedVaultSummary,
   Invitation,
   ServerUser,
@@ -437,6 +440,7 @@ function VaultDetailPage({ vaultId, onBack }: { vaultId: string; onBack: () => v
   const [detail, setDetail] = useState<HostedVaultAdminDetail | null>(null);
   const [members, setMembers] = useState<HostedVaultMember[]>([]);
   const [activity, setActivity] = useState<HostedVaultActivityEvent[]>([]);
+  const [storage, setStorage] = useState<HostedVaultStorage | null>(null);
   const [users, setUsers] = useState<ServerUser[]>([]);
   const [newMemberId, setNewMemberId] = useState('');
   const [newMemberRole, setNewMemberRole] = useState('viewer');
@@ -447,20 +451,23 @@ function VaultDetailPage({ vaultId, onBack }: { vaultId: string; onBack: () => v
     action: () => Promise<unknown>;
   } | null>(null);
   const [renaming, setRenaming] = useState(false);
+  const [importing, setImporting] = useState(false);
   const [error, setError] = useState('');
   const load = useCallback(async () => {
     setError('');
     try {
-      const [nextDetail, nextMembers, nextActivity, nextUsers] = await Promise.all([
+      const [nextDetail, nextMembers, nextActivity, nextUsers, nextStorage] = await Promise.all([
         serverApi.vaultDetail(vaultId),
         serverApi.vaultMembers(vaultId),
         serverApi.vaultActivity(vaultId),
         serverApi.users(),
+        serverApi.vaultStorage(vaultId).catch(() => null),
       ]);
       setDetail(nextDetail);
       setMembers(nextMembers);
       setActivity(nextActivity);
       setUsers(nextUsers);
+      setStorage(nextStorage);
     } catch (reason) {
       setError(String(reason));
     }
@@ -487,6 +494,43 @@ function VaultDetailPage({ vaultId, onBack }: { vaultId: string; onBack: () => v
     await run(() => serverApi.addVaultMember(vaultId, { userId: memberChoice, role: newMemberRole }));
     setNewMemberId('');
     setNewMemberRole('viewer');
+  }
+
+  async function importVault(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const file = new FormData(event.currentTarget).get('archive');
+    if (!(file instanceof File) || file.size === 0) return;
+    setImporting(true);
+    setError('');
+    try {
+      const bytes = new Uint8Array(await file.arrayBuffer());
+      let binary = '';
+      for (let offset = 0; offset < bytes.length; offset += 32_768) {
+        binary += String.fromCharCode(...bytes.subarray(offset, offset + 32_768));
+      }
+      await serverApi.importVault(vaultId, btoa(binary));
+      event.currentTarget.reset();
+      await load();
+    } catch (reason) {
+      setError(String(reason));
+    } finally {
+      setImporting(false);
+    }
+  }
+
+  async function exportVault() {
+    setError('');
+    try {
+      const blob = await serverApi.exportVault(vaultId);
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = `${detail?.name ?? 'collab-vault'}.zip`;
+      link.click();
+      URL.revokeObjectURL(url);
+    } catch (reason) {
+      setError(String(reason));
+    }
   }
 
   const pendingDelete = detail?.status === 'pending_delete';
@@ -531,6 +575,26 @@ function VaultDetailPage({ vaultId, onBack }: { vaultId: string; onBack: () => v
           <Metric icon={<Users />} label="Members" value={detail.members} detail="Persisted vault memberships" />
           <Metric icon={<Activity />} label="Manifest sequence" value={detail.manifestSequence} detail={`Updated ${new Date(detail.updatedAt).toLocaleString()}`} />
         </div>
+        <Panel title="Storage and transfer" icon={<Database size={17} />}>
+          {storage ? (
+            <div className="storage-grid">
+              <Metric icon={<Database />} label="Active content" value={formatBytes(storage.activeBytes)} detail={`${storage.activeFiles} active entries`} />
+              <Metric icon={<Database />} label="Trash content" value={formatBytes(storage.trashBytes)} detail={`${storage.trashedFiles} trashed entries`} />
+              <Metric icon={<Database />} label="Retained history" value={formatBytes(storage.retainedRevisionBytes)} detail={`${storage.revisionCount} revisions · ${storage.snapshotCount} snapshots`} />
+              <Metric icon={<Database />} label="Unique blobs" value={formatBytes(storage.uniqueBlobBytes)} detail="Deduplicated within this vault" />
+            </div>
+          ) : (
+            <p className="subtle">Detailed storage accounting requires this administrator to be a vault member.</p>
+          )}
+          <div className="transfer-actions">
+            <form className="inline-form" onSubmit={importVault}>
+              <Field label="Import ZIP into empty vault" name="archive" type="file" accept=".zip,application/zip" required disabled={detail.status !== 'active' || detail.activeFiles > 0 || importing} />
+              <Button size="sm" disabled={detail.status !== 'active' || detail.activeFiles > 0 || importing}><Upload size={16} />{importing ? 'Importing...' : 'Import ZIP'}</Button>
+            </form>
+            <Button variant="outline" size="sm" onClick={() => void exportVault()} disabled={detail.status === 'pending_delete'}><Download size={16} />Export ZIP</Button>
+          </div>
+          <p className="subtle">Import requires an empty active vault. Import/export follows vault-admin permissions; server administrators can add themselves as a vault admin above when needed.</p>
+        </Panel>
         <Panel title={`${members.length} members`} icon={<Users size={17} />}>
           <div className="user-list">
             {members.map((member) => (

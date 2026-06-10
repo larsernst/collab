@@ -59,4 +59,24 @@ describe('admin API client', () => {
       expect.objectContaining({ cache: 'no-store' }),
     );
   });
+
+  it('uses the hosted vault transfer endpoints from the admin client', async () => {
+    document.cookie = 'collab_csrf=csrf-token';
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ data: { importedFiles: 1 } }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(new Blob(['zip']), { status: 200 }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await serverApi.importVault('vault-1', 'emlw');
+    const exported = await serverApi.exportVault('vault-1');
+
+    expect(exported).toBeInstanceOf(Blob);
+    expect(fetchMock.mock.calls[0][0]).toBe('/api/v1/vaults/vault-1/import');
+    expect(fetchMock.mock.calls[1]).toEqual([
+      '/api/v1/vaults/vault-1/export',
+      { credentials: 'same-origin' },
+    ]);
+    const importHeaders = fetchMock.mock.calls[0][1].headers as Headers;
+    expect(importHeaders.get('x-collab-csrf')).toBe('csrf-token');
+  });
 });

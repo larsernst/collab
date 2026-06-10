@@ -31,6 +31,9 @@ vi.mock('./api', () => ({
     updateVaultMember: vi.fn(),
     removeVaultMember: vi.fn(),
     vaultActivity: vi.fn(),
+    vaultStorage: vi.fn(),
+    importVault: vi.fn(),
+    exportVault: vi.fn(),
     auditEvents: vi.fn(),
   },
 }));
@@ -88,6 +91,16 @@ describe('admin application', () => {
     });
     vi.mocked(serverApi.invitations).mockResolvedValue([]);
     vi.mocked(serverApi.vaults).mockResolvedValue([]);
+    vi.mocked(serverApi.vaultStorage).mockResolvedValue({
+      activeBytes: 0,
+      trashBytes: 0,
+      retainedRevisionBytes: 0,
+      uniqueBlobBytes: 0,
+      activeFiles: 0,
+      trashedFiles: 0,
+      revisionCount: 0,
+      snapshotCount: 0,
+    });
   });
 
   afterEach(() => {
@@ -275,6 +288,47 @@ describe('admin application', () => {
     fireEvent.change(within(renameDialog).getByLabelText('Vault name'), { target: { value: 'Renamed Vault' } });
     fireEvent.click(within(renameDialog).getByRole('button', { name: 'Rename' }));
     await waitFor(() => expect(serverApi.updateVault).toHaveBeenCalledWith('vault-1', { name: 'Renamed Vault' }));
+  });
+
+  it('shows storage accounting and exports hosted vaults from the web interface', async () => {
+    vi.stubGlobal('URL', {
+      createObjectURL: vi.fn(() => 'blob:export'),
+      revokeObjectURL: vi.fn(),
+    });
+    vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => undefined);
+    vi.mocked(serverApi.bootstrapStatus).mockResolvedValue({ required: false });
+    vi.mocked(serverApi.me).mockResolvedValue(admin);
+    vi.mocked(serverApi.users).mockResolvedValue([admin]);
+    vi.mocked(serverApi.vaults).mockResolvedValue([{
+      id: 'vault-1', name: 'Team Vault', ownerDisplayName: 'Admin User', status: 'active',
+      members: 1, storageBytes: 4096, updatedAt: '2026-06-10T00:00:00Z',
+    }]);
+    vi.mocked(serverApi.vaultDetail).mockResolvedValue({
+      id: 'vault-1', name: 'Team Vault', ownerUserId: 'admin-1', ownerUsername: 'admin',
+      ownerDisplayName: 'Admin User', status: 'active', manifestSequence: 2, members: 1,
+      activeFiles: 1, trashedFiles: 0, storageBytes: 4096,
+      createdAt: '2026-06-09T00:00:00Z', updatedAt: '2026-06-10T00:00:00Z',
+    });
+    vi.mocked(serverApi.vaultMembers).mockResolvedValue([
+      { userId: 'admin-1', username: 'admin', displayName: 'Admin User', role: 'admin', owner: true, createdAt: '2026-06-09T00:00:00Z' },
+    ]);
+    vi.mocked(serverApi.vaultActivity).mockResolvedValue([]);
+    vi.mocked(serverApi.vaultStorage).mockResolvedValue({
+      activeBytes: 1024, trashBytes: 0, retainedRevisionBytes: 4096, uniqueBlobBytes: 2048,
+      activeFiles: 1, trashedFiles: 0, revisionCount: 4, snapshotCount: 1,
+    });
+    vi.mocked(serverApi.exportVault).mockResolvedValue(new Blob(['zip']));
+
+    render(<App />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Vaults' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Manage Team Vault' }));
+
+    expect(await screen.findByText('Storage and transfer')).toBeTruthy();
+    expect(screen.getByText('Retained history')).toBeTruthy();
+    expect(screen.getByText('4 revisions · 1 snapshots')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Export ZIP' }));
+    await waitFor(() => expect(serverApi.exportVault).toHaveBeenCalledWith('vault-1'));
+    expect(URL.createObjectURL).toHaveBeenCalled();
   });
 
   it('adds vault members and protects owner and pending-delete vaults', async () => {

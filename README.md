@@ -304,11 +304,15 @@ Start PostgreSQL, the collaboration server, and Caddy:
 docker compose up --build --wait
 ```
 
-The local gateway listens on `http://127.0.0.1:8788`:
+The gateway listens on port `8788` on all host interfaces by default:
 
-- Admin interface: `http://127.0.0.1:8788/admin/`
+- Admin interface: `http://<server-address>:8788/` (redirects to `/admin/`)
 - Liveness: `http://127.0.0.1:8788/health/live`
 - Readiness: `http://127.0.0.1:8788/health/ready`
+
+Set `COLLAB_HTTP_BIND=127.0.0.1` to keep the gateway local-only. Public
+deployments should place the gateway behind HTTPS and set
+`COLLAB_BROWSER_SECURE_COOKIES=true`.
 
 Stop the containers while preserving data:
 

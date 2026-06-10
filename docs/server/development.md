@@ -8,7 +8,9 @@
 
 ## Run With Docker Compose
 
-Copy `.env.example` to `.env` and replace the development database password before exposing the stack beyond localhost.
+Copy `.env.example` to `.env` and replace the development database password
+before exposing the stack beyond localhost. The gateway binds to all host
+interfaces by default so it can be reached from another machine.
 
 ```bash
 docker compose up --build --wait
@@ -16,9 +18,16 @@ curl http://127.0.0.1:8788/health/live
 curl http://127.0.0.1:8788/health/ready
 ```
 
-The gateway listens on `127.0.0.1:8788` by default. PostgreSQL is not published to the host.
-The administration interface is available at `http://127.0.0.1:8788/admin/`.
+The gateway listens on `0.0.0.0:8788` by default. Set
+`COLLAB_HTTP_BIND=127.0.0.1` for a local-only or external-reverse-proxy
+deployment. PostgreSQL is not published to the host.
+The administration interface is available at `http://<server-address>:8788/`;
+the root path redirects to `/admin/`.
 On a fresh database it opens the one-time first-administrator bootstrap flow.
+
+Do not expose the default plain-HTTP development gateway directly to the
+internet. Terminate TLS in front of it and set
+`COLLAB_BROWSER_SECURE_COOKIES=true`.
 
 The server image uses `cargo-chef` to keep compiled Rust dependencies in a
 separate Docker layer. Normal source changes rebuild the application crate but
@@ -57,6 +66,8 @@ Configuration can also be read from a JSON file selected by `COLLAB_CONFIG_FILE`
 Supported environment variables:
 
 - `COLLAB_CONFIG_FILE`
+- `COLLAB_HTTP_BIND`: host interface used by the Compose gateway
+- `COLLAB_HTTP_PORT`: host port used by the Compose gateway
 - `COLLAB_HOST`
 - `COLLAB_PORT`
 - `COLLAB_DATABASE_URL`
@@ -66,8 +77,18 @@ Supported environment variables:
 - `COLLAB_SESSION_TTL_HOURS`
 - `COLLAB_NATIVE_ACCESS_TTL_MINUTES`
 - `COLLAB_NATIVE_REFRESH_TTL_DAYS`
-- `COLLAB_MAX_FILE_BYTES`: maximum decoded size for a single hosted asset;
-  defaults to 25 MiB
+- `COLLAB_MAX_FILE_BYTES`: maximum decoded size for one hosted file; defaults
+  to 256 MiB.
+- `COLLAB_MAX_IMPORT_BYTES`: maximum compressed ZIP import size; defaults to
+  512 MiB.
+- `COLLAB_MAX_IMPORT_EXPANDED_BYTES`: maximum total expanded ZIP content;
+  defaults to 2 GiB.
+
+The server automatically allows the larger JSON request body required by
+base64 encoding. The current ZIP importer validates in memory, so operators
+should size these limits according to available container memory. A future
+streaming/staged importer is required before enabling multi-gigabyte compressed
+archives.
 - `COLLAB_LOG`
 - `COLLAB_LOG_FORMAT`: `pretty` or `json`
 

@@ -4,7 +4,9 @@ import type {
   CreatedInvitation,
   HostedVaultActivityEvent,
   HostedVaultAdminDetail,
+  HostedVaultImportResult,
   HostedVaultMember,
+  HostedVaultStorage,
   HostedVaultSummary,
   Invitation,
   ServerUser,
@@ -41,6 +43,16 @@ export async function api<T>(path: string, init: RequestInit = {}): Promise<T> {
   }
   if (response.status === 204) return undefined as T;
   return ((await response.json()) as DataResponse<T>).data;
+}
+
+async function apiBlob(path: string): Promise<Blob> {
+  const response = await fetch(path, { credentials: 'same-origin' });
+  if (!response.ok) {
+    const body = (await response.json().catch(() => ({}))) as ErrorResponse;
+    const suffix = body.error?.requestId ? ` (${body.error.requestId})` : '';
+    throw new Error(`${body.error?.message ?? `Request failed with ${response.status}`}${suffix}`);
+  }
+  return response.blob();
 }
 
 export const serverApi = {
@@ -107,5 +119,12 @@ export const serverApi = {
   removeVaultMember: (id: string, userId: string) =>
     api<void>(`/api/v1/admin/vaults/${id}/members/${userId}`, { method: 'DELETE' }),
   vaultActivity: (id: string) => api<HostedVaultActivityEvent[]>(`/api/v1/admin/vaults/${id}/activity`),
+  vaultStorage: (id: string) => api<HostedVaultStorage>(`/api/v1/vaults/${id}/storage`),
+  importVault: (id: string, archiveBase64: string) =>
+    api<HostedVaultImportResult>(`/api/v1/vaults/${id}/import`, {
+      method: 'POST',
+      body: JSON.stringify({ archiveBase64 }),
+    }),
+  exportVault: (id: string) => apiBlob(`/api/v1/vaults/${id}/export`),
   auditEvents: () => api<AuditEvent[]>('/api/v1/admin/audit-events'),
 };

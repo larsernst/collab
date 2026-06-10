@@ -2473,7 +2473,7 @@ pub async fn import_vault_zip(
     let archive_bytes = STANDARD.decode(payload.archive_base64).map_err(|_| {
         ApiFailure::validation("Vault import is not valid base64.", request_id.clone())
     })?;
-    if archive_bytes.len() > state.config.max_file_bytes {
+    if archive_bytes.len() > state.config.max_import_bytes {
         return Err(ApiFailure::quota_exceeded(request_id));
     }
     let manifest = load_vault_manifest(&state.database, vault_id, &request_id).await?;
@@ -2487,7 +2487,12 @@ pub async fn import_vault_zip(
             request_id,
         ));
     }
-    let mut entries = parse_vault_zip(&archive_bytes, state.config.max_file_bytes, &request_id)?;
+    let mut entries = parse_vault_zip(
+        &archive_bytes,
+        state.config.max_file_bytes,
+        state.config.max_import_expanded_bytes,
+        &request_id,
+    )?;
     let mut imported_bytes = 0usize;
     for entry in &mut entries {
         if let Some(content) = entry.content.as_deref() {
@@ -4975,6 +4980,7 @@ async fn ensure_hosted_note_index(
 fn parse_vault_zip(
     bytes: &[u8],
     max_file_bytes: usize,
+    max_expanded_bytes: usize,
     request_id: &str,
 ) -> Result<Vec<VaultImportEntry>, ApiFailure> {
     let mut archive = zip::ZipArchive::new(Cursor::new(bytes)).map_err(|_| {
@@ -5038,7 +5044,7 @@ fn parse_vault_zip(
             )
         })?;
         expanded_bytes = expanded_bytes.saturating_add(content.len());
-        if expanded_bytes > max_file_bytes.saturating_mul(4) {
+        if expanded_bytes > max_expanded_bytes {
             return Err(ApiFailure::quota_exceeded(request_id.to_owned()));
         }
         files.push((path, content));
@@ -5730,7 +5736,7 @@ mod tests {
         let valid = STANDARD
             .decode(zip_base64(&[("Notes/Test.md", b"# Test")]))
             .unwrap();
-        let entries = parse_vault_zip(&valid, 1024, "request").unwrap();
+        let entries = parse_vault_zip(&valid, 1024, 4096, "request").unwrap();
         assert_eq!(entries.len(), 2);
         assert_eq!(entries[0].relative_path, "Notes");
         assert_eq!(entries[1].relative_path, "Notes/Test.md");
@@ -5738,7 +5744,20 @@ mod tests {
         let invalid = STANDARD
             .decode(zip_base64(&[("../escape.md", b"no")]))
             .unwrap();
-        assert!(parse_vault_zip(&invalid, 1024, "request").is_err());
+        assert!(parse_vault_zip(&invalid, 1024, 4096, "request").is_err());
+    }
+
+    #[test]
+    fn vault_zip_parser_enforces_total_expanded_limit_separately() {
+        let archive = STANDARD
+            .decode(zip_base64(&[
+                ("one.bin", &[1; 700]),
+                ("two.bin", &[2; 700]),
+            ]))
+            .unwrap();
+
+        assert!(parse_vault_zip(&archive, 1024, 1200, "request").is_err());
+        assert!(parse_vault_zip(&archive, 1024, 1600, "request").is_ok());
     }
 
     async fn request(

@@ -25,6 +25,8 @@ pub struct ServerConfig {
     pub native_access_ttl_minutes: i64,
     pub native_refresh_ttl_days: i64,
     pub max_file_bytes: usize,
+    pub max_import_bytes: usize,
+    pub max_import_expanded_bytes: usize,
     pub log_filter: String,
     pub log_format: LogFormat,
 }
@@ -41,7 +43,9 @@ impl Default for ServerConfig {
             session_ttl_hours: 12,
             native_access_ttl_minutes: 15,
             native_refresh_ttl_days: 30,
-            max_file_bytes: 25 * 1024 * 1024,
+            max_file_bytes: 256 * 1024 * 1024,
+            max_import_bytes: 512 * 1024 * 1024,
+            max_import_expanded_bytes: 2 * 1024 * 1024 * 1024,
             log_filter: "collab_server=info,tower_http=info".into(),
             log_format: LogFormat::Pretty,
         }
@@ -49,6 +53,15 @@ impl Default for ServerConfig {
 }
 
 impl ServerConfig {
+    pub fn max_json_body_bytes(&self) -> usize {
+        // Binary uploads and ZIP imports are currently base64-encoded in JSON.
+        self.max_file_bytes
+            .max(self.max_import_bytes)
+            .saturating_mul(4)
+            .div_ceil(3)
+            .saturating_add(1024 * 1024)
+    }
+
     pub fn load() -> Result<Self, ConfigError> {
         let mut config = if let Ok(path) = env::var("COLLAB_CONFIG_FILE") {
             let raw = fs::read_to_string(&path).map_err(|source| ConfigError::ReadFile {
@@ -114,6 +127,16 @@ impl ServerConfig {
                 .parse()
                 .map_err(|_| ConfigError::Invalid("COLLAB_MAX_FILE_BYTES"))?;
         }
+        if let Ok(value) = env::var("COLLAB_MAX_IMPORT_BYTES") {
+            self.max_import_bytes = value
+                .parse()
+                .map_err(|_| ConfigError::Invalid("COLLAB_MAX_IMPORT_BYTES"))?;
+        }
+        if let Ok(value) = env::var("COLLAB_MAX_IMPORT_EXPANDED_BYTES") {
+            self.max_import_expanded_bytes = value
+                .parse()
+                .map_err(|_| ConfigError::Invalid("COLLAB_MAX_IMPORT_EXPANDED_BYTES"))?;
+        }
         if let Ok(value) = env::var("COLLAB_LOG") {
             self.log_filter = value;
         }
@@ -151,8 +174,16 @@ impl ServerConfig {
         if self.native_refresh_ttl_days <= 0 || self.native_refresh_ttl_days > 365 {
             return Err(ConfigError::Invalid("COLLAB_NATIVE_REFRESH_TTL_DAYS"));
         }
-        if self.max_file_bytes == 0 || self.max_file_bytes > 1024 * 1024 * 1024 {
+        if self.max_file_bytes == 0 || self.max_file_bytes > 8 * 1024 * 1024 * 1024 {
             return Err(ConfigError::Invalid("COLLAB_MAX_FILE_BYTES"));
+        }
+        if self.max_import_bytes == 0 || self.max_import_bytes > 8 * 1024 * 1024 * 1024 {
+            return Err(ConfigError::Invalid("COLLAB_MAX_IMPORT_BYTES"));
+        }
+        if self.max_import_expanded_bytes < self.max_import_bytes
+            || self.max_import_expanded_bytes > 32 * 1024 * 1024 * 1024
+        {
+            return Err(ConfigError::Invalid("COLLAB_MAX_IMPORT_EXPANDED_BYTES"));
         }
         Ok(())
     }
@@ -184,7 +215,9 @@ mod tests {
         let config = ServerConfig::default();
         assert_eq!(config.bind_address().to_string(), "127.0.0.1:8787");
         assert_eq!(config.blob_dir, PathBuf::from("server-data/blobs"));
-        assert_eq!(config.max_file_bytes, 25 * 1024 * 1024);
+        assert_eq!(config.max_file_bytes, 256 * 1024 * 1024);
+        assert_eq!(config.max_import_bytes, 512 * 1024 * 1024);
+        assert_eq!(config.max_import_expanded_bytes, 2 * 1024 * 1024 * 1024);
         assert_eq!(config.log_format, LogFormat::Pretty);
         config.validate().unwrap();
     }
@@ -216,9 +249,26 @@ mod tests {
         assert!(config.validate().is_err());
 
         let config = ServerConfig {
-            max_file_bytes: 1024 * 1024 * 1024 + 1,
+            max_file_bytes: 8 * 1024 * 1024 * 1024 + 1,
             ..ServerConfig::default()
         };
         assert!(config.validate().is_err());
+
+        let config = ServerConfig {
+            max_import_expanded_bytes: 128 * 1024 * 1024,
+            ..ServerConfig::default()
+        };
+        assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn json_body_limit_includes_base64_and_envelope_overhead() {
+        let config = ServerConfig {
+            max_file_bytes: 256 * 1024 * 1024,
+            max_import_bytes: 512 * 1024 * 1024,
+            ..ServerConfig::default()
+        };
+
+        assert!(config.max_json_body_bytes() > 683 * 1024 * 1024);
     }
 }

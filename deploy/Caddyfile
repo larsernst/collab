@@ -5,5 +5,6 @@
 
 :80 {
 	encode zstd gzip
+	redir / /admin/ permanent
 	reverse_proxy collab-server:8787
 }

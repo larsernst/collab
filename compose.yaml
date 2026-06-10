@@ -30,7 +30,9 @@ services:
       COLLAB_BROWSER_SECURE_COOKIES: ${COLLAB_BROWSER_SECURE_COOKIES:-false}
       COLLAB_NATIVE_ACCESS_TTL_MINUTES: ${COLLAB_NATIVE_ACCESS_TTL_MINUTES:-15}
       COLLAB_NATIVE_REFRESH_TTL_DAYS: ${COLLAB_NATIVE_REFRESH_TTL_DAYS:-30}
-      COLLAB_MAX_FILE_BYTES: ${COLLAB_MAX_FILE_BYTES:-26214400}
+      COLLAB_MAX_FILE_BYTES: ${COLLAB_MAX_FILE_BYTES:-268435456}
+      COLLAB_MAX_IMPORT_BYTES: ${COLLAB_MAX_IMPORT_BYTES:-536870912}
+      COLLAB_MAX_IMPORT_EXPANDED_BYTES: ${COLLAB_MAX_IMPORT_EXPANDED_BYTES:-2147483648}
       COLLAB_LOG_FORMAT: ${COLLAB_LOG_FORMAT:-json}
       COLLAB_LOG: ${COLLAB_LOG:-collab_server=info,tower_http=info}
     depends_on:
@@ -52,7 +54,7 @@ services:
       collab-server:
         condition: service_healthy
     ports:
-      - "127.0.0.1:${COLLAB_HTTP_PORT:-8788}:80"
+      - "${COLLAB_HTTP_BIND:-0.0.0.0}:${COLLAB_HTTP_PORT:-8788}:80"
     volumes:
       - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
       - caddy-data:/data

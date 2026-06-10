@@ -1,9 +1,9 @@
 use crate::{api, config::ServerConfig, database, storage::BlobStorage};
 use axum::{
-    extract::{Request, State},
+    extract::{DefaultBodyLimit, Request, State},
     http::{HeaderName, HeaderValue, StatusCode},
     middleware::{self, Next},
-    response::{IntoResponse, Response},
+    response::{IntoResponse, Redirect, Response},
     routing::{get, patch, post},
     Json, Router,
 };
@@ -47,9 +47,11 @@ impl AppState {
 
 pub fn build_router(state: AppState) -> Router {
     let admin_index = state.config.admin_web_dir.join("index.html");
+    let max_json_body_bytes = state.config.max_json_body_bytes();
     let admin_assets =
         ServeDir::new(&state.config.admin_web_dir).fallback(ServeFile::new(admin_index));
     Router::new()
+        .route("/", get(|| async { Redirect::permanent("/admin/") }))
         .route("/health/live", get(liveness))
         .route("/health/ready", get(readiness))
         .route("/api/v1/auth/bootstrap-status", get(api::bootstrap_status))
@@ -198,6 +200,7 @@ pub fn build_router(state: AppState) -> Router {
             HeaderName::from_static("x-content-type-options"),
             HeaderValue::from_static("nosniff"),
         ))
+        .layer(DefaultBodyLimit::max(max_json_body_bytes))
         .layer(middleware::from_fn(request_id))
         .layer(TraceLayer::new_for_http())
         .with_state(state)
@@ -314,6 +317,44 @@ mod tests {
         assert!(std::str::from_utf8(&body)
             .unwrap()
             .contains("\"status\":\"ok\""));
+    }
+
+    #[tokio::test]
+    async fn root_redirects_to_admin_dashboard() {
+        let state = test_state().await;
+        let response = build_router(state)
+            .oneshot(
+                Request::builder()
+                    .uri("/")
+                    .body(Body::empty())
+                    .expect("request should build"),
+            )
+            .await
+            .expect("router should respond");
+
+        assert_eq!(response.status(), StatusCode::PERMANENT_REDIRECT);
+        assert_eq!(response.headers()["location"], "/admin/");
+    }
+
+    #[tokio::test]
+    async fn configured_json_body_limit_accepts_base64_import_over_default_limit() {
+        let payload = serde_json::json!({
+            "archiveBase64": "a".repeat(3 * 1024 * 1024)
+        });
+        let response = build_router(test_state().await)
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/v1/vaults/019eb16e-2a85-7070-bbe7-8cf09911c2c1/import")
+                    .header("content-type", "application/json")
+                    .body(Body::from(payload.to_string()))
+                    .expect("request should build"),
+            )
+            .await
+            .expect("router should respond");
+
+        // Reaching authentication proves the JSON extractor accepted the body.
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
     }
 
     #[tokio::test]
