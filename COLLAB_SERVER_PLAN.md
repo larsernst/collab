@@ -15,7 +15,7 @@ This document is the source of truth for implementation progress. Update task ch
 | 0. Architecture and prerequisites | Complete | 100% |
 | 1. Server foundation and Compose | Complete | 100% |
 | 2. Authentication and administration | Complete | 100% |
-| 3. Hosted vault storage and permissions | In progress | 41% |
+| 3. Hosted vault storage and permissions | In progress | 53% |
 | 4. Native hosted-vault client | Not started | 0% |
 | 5. Live collaboration | Not started | 0% |
 | 6. Full offline synchronization | Not started | 0% |
@@ -200,8 +200,8 @@ surface before hosted vault mutations are exposed.
 - [x] Implement member invite, removal, and role updates.
 - [x] Implement file and folder listing using stable file IDs and relative paths.
 - [x] Implement text-document read and optimistic write operations.
-- [ ] Implement binary-asset upload, download, deduplication, and integrity checks.
-- [ ] Implement create, rename, move, trash, restore, and purge operations.
+- [x] Implement binary-asset upload, download, deduplication, and integrity checks.
+- [x] Implement create, rename, move, trash, restore, and purge operations.
 - [x] Implement server-side path normalization and traversal protection.
 - [ ] Implement reference-impact previews and reference rewrites.
 - [ ] Implement snapshots, history listing, comparison inputs, and restore.
@@ -397,3 +397,4 @@ Add one entry whenever a meaningful server milestone lands.
 | 2026-06-09 | Phase 2 account lifecycle | Added account re-enable and permanent deletion controls, with durable primary-administrator identification and server-side protection from disable/delete operations | Admin-web management-flow tests, Rust checks, and live PostgreSQL lifecycle tests | Begin Phase 3 hosted vault storage and permissions |
 | 2026-06-10 | Phase 3 foundation | Added canonical hosted-vault, membership, file/revision/blob/trash/snapshot/operation/activity tables; authenticated vault lifecycle and membership APIs; owner/admin role enforcement; real admin inventory/counts; and vault activity records | Rust checks, admin production build, migration idempotency, and live PostgreSQL lifecycle coverage for membership visibility, viewer denial, owner protection, archive enforcement, activity, and pending deletion | Implement stable-ID file manifests and text-document revision operations |
 | 2026-06-10 | Phase 3 files and text revisions | Added strict portable hosted-path normalization, stable-ID file manifests with derived relative paths, folder and text-document creation, current-document reads, optimistic revision writes/history, content-addressed text blobs, manifest sequencing, and same-vault relational constraints | Shared path tests, Rust checks, and live PostgreSQL lifecycle coverage for viewer denial, path rejection/collision, document reads, stale-write conflicts, revision history, manifest increments, activity, and archive enforcement | Implement binary upload/download and structural rename/move/trash/restore/purge operations |
+| 2026-06-10 | Phase 3 assets and structural operations | Added bounded integrity-checked binary uploads, authenticated raw downloads, blob deduplication, idempotent stable-ID rename/move/trash/restore/purge operations, manifest conflict detection, and admin-only purge | Rust checks and live PostgreSQL lifecycle coverage for hash rejection, asset deduplication/download, idempotency, stale-manifest conflicts, stable-ID moves, trash/restore, and purge authorization | Implement snapshots/history restore and reference-impact previews/rewrites |

@@ -97,8 +97,20 @@ pub fn build_router(state: AppState) -> Router {
             get(api::get_vault_file),
         )
         .route(
+            "/api/v1/vaults/{vault_id}/files/{file_id}/content",
+            get(api::download_vault_file),
+        )
+        .route(
             "/api/v1/vaults/{vault_id}/files/{file_id}/revisions",
             get(api::list_file_revisions).post(api::write_text_revision),
+        )
+        .route(
+            "/api/v1/vaults/{vault_id}/uploads",
+            post(api::upload_binary_asset),
+        )
+        .route(
+            "/api/v1/vaults/{vault_id}/operations",
+            post(api::apply_structural_operation),
         )
         .route("/api/v1/admin/overview", get(api::overview))
         .route("/api/v1/admin/users", get(api::list_users).post(api::create_user))

@@ -84,6 +84,11 @@ Configurable limits apply to:
 - Request body size.
 - Concurrent uploads per user and server.
 
+The initial hosted asset endpoint enforces `COLLAB_MAX_FILE_BYTES` after base64
+decoding and verifies the supplied SHA-256 digest before committing metadata.
+Request-body and concurrent-upload limits remain required before production
+exposure.
+
 Archive import extracts into an isolated staging location, validates every entry, and commits metadata only after validation succeeds.
 
 ## Compatibility Policy

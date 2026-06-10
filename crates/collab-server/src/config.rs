@@ -24,6 +24,7 @@ pub struct ServerConfig {
     pub session_ttl_hours: i64,
     pub native_access_ttl_minutes: i64,
     pub native_refresh_ttl_days: i64,
+    pub max_file_bytes: usize,
     pub log_filter: String,
     pub log_format: LogFormat,
 }
@@ -40,6 +41,7 @@ impl Default for ServerConfig {
             session_ttl_hours: 12,
             native_access_ttl_minutes: 15,
             native_refresh_ttl_days: 30,
+            max_file_bytes: 25 * 1024 * 1024,
             log_filter: "collab_server=info,tower_http=info".into(),
             log_format: LogFormat::Pretty,
         }
@@ -107,6 +109,11 @@ impl ServerConfig {
                 .parse()
                 .map_err(|_| ConfigError::Invalid("COLLAB_NATIVE_REFRESH_TTL_DAYS"))?;
         }
+        if let Ok(value) = env::var("COLLAB_MAX_FILE_BYTES") {
+            self.max_file_bytes = value
+                .parse()
+                .map_err(|_| ConfigError::Invalid("COLLAB_MAX_FILE_BYTES"))?;
+        }
         if let Ok(value) = env::var("COLLAB_LOG") {
             self.log_filter = value;
         }
@@ -144,6 +151,9 @@ impl ServerConfig {
         if self.native_refresh_ttl_days <= 0 || self.native_refresh_ttl_days > 365 {
             return Err(ConfigError::Invalid("COLLAB_NATIVE_REFRESH_TTL_DAYS"));
         }
+        if self.max_file_bytes == 0 || self.max_file_bytes > 1024 * 1024 * 1024 {
+            return Err(ConfigError::Invalid("COLLAB_MAX_FILE_BYTES"));
+        }
         Ok(())
     }
 }
@@ -174,6 +184,7 @@ mod tests {
         let config = ServerConfig::default();
         assert_eq!(config.bind_address().to_string(), "127.0.0.1:8787");
         assert_eq!(config.blob_dir, PathBuf::from("server-data/blobs"));
+        assert_eq!(config.max_file_bytes, 25 * 1024 * 1024);
         assert_eq!(config.log_format, LogFormat::Pretty);
         config.validate().unwrap();
     }
@@ -194,5 +205,20 @@ mod tests {
             ..ServerConfig::default()
         };
         assert_eq!(config.bind_address().to_string(), "[::1]:8787");
+    }
+
+    #[test]
+    fn validation_rejects_invalid_file_size_limits() {
+        let config = ServerConfig {
+            max_file_bytes: 0,
+            ..ServerConfig::default()
+        };
+        assert!(config.validate().is_err());
+
+        let config = ServerConfig {
+            max_file_bytes: 1024 * 1024 * 1024 + 1,
+            ..ServerConfig::default()
+        };
+        assert!(config.validate().is_err());
     }
 }

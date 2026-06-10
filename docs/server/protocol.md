@@ -15,7 +15,9 @@
 - Timestamps are UTC RFC 3339 strings.
 - Collection endpoints use cursor pagination with `items` and `nextCursor`.
 - Mutations include `clientOperationId` where retry is possible.
-- Binary transfers use dedicated upload/download endpoints rather than JSON data URLs.
+- Binary transfers use dedicated upload/download endpoints. The initial bounded
+  upload endpoint accepts base64 JSON; resumable streaming sessions replace it
+  for larger transfers in a later phase.
 
 Successful single-resource response:
 
@@ -142,8 +144,7 @@ Files and history:
 - `GET|POST /api/v1/vaults/{vaultId}/files/{fileId}/snapshots`
 - `POST /api/v1/vaults/{vaultId}/operations`
 - `POST /api/v1/vaults/{vaultId}/uploads`
-- `PATCH /api/v1/vaults/{vaultId}/uploads/{uploadId}`
-- `POST /api/v1/vaults/{vaultId}/uploads/{uploadId}/complete`
+- `GET /api/v1/vaults/{vaultId}/files/{fileId}/content`
 - `GET /api/v1/vaults/{vaultId}/activity`
 - `GET /api/v1/vaults/{vaultId}/search`
 
@@ -160,7 +161,19 @@ Each successful create or text revision increments the vault manifest sequence
 and records vault activity. Text payloads use the content-addressed blob store.
 Viewer reads are allowed; mutations require editor access and an active vault.
 
-Operations that modify structure are submitted to `/operations` with a stable target file ID, `clientOperationId`, and `baseManifestSequence`.
+The binary and structural-operation slice also implements:
+
+- `POST /uploads` for bounded base64 assets with a required SHA-256 digest,
+  content-addressed blob deduplication, and a configurable per-file limit.
+- `GET /files/{fileId}/content` for authenticated raw content downloads with
+  digest verification.
+- `POST /operations` for idempotent rename, move, trash, restore, and purge.
+  Operations target stable file IDs and include `clientOperationId` and
+  `baseManifestSequence`; stale manifests return `manifest_conflict`.
+- Editor access for rename, move, trash, and restore. Purge requires vault
+  administrator access.
+
+Resumable streaming upload sessions remain a later Phase 4 task.
 
 ## WebSocket Protocol
 

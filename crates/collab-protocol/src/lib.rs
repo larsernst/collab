@@ -294,6 +294,27 @@ pub struct HostedTextDocument {
     pub content: String,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum HostedStructuralOperationType {
+    Rename,
+    Move,
+    Trash,
+    Restore,
+    Purge,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct HostedStructuralOperationResult {
+    pub operation_id: String,
+    pub client_operation_id: String,
+    pub operation_type: HostedStructuralOperationType,
+    pub target_file_id: String,
+    pub result_manifest_sequence: i64,
+    pub already_applied: bool,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct AdminOverview {

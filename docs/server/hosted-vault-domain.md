@@ -20,11 +20,12 @@ All IDs are server-generated UUIDv7 values unless explicitly described otherwise
 
 Folders are explicit `FileEntry` records. Relative paths are derived by walking `parentId` relationships and applying the hosted path rules.
 
-The Phase 3 online API now persists stable folder/document IDs and derives
+The Phase 3 online API persists stable folder/document/asset IDs and derives
 relative paths from their parent relationships. Text-backed note, Kanban, and
 canvas documents commit immutable content-addressed revisions using optimistic
-revision sequences. Binary assets and structural rename/move/trash operations
-remain separate follow-up slices.
+revision sequences. Bounded binary uploads verify caller-provided SHA-256
+digests and deduplicate blobs. Rename, move, trash, restore, and purge are
+idempotent structural operations ordered by the vault manifest sequence.
 
 ## File Kinds and Document Types
 
