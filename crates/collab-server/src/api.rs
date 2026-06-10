@@ -17,10 +17,11 @@ use base64::{engine::general_purpose::STANDARD, Engine};
 use collab_protocol::{
     AdminOverview, ApiError, AuditEvent, BootstrapStatus, BrowserSession, CreatedInvitation,
     DataResponse, ErrorCode, ErrorResponse, HealthState, HostedDocumentType, HostedFileEntry,
-    HostedFileKind, HostedFileRevision, HostedFileState, HostedStructuralOperationResult,
-    HostedStructuralOperationType, HostedTextDocument, HostedVault, HostedVaultActivityEvent,
-    HostedVaultManifest, HostedVaultMember, HostedVaultRole, HostedVaultStatus, HostedVaultSummary,
-    Invitation, NativeSession, OperationalWarning, ServerUser, ServerUserRole, StorageSummary,
+    HostedFileKind, HostedFileRevision, HostedFileState, HostedRevisionContent, HostedSnapshot,
+    HostedStructuralOperationResult, HostedStructuralOperationType, HostedTextDocument,
+    HostedVault, HostedVaultActivityEvent, HostedVaultManifest, HostedVaultMember, HostedVaultRole,
+    HostedVaultStatus, HostedVaultSummary, Invitation, NativeSession, OperationalWarning,
+    ServerUser, ServerUserRole, StorageSummary,
 };
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -148,6 +149,19 @@ pub struct CreateVaultFileRequest {
 pub struct WriteTextRevisionRequest {
     pub expected_revision_sequence: i64,
     pub content: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CreateSnapshotRequest {
+    pub revision_id: Option<Uuid>,
+    pub label: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RestoreSnapshotRequest {
+    pub expected_revision_sequence: i64,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1224,6 +1238,245 @@ pub async fn list_file_revisions(
     Ok(Json(DataResponse::new(
         load_file_revisions(&state.database, vault_id, file_id, &request_id).await?,
     )))
+}
+
+pub async fn get_text_revision(
+    State(state): State<AppState>,
+    Extension(request_id): Extension<String>,
+    headers: HeaderMap,
+    Path((vault_id, file_id, revision_id)): Path<(Uuid, Uuid, Uuid)>,
+) -> Result<Json<DataResponse<HostedRevisionContent>>, ApiFailure> {
+    let actor = require_authenticated_user(&state, &headers, &request_id).await?;
+    require_vault_access(
+        &state.database,
+        vault_id,
+        user_uuid(&actor.user),
+        HostedVaultRole::Viewer,
+        &request_id,
+    )
+    .await?;
+    Ok(Json(DataResponse::new(
+        load_text_revision_content(&state, vault_id, file_id, revision_id, &request_id).await?,
+    )))
+}
+
+pub async fn list_file_snapshots(
+    State(state): State<AppState>,
+    Extension(request_id): Extension<String>,
+    headers: HeaderMap,
+    Path((vault_id, file_id)): Path<(Uuid, Uuid)>,
+) -> Result<Json<DataResponse<Vec<HostedSnapshot>>>, ApiFailure> {
+    let actor = require_authenticated_user(&state, &headers, &request_id).await?;
+    require_vault_access(
+        &state.database,
+        vault_id,
+        user_uuid(&actor.user),
+        HostedVaultRole::Viewer,
+        &request_id,
+    )
+    .await?;
+    Ok(Json(DataResponse::new(
+        load_file_snapshots(&state.database, vault_id, file_id, &request_id).await?,
+    )))
+}
+
+pub async fn create_file_snapshot(
+    State(state): State<AppState>,
+    Extension(request_id): Extension<String>,
+    headers: HeaderMap,
+    Path((vault_id, file_id)): Path<(Uuid, Uuid)>,
+    Json(payload): Json<CreateSnapshotRequest>,
+) -> Result<(StatusCode, Json<DataResponse<HostedSnapshot>>), ApiFailure> {
+    let actor = require_any_user(&state, &headers, &request_id).await?;
+    require_active_vault_role(
+        &state.database,
+        vault_id,
+        &actor.user,
+        HostedVaultRole::Editor,
+        &request_id,
+    )
+    .await?;
+    let label = normalize_snapshot_label(payload.label, &request_id)?;
+    let actor_id = user_uuid(&actor.user);
+    let snapshot_id = Uuid::now_v7();
+    let mut transaction = state
+        .database
+        .begin()
+        .await
+        .map_err(|_| ApiFailure::server(request_id.clone()))?;
+    lock_active_vault(&mut transaction, vault_id, &request_id).await?;
+    let file = sqlx::query(
+        "SELECT kind::text AS kind, state::text AS state, current_revision_id FROM hosted_file_entries WHERE vault_id = $1 AND id = $2 FOR UPDATE",
+    )
+    .bind(vault_id)
+    .bind(file_id)
+    .fetch_optional(&mut *transaction)
+    .await
+    .map_err(|_| ApiFailure::server(request_id.clone()))?
+    .ok_or_else(|| ApiFailure::not_found(request_id.clone()))?;
+    if file.get::<String, _>("kind") != "document" || file.get::<String, _>("state") != "active" {
+        return Err(ApiFailure::validation(
+            "Only active text documents can be snapshotted.",
+            request_id,
+        ));
+    }
+    let revision_id = payload
+        .revision_id
+        .or_else(|| file.get::<Option<Uuid>, _>("current_revision_id"))
+        .ok_or_else(|| ApiFailure::not_found(request_id.clone()))?;
+    let revision_exists = sqlx::query_scalar::<_, bool>(
+        "SELECT EXISTS(SELECT 1 FROM hosted_file_revisions WHERE vault_id = $1 AND file_id = $2 AND id = $3)",
+    )
+    .bind(vault_id)
+    .bind(file_id)
+    .bind(revision_id)
+    .fetch_one(&mut *transaction)
+    .await
+    .map_err(|_| ApiFailure::server(request_id.clone()))?;
+    if !revision_exists {
+        return Err(ApiFailure::not_found(request_id));
+    }
+    sqlx::query(
+        "INSERT INTO hosted_snapshots (id, vault_id, file_id, revision_id, label, created_by) VALUES ($1, $2, $3, $4, $5, $6)",
+    )
+    .bind(snapshot_id)
+    .bind(vault_id)
+    .bind(file_id)
+    .bind(revision_id)
+    .bind(&label)
+    .bind(actor_id)
+    .execute(&mut *transaction)
+    .await
+    .map_err(|_| ApiFailure::server(request_id.clone()))?;
+    vault_activity_event(
+        &mut transaction,
+        vault_id,
+        Some(actor_id),
+        "snapshot.created",
+        Some("file"),
+        Some(&file_id.to_string()),
+        json!({"snapshotId": snapshot_id, "revisionId": revision_id}),
+        &request_id,
+    )
+    .await?;
+    transaction
+        .commit()
+        .await
+        .map_err(|_| ApiFailure::server(request_id.clone()))?;
+    let snapshot =
+        load_file_snapshot(&state.database, vault_id, file_id, snapshot_id, &request_id).await?;
+    Ok((StatusCode::CREATED, Json(DataResponse::new(snapshot))))
+}
+
+pub async fn restore_file_snapshot(
+    State(state): State<AppState>,
+    Extension(request_id): Extension<String>,
+    headers: HeaderMap,
+    Path((vault_id, file_id, snapshot_id)): Path<(Uuid, Uuid, Uuid)>,
+    Json(payload): Json<RestoreSnapshotRequest>,
+) -> Result<(StatusCode, Json<DataResponse<HostedTextDocument>>), ApiFailure> {
+    let actor = require_any_user(&state, &headers, &request_id).await?;
+    require_active_vault_role(
+        &state.database,
+        vault_id,
+        &actor.user,
+        HostedVaultRole::Editor,
+        &request_id,
+    )
+    .await?;
+    let actor_id = user_uuid(&actor.user);
+    let revision_id = Uuid::now_v7();
+    let mut transaction = state
+        .database
+        .begin()
+        .await
+        .map_err(|_| ApiFailure::server(request_id.clone()))?;
+    lock_active_vault(&mut transaction, vault_id, &request_id).await?;
+    let current = sqlx::query(
+        r#"
+        SELECT f.kind::text AS kind, f.state::text AS state, current.sequence,
+               snapshot_revision.blob_digest, snapshot_revision.content_hash,
+               snapshot_revision.size_bytes
+        FROM hosted_file_entries f
+        LEFT JOIN hosted_file_revisions current ON current.id = f.current_revision_id
+        JOIN hosted_snapshots snapshot ON snapshot.vault_id = f.vault_id AND snapshot.file_id = f.id
+        JOIN hosted_file_revisions snapshot_revision ON snapshot_revision.id = snapshot.revision_id
+        WHERE f.vault_id = $1 AND f.id = $2 AND snapshot.id = $3
+        FOR UPDATE OF f
+        "#,
+    )
+    .bind(vault_id)
+    .bind(file_id)
+    .bind(snapshot_id)
+    .fetch_optional(&mut *transaction)
+    .await
+    .map_err(|_| ApiFailure::server(request_id.clone()))?
+    .ok_or_else(|| ApiFailure::not_found(request_id.clone()))?;
+    if current.get::<String, _>("kind") != "document"
+        || current.get::<String, _>("state") != "active"
+    {
+        return Err(ApiFailure::validation(
+            "Only active text documents can be restored.",
+            request_id,
+        ));
+    }
+    let current_sequence = current.get::<Option<i64>, _>("sequence").unwrap_or(0);
+    if current_sequence != payload.expected_revision_sequence {
+        return Err(ApiFailure::revision_conflict(request_id));
+    }
+    let next_sequence = current_sequence + 1;
+    sqlx::query(
+        "INSERT INTO hosted_file_revisions (id, vault_id, file_id, sequence, blob_digest, content_hash, size_bytes, created_by) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
+    )
+    .bind(revision_id)
+    .bind(vault_id)
+    .bind(file_id)
+    .bind(next_sequence)
+    .bind(current.get::<String, _>("blob_digest"))
+    .bind(current.get::<String, _>("content_hash"))
+    .bind(current.get::<i64, _>("size_bytes"))
+    .bind(actor_id)
+    .execute(&mut *transaction)
+    .await
+    .map_err(|_| ApiFailure::server(request_id.clone()))?;
+    sqlx::query(
+        "UPDATE hosted_file_entries SET current_revision_id = $1, updated_at = NOW() WHERE id = $2",
+    )
+    .bind(revision_id)
+    .bind(file_id)
+    .execute(&mut *transaction)
+    .await
+    .map_err(|_| ApiFailure::server(request_id.clone()))?;
+    increment_manifest(&mut transaction, vault_id, &request_id).await?;
+    vault_activity_event(
+        &mut transaction,
+        vault_id,
+        Some(actor_id),
+        "snapshot.restored",
+        Some("file"),
+        Some(&file_id.to_string()),
+        json!({"snapshotId": snapshot_id, "revisionSequence": next_sequence}),
+        &request_id,
+    )
+    .await?;
+    transaction
+        .commit()
+        .await
+        .map_err(|_| ApiFailure::server(request_id.clone()))?;
+    let file = load_vault_file_entry(&state.database, vault_id, file_id, &request_id).await?;
+    let content = load_blob_text(
+        &state,
+        file.current_revision
+            .as_ref()
+            .map(|revision| revision.content_hash.as_str())
+            .ok_or_else(|| ApiFailure::not_found(request_id.clone()))?,
+        &request_id,
+    )
+    .await?;
+    Ok((
+        StatusCode::CREATED,
+        Json(DataResponse::new(HostedTextDocument { file, content })),
+    ))
 }
 
 pub async fn write_text_revision(
@@ -3240,6 +3493,156 @@ async fn load_file_revisions(
         .collect())
 }
 
+fn normalize_snapshot_label(
+    label: Option<String>,
+    request_id: &str,
+) -> Result<Option<String>, ApiFailure> {
+    let label = label
+        .map(|value| value.trim().to_owned())
+        .filter(|value| !value.is_empty());
+    if label
+        .as_ref()
+        .is_some_and(|value| value.chars().count() > 200)
+    {
+        return Err(ApiFailure::validation(
+            "Snapshot labels must be at most 200 characters.",
+            request_id.to_owned(),
+        ));
+    }
+    Ok(label)
+}
+
+fn revision_from_row(row: &sqlx::postgres::PgRow) -> HostedFileRevision {
+    HostedFileRevision {
+        id: row.get::<Uuid, _>("revision_id").to_string(),
+        sequence: row.get("revision_sequence"),
+        content_hash: row.get("content_hash"),
+        size_bytes: row.get::<i64, _>("size_bytes").max(0) as u64,
+        created_by_display_name: row.get("revision_creator_display_name"),
+        created_at: row
+            .get::<chrono::DateTime<chrono::Utc>, _>("revision_created_at")
+            .to_rfc3339(),
+    }
+}
+
+fn snapshot_from_row(row: &sqlx::postgres::PgRow) -> HostedSnapshot {
+    HostedSnapshot {
+        id: row.get::<Uuid, _>("snapshot_id").to_string(),
+        label: row.get("label"),
+        revision: revision_from_row(row),
+        created_by_display_name: row.get("snapshot_creator_display_name"),
+        created_at: row
+            .get::<chrono::DateTime<chrono::Utc>, _>("snapshot_created_at")
+            .to_rfc3339(),
+    }
+}
+
+async fn load_file_snapshots(
+    pool: &PgPool,
+    vault_id: Uuid,
+    file_id: Uuid,
+    request_id: &str,
+) -> Result<Vec<HostedSnapshot>, ApiFailure> {
+    let rows = sqlx::query(
+        r#"
+        SELECT snapshot.id AS snapshot_id, snapshot.label,
+               snapshot.created_at AS snapshot_created_at,
+               snapshot_creator.display_name AS snapshot_creator_display_name,
+               revision.id AS revision_id, revision.sequence AS revision_sequence,
+               revision.content_hash, revision.size_bytes,
+               revision.created_at AS revision_created_at,
+               revision_creator.display_name AS revision_creator_display_name
+        FROM hosted_snapshots snapshot
+        JOIN hosted_file_revisions revision ON revision.id = snapshot.revision_id
+        LEFT JOIN users snapshot_creator ON snapshot_creator.id = snapshot.created_by
+        LEFT JOIN users revision_creator ON revision_creator.id = revision.created_by
+        WHERE snapshot.vault_id = $1 AND snapshot.file_id = $2
+        ORDER BY snapshot.created_at DESC
+        "#,
+    )
+    .bind(vault_id)
+    .bind(file_id)
+    .fetch_all(pool)
+    .await
+    .map_err(|_| ApiFailure::server(request_id.to_owned()))?;
+    Ok(rows.iter().map(snapshot_from_row).collect())
+}
+
+async fn load_file_snapshot(
+    pool: &PgPool,
+    vault_id: Uuid,
+    file_id: Uuid,
+    snapshot_id: Uuid,
+    request_id: &str,
+) -> Result<HostedSnapshot, ApiFailure> {
+    let rows = load_file_snapshots(pool, vault_id, file_id, request_id).await?;
+    rows.into_iter()
+        .find(|snapshot| snapshot.id == snapshot_id.to_string())
+        .ok_or_else(|| ApiFailure::not_found(request_id.to_owned()))
+}
+
+async fn load_blob_text(
+    state: &AppState,
+    digest: &str,
+    request_id: &str,
+) -> Result<String, ApiFailure> {
+    let bytes = state
+        .blobs
+        .get(digest)
+        .await
+        .map_err(|_| ApiFailure::server(request_id.to_owned()))?
+        .ok_or_else(|| ApiFailure::server(request_id.to_owned()))?;
+    if collab_core::sha256_bytes(&bytes) != digest {
+        return Err(ApiFailure::upload_hash_mismatch(request_id.to_owned()));
+    }
+    String::from_utf8(bytes).map_err(|_| ApiFailure::server(request_id.to_owned()))
+}
+
+async fn load_text_revision_content(
+    state: &AppState,
+    vault_id: Uuid,
+    file_id: Uuid,
+    revision_id: Uuid,
+    request_id: &str,
+) -> Result<HostedRevisionContent, ApiFailure> {
+    let row = sqlx::query(
+        r#"
+        SELECT file.kind::text AS kind, revision.blob_digest,
+               revision.id AS revision_id, revision.sequence AS revision_sequence,
+               revision.content_hash, revision.size_bytes,
+               revision.created_at AS revision_created_at,
+               creator.display_name AS revision_creator_display_name
+        FROM hosted_file_entries file
+        JOIN hosted_file_revisions revision
+          ON revision.vault_id = file.vault_id AND revision.file_id = file.id
+        LEFT JOIN users creator ON creator.id = revision.created_by
+        WHERE file.vault_id = $1 AND file.id = $2 AND revision.id = $3
+        "#,
+    )
+    .bind(vault_id)
+    .bind(file_id)
+    .bind(revision_id)
+    .fetch_optional(&state.database)
+    .await
+    .map_err(|_| ApiFailure::server(request_id.to_owned()))?
+    .ok_or_else(|| ApiFailure::not_found(request_id.to_owned()))?;
+    if row.get::<String, _>("kind") != "document" {
+        return Err(ApiFailure::validation(
+            "Only text revision content can be read through this endpoint.",
+            request_id.to_owned(),
+        ));
+    }
+    Ok(HostedRevisionContent {
+        revision: revision_from_row(&row),
+        content: load_blob_text(
+            state,
+            row.get::<String, _>("blob_digest").as_str(),
+            request_id,
+        )
+        .await?,
+    })
+}
+
 fn invitation_from_row(row: &sqlx::postgres::PgRow) -> Invitation {
     Invitation {
         id: row.get::<Uuid, _>("id").to_string(),
@@ -4456,10 +4859,125 @@ mod tests {
         )
         .await;
         assert_eq!(revisions.status(), StatusCode::OK);
+        let revisions_body = json_body(revisions).await;
+        assert_eq!(revisions_body["data"].as_array().unwrap().len(), 2);
+        let original_revision_id = revisions_body["data"][1]["id"].as_str().unwrap().to_owned();
+
+        let original_revision = request(
+            &app,
+            "GET",
+            &format!(
+                "/api/v1/vaults/{vault_id}/files/{document_id}/revisions/{original_revision_id}"
+            ),
+            json!({}),
+            Some(&admin_cookie),
+            None,
+        )
+        .await;
+        assert_eq!(original_revision.status(), StatusCode::OK);
         assert_eq!(
-            json_body(revisions).await["data"].as_array().unwrap().len(),
-            2
+            json_body(original_revision).await["data"]["content"],
+            "# Welcome"
         );
+
+        let snapshot = request(
+            &app,
+            "POST",
+            &format!("/api/v1/vaults/{vault_id}/files/{document_id}/snapshots"),
+            json!({"revisionId": original_revision_id, "label": "Before update"}),
+            Some(&member_cookie),
+            Some(&member_csrf),
+        )
+        .await;
+        assert_eq!(snapshot.status(), StatusCode::CREATED);
+        let snapshot_body = json_body(snapshot).await;
+        let snapshot_id = snapshot_body["data"]["id"].as_str().unwrap().to_owned();
+        assert_eq!(snapshot_body["data"]["label"], "Before update");
+        assert_eq!(snapshot_body["data"]["revision"]["sequence"], 1);
+
+        let snapshots = request(
+            &app,
+            "GET",
+            &format!("/api/v1/vaults/{vault_id}/files/{document_id}/snapshots"),
+            json!({}),
+            Some(&admin_cookie),
+            None,
+        )
+        .await;
+        assert_eq!(snapshots.status(), StatusCode::OK);
+        assert_eq!(
+            json_body(snapshots).await["data"].as_array().unwrap().len(),
+            1
+        );
+
+        let stale_restore = request(
+            &app,
+            "POST",
+            &format!(
+                "/api/v1/vaults/{vault_id}/files/{document_id}/snapshots/{snapshot_id}/restore"
+            ),
+            json!({"expectedRevisionSequence": 1}),
+            Some(&member_cookie),
+            Some(&member_csrf),
+        )
+        .await;
+        assert_eq!(stale_restore.status(), StatusCode::CONFLICT);
+        assert_eq!(
+            json_body(stale_restore).await["error"]["code"],
+            "revision_conflict"
+        );
+
+        let restored = request(
+            &app,
+            "POST",
+            &format!(
+                "/api/v1/vaults/{vault_id}/files/{document_id}/snapshots/{snapshot_id}/restore"
+            ),
+            json!({"expectedRevisionSequence": 2}),
+            Some(&member_cookie),
+            Some(&member_csrf),
+        )
+        .await;
+        assert_eq!(restored.status(), StatusCode::CREATED);
+        let restored_body = json_body(restored).await;
+        assert_eq!(restored_body["data"]["content"], "# Welcome");
+        assert_eq!(
+            restored_body["data"]["file"]["currentRevision"]["sequence"],
+            3
+        );
+
+        let demoted_member = request(
+            &app,
+            "PATCH",
+            &format!("/api/v1/vaults/{vault_id}/members/{member_id}"),
+            json!({"role": "viewer"}),
+            Some(&admin_cookie),
+            Some(&admin_csrf),
+        )
+        .await;
+        assert_eq!(demoted_member.status(), StatusCode::OK);
+
+        let viewer_snapshot = request(
+            &app,
+            "POST",
+            &format!("/api/v1/vaults/{vault_id}/files/{document_id}/snapshots"),
+            json!({"label": "Denied"}),
+            Some(&member_cookie),
+            Some(&member_csrf),
+        )
+        .await;
+        assert_eq!(viewer_snapshot.status(), StatusCode::FORBIDDEN);
+
+        let re_promoted_member = request(
+            &app,
+            "PATCH",
+            &format!("/api/v1/vaults/{vault_id}/members/{member_id}"),
+            json!({"role": "editor"}),
+            Some(&admin_cookie),
+            Some(&admin_csrf),
+        )
+        .await;
+        assert_eq!(re_promoted_member.status(), StatusCode::OK);
 
         let bad_asset = request(
             &app,
@@ -4547,7 +5065,7 @@ mod tests {
         let rename_operation_id = Uuid::now_v7();
         let rename_payload = json!({
             "clientOperationId": rename_operation_id,
-            "baseManifestSequence": 5,
+            "baseManifestSequence": 6,
             "operationType": "rename",
             "targetFileId": document_id,
             "name": "Renamed.md"
@@ -4564,7 +5082,7 @@ mod tests {
         assert_eq!(renamed.status(), StatusCode::OK);
         assert_eq!(
             json_body(renamed).await["data"]["resultManifestSequence"],
-            6
+            7
         );
 
         let repeated_rename = request(
@@ -4588,7 +5106,7 @@ mod tests {
             &format!("/api/v1/vaults/{vault_id}/operations"),
             json!({
                 "clientOperationId": Uuid::now_v7(),
-                "baseManifestSequence": 5,
+                "baseManifestSequence": 6,
                 "operationType": "move",
                 "targetFileId": document_id,
                 "parentId": null
@@ -4609,7 +5127,7 @@ mod tests {
             &format!("/api/v1/vaults/{vault_id}/operations"),
             json!({
                 "clientOperationId": Uuid::now_v7(),
-                "baseManifestSequence": 6,
+                "baseManifestSequence": 7,
                 "operationType": "move",
                 "targetFileId": document_id,
                 "parentId": null
@@ -4638,7 +5156,7 @@ mod tests {
             .unwrap();
         assert_eq!(moved_document["relativePath"], "Renamed.md");
 
-        for (operation_type, sequence) in [("trash", 7), ("restore", 8), ("trash", 9)] {
+        for (operation_type, sequence) in [("trash", 8), ("restore", 9), ("trash", 10)] {
             let response = request(
                 &app,
                 "POST",
@@ -4662,7 +5180,7 @@ mod tests {
             &format!("/api/v1/vaults/{vault_id}/operations"),
             json!({
                 "clientOperationId": Uuid::now_v7(),
-                "baseManifestSequence": 10,
+                "baseManifestSequence": 11,
                 "operationType": "purge",
                 "targetFileId": document_id
             }),
@@ -4678,7 +5196,7 @@ mod tests {
             &format!("/api/v1/vaults/{vault_id}/operations"),
             json!({
                 "clientOperationId": Uuid::now_v7(),
-                "baseManifestSequence": 10,
+                "baseManifestSequence": 11,
                 "operationType": "purge",
                 "targetFileId": document_id
             }),
@@ -4689,7 +5207,7 @@ mod tests {
         assert_eq!(admin_purge.status(), StatusCode::OK);
         assert_eq!(
             json_body(admin_purge).await["data"]["resultManifestSequence"],
-            11
+            12
         );
 
         let archived = request(

@@ -141,7 +141,9 @@ Files and history:
 - `GET|POST /api/v1/vaults/{vaultId}/files`
 - `GET|PATCH|DELETE /api/v1/vaults/{vaultId}/files/{fileId}`
 - `GET|POST /api/v1/vaults/{vaultId}/files/{fileId}/revisions`
+- `GET /api/v1/vaults/{vaultId}/files/{fileId}/revisions/{revisionId}`
 - `GET|POST /api/v1/vaults/{vaultId}/files/{fileId}/snapshots`
+- `POST /api/v1/vaults/{vaultId}/files/{fileId}/snapshots/{snapshotId}/restore`
 - `POST /api/v1/vaults/{vaultId}/operations`
 - `POST /api/v1/vaults/{vaultId}/uploads`
 - `GET /api/v1/vaults/{vaultId}/files/{fileId}/content`
@@ -172,6 +174,13 @@ The binary and structural-operation slice also implements:
   `baseManifestSequence`; stale manifests return `manifest_conflict`.
 - Editor access for rename, move, trash, and restore. Purge requires vault
   administrator access.
+- `GET /revisions/{revisionId}` returns immutable historical text content for
+  comparison views.
+- `GET|POST /snapshots` lists or labels immutable revisions. Snapshot creation
+  does not advance the manifest because it does not change file content.
+- `POST /snapshots/{snapshotId}/restore` requires
+  `expectedRevisionSequence`, creates a new immutable revision, advances the
+  vault manifest, and preserves the intervening history.
 
 Resumable streaming upload sessions remain a later Phase 4 task.
 

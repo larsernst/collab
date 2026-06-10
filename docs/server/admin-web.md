@@ -9,6 +9,12 @@ operational summaries, read-only vault inventory, and redacted audit views.
 The first bootstrapped administrator is permanently marked as the primary
 administrator and cannot be disabled or deleted.
 
+The interface now uses an admin-local shadcn-style primitive layer for buttons,
+cards, inputs, badges, selects, separators, and switches. A Settings category
+provides browser-local theme, accent-color, and compact-density preferences.
+Appearance preferences may use local storage; authentication state and secrets
+must never do so.
+
 ## Purpose
 
 The self-hosted server includes a small browser-based administration interface.
@@ -62,6 +68,7 @@ Initial routes:
 - `/admin/users/{userId}`
 - `/admin/vaults`
 - `/admin/audit`
+- `/admin/settings`
 
 ## Browser Security
 

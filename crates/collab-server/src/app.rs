@@ -105,6 +105,18 @@ pub fn build_router(state: AppState) -> Router {
             get(api::list_file_revisions).post(api::write_text_revision),
         )
         .route(
+            "/api/v1/vaults/{vault_id}/files/{file_id}/revisions/{revision_id}",
+            get(api::get_text_revision),
+        )
+        .route(
+            "/api/v1/vaults/{vault_id}/files/{file_id}/snapshots",
+            get(api::list_file_snapshots).post(api::create_file_snapshot),
+        )
+        .route(
+            "/api/v1/vaults/{vault_id}/files/{file_id}/snapshots/{snapshot_id}/restore",
+            post(api::restore_file_snapshot),
+        )
+        .route(
             "/api/v1/vaults/{vault_id}/uploads",
             post(api::upload_binary_asset),
         )

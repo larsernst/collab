@@ -132,13 +132,16 @@ Collab-style admin web interface, and a minimal desktop server connection flow.
   authenticated downloads, and configurable per-file upload limits
 - Idempotent stable-ID rename, move, trash, restore, and admin-only purge
   operations with manifest conflict detection
+- Hosted text revision history, labeled snapshots, historical comparison
+  content, and optimistic snapshot restore as a new revision
 - Argon2id password hashing, one-time administrator bootstrap, CSRF protection, and login rate limiting
-- Collab-style admin web interface served at `/admin/`
+- Collab-style shadcn admin web interface served at `/admin/`, with persisted
+  theme, accent, and density settings
 - Dashboard storage/warning summaries, user creation/invitations, password reset, disable/re-enable/delete controls, session revocation, activity inspection, and redacted audit views
 - Desktop server login in Settings with memory-only access tokens and refresh tokens stored in the OS credential store
 
-Hosted snapshots, reference-aware operations, search/import/export, and
-live/offline synchronization remain under active development. Progress is tracked in
+Reference-aware operations, search/import/export, and live/offline
+synchronization remain under active development. Progress is tracked in
 [COLLAB_SERVER_PLAN.md](./COLLAB_SERVER_PLAN.md).
 
 ### Vault Management And Security

@@ -294,6 +294,23 @@ pub struct HostedTextDocument {
     pub content: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct HostedRevisionContent {
+    pub revision: HostedFileRevision,
+    pub content: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct HostedSnapshot {
+    pub id: String,
+    pub label: Option<String>,
+    pub revision: HostedFileRevision,
+    pub created_by_display_name: Option<String>,
+    pub created_at: String,
+}
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum HostedStructuralOperationType {

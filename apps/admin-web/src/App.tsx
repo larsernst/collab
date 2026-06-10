@@ -9,14 +9,18 @@ import {
   Plus,
   RefreshCw,
   Server,
+  Settings,
   ShieldCheck,
+  SunMoon,
   Users,
 } from 'lucide-react';
 import { FormEvent, useCallback, useEffect, useState } from 'react';
 import { serverApi } from './api';
+import { useAdminAppearance, type AdminAccent, type AdminTheme } from './theme';
 import type { AdminOverview, AuditEvent, HostedVaultSummary, Invitation, ServerUser } from './types';
+import { Badge, Button, Card, Checkbox, Input, Select, Separator, Switch } from './ui';
 
-type View = 'dashboard' | 'users' | 'vaults' | 'audit';
+type View = 'dashboard' | 'users' | 'vaults' | 'audit' | 'settings';
 
 export function App() {
   const invitationToken = new URLSearchParams(window.location.search).get('invite');
@@ -63,7 +67,7 @@ function InvitationScreen({ token }: { token: string }) {
     }
   }
   if (done) return <CenteredMessage title="Invitation accepted. Reload to continue." />;
-  return <main className="auth-page"><section className="auth-card"><div className="logo-mark"><KeyRound size={24} /></div><h1>Accept invitation</h1><p className="subtle">Choose a password of at least 12 characters for your Collab account.</p><form onSubmit={accept}><Field label="New password" name="password" type="password" autoComplete="new-password" minLength={12} required />{error && <div className="error-banner"><CircleAlert size={16} />{error}</div>}<button className="primary-button">Create account</button></form></section></main>;
+  return <main className="auth-page"><Card className="auth-card"><div className="logo-mark"><KeyRound size={24} /></div><h1>Accept invitation</h1><p className="subtle">Choose a password of at least 12 characters for your Collab account.</p><form onSubmit={accept}><Field label="New password" name="password" type="password" autoComplete="new-password" minLength={12} required />{error && <div className="error-banner"><CircleAlert size={16} />{error}</div>}<Button>Create account</Button></form></Card></main>;
 }
 
 function AccessDenied({ onLogout }: { onLogout: () => void }) {
@@ -73,12 +77,12 @@ function AccessDenied({ onLogout }: { onLogout: () => void }) {
   }
   return (
     <main className="auth-page">
-      <section className="auth-card">
+      <Card className="auth-card">
         <div className="logo-mark"><ShieldCheck size={24} /></div>
         <h1>Administrator access required</h1>
         <p className="subtle">This account can use Collab, but it cannot manage the server.</p>
-        <button className="primary-button" onClick={logout}>Sign out</button>
-      </section>
+        <Button onClick={logout}>Sign out</Button>
+      </Card>
     </main>
   );
 }
@@ -114,7 +118,7 @@ function AuthScreen({
   }
   return (
     <main className="auth-page">
-      <section className="auth-card">
+      <Card className="auth-card">
         <div className="logo-mark"><Boxes size={24} /></div>
         <p className="eyebrow">COLLAB SERVER</p>
         <h1>{mode === 'bootstrap' ? 'Create the first administrator' : 'Welcome back'}</h1>
@@ -128,15 +132,16 @@ function AuthScreen({
           <Field label="Username" name="username" autoComplete="username" required />
           <Field label="Password" name="password" type="password" autoComplete={mode === 'bootstrap' ? 'new-password' : 'current-password'} required />
           {error && <div className="error-banner"><CircleAlert size={16} />{error}</div>}
-          <button className="primary-button" disabled={busy}>{busy ? 'Working...' : mode === 'bootstrap' ? 'Create administrator' : 'Sign in'}</button>
+          <Button disabled={busy}>{busy ? 'Working...' : mode === 'bootstrap' ? 'Create administrator' : 'Sign in'}</Button>
         </form>
-      </section>
+      </Card>
     </main>
   );
 }
 
 function AdminShell({ me, onLogout }: { me: ServerUser; onLogout: () => void }) {
   const [view, setView] = useState<View>('dashboard');
+  const { appearance, setAppearance } = useAdminAppearance();
   async function logout() {
     await serverApi.logout().catch(() => undefined);
     onLogout();
@@ -150,16 +155,67 @@ function AdminShell({ me, onLogout }: { me: ServerUser; onLogout: () => void }) 
           <NavButton active={view === 'users'} icon={<Users />} label="Users" onClick={() => setView('users')} />
           <NavButton active={view === 'vaults'} icon={<Boxes />} label="Vaults" onClick={() => setView('vaults')} />
           <NavButton active={view === 'audit'} icon={<Activity />} label="Audit log" onClick={() => setView('audit')} />
+          <NavButton active={view === 'settings'} icon={<Settings />} label="Settings" onClick={() => setView('settings')} />
         </nav>
-        <div className="profile"><div><strong>{me.displayName}</strong><small>{me.username}</small></div><button title="Sign out" onClick={logout}><LogOut size={17} /></button></div>
+        <div className="profile"><div><strong>{me.displayName}</strong><small>{me.username}</small></div><Button variant="ghost" size="icon" title="Sign out" onClick={logout}><LogOut size={17} /></Button></div>
       </aside>
       <main className="content">
         {view === 'dashboard' && <Dashboard />}
         {view === 'users' && <UsersPage currentUser={me} />}
         {view === 'vaults' && <VaultsPage />}
         {view === 'audit' && <AuditPage />}
+        {view === 'settings' && <SettingsPage appearance={appearance} onChange={setAppearance} />}
       </main>
     </div>
+  );
+}
+
+function SettingsPage({
+  appearance,
+  onChange,
+}: {
+  appearance: ReturnType<typeof useAdminAppearance>['appearance'];
+  onChange: ReturnType<typeof useAdminAppearance>['setAppearance'];
+}) {
+  const themes: Array<{ value: AdminTheme; label: string; detail: string }> = [
+    { value: 'dark', label: 'Dark', detail: 'Balanced dark workspace' },
+    { value: 'midnight', label: 'Midnight', detail: 'Deep, low-contrast surfaces' },
+    { value: 'warm', label: 'Warm', detail: 'Soft charcoal and amber tones' },
+    { value: 'light', label: 'Light', detail: 'Bright neutral workspace' },
+  ];
+  const accents: AdminAccent[] = ['violet', 'blue', 'emerald', 'rose', 'orange', 'cyan'];
+  return (
+    <>
+      <PageHeader eyebrow="PREFERENCES" title="Settings" subtitle="Tune the administration interface to match your Collab workspace." />
+      <Panel title="Appearance" icon={<SunMoon size={17} />}>
+        <div className="settings-stack">
+          <div className="settings-row">
+            <div><strong>Theme</strong><small>Choose the base surface palette.</small></div>
+            <Select aria-label="Theme" value={appearance.theme} onChange={(event) => onChange((current) => ({ ...current, theme: event.target.value as AdminTheme }))}>
+              {themes.map((theme) => <option key={theme.value} value={theme.value}>{theme.label}</option>)}
+            </Select>
+          </div>
+          <Separator />
+          <div className="settings-row settings-row-top">
+            <div><strong>Accent color</strong><small>Used for focus, selection, and primary actions.</small></div>
+            <div className="accent-picker" role="group" aria-label="Accent color">
+              {accents.map((accent) => <Button key={accent} variant={appearance.accent === accent ? 'default' : 'outline'} size="icon" className={`accent-swatch accent-${accent}`} aria-label={accent} title={accent} onClick={() => onChange((current) => ({ ...current, accent }))}><span /></Button>)}
+            </div>
+          </div>
+          <Separator />
+          <div className="settings-row">
+            <div><strong>Compact density</strong><small>Reduce spacing in data-heavy server views.</small></div>
+            <Switch label="Compact density" checked={appearance.compact} onCheckedChange={(compact) => onChange((current) => ({ ...current, compact }))} />
+          </div>
+        </div>
+      </Panel>
+      <Panel title="Preview" icon={<Gauge size={17} />}>
+        <div className="appearance-preview">
+          <div><Badge variant="success">Server healthy</Badge><h2>{themes.find((theme) => theme.value === appearance.theme)?.label} administration</h2><p className="subtle">The interface updates immediately and persists in this browser.</p></div>
+          <Button>Primary action</Button>
+        </div>
+      </Panel>
+    </>
   );
 }
 
@@ -251,12 +307,12 @@ function UsersPage({ currentUser }: { currentUser: ServerUser }) {
   }
   return (
     <>
-      <PageHeader eyebrow="IDENTITY" title="Users" subtitle="Create accounts, issue invitations, and manage access." action={<div className="actions"><button onClick={() => setShowInvite(!showInvite)}>Invite user</button><button className="primary-button compact" onClick={() => setShowCreate(!showCreate)}><Plus size={16} />Add user</button></div>} />
+      <PageHeader eyebrow="IDENTITY" title="Users" subtitle="Create accounts, issue invitations, and manage access." action={<div className="actions"><Button variant="outline" size="sm" onClick={() => setShowInvite(!showInvite)}>Invite user</Button><Button size="sm" onClick={() => setShowCreate(!showCreate)}><Plus size={16} />Add user</Button></div>} />
       {error && <div className="error-banner"><CircleAlert size={16} />{error}</div>}
-      {showCreate && <Panel title="Create user" icon={<Plus size={17} />}><form className="inline-form" onSubmit={create}><Field label="Display name" name="displayName" required /><Field label="Username" name="username" required /><Field label="Temporary password" name="password" type="password" required /><label className="check"><input type="checkbox" name="admin" /> Administrator</label><button className="primary-button compact">Create user</button></form></Panel>}
-      {showInvite && <Panel title="Invite user" icon={<KeyRound size={17} />}><form className="inline-form" onSubmit={invite}><Field label="Display name" name="displayName" required /><Field label="Username" name="username" required /><Field label="Expires in hours" name="expiresInHours" type="number" min={1} max={720} defaultValue={72} required /><label className="check"><input type="checkbox" name="admin" /> Administrator</label><button className="primary-button compact">Create link</button></form>{invitationLink && <div className="invitation-link" role="status"><code>{invitationLink}</code><button onClick={() => navigator.clipboard?.writeText(invitationLink)}>Copy</button></div>}</Panel>}
+      {showCreate && <Panel title="Create user" icon={<Plus size={17} />}><form className="inline-form" onSubmit={create}><Field label="Display name" name="displayName" required /><Field label="Username" name="username" required /><Field label="Temporary password" name="password" type="password" required /><label className="check"><Checkbox name="admin" /> Administrator</label><Button size="sm">Create user</Button></form></Panel>}
+      {showInvite && <Panel title="Invite user" icon={<KeyRound size={17} />}><form className="inline-form" onSubmit={invite}><Field label="Display name" name="displayName" required /><Field label="Username" name="username" required /><Field label="Expires in hours" name="expiresInHours" type="number" min={1} max={720} defaultValue={72} required /><label className="check"><Checkbox name="admin" /> Administrator</label><Button size="sm">Create link</Button></form>{invitationLink && <div className="invitation-link" role="status"><code>{invitationLink}</code><Button variant="outline" size="sm" onClick={() => navigator.clipboard?.writeText(invitationLink)}>Copy</Button></div>}</Panel>}
       <Panel title={`${users.length} server users`} icon={<Users size={17} />}>
-        <div className="user-list">{users.map((user) => <div className="user-row" key={user.id}><div className="avatar">{user.displayName.slice(0, 2).toUpperCase()}</div><div className="grow"><strong>{user.displayName}</strong><small>{user.username} · {user.role}{user.isPrimaryAdmin ? ' · primary administrator' : ''}</small></div><span className={`status ${user.status}`}>{user.status}</span><span className="session-count">{user.activeSessions} sessions</span><button onClick={async () => setActivity({ user, events: await serverApi.userActivity(user.id) })}>Activity</button><button onClick={async () => { const password = window.prompt(`New password for ${user.username}`); if (password) { await serverApi.resetPassword(user.id, password); await load(); } }}>Reset password</button>{user.status === 'disabled' ? <button disabled={user.isPrimaryAdmin} onClick={() => setDisabled(user, false)}>Re-enable</button> : <button disabled={user.id === currentUser.id || user.isPrimaryAdmin} onClick={() => setDisabled(user, true)}>Disable</button>}<button onClick={async () => { await serverApi.revokeSessions(user.id); await load(); }}>Revoke sessions</button><button className="danger-button" disabled={user.id === currentUser.id || user.isPrimaryAdmin} onClick={() => deleteAccount(user)}>Delete account</button></div>)}</div>
+        <div className="user-list">{users.map((user) => <div className="user-row" key={user.id}><div className="avatar">{user.displayName.slice(0, 2).toUpperCase()}</div><div className="grow"><strong>{user.displayName}</strong><small>{user.username} · {user.role}{user.isPrimaryAdmin ? ' · primary administrator' : ''}</small></div><Badge variant={user.status === 'active' ? 'success' : 'destructive'}>{user.status}</Badge><span className="session-count">{user.activeSessions} sessions</span><Button variant="outline" size="sm" onClick={async () => setActivity({ user, events: await serverApi.userActivity(user.id) })}>Activity</Button><Button variant="outline" size="sm" onClick={async () => { const password = window.prompt(`New password for ${user.username}`); if (password) { await serverApi.resetPassword(user.id, password); await load(); } }}>Reset password</Button>{user.status === 'disabled' ? <Button variant="outline" size="sm" disabled={user.isPrimaryAdmin} onClick={() => setDisabled(user, false)}>Re-enable</Button> : <Button variant="outline" size="sm" disabled={user.id === currentUser.id || user.isPrimaryAdmin} onClick={() => setDisabled(user, true)}>Disable</Button>}<Button variant="outline" size="sm" onClick={async () => { await serverApi.revokeSessions(user.id); await load(); }}>Revoke sessions</Button><Button variant="destructive" size="sm" disabled={user.id === currentUser.id || user.isPrimaryAdmin} onClick={() => deleteAccount(user)}>Delete account</Button></div>)}</div>
       </Panel>
       <Panel title={`${invitations.length} invitations`} icon={<KeyRound size={17} />}><div className="audit-list">{invitations.map((invitation) => <div className="audit-row" key={invitation.id}><div className="grow"><strong>{invitation.displayName}</strong><small>{invitation.username} · expires {new Date(invitation.expiresAt).toLocaleString()}</small></div><span className="request-chip">{invitation.acceptedAt ? 'accepted' : invitation.revokedAt ? 'revoked' : new Date(invitation.expiresAt) < new Date() ? 'expired' : 'pending'}</span></div>)}</div></Panel>
       {activity && <Panel title={`${activity.user.displayName} activity`} icon={<Activity size={17} />}><AuditTable events={activity.events} /></Panel>}
@@ -284,11 +340,11 @@ function AuditTable({ events }: { events: AuditEvent[] }) {
 function PageHeader({ eyebrow, title, subtitle, action }: { eyebrow: string; title: string; subtitle: string; action?: React.ReactNode }) {
   return <header className="page-header"><div><p className="eyebrow">{eyebrow}</p><h1>{title}</h1><p className="subtle">{subtitle}</p></div>{action}</header>;
 }
-function Panel({ title, icon, children }: { title: string; icon: React.ReactNode; children: React.ReactNode }) { return <section className="panel"><div className="panel-title">{icon}<h2>{title}</h2></div>{children}</section>; }
-function Metric({ icon, label, value, detail }: { icon: React.ReactNode; label: string; value: string | number; detail: string }) { return <article className="metric"><div className="metric-icon">{icon}</div><p>{label}</p><strong>{value}</strong><small>{detail}</small></article>; }
-function Field(props: React.InputHTMLAttributes<HTMLInputElement> & { label: string }) { return <label className="field"><span>{props.label}</span><input {...props} /></label>; }
-function NavButton({ active, icon, label, onClick }: { active: boolean; icon: React.ReactNode; label: string; onClick: () => void }) { return <button className={active ? 'active' : ''} onClick={onClick}>{icon}<span>{label}</span></button>; }
-function IconButton({ label, children, onClick }: { label: string; children: React.ReactNode; onClick: () => void }) { return <button className="icon-button" title={label} aria-label={label} onClick={onClick}>{children}</button>; }
+function Panel({ title, icon, children }: { title: string; icon: React.ReactNode; children: React.ReactNode }) { return <Card className="panel"><div className="panel-title">{icon}<h2>{title}</h2></div>{children}</Card>; }
+function Metric({ icon, label, value, detail }: { icon: React.ReactNode; label: string; value: string | number; detail: string }) { return <Card className="metric"><div className="metric-icon">{icon}</div><p>{label}</p><strong>{value}</strong><small>{detail}</small></Card>; }
+function Field(props: React.InputHTMLAttributes<HTMLInputElement> & { label: string }) { const { label, ...inputProps } = props; return <label className="field"><span>{label}</span><Input {...inputProps} /></label>; }
+function NavButton({ active, icon, label, onClick }: { active: boolean; icon: React.ReactNode; label: string; onClick: () => void }) { return <Button variant="ghost" className={active ? 'active' : ''} onClick={onClick}>{icon}<span>{label}</span></Button>; }
+function IconButton({ label, children, onClick }: { label: string; children: React.ReactNode; onClick: () => void }) { return <Button variant="outline" size="icon" title={label} aria-label={label} onClick={onClick}>{children}</Button>; }
 function Loading() { return <div className="empty-state"><RefreshCw className="spin" /><p>Loading server data...</p></div>; }
-function CenteredMessage({ title }: { title: string }) { return <main className="auth-page"><div className="auth-card"><Server size={28} /><h1>{title}</h1></div></main>; }
+function CenteredMessage({ title }: { title: string }) { return <main className="auth-page"><Card className="auth-card"><Server size={28} /><h1>{title}</h1></Card></main>; }
 function formatBytes(value: number) { if (value < 1024) return `${value} B`; if (value < 1024 ** 2) return `${(value / 1024).toFixed(1)} KB`; return `${(value / 1024 ** 2).toFixed(1)} MB`; }

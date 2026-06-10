@@ -26,6 +26,9 @@ canvas documents commit immutable content-addressed revisions using optimistic
 revision sequences. Bounded binary uploads verify caller-provided SHA-256
 digests and deduplicate blobs. Rename, move, trash, restore, and purge are
 idempotent structural operations ordered by the vault manifest sequence.
+Snapshots label immutable revisions without changing current content. Restoring
+a snapshot creates a new revision that references the preserved snapshot blob,
+so no history is overwritten.
 
 ## File Kinds and Document Types
 
@@ -65,6 +68,8 @@ Trash preserves the file ID, revisions, original parent/name, actor, and deletio
 - Each vault has a monotonic manifest sequence covering structural and committed content changes.
 - REST mutations use `clientOperationId` for idempotency.
 - Optimistic online writes before CRDT migration include the expected file revision.
+- Snapshot restore includes the expected current revision and creates a new
+  revision rather than moving the current pointer backward.
 - CRDT materialization creates normal file revisions and increments the manifest sequence.
 
 ## Roles and Permissions

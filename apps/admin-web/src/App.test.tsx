@@ -49,8 +49,20 @@ const disabledMember = {
   isPrimaryAdmin: false,
 };
 
+const storedValues = new Map<string, string>();
+const localStorageMock = {
+  clear: () => storedValues.clear(),
+  getItem: (key: string) => storedValues.get(key) ?? null,
+  setItem: (key: string, value: string) => storedValues.set(key, value),
+  removeItem: (key: string) => storedValues.delete(key),
+  key: (index: number) => [...storedValues.keys()][index] ?? null,
+  get length() { return storedValues.size; },
+};
+
 describe('admin application', () => {
   beforeEach(() => {
+    vi.stubGlobal('localStorage', localStorageMock);
+    localStorage.clear();
     vi.mocked(serverApi.overview).mockResolvedValue({
       health: 'ok',
       serverVersion: '0.4.3',
@@ -73,6 +85,7 @@ describe('admin application', () => {
     cleanup();
     vi.clearAllMocks();
     vi.restoreAllMocks();
+    vi.unstubAllGlobals();
   });
 
   it('shows the one-time bootstrap screen when no administrator exists', async () => {
@@ -185,5 +198,27 @@ describe('admin application', () => {
     expect((deleteButtons[1] as HTMLButtonElement).disabled).toBe(false);
     fireEvent.click(deleteButtons[1]);
     await waitFor(() => expect(serverApi.deleteUser).toHaveBeenCalledWith('member-1'));
+  });
+
+  it('persists administration appearance settings', async () => {
+    vi.mocked(serverApi.bootstrapStatus).mockResolvedValue({ required: false });
+    vi.mocked(serverApi.me).mockResolvedValue(admin);
+    render(<App />);
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Settings' }));
+    fireEvent.change(screen.getByLabelText('Theme'), { target: { value: 'light' } });
+    fireEvent.click(screen.getByRole('button', { name: 'emerald' }));
+    fireEvent.click(screen.getByRole('switch', { name: 'Compact density' }));
+
+    await waitFor(() => {
+      expect(document.documentElement.dataset.theme).toBe('light');
+      expect(document.documentElement.dataset.accent).toBe('emerald');
+      expect(document.documentElement.dataset.density).toBe('compact');
+    });
+    expect(JSON.parse(localStorage.getItem('collab-admin-appearance') ?? '{}')).toEqual({
+      theme: 'light',
+      accent: 'emerald',
+      compact: true,
+    });
   });
 });
