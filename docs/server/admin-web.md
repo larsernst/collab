@@ -10,10 +10,28 @@ The first bootstrapped administrator is permanently marked as the primary
 administrator and cannot be disabled or deleted.
 
 The interface now uses an admin-local shadcn-style primitive layer for buttons,
-cards, inputs, badges, selects, separators, and switches. A Settings category
-provides browser-local theme, accent-color, and compact-density preferences.
-Appearance preferences may use local storage; authentication state and secrets
-must never do so.
+cards, inputs, badges, separators, switches, select menus, and dialogs. A
+Settings category provides browser-local theme, accent-color, and
+compact-density preferences. Appearance preferences may use local storage;
+authentication state and secrets must never do so.
+
+Per `UI_GUIDE.md`, the admin interface must not fall back to browser-default
+controls: confirmation and text-input flows use the shared `ConfirmDialog` and
+`PromptDialog` primitives instead of `window.confirm`/`window.prompt`, and
+option pickers use the shared `SelectMenu` popover listbox instead of native
+`<select>` elements. Confirmation dialogs focus the safe action and reserve
+destructive styling for the destructive button.
+
+The Phase 3 vault-management expansion is implemented: the vault inventory now
+opens a per-vault detail view backed by the `/api/v1/admin/vaults/{vaultId}`
+endpoints. It shows storage usage, active/trashed file counts, the manifest
+sequence, and recent vault activity; supports adding, re-roling, and removing
+members (the owner membership is protected); and provides rename plus archive,
+reactivate, restore, and pending-delete lifecycle controls. The inventory can
+also create new hosted vaults through `POST /api/v1/vaults`, making the
+creating administrator the vault owner. Member mutations are disabled while a
+vault is pending deletion. Import/export and storage-management actions remain
+open Phase 3 work.
 
 ## Purpose
 

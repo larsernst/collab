@@ -109,6 +109,10 @@ been created or the server has restarted.
 - `GET /api/v1/admin/audit-events`
 - `GET /api/v1/admin/operational-warnings`
 - `GET /api/v1/admin/vaults`
+- `GET|PATCH|DELETE /api/v1/admin/vaults/{vaultId}`
+- `GET|POST /api/v1/admin/vaults/{vaultId}/members`
+- `PATCH|DELETE /api/v1/admin/vaults/{vaultId}/members/{userId}`
+- `GET /api/v1/admin/vaults/{vaultId}/activity`
 
 Browser administration uses the same administration resources but authenticates
 with a hardened same-origin browser session and CSRF protection. Native clients
@@ -118,6 +122,17 @@ tokens in memory and refresh tokens in the operating system credential store.
 Administration collection endpoints return only typed, redacted data.
 The first bootstrapped administrator is marked as the primary administrator;
 status updates cannot disable it and the user deletion endpoint rejects it.
+
+Administration vault endpoints act with server-operator authority and do not
+require vault membership. `GET /admin/vaults/{vaultId}` returns a
+`HostedVaultAdminDetail` with status, manifest sequence, member count,
+active/trashed file counts, and storage usage. `PATCH` renames or moves a vault
+between `active` and `archived` (including restoring a pending-delete vault);
+`DELETE` marks it pending deletion. Member endpoints add, re-role, and remove
+members but never modify the owner membership, and member mutations are
+rejected while a vault is pending deletion. Every administration vault mutation
+records both an audit event and a vault activity event flagged
+`byServerAdmin`.
 
 Vault management:
 
@@ -145,6 +160,8 @@ Files and history:
 - `GET|POST /api/v1/vaults/{vaultId}/files/{fileId}/snapshots`
 - `POST /api/v1/vaults/{vaultId}/files/{fileId}/snapshots/{snapshotId}/restore`
 - `POST /api/v1/vaults/{vaultId}/operations`
+- `POST /api/v1/vaults/{vaultId}/operations/preview`
+- `GET /api/v1/vaults/{vaultId}/files/{fileId}/references`
 - `POST /api/v1/vaults/{vaultId}/uploads`
 - `GET /api/v1/vaults/{vaultId}/files/{fileId}/content`
 - `GET /api/v1/vaults/{vaultId}/activity`
@@ -181,6 +198,28 @@ The binary and structural-operation slice also implements:
 - `POST /snapshots/{snapshotId}/restore` requires
   `expectedRevisionSequence`, creates a new immutable revision, advances the
   vault manifest, and preserves the intervening history.
+
+The reference-impact slice also implements:
+
+- `GET /files/{fileId}/references` lists where an active file is referenced by
+  note links and wikilinks, Kanban attachments, and canvas file/note nodes.
+  Viewer access is sufficient because the listing is read-only.
+- `POST /operations/preview` returns a non-mutating
+  `HostedStructuralOperationPreview` with the old and new relative paths, the
+  nested active item count, the documents whose references would be rewritten,
+  and a `blockedReason` instead of an error when the operation cannot apply
+  (for example a destination collision). Preview requires the same role the
+  previewed operation would require.
+- Rename and move operations rewrite affected references in other active
+  documents inside the same transaction. Each rewritten document receives a
+  new revision attributed to the acting user, and a `file.references_rewritten`
+  activity event records the rewritten document IDs. Trash accepts an optional
+  `removeReferences` flag that removes references instead. Reference analysis
+  and rewriting share `collab-core` logic with the native local-vault flows;
+  unparseable board or canvas documents are skipped rather than blocking the
+  operation.
+- `HostedStructuralOperationResult` now includes `rewrittenDocumentIds`, which
+  is preserved for idempotent replays of the same `clientOperationId`.
 
 Resumable streaming upload sessions remain a later Phase 4 task.
 

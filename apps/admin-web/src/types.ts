@@ -63,12 +63,49 @@ export interface CreatedInvitation {
   token: string;
 }
 
+export type HostedVaultStatus = 'active' | 'archived' | 'pending_delete';
+export type HostedVaultRole = 'viewer' | 'editor' | 'admin';
+
 export interface HostedVaultSummary {
   id: string;
   name: string;
   ownerDisplayName: string;
-  status: 'active' | 'archived' | 'pending_delete';
+  status: HostedVaultStatus;
   members: number;
   storageBytes: number;
   updatedAt: string;
+}
+
+export interface HostedVaultAdminDetail {
+  id: string;
+  name: string;
+  ownerUserId: string;
+  ownerUsername: string;
+  ownerDisplayName: string;
+  status: HostedVaultStatus;
+  manifestSequence: number;
+  members: number;
+  activeFiles: number;
+  trashedFiles: number;
+  storageBytes: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface HostedVaultMember {
+  userId: string;
+  username: string;
+  displayName: string;
+  role: HostedVaultRole;
+  owner: boolean;
+  createdAt: string;
+}
+
+export interface HostedVaultActivityEvent {
+  id: string;
+  actorDisplayName: string | null;
+  eventType: string;
+  targetType: string | null;
+  targetId: string | null;
+  createdAt: string;
 }

@@ -800,6 +800,9 @@ name = "collab-core"
 version = "0.4.3"
 dependencies = [
  "hex",
+ "regex",
+ "serde",
+ "serde_json",
  "sha2",
  "tempfile",
  "thiserror 1.0.69",

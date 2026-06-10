@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { App } from './App';
 import { serverApi } from './api';
@@ -22,6 +22,15 @@ vi.mock('./api', () => ({
     invitations: vi.fn(),
     createInvitation: vi.fn(),
     vaults: vi.fn(),
+    createVault: vi.fn(),
+    vaultDetail: vi.fn(),
+    updateVault: vi.fn(),
+    deleteVault: vi.fn(),
+    vaultMembers: vi.fn(),
+    addVaultMember: vi.fn(),
+    updateVaultMember: vi.fn(),
+    removeVaultMember: vi.fn(),
+    vaultActivity: vi.fn(),
     auditEvents: vi.fn(),
   },
 }));
@@ -153,6 +162,167 @@ describe('admin application', () => {
     expect(screen.getByText(/2 members/)).toBeTruthy();
   });
 
+  it('manages hosted-vault members and lifecycle from the vault detail view', async () => {
+    const activeMember = { ...disabledMember, status: 'active' as const };
+    const vaultSummary = {
+      id: 'vault-1',
+      name: 'Team Vault',
+      ownerDisplayName: 'Admin User',
+      status: 'active' as const,
+      members: 2,
+      storageBytes: 2048,
+      updatedAt: '2026-06-10T00:00:00Z',
+    };
+    const vaultDetail = {
+      id: 'vault-1',
+      name: 'Team Vault',
+      ownerUserId: 'admin-1',
+      ownerUsername: 'admin',
+      ownerDisplayName: 'Admin User',
+      status: 'active' as const,
+      manifestSequence: 13,
+      members: 2,
+      activeFiles: 4,
+      trashedFiles: 1,
+      storageBytes: 2048,
+      createdAt: '2026-06-09T00:00:00Z',
+      updatedAt: '2026-06-10T00:00:00Z',
+    };
+    vi.mocked(serverApi.bootstrapStatus).mockResolvedValue({ required: false });
+    vi.mocked(serverApi.me).mockResolvedValue(admin);
+    vi.mocked(serverApi.users).mockResolvedValue([admin, activeMember]);
+    vi.mocked(serverApi.vaults).mockResolvedValue([vaultSummary]);
+    vi.mocked(serverApi.vaultDetail).mockResolvedValue(vaultDetail);
+    vi.mocked(serverApi.vaultMembers).mockResolvedValue([
+      { userId: 'admin-1', username: 'admin', displayName: 'Admin User', role: 'admin', owner: true, createdAt: '2026-06-09T00:00:00Z' },
+      { userId: 'member-1', username: 'member', displayName: 'Member User', role: 'editor', owner: false, createdAt: '2026-06-09T00:00:00Z' },
+    ]);
+    vi.mocked(serverApi.vaultActivity).mockResolvedValue([
+      { id: 'event-1', actorDisplayName: 'Admin User', eventType: 'vault.created', targetType: 'vault', targetId: 'vault-1', createdAt: '2026-06-09T00:00:00Z' },
+    ]);
+    vi.mocked(serverApi.updateVaultMember).mockResolvedValue({
+      userId: 'member-1', username: 'member', displayName: 'Member User', role: 'viewer', owner: false, createdAt: '2026-06-09T00:00:00Z',
+    });
+    vi.mocked(serverApi.updateVault).mockResolvedValue({ ...vaultDetail, status: 'archived' });
+
+    render(<App />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Vaults' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Manage Team Vault' }));
+
+    expect(await screen.findByRole('heading', { name: 'Team Vault' })).toBeTruthy();
+    expect(screen.getByText('Vault storage')).toBeTruthy();
+    expect(screen.getByText('2.0 KB')).toBeTruthy();
+    expect(screen.getByText('1 in trash')).toBeTruthy();
+    expect(await screen.findByText('vault created')).toBeTruthy();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Role for member' }));
+    fireEvent.click(screen.getByRole('option', { name: 'viewer' }));
+    await waitFor(() =>
+      expect(serverApi.updateVaultMember).toHaveBeenCalledWith('vault-1', 'member-1', { role: 'viewer' }),
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: 'Archive vault' }));
+    await waitFor(() => expect(serverApi.updateVault).toHaveBeenCalledWith('vault-1', { status: 'archived' }));
+  });
+
+  it('creates and renames hosted vaults from the web interface', async () => {
+    const vaultSummary = {
+      id: 'vault-1',
+      name: 'Team Vault',
+      ownerDisplayName: 'Admin User',
+      status: 'active' as const,
+      members: 1,
+      storageBytes: 0,
+      updatedAt: '2026-06-10T00:00:00Z',
+    };
+    const vaultDetail = {
+      id: 'vault-1',
+      name: 'Team Vault',
+      ownerUserId: 'admin-1',
+      ownerUsername: 'admin',
+      ownerDisplayName: 'Admin User',
+      status: 'active' as const,
+      manifestSequence: 0,
+      members: 1,
+      activeFiles: 0,
+      trashedFiles: 0,
+      storageBytes: 0,
+      createdAt: '2026-06-09T00:00:00Z',
+      updatedAt: '2026-06-10T00:00:00Z',
+    };
+    vi.mocked(serverApi.bootstrapStatus).mockResolvedValue({ required: false });
+    vi.mocked(serverApi.me).mockResolvedValue(admin);
+    vi.mocked(serverApi.users).mockResolvedValue([admin]);
+    vi.mocked(serverApi.vaults).mockResolvedValue([vaultSummary]);
+    vi.mocked(serverApi.createVault).mockResolvedValue({ id: 'vault-2' });
+    vi.mocked(serverApi.vaultDetail).mockResolvedValue(vaultDetail);
+    vi.mocked(serverApi.vaultMembers).mockResolvedValue([
+      { userId: 'admin-1', username: 'admin', displayName: 'Admin User', role: 'admin', owner: true, createdAt: '2026-06-09T00:00:00Z' },
+    ]);
+    vi.mocked(serverApi.vaultActivity).mockResolvedValue([]);
+    vi.mocked(serverApi.updateVault).mockResolvedValue({ ...vaultDetail, name: 'Renamed Vault' });
+
+    render(<App />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Vaults' }));
+    fireEvent.click(await screen.findByRole('button', { name: /New vault/ }));
+    fireEvent.change(await screen.findByLabelText('Vault name'), { target: { value: 'Fresh Vault' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Create vault' }));
+    await waitFor(() => expect(serverApi.createVault).toHaveBeenCalledWith({ name: 'Fresh Vault' }));
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Manage Team Vault' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Rename' }));
+    const renameDialog = await screen.findByRole('dialog', { name: 'Rename vault' });
+    fireEvent.change(within(renameDialog).getByLabelText('Vault name'), { target: { value: 'Renamed Vault' } });
+    fireEvent.click(within(renameDialog).getByRole('button', { name: 'Rename' }));
+    await waitFor(() => expect(serverApi.updateVault).toHaveBeenCalledWith('vault-1', { name: 'Renamed Vault' }));
+  });
+
+  it('adds vault members and protects owner and pending-delete vaults', async () => {
+    const activeMember = { ...disabledMember, status: 'active' as const };
+    const extraUser = { ...activeMember, id: 'user-3', username: 'carol', displayName: 'Carol' };
+    vi.mocked(serverApi.bootstrapStatus).mockResolvedValue({ required: false });
+    vi.mocked(serverApi.me).mockResolvedValue(admin);
+    vi.mocked(serverApi.users).mockResolvedValue([admin, activeMember, extraUser]);
+    vi.mocked(serverApi.vaults).mockResolvedValue([{
+      id: 'vault-1',
+      name: 'Frozen Vault',
+      ownerDisplayName: 'Admin User',
+      status: 'pending_delete',
+      members: 1,
+      storageBytes: 0,
+      updatedAt: '2026-06-10T00:00:00Z',
+    }]);
+    vi.mocked(serverApi.vaultDetail).mockResolvedValue({
+      id: 'vault-1',
+      name: 'Frozen Vault',
+      ownerUserId: 'admin-1',
+      ownerUsername: 'admin',
+      ownerDisplayName: 'Admin User',
+      status: 'pending_delete',
+      manifestSequence: 2,
+      members: 1,
+      activeFiles: 0,
+      trashedFiles: 0,
+      storageBytes: 0,
+      createdAt: '2026-06-09T00:00:00Z',
+      updatedAt: '2026-06-10T00:00:00Z',
+    });
+    vi.mocked(serverApi.vaultMembers).mockResolvedValue([
+      { userId: 'admin-1', username: 'admin', displayName: 'Admin User', role: 'admin', owner: true, createdAt: '2026-06-09T00:00:00Z' },
+    ]);
+    vi.mocked(serverApi.vaultActivity).mockResolvedValue([]);
+
+    render(<App />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Vaults' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Manage Frozen Vault' }));
+
+    expect(await screen.findByRole('heading', { name: 'Frozen Vault' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Restore vault' })).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Delete vault' })).toBeNull();
+    expect(screen.queryByLabelText('Add member user')).toBeNull();
+    expect((screen.getByRole('button', { name: 'Remove' }) as HTMLButtonElement).disabled).toBe(true);
+  });
+
   it('creates a one-time invitation link through the user-management flow', async () => {
     vi.mocked(serverApi.bootstrapStatus).mockResolvedValue({ required: false });
     vi.mocked(serverApi.me).mockResolvedValue(admin);
@@ -186,7 +356,6 @@ describe('admin application', () => {
     vi.mocked(serverApi.users).mockResolvedValue([admin, disabledMember]);
     vi.mocked(serverApi.updateUser).mockResolvedValue({ ...disabledMember, status: 'active' });
     vi.mocked(serverApi.deleteUser).mockResolvedValue(undefined);
-    vi.spyOn(window, 'confirm').mockReturnValue(true);
 
     render(<App />);
     fireEvent.click(await screen.findByRole('button', { name: 'Users' }));
@@ -197,6 +366,14 @@ describe('admin application', () => {
     expect((deleteButtons[0] as HTMLButtonElement).disabled).toBe(true);
     expect((deleteButtons[1] as HTMLButtonElement).disabled).toBe(false);
     fireEvent.click(deleteButtons[1]);
+    const cancelledDialog = await screen.findByRole('dialog', { name: 'Delete member?' });
+    fireEvent.click(within(cancelledDialog).getByRole('button', { name: 'Cancel' }));
+    expect(screen.queryByRole('dialog')).toBeNull();
+    expect(serverApi.deleteUser).not.toHaveBeenCalled();
+
+    fireEvent.click(deleteButtons[1]);
+    const confirmDialog = await screen.findByRole('dialog', { name: 'Delete member?' });
+    fireEvent.click(within(confirmDialog).getByRole('button', { name: 'Delete account' }));
     await waitFor(() => expect(serverApi.deleteUser).toHaveBeenCalledWith('member-1'));
   });
 
@@ -206,7 +383,8 @@ describe('admin application', () => {
     render(<App />);
 
     fireEvent.click(await screen.findByRole('button', { name: 'Settings' }));
-    fireEvent.change(screen.getByLabelText('Theme'), { target: { value: 'light' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Theme' }));
+    fireEvent.click(screen.getByRole('option', { name: 'Light' }));
     fireEvent.click(screen.getByRole('button', { name: 'emerald' }));
     fireEvent.click(screen.getByRole('switch', { name: 'Compact density' }));
 

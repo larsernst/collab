@@ -1,5 +1,6 @@
 mod hashing;
 mod paths;
+pub mod references;
 
 pub use hashing::{sha256_bytes, sha256_text};
 pub use paths::{

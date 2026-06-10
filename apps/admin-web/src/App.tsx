@@ -17,8 +17,17 @@ import {
 import { FormEvent, useCallback, useEffect, useState } from 'react';
 import { serverApi } from './api';
 import { useAdminAppearance, type AdminAccent, type AdminTheme } from './theme';
-import type { AdminOverview, AuditEvent, HostedVaultSummary, Invitation, ServerUser } from './types';
-import { Badge, Button, Card, Checkbox, Input, Select, Separator, Switch } from './ui';
+import type {
+  AdminOverview,
+  AuditEvent,
+  HostedVaultActivityEvent,
+  HostedVaultAdminDetail,
+  HostedVaultMember,
+  HostedVaultSummary,
+  Invitation,
+  ServerUser,
+} from './types';
+import { Badge, Button, Card, Checkbox, ConfirmDialog, Input, PromptDialog, SelectMenu, Separator, Switch } from './ui';
 
 type View = 'dashboard' | 'users' | 'vaults' | 'audit' | 'settings';
 
@@ -191,9 +200,12 @@ function SettingsPage({
         <div className="settings-stack">
           <div className="settings-row">
             <div><strong>Theme</strong><small>Choose the base surface palette.</small></div>
-            <Select aria-label="Theme" value={appearance.theme} onChange={(event) => onChange((current) => ({ ...current, theme: event.target.value as AdminTheme }))}>
-              {themes.map((theme) => <option key={theme.value} value={theme.value}>{theme.label}</option>)}
-            </Select>
+            <SelectMenu
+              label="Theme"
+              value={appearance.theme}
+              options={themes.map((theme) => ({ value: theme.value, label: theme.label }))}
+              onChange={(value) => onChange((current) => ({ ...current, theme: value as AdminTheme }))}
+            />
           </div>
           <Separator />
           <div className="settings-row settings-row-top">
@@ -252,6 +264,8 @@ function UsersPage({ currentUser }: { currentUser: ServerUser }) {
   const [invitations, setInvitations] = useState<Invitation[]>([]);
   const [invitationLink, setInvitationLink] = useState('');
   const [activity, setActivity] = useState<{ user: ServerUser; events: AuditEvent[] } | null>(null);
+  const [confirmDelete, setConfirmDelete] = useState<ServerUser | null>(null);
+  const [resetTarget, setResetTarget] = useState<ServerUser | null>(null);
   const [error, setError] = useState('');
   const load = useCallback(async () => {
     try {
@@ -298,7 +312,6 @@ function UsersPage({ currentUser }: { currentUser: ServerUser }) {
     } catch (reason) { setError(String(reason)); }
   }
   async function deleteAccount(user: ServerUser) {
-    if (!window.confirm(`Permanently delete ${user.username}? This cannot be undone.`)) return;
     try {
       await serverApi.deleteUser(user.id);
       if (activity?.user.id === user.id) setActivity(null);
@@ -312,18 +325,310 @@ function UsersPage({ currentUser }: { currentUser: ServerUser }) {
       {showCreate && <Panel title="Create user" icon={<Plus size={17} />}><form className="inline-form" onSubmit={create}><Field label="Display name" name="displayName" required /><Field label="Username" name="username" required /><Field label="Temporary password" name="password" type="password" required /><label className="check"><Checkbox name="admin" /> Administrator</label><Button size="sm">Create user</Button></form></Panel>}
       {showInvite && <Panel title="Invite user" icon={<KeyRound size={17} />}><form className="inline-form" onSubmit={invite}><Field label="Display name" name="displayName" required /><Field label="Username" name="username" required /><Field label="Expires in hours" name="expiresInHours" type="number" min={1} max={720} defaultValue={72} required /><label className="check"><Checkbox name="admin" /> Administrator</label><Button size="sm">Create link</Button></form>{invitationLink && <div className="invitation-link" role="status"><code>{invitationLink}</code><Button variant="outline" size="sm" onClick={() => navigator.clipboard?.writeText(invitationLink)}>Copy</Button></div>}</Panel>}
       <Panel title={`${users.length} server users`} icon={<Users size={17} />}>
-        <div className="user-list">{users.map((user) => <div className="user-row" key={user.id}><div className="avatar">{user.displayName.slice(0, 2).toUpperCase()}</div><div className="grow"><strong>{user.displayName}</strong><small>{user.username} · {user.role}{user.isPrimaryAdmin ? ' · primary administrator' : ''}</small></div><Badge variant={user.status === 'active' ? 'success' : 'destructive'}>{user.status}</Badge><span className="session-count">{user.activeSessions} sessions</span><Button variant="outline" size="sm" onClick={async () => setActivity({ user, events: await serverApi.userActivity(user.id) })}>Activity</Button><Button variant="outline" size="sm" onClick={async () => { const password = window.prompt(`New password for ${user.username}`); if (password) { await serverApi.resetPassword(user.id, password); await load(); } }}>Reset password</Button>{user.status === 'disabled' ? <Button variant="outline" size="sm" disabled={user.isPrimaryAdmin} onClick={() => setDisabled(user, false)}>Re-enable</Button> : <Button variant="outline" size="sm" disabled={user.id === currentUser.id || user.isPrimaryAdmin} onClick={() => setDisabled(user, true)}>Disable</Button>}<Button variant="outline" size="sm" onClick={async () => { await serverApi.revokeSessions(user.id); await load(); }}>Revoke sessions</Button><Button variant="destructive" size="sm" disabled={user.id === currentUser.id || user.isPrimaryAdmin} onClick={() => deleteAccount(user)}>Delete account</Button></div>)}</div>
+        <div className="user-list">{users.map((user) => <div className="user-row" key={user.id}><div className="avatar">{user.displayName.slice(0, 2).toUpperCase()}</div><div className="grow"><strong>{user.displayName}</strong><small>{user.username} · {user.role}{user.isPrimaryAdmin ? ' · primary administrator' : ''}</small></div><Badge variant={user.status === 'active' ? 'success' : 'destructive'}>{user.status}</Badge><span className="session-count">{user.activeSessions} sessions</span><Button variant="outline" size="sm" onClick={async () => setActivity({ user, events: await serverApi.userActivity(user.id) })}>Activity</Button><Button variant="outline" size="sm" onClick={() => setResetTarget(user)}>Reset password</Button>{user.status === 'disabled' ? <Button variant="outline" size="sm" disabled={user.isPrimaryAdmin} onClick={() => setDisabled(user, false)}>Re-enable</Button> : <Button variant="outline" size="sm" disabled={user.id === currentUser.id || user.isPrimaryAdmin} onClick={() => setDisabled(user, true)}>Disable</Button>}<Button variant="outline" size="sm" onClick={async () => { await serverApi.revokeSessions(user.id); await load(); }}>Revoke sessions</Button><Button variant="destructive" size="sm" disabled={user.id === currentUser.id || user.isPrimaryAdmin} onClick={() => setConfirmDelete(user)}>Delete account</Button></div>)}</div>
       </Panel>
       <Panel title={`${invitations.length} invitations`} icon={<KeyRound size={17} />}><div className="audit-list">{invitations.map((invitation) => <div className="audit-row" key={invitation.id}><div className="grow"><strong>{invitation.displayName}</strong><small>{invitation.username} · expires {new Date(invitation.expiresAt).toLocaleString()}</small></div><span className="request-chip">{invitation.acceptedAt ? 'accepted' : invitation.revokedAt ? 'revoked' : new Date(invitation.expiresAt) < new Date() ? 'expired' : 'pending'}</span></div>)}</div></Panel>
       {activity && <Panel title={`${activity.user.displayName} activity`} icon={<Activity size={17} />}><AuditTable events={activity.events} /></Panel>}
+      {confirmDelete && (
+        <ConfirmDialog
+          destructive
+          title={`Delete ${confirmDelete.username}?`}
+          description="The account is permanently deleted. This cannot be undone."
+          confirmLabel="Delete account"
+          onCancel={() => setConfirmDelete(null)}
+          onConfirm={() => {
+            const user = confirmDelete;
+            setConfirmDelete(null);
+            void deleteAccount(user);
+          }}
+        />
+      )}
+      {resetTarget && (
+        <PromptDialog
+          title={`Reset password for ${resetTarget.username}`}
+          description="Every session of this user is revoked and the new password takes effect immediately."
+          label="New password"
+          type="password"
+          minLength={12}
+          submitLabel="Reset password"
+          onCancel={() => setResetTarget(null)}
+          onSubmit={async (password) => {
+            const user = resetTarget;
+            setResetTarget(null);
+            try {
+              await serverApi.resetPassword(user.id, password);
+              await load();
+            } catch (reason) {
+              setError(String(reason));
+            }
+          }}
+        />
+      )}
     </>
   );
 }
 
 function VaultsPage() {
   const [vaults, setVaults] = useState<HostedVaultSummary[]>([]);
-  useEffect(() => void serverApi.vaults().then(setVaults), []);
-  return <><PageHeader eyebrow="HOSTED CONTENT" title="Vaults" subtitle="Read-only inventory backed by canonical hosted-vault storage." />{vaults.length === 0 ? <div className="empty-state"><Boxes size={34} /><h2>No hosted vaults yet</h2><p>Hosted vaults created through the Phase 3 API will appear here.</p></div> : <Panel title={`${vaults.length} hosted vaults`} icon={<Boxes size={17} />}><div className="audit-list">{vaults.map((vault) => <div className="audit-row" key={vault.id}><div className="grow"><strong>{vault.name}</strong><small>{vault.ownerDisplayName} · {vault.members} members · {formatBytes(vault.storageBytes)}</small></div><span className={`status ${vault.status === 'active' ? 'active' : 'disabled'}`}>{vault.status.replace('_', ' ')}</span></div>)}</div></Panel>}</>;
+  const [selectedVaultId, setSelectedVaultId] = useState<string | null>(null);
+  const [showCreate, setShowCreate] = useState(false);
+  const [error, setError] = useState('');
+  const load = useCallback(() => serverApi.vaults().then(setVaults).catch((reason) => setError(String(reason))), []);
+  useEffect(() => void load(), [load]);
+  async function create(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const form = new FormData(event.currentTarget);
+    setError('');
+    try {
+      await serverApi.createVault({ name: form.get('name') });
+      setShowCreate(false);
+      await load();
+    } catch (reason) {
+      setError(String(reason));
+    }
+  }
+  if (selectedVaultId) {
+    return <VaultDetailPage vaultId={selectedVaultId} onBack={() => { setSelectedVaultId(null); void load(); }} />;
+  }
+  return (
+    <>
+      <PageHeader
+        eyebrow="HOSTED CONTENT"
+        title="Vaults"
+        subtitle="Canonical hosted vaults with storage, membership, and lifecycle controls."
+        action={<Button size="sm" onClick={() => setShowCreate(!showCreate)}><Plus size={16} />New vault</Button>}
+      />
+      {error && <div className="error-banner"><CircleAlert size={16} />{error}</div>}
+      {showCreate && (
+        <Panel title="Create vault" icon={<Plus size={17} />}>
+          <form className="inline-form" onSubmit={create}>
+            <Field label="Vault name" name="name" maxLength={128} required />
+            <Button size="sm">Create vault</Button>
+          </form>
+          <p className="subtle">You become the vault owner and can add members from the vault detail view.</p>
+        </Panel>
+      )}
+      {vaults.length === 0 ? (
+        <div className="empty-state"><Boxes size={34} /><h2>No hosted vaults yet</h2><p>Create a vault here or through the Phase 3 API and it will appear in this inventory.</p></div>
+      ) : (
+        <Panel title={`${vaults.length} hosted vaults`} icon={<Boxes size={17} />}>
+          <div className="audit-list">
+            {vaults.map((vault) => (
+              <div className="audit-row" key={vault.id}>
+                <div className="grow"><strong>{vault.name}</strong><small>{vault.ownerDisplayName} · {vault.members} members · {formatBytes(vault.storageBytes)}</small></div>
+                <span className={`status ${vault.status === 'active' ? 'active' : 'disabled'}`}>{vault.status.replace('_', ' ')}</span>
+                <Button variant="outline" size="sm" aria-label={`Manage ${vault.name}`} onClick={() => setSelectedVaultId(vault.id)}>Manage</Button>
+              </div>
+            ))}
+          </div>
+        </Panel>
+      )}
+    </>
+  );
+}
+
+const ROLE_OPTIONS = [
+  { value: 'viewer', label: 'viewer' },
+  { value: 'editor', label: 'editor' },
+  { value: 'admin', label: 'admin' },
+];
+
+function VaultDetailPage({ vaultId, onBack }: { vaultId: string; onBack: () => void }) {
+  const [detail, setDetail] = useState<HostedVaultAdminDetail | null>(null);
+  const [members, setMembers] = useState<HostedVaultMember[]>([]);
+  const [activity, setActivity] = useState<HostedVaultActivityEvent[]>([]);
+  const [users, setUsers] = useState<ServerUser[]>([]);
+  const [newMemberId, setNewMemberId] = useState('');
+  const [newMemberRole, setNewMemberRole] = useState('viewer');
+  const [confirm, setConfirm] = useState<{
+    title: string;
+    description: string;
+    label: string;
+    action: () => Promise<unknown>;
+  } | null>(null);
+  const [renaming, setRenaming] = useState(false);
+  const [error, setError] = useState('');
+  const load = useCallback(async () => {
+    setError('');
+    try {
+      const [nextDetail, nextMembers, nextActivity, nextUsers] = await Promise.all([
+        serverApi.vaultDetail(vaultId),
+        serverApi.vaultMembers(vaultId),
+        serverApi.vaultActivity(vaultId),
+        serverApi.users(),
+      ]);
+      setDetail(nextDetail);
+      setMembers(nextMembers);
+      setActivity(nextActivity);
+      setUsers(nextUsers);
+    } catch (reason) {
+      setError(String(reason));
+    }
+  }, [vaultId]);
+  useEffect(() => void load(), [load]);
+
+  async function run(action: () => Promise<unknown>) {
+    setError('');
+    try {
+      await action();
+      await load();
+    } catch (reason) {
+      setError(String(reason));
+    }
+  }
+  const memberIds = new Set(members.map((member) => member.userId));
+  const candidates = users.filter((user) => user.status === 'active' && !memberIds.has(user.id));
+  const memberChoice = candidates.some((user) => user.id === newMemberId)
+    ? newMemberId
+    : candidates[0]?.id ?? '';
+  async function addMember(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!memberChoice) return;
+    await run(() => serverApi.addVaultMember(vaultId, { userId: memberChoice, role: newMemberRole }));
+    setNewMemberId('');
+    setNewMemberRole('viewer');
+  }
+
+  const pendingDelete = detail?.status === 'pending_delete';
+  const lifecycleActions = detail && (
+    <div className="actions">
+      <Button variant="outline" size="sm" onClick={onBack}>Back to vaults</Button>
+      <Button variant="outline" size="sm" onClick={() => setRenaming(true)}>Rename</Button>
+      {detail.status === 'active' && <Button variant="outline" size="sm" onClick={() => run(() => serverApi.updateVault(vaultId, { status: 'archived' }))}>Archive vault</Button>}
+      {detail.status === 'archived' && <Button variant="outline" size="sm" onClick={() => run(() => serverApi.updateVault(vaultId, { status: 'active' }))}>Reactivate vault</Button>}
+      {pendingDelete ? (
+        <Button variant="outline" size="sm" onClick={() => run(() => serverApi.updateVault(vaultId, { status: 'active' }))}>Restore vault</Button>
+      ) : (
+        <Button
+          variant="destructive"
+          size="sm"
+          onClick={() => setConfirm({
+            title: `Delete ${detail.name}?`,
+            description: 'The vault is marked for deletion and stops accepting changes.',
+            label: 'Delete vault',
+            action: () => serverApi.deleteVault(vaultId),
+          })}
+        >
+          Delete vault
+        </Button>
+      )}
+    </div>
+  );
+
+  return (
+    <>
+      <PageHeader
+        eyebrow="HOSTED CONTENT"
+        title={detail?.name ?? 'Vault'}
+        subtitle={detail ? `Owned by ${detail.ownerDisplayName} (${detail.ownerUsername}) · ${detail.status.replace('_', ' ')}` : 'Loading vault details...'}
+        action={lifecycleActions ?? <Button variant="outline" size="sm" onClick={onBack}>Back to vaults</Button>}
+      />
+      {error && <div className="error-banner"><CircleAlert size={16} />{error}</div>}
+      {!detail ? <Loading /> : <>
+        <div className="metric-grid">
+          <Metric icon={<Database />} label="Vault storage" value={formatBytes(detail.storageBytes)} detail="Sum of all stored revisions" />
+          <Metric icon={<Boxes />} label="Active files" value={detail.activeFiles} detail={`${detail.trashedFiles} in trash`} />
+          <Metric icon={<Users />} label="Members" value={detail.members} detail="Persisted vault memberships" />
+          <Metric icon={<Activity />} label="Manifest sequence" value={detail.manifestSequence} detail={`Updated ${new Date(detail.updatedAt).toLocaleString()}`} />
+        </div>
+        <Panel title={`${members.length} members`} icon={<Users size={17} />}>
+          <div className="user-list">
+            {members.map((member) => (
+              <div className="user-row" key={member.userId}>
+                <div className="avatar">{member.displayName.slice(0, 2).toUpperCase()}</div>
+                <div className="grow"><strong>{member.displayName}</strong><small>{member.username}{member.owner ? ' · owner' : ''}</small></div>
+                {member.owner ? <Badge variant="success">admin</Badge> : (
+                  <SelectMenu
+                    size="sm"
+                    label={`Role for ${member.username}`}
+                    value={member.role}
+                    options={ROLE_OPTIONS}
+                    disabled={pendingDelete}
+                    onChange={(role) => void run(() => serverApi.updateVaultMember(vaultId, member.userId, { role }))}
+                  />
+                )}
+                <Button
+                  variant="destructive"
+                  size="sm"
+                  disabled={member.owner || pendingDelete}
+                  onClick={() => setConfirm({
+                    title: `Remove ${member.username}?`,
+                    description: `They immediately lose access to ${detail.name}.`,
+                    label: 'Remove member',
+                    action: () => serverApi.removeVaultMember(vaultId, member.userId),
+                  })}
+                >
+                  Remove
+                </Button>
+              </div>
+            ))}
+          </div>
+          {!pendingDelete && candidates.length > 0 && (
+            <form className="inline-form" onSubmit={addMember}>
+              <label className="field"><span>User</span>
+                <SelectMenu
+                  label="Add member user"
+                  value={memberChoice}
+                  options={candidates.map((user) => ({ value: user.id, label: `${user.displayName} (${user.username})` }))}
+                  onChange={setNewMemberId}
+                />
+              </label>
+              <label className="field"><span>Role</span>
+                <SelectMenu
+                  label="New member role"
+                  value={newMemberRole}
+                  options={ROLE_OPTIONS}
+                  onChange={setNewMemberRole}
+                />
+              </label>
+              <Button size="sm">Add member</Button>
+            </form>
+          )}
+        </Panel>
+        <Panel title="Vault activity" icon={<Activity size={17} />}>
+          {activity.length === 0 ? <p className="subtle">No recorded activity yet.</p> : (
+            <div className="audit-list">
+              {activity.map((event) => (
+                <div className="audit-row" key={event.id}>
+                  <span className="event-dot success" />
+                  <div className="grow"><strong>{event.eventType.replaceAll('.', ' ').replaceAll('_', ' ')}</strong><small>{event.actorDisplayName ?? 'System'} · {new Date(event.createdAt).toLocaleString()}</small></div>
+                  {event.targetType && <span className="request-chip">{event.targetType}</span>}
+                </div>
+              ))}
+            </div>
+          )}
+        </Panel>
+      </>}
+      {confirm && (
+        <ConfirmDialog
+          destructive
+          title={confirm.title}
+          description={confirm.description}
+          confirmLabel={confirm.label}
+          onCancel={() => setConfirm(null)}
+          onConfirm={() => {
+            const pending = confirm;
+            setConfirm(null);
+            void run(pending.action);
+          }}
+        />
+      )}
+      {renaming && detail && (
+        <PromptDialog
+          title="Rename vault"
+          description="The new name is visible to every vault member."
+          label="Vault name"
+          defaultValue={detail.name}
+          submitLabel="Rename"
+          onCancel={() => setRenaming(false)}
+          onSubmit={(name) => {
+            setRenaming(false);
+            void run(() => serverApi.updateVault(vaultId, { name }));
+          }}
+        />
+      )}
+    </>
+  );
 }
 
 function AuditPage() {

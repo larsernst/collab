@@ -209,6 +209,24 @@ pub struct HostedVault {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
+pub struct HostedVaultAdminDetail {
+    pub id: String,
+    pub name: String,
+    pub owner_user_id: String,
+    pub owner_username: String,
+    pub owner_display_name: String,
+    pub status: HostedVaultStatus,
+    pub manifest_sequence: i64,
+    pub members: i64,
+    pub active_files: i64,
+    pub trashed_files: i64,
+    pub storage_bytes: u64,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
 pub struct HostedVaultMember {
     pub user_id: String,
     pub username: String,
@@ -330,6 +348,41 @@ pub struct HostedStructuralOperationResult {
     pub target_file_id: String,
     pub result_manifest_sequence: i64,
     pub already_applied: bool,
+    #[serde(default)]
+    pub rewritten_document_ids: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct HostedFileReference {
+    pub source_file_id: String,
+    pub source_relative_path: String,
+    pub source_document_type: String,
+    pub reference_kind: String,
+    pub referenced_file_id: Option<String>,
+    pub referenced_relative_path: String,
+    pub display_label: Option<String>,
+    pub context: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct HostedReferenceImpact {
+    pub file_id: String,
+    pub relative_path: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct HostedStructuralOperationPreview {
+    pub operation_type: HostedStructuralOperationType,
+    pub target_file_id: String,
+    pub item_kind: HostedFileKind,
+    pub old_relative_path: String,
+    pub new_relative_path: Option<String>,
+    pub nested_item_count: i64,
+    pub affected_documents: Vec<HostedReferenceImpact>,
+    pub blocked_reason: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

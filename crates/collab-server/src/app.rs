@@ -101,6 +101,10 @@ pub fn build_router(state: AppState) -> Router {
             get(api::download_vault_file),
         )
         .route(
+            "/api/v1/vaults/{vault_id}/files/{file_id}/references",
+            get(api::list_file_references),
+        )
+        .route(
             "/api/v1/vaults/{vault_id}/files/{file_id}/revisions",
             get(api::list_file_revisions).post(api::write_text_revision),
         )
@@ -123,6 +127,10 @@ pub fn build_router(state: AppState) -> Router {
         .route(
             "/api/v1/vaults/{vault_id}/operations",
             post(api::apply_structural_operation),
+        )
+        .route(
+            "/api/v1/vaults/{vault_id}/operations/preview",
+            post(api::preview_structural_operation),
         )
         .route("/api/v1/admin/overview", get(api::overview))
         .route("/api/v1/admin/users", get(api::list_users).post(api::create_user))
@@ -147,6 +155,24 @@ pub fn build_router(state: AppState) -> Router {
             get(api::list_invitations).post(api::create_invitation),
         )
         .route("/api/v1/admin/vaults", get(api::hosted_vaults))
+        .route(
+            "/api/v1/admin/vaults/{vault_id}",
+            get(api::admin_vault_detail)
+                .patch(api::admin_update_vault)
+                .delete(api::admin_delete_vault),
+        )
+        .route(
+            "/api/v1/admin/vaults/{vault_id}/members",
+            get(api::admin_vault_members).post(api::admin_add_vault_member),
+        )
+        .route(
+            "/api/v1/admin/vaults/{vault_id}/members/{user_id}",
+            patch(api::admin_update_vault_member).delete(api::admin_remove_vault_member),
+        )
+        .route(
+            "/api/v1/admin/vaults/{vault_id}/activity",
+            get(api::admin_vault_activity),
+        )
         .route("/api/v1/admin/audit-events", get(api::audit_events))
         .nest_service("/admin", admin_assets)
         .layer(SetResponseHeaderLayer::if_not_present(

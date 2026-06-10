@@ -1,4 +1,14 @@
-import type { AdminOverview, AuditEvent, CreatedInvitation, HostedVaultSummary, Invitation, ServerUser } from './types';
+import type {
+  AdminOverview,
+  AuditEvent,
+  CreatedInvitation,
+  HostedVaultActivityEvent,
+  HostedVaultAdminDetail,
+  HostedVaultMember,
+  HostedVaultSummary,
+  Invitation,
+  ServerUser,
+} from './types';
 
 interface DataResponse<T> {
   data: T;
@@ -74,5 +84,28 @@ export const serverApi = {
   createInvitation: (payload: Record<string, unknown>) =>
     api<CreatedInvitation>('/api/v1/admin/invitations', { method: 'POST', body: JSON.stringify(payload) }),
   vaults: () => api<HostedVaultSummary[]>('/api/v1/admin/vaults'),
+  createVault: (payload: Record<string, unknown>) =>
+    api<{ id: string }>('/api/v1/vaults', { method: 'POST', body: JSON.stringify(payload) }),
+  vaultDetail: (id: string) => api<HostedVaultAdminDetail>(`/api/v1/admin/vaults/${id}`),
+  updateVault: (id: string, payload: Record<string, unknown>) =>
+    api<HostedVaultAdminDetail>(`/api/v1/admin/vaults/${id}`, {
+      method: 'PATCH',
+      body: JSON.stringify(payload),
+    }),
+  deleteVault: (id: string) => api<void>(`/api/v1/admin/vaults/${id}`, { method: 'DELETE' }),
+  vaultMembers: (id: string) => api<HostedVaultMember[]>(`/api/v1/admin/vaults/${id}/members`),
+  addVaultMember: (id: string, payload: Record<string, unknown>) =>
+    api<HostedVaultMember>(`/api/v1/admin/vaults/${id}/members`, {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
+  updateVaultMember: (id: string, userId: string, payload: Record<string, unknown>) =>
+    api<HostedVaultMember>(`/api/v1/admin/vaults/${id}/members/${userId}`, {
+      method: 'PATCH',
+      body: JSON.stringify(payload),
+    }),
+  removeVaultMember: (id: string, userId: string) =>
+    api<void>(`/api/v1/admin/vaults/${id}/members/${userId}`, { method: 'DELETE' }),
+  vaultActivity: (id: string) => api<HostedVaultActivityEvent[]>(`/api/v1/admin/vaults/${id}/activity`),
   auditEvents: () => api<AuditEvent[]>('/api/v1/admin/audit-events'),
 };

@@ -17,9 +17,11 @@ use base64::{engine::general_purpose::STANDARD, Engine};
 use collab_protocol::{
     AdminOverview, ApiError, AuditEvent, BootstrapStatus, BrowserSession, CreatedInvitation,
     DataResponse, ErrorCode, ErrorResponse, HealthState, HostedDocumentType, HostedFileEntry,
-    HostedFileKind, HostedFileRevision, HostedFileState, HostedRevisionContent, HostedSnapshot,
-    HostedStructuralOperationResult, HostedStructuralOperationType, HostedTextDocument,
-    HostedVault, HostedVaultActivityEvent, HostedVaultManifest, HostedVaultMember, HostedVaultRole,
+    HostedFileKind, HostedFileReference, HostedFileRevision, HostedFileState,
+    HostedReferenceImpact, HostedRevisionContent, HostedSnapshot,
+    HostedStructuralOperationPreview, HostedStructuralOperationResult,
+    HostedStructuralOperationType, HostedTextDocument, HostedVault, HostedVaultActivityEvent,
+    HostedVaultAdminDetail, HostedVaultManifest, HostedVaultMember, HostedVaultRole,
     HostedVaultStatus, HostedVaultSummary, Invitation, NativeSession, OperationalWarning,
     ServerUser, ServerUserRole, StorageSummary,
 };
@@ -179,6 +181,17 @@ pub struct UploadBinaryAssetRequest {
 pub struct StructuralOperationRequest {
     pub client_operation_id: Uuid,
     pub base_manifest_sequence: i64,
+    pub operation_type: HostedStructuralOperationType,
+    pub target_file_id: Uuid,
+    pub name: Option<String>,
+    pub parent_id: Option<Uuid>,
+    #[serde(default)]
+    pub remove_references: bool,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StructuralOperationPreviewRequest {
     pub operation_type: HostedStructuralOperationType,
     pub target_file_id: Uuid,
     pub name: Option<String>,
@@ -1811,12 +1824,39 @@ pub async fn apply_structural_operation(
     }
 
     let manifest = load_vault_manifest(&state.database, vault_id, &request_id).await?;
+    if manifest.sequence != payload.base_manifest_sequence {
+        return Err(ApiFailure::manifest_conflict(request_id));
+    }
     let target = manifest
         .files
         .iter()
         .find(|file| file.id == payload.target_file_id.to_string())
         .ok_or_else(|| ApiFailure::not_found(request_id.clone()))?;
-    validate_structural_operation(&manifest, target, &payload, &request_id)?;
+    let new_prefix = validate_structural_operation(&manifest, target, &payload, &request_id)?;
+
+    let rewrite_destination = match payload.operation_type {
+        HostedStructuralOperationType::Rename | HostedStructuralOperationType::Move => {
+            Some(new_prefix.as_deref())
+        }
+        HostedStructuralOperationType::Trash if payload.remove_references => Some(None),
+        _ => None,
+    };
+    let rewrites = if let Some(new_path) = rewrite_destination {
+        compute_reference_rewrites(&state, &manifest, &target.relative_path, new_path, &request_id)
+            .await?
+    } else {
+        Vec::new()
+    };
+    let mut planned_revisions = Vec::with_capacity(rewrites.len());
+    for rewrite in rewrites {
+        let bytes = rewrite.content.into_bytes();
+        let digest = state
+            .blobs
+            .put(&bytes)
+            .await
+            .map_err(|_| ApiFailure::server(request_id.clone()))?;
+        planned_revisions.push((rewrite.file_id, rewrite.revision_sequence, digest, bytes.len()));
+    }
 
     let actor_id = user_uuid(&actor.user);
     let operation_id = Uuid::now_v7();
@@ -1946,6 +1986,34 @@ pub async fn apply_structural_operation(
             .await?;
         }
     }
+    let mut rewritten_document_ids = Vec::with_capacity(planned_revisions.len());
+    for (file_id, revision_sequence, digest, size) in &planned_revisions {
+        insert_blob_record(&mut transaction, digest, *size, "text/plain", &request_id).await?;
+        let revision_id = Uuid::now_v7();
+        sqlx::query(
+            "INSERT INTO hosted_file_revisions (id, vault_id, file_id, sequence, blob_digest, content_hash, size_bytes, created_by) VALUES ($1, $2, $3, $4, $5, $5, $6, $7)",
+        )
+        .bind(revision_id)
+        .bind(vault_id)
+        .bind(file_id)
+        .bind(revision_sequence + 1)
+        .bind(digest)
+        .bind(*size as i64)
+        .bind(actor_id)
+        .execute(&mut *transaction)
+        .await
+        .map_err(|_| ApiFailure::server(request_id.clone()))?;
+        sqlx::query(
+            "UPDATE hosted_file_entries SET current_revision_id = $1, updated_at = NOW() WHERE vault_id = $2 AND id = $3",
+        )
+        .bind(revision_id)
+        .bind(vault_id)
+        .bind(file_id)
+        .execute(&mut *transaction)
+        .await
+        .map_err(|_| ApiFailure::server(request_id.clone()))?;
+        rewritten_document_ids.push(file_id.to_string());
+    }
     let result_manifest = increment_manifest(&mut transaction, vault_id, &request_id).await?;
     sqlx::query(
         "INSERT INTO hosted_structural_operations (id, client_operation_id, vault_id, actor_user_id, base_manifest_sequence, result_manifest_sequence, operation_type, payload) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
@@ -1957,7 +2025,12 @@ pub async fn apply_structural_operation(
     .bind(payload.base_manifest_sequence)
     .bind(result_manifest)
     .bind(structural_operation_name(payload.operation_type))
-    .bind(json!({"targetFileId": payload.target_file_id, "name": payload.name, "parentId": payload.parent_id}))
+    .bind(json!({
+        "targetFileId": payload.target_file_id,
+        "name": payload.name,
+        "parentId": payload.parent_id,
+        "rewrittenDocumentIds": rewritten_document_ids,
+    }))
     .execute(&mut *transaction)
     .await
     .map_err(|_| ApiFailure::server(request_id.clone()))?;
@@ -1972,6 +2045,19 @@ pub async fn apply_structural_operation(
         &request_id,
     )
     .await?;
+    if !rewritten_document_ids.is_empty() {
+        vault_activity_event(
+            &mut transaction,
+            vault_id,
+            Some(actor_id),
+            "file.references_rewritten",
+            Some("file"),
+            Some(&payload.target_file_id.to_string()),
+            json!({"documents": rewritten_document_ids}),
+            &request_id,
+        )
+        .await?;
+    }
     transaction
         .commit()
         .await
@@ -1983,7 +2069,269 @@ pub async fn apply_structural_operation(
         target_file_id: payload.target_file_id.to_string(),
         result_manifest_sequence: result_manifest,
         already_applied: false,
+        rewritten_document_ids,
     })))
+}
+
+pub async fn preview_structural_operation(
+    State(state): State<AppState>,
+    Extension(request_id): Extension<String>,
+    headers: HeaderMap,
+    Path(vault_id): Path<Uuid>,
+    Json(payload): Json<StructuralOperationPreviewRequest>,
+) -> Result<Json<DataResponse<HostedStructuralOperationPreview>>, ApiFailure> {
+    let actor = require_any_user(&state, &headers, &request_id).await?;
+    let minimum_role = if payload.operation_type == HostedStructuralOperationType::Purge {
+        HostedVaultRole::Admin
+    } else {
+        HostedVaultRole::Editor
+    };
+    require_active_vault_role(
+        &state.database,
+        vault_id,
+        &actor.user,
+        minimum_role,
+        &request_id,
+    )
+    .await?;
+    let manifest = load_vault_manifest(&state.database, vault_id, &request_id).await?;
+    let target = manifest
+        .files
+        .iter()
+        .find(|file| file.id == payload.target_file_id.to_string())
+        .ok_or_else(|| ApiFailure::not_found(request_id.clone()))?;
+    let validation = StructuralOperationRequest {
+        client_operation_id: Uuid::nil(),
+        base_manifest_sequence: manifest.sequence,
+        operation_type: payload.operation_type,
+        target_file_id: payload.target_file_id,
+        name: payload.name.clone(),
+        parent_id: payload.parent_id,
+        remove_references: false,
+    };
+    let mut new_relative_path = None;
+    let mut blocked_reason = None;
+    match validate_structural_operation(&manifest, target, &validation, &request_id) {
+        Ok(prefix) => new_relative_path = prefix,
+        Err(failure) => blocked_reason = Some(failure.message().to_owned()),
+    }
+    if blocked_reason.is_none() {
+        if let Some(next_path) = new_relative_path.as_deref() {
+            if next_path == target.relative_path {
+                blocked_reason = Some("The destination matches the current path.".into());
+            } else if manifest.files.iter().any(|file| {
+                file.id != target.id
+                    && file.state == HostedFileState::Active
+                    && file.relative_path.to_lowercase() == next_path.to_lowercase()
+            }) {
+                blocked_reason = Some("The destination path already exists.".into());
+            }
+        }
+    }
+    let rewrite_destination = if blocked_reason.is_some() {
+        None
+    } else {
+        match payload.operation_type {
+            HostedStructuralOperationType::Rename | HostedStructuralOperationType::Move => {
+                Some(new_relative_path.as_deref())
+            }
+            HostedStructuralOperationType::Trash => Some(None),
+            _ => None,
+        }
+    };
+    let affected_documents = if let Some(new_path) = rewrite_destination {
+        compute_reference_rewrites(&state, &manifest, &target.relative_path, new_path, &request_id)
+            .await?
+            .into_iter()
+            .map(|rewrite| HostedReferenceImpact {
+                file_id: rewrite.file_id.to_string(),
+                relative_path: rewrite.relative_path,
+            })
+            .collect()
+    } else {
+        Vec::new()
+    };
+    let nested_item_count = manifest
+        .files
+        .iter()
+        .filter(|file| {
+            file.state == HostedFileState::Active
+                && file
+                    .relative_path
+                    .starts_with(&format!("{}/", target.relative_path))
+        })
+        .count() as i64;
+    Ok(Json(DataResponse::new(HostedStructuralOperationPreview {
+        operation_type: payload.operation_type,
+        target_file_id: target.id.clone(),
+        item_kind: target.kind,
+        old_relative_path: target.relative_path.clone(),
+        new_relative_path,
+        nested_item_count,
+        affected_documents,
+        blocked_reason,
+    })))
+}
+
+pub async fn list_file_references(
+    State(state): State<AppState>,
+    Extension(request_id): Extension<String>,
+    headers: HeaderMap,
+    Path((vault_id, file_id)): Path<(Uuid, Uuid)>,
+) -> Result<Json<DataResponse<Vec<HostedFileReference>>>, ApiFailure> {
+    let actor = require_authenticated_user(&state, &headers, &request_id).await?;
+    require_vault_access(
+        &state.database,
+        vault_id,
+        user_uuid(&actor.user),
+        HostedVaultRole::Viewer,
+        &request_id,
+    )
+    .await?;
+    let manifest = load_vault_manifest(&state.database, vault_id, &request_id).await?;
+    let target = manifest
+        .files
+        .iter()
+        .find(|file| file.id == file_id.to_string())
+        .ok_or_else(|| ApiFailure::not_found(request_id.clone()))?;
+    if target.state != HostedFileState::Active {
+        return Err(ApiFailure::validation(
+            "Only active files can be inspected for references.",
+            request_id,
+        ));
+    }
+    let target_path = target.relative_path.clone();
+    let lookup = collab_core::references::build_reference_lookup(
+        manifest
+            .files
+            .iter()
+            .filter(|file| {
+                file.kind != HostedFileKind::Folder && file.state == HostedFileState::Active
+            })
+            .map(|file| file.relative_path.as_str()),
+    );
+    let path_ids = manifest
+        .files
+        .iter()
+        .filter(|file| file.state == HostedFileState::Active)
+        .map(|file| (file.relative_path.as_str(), file.id.as_str()))
+        .collect::<HashMap<_, _>>();
+    let mut references = Vec::new();
+    for file in &manifest.files {
+        if file.kind != HostedFileKind::Document
+            || file.state != HostedFileState::Active
+            || file.id == target.id
+            || collab_core::references::path_matches_or_descends(&file.relative_path, &target_path)
+        {
+            continue;
+        }
+        let Some(revision) = file.current_revision.as_ref() else {
+            continue;
+        };
+        let content = load_blob_text(&state, &revision.content_hash, &request_id).await?;
+        let collected = match file.document_type.unwrap_or(HostedDocumentType::Note) {
+            HostedDocumentType::Note => collab_core::references::collect_note_references(
+                &content,
+                &file.relative_path,
+                &lookup,
+                &target_path,
+            ),
+            HostedDocumentType::Kanban => collab_core::references::collect_kanban_references(
+                &content,
+                &file.relative_path,
+                &target_path,
+            )
+            .unwrap_or_default(),
+            HostedDocumentType::Canvas => collab_core::references::collect_canvas_references(
+                &content,
+                &file.relative_path,
+                &target_path,
+            )
+            .unwrap_or_default(),
+        };
+        for reference in collected {
+            let referenced_file_id = path_ids
+                .get(reference.referenced_relative_path.as_str())
+                .map(|id| (*id).to_owned());
+            references.push(HostedFileReference {
+                source_file_id: file.id.clone(),
+                source_relative_path: reference.source_relative_path,
+                source_document_type: reference.source_document_type,
+                reference_kind: reference.reference_kind,
+                referenced_file_id,
+                referenced_relative_path: reference.referenced_relative_path,
+                display_label: reference.display_label,
+                context: reference.context,
+            });
+        }
+    }
+    references.sort_by(|a, b| {
+        a.source_relative_path
+            .cmp(&b.source_relative_path)
+            .then(a.reference_kind.cmp(&b.reference_kind))
+            .then(a.display_label.cmp(&b.display_label))
+    });
+    Ok(Json(DataResponse::new(references)))
+}
+
+struct ReferenceRewrite {
+    file_id: Uuid,
+    relative_path: String,
+    revision_sequence: i64,
+    content: String,
+}
+
+async fn compute_reference_rewrites(
+    state: &AppState,
+    manifest: &HostedVaultManifest,
+    old_path: &str,
+    new_path: Option<&str>,
+    request_id: &str,
+) -> Result<Vec<ReferenceRewrite>, ApiFailure> {
+    let mut rewrites = Vec::new();
+    for file in &manifest.files {
+        if file.kind != HostedFileKind::Document
+            || file.state != HostedFileState::Active
+            || collab_core::references::path_matches_or_descends(&file.relative_path, old_path)
+        {
+            continue;
+        }
+        let Some(revision) = file.current_revision.as_ref() else {
+            continue;
+        };
+        let content = load_blob_text(state, &revision.content_hash, request_id).await?;
+        // Unparseable board/canvas documents are skipped rather than blocking
+        // the structural operation; they cannot hold resolvable references.
+        let rewritten = match file.document_type.unwrap_or(HostedDocumentType::Note) {
+            HostedDocumentType::Note => Some(collab_core::references::rewrite_note_references(
+                &content,
+                &file.relative_path,
+                old_path,
+                new_path,
+            )),
+            HostedDocumentType::Kanban => {
+                collab_core::references::rewrite_kanban_references(&content, old_path, new_path)
+                    .ok()
+            }
+            HostedDocumentType::Canvas => {
+                collab_core::references::rewrite_canvas_references(&content, old_path, new_path)
+                    .ok()
+            }
+        };
+        let Some(rewritten) = rewritten else {
+            continue;
+        };
+        if rewritten == content {
+            continue;
+        }
+        rewrites.push(ReferenceRewrite {
+            file_id: Uuid::parse_str(&file.id).expect("stored file IDs are valid UUIDs"),
+            relative_path: file.relative_path.clone(),
+            revision_sequence: revision.sequence,
+            content: rewritten,
+        });
+    }
+    Ok(rewrites)
 }
 
 pub async fn overview(
@@ -2531,6 +2879,435 @@ pub async fn audit_events(
     )))
 }
 
+pub async fn admin_vault_detail(
+    State(state): State<AppState>,
+    Extension(request_id): Extension<String>,
+    headers: HeaderMap,
+    Path(vault_id): Path<Uuid>,
+) -> Result<Json<DataResponse<HostedVaultAdminDetail>>, ApiFailure> {
+    require_admin(&state, &headers, &request_id).await?;
+    Ok(Json(DataResponse::new(
+        load_admin_vault_detail(&state.database, vault_id, &request_id).await?,
+    )))
+}
+
+pub async fn admin_update_vault(
+    State(state): State<AppState>,
+    Extension(request_id): Extension<String>,
+    headers: HeaderMap,
+    Path(vault_id): Path<Uuid>,
+    Json(payload): Json<UpdateVaultRequest>,
+) -> Result<Json<DataResponse<HostedVaultAdminDetail>>, ApiFailure> {
+    let actor = require_admin_csrf(&state, &headers, &request_id).await?;
+    let name = payload
+        .name
+        .as_deref()
+        .map(|value| validate_vault_name(value, &request_id))
+        .transpose()?;
+    if payload.status == Some(HostedVaultStatus::PendingDelete) {
+        return Err(ApiFailure::validation(
+            "Use DELETE to mark a vault for deletion.",
+            request_id,
+        ));
+    }
+    let status = payload.status.map(vault_status_name);
+    let mut transaction = state
+        .database
+        .begin()
+        .await
+        .map_err(|_| ApiFailure::server(request_id.clone()))?;
+    let updated = sqlx::query(
+        r#"
+        UPDATE hosted_vaults SET
+          name = COALESCE($1, name),
+          status = COALESCE($2::hosted_vault_status, status),
+          archived_at = CASE
+            WHEN $2 = 'archived' THEN NOW()
+            WHEN $2 = 'active' THEN NULL
+            ELSE archived_at
+          END,
+          pending_delete_at = CASE WHEN $2 IS NOT NULL THEN NULL ELSE pending_delete_at END,
+          updated_at = NOW()
+        WHERE id = $3
+        "#,
+    )
+    .bind(name.as_deref())
+    .bind(status)
+    .bind(vault_id)
+    .execute(&mut *transaction)
+    .await
+    .map_err(|_| ApiFailure::server(request_id.clone()))?;
+    if updated.rows_affected() == 0 {
+        return Err(ApiFailure::not_found(request_id));
+    }
+    vault_activity_event(
+        &mut transaction,
+        vault_id,
+        Some(user_uuid(&actor.user)),
+        if payload.status.is_some() {
+            "vault.status_changed"
+        } else {
+            "vault.renamed"
+        },
+        Some("vault"),
+        Some(&vault_id.to_string()),
+        json!({"status": status, "name": name, "byServerAdmin": true}),
+        &request_id,
+    )
+    .await?;
+    audit(
+        &mut transaction,
+        Some(&actor.user.id),
+        "admin.vault.update",
+        Some("vault"),
+        Some(&vault_id.to_string()),
+        "success",
+        &request_id,
+        json!({"status": status, "renamed": name.is_some()}),
+    )
+    .await?;
+    transaction
+        .commit()
+        .await
+        .map_err(|_| ApiFailure::server(request_id.clone()))?;
+    Ok(Json(DataResponse::new(
+        load_admin_vault_detail(&state.database, vault_id, &request_id).await?,
+    )))
+}
+
+pub async fn admin_delete_vault(
+    State(state): State<AppState>,
+    Extension(request_id): Extension<String>,
+    headers: HeaderMap,
+    Path(vault_id): Path<Uuid>,
+) -> Result<StatusCode, ApiFailure> {
+    let actor = require_admin_csrf(&state, &headers, &request_id).await?;
+    let mut transaction = state
+        .database
+        .begin()
+        .await
+        .map_err(|_| ApiFailure::server(request_id.clone()))?;
+    let updated = sqlx::query(
+        "UPDATE hosted_vaults SET status = 'pending_delete', pending_delete_at = NOW(), updated_at = NOW() WHERE id = $1",
+    )
+    .bind(vault_id)
+    .execute(&mut *transaction)
+    .await
+    .map_err(|_| ApiFailure::server(request_id.clone()))?;
+    if updated.rows_affected() == 0 {
+        return Err(ApiFailure::not_found(request_id));
+    }
+    vault_activity_event(
+        &mut transaction,
+        vault_id,
+        Some(user_uuid(&actor.user)),
+        "vault.pending_delete",
+        Some("vault"),
+        Some(&vault_id.to_string()),
+        json!({"byServerAdmin": true}),
+        &request_id,
+    )
+    .await?;
+    audit(
+        &mut transaction,
+        Some(&actor.user.id),
+        "admin.vault.delete",
+        Some("vault"),
+        Some(&vault_id.to_string()),
+        "success",
+        &request_id,
+        json!({}),
+    )
+    .await?;
+    transaction
+        .commit()
+        .await
+        .map_err(|_| ApiFailure::server(request_id))?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+pub async fn admin_vault_members(
+    State(state): State<AppState>,
+    Extension(request_id): Extension<String>,
+    headers: HeaderMap,
+    Path(vault_id): Path<Uuid>,
+) -> Result<Json<DataResponse<Vec<HostedVaultMember>>>, ApiFailure> {
+    require_admin(&state, &headers, &request_id).await?;
+    require_vault_exists(&state.database, vault_id, &request_id).await?;
+    Ok(Json(DataResponse::new(
+        load_vault_members(&state.database, vault_id, &request_id).await?,
+    )))
+}
+
+pub async fn admin_add_vault_member(
+    State(state): State<AppState>,
+    Extension(request_id): Extension<String>,
+    headers: HeaderMap,
+    Path(vault_id): Path<Uuid>,
+    Json(payload): Json<AddVaultMemberRequest>,
+) -> Result<(StatusCode, Json<DataResponse<HostedVaultMember>>), ApiFailure> {
+    let actor = require_admin_csrf(&state, &headers, &request_id).await?;
+    require_vault_not_pending_delete(&state.database, vault_id, &request_id).await?;
+    let mut transaction = state
+        .database
+        .begin()
+        .await
+        .map_err(|_| ApiFailure::server(request_id.clone()))?;
+    let inserted = sqlx::query(
+        "INSERT INTO hosted_vault_memberships (vault_id, user_id, role) SELECT $1, id, $3::hosted_vault_role FROM users WHERE id = $2 AND status = 'active' ON CONFLICT DO NOTHING",
+    )
+    .bind(vault_id)
+    .bind(payload.user_id)
+    .bind(vault_role_name(payload.role))
+    .execute(&mut *transaction)
+    .await
+    .map_err(|_| ApiFailure::server(request_id.clone()))?;
+    if inserted.rows_affected() == 0 {
+        return Err(ApiFailure::validation(
+            "The user does not exist, is disabled, or is already a member.",
+            request_id,
+        ));
+    }
+    vault_activity_event(
+        &mut transaction,
+        vault_id,
+        Some(user_uuid(&actor.user)),
+        "member.added",
+        Some("user"),
+        Some(&payload.user_id.to_string()),
+        json!({"role": vault_role_name(payload.role), "byServerAdmin": true}),
+        &request_id,
+    )
+    .await?;
+    audit(
+        &mut transaction,
+        Some(&actor.user.id),
+        "admin.vault.member.add",
+        Some("vault"),
+        Some(&vault_id.to_string()),
+        "success",
+        &request_id,
+        json!({"userId": payload.user_id, "role": vault_role_name(payload.role)}),
+    )
+    .await?;
+    transaction
+        .commit()
+        .await
+        .map_err(|_| ApiFailure::server(request_id.clone()))?;
+    Ok((
+        StatusCode::CREATED,
+        Json(DataResponse::new(
+            load_vault_member(&state.database, vault_id, payload.user_id, &request_id).await?,
+        )),
+    ))
+}
+
+pub async fn admin_update_vault_member(
+    State(state): State<AppState>,
+    Extension(request_id): Extension<String>,
+    headers: HeaderMap,
+    Path((vault_id, user_id)): Path<(Uuid, Uuid)>,
+    Json(payload): Json<UpdateVaultMemberRequest>,
+) -> Result<Json<DataResponse<HostedVaultMember>>, ApiFailure> {
+    let actor = require_admin_csrf(&state, &headers, &request_id).await?;
+    require_vault_not_pending_delete(&state.database, vault_id, &request_id).await?;
+    let target = load_vault_member(&state.database, vault_id, user_id, &request_id).await?;
+    if target.owner {
+        return Err(ApiFailure::validation(
+            "The owner membership cannot be changed.",
+            request_id,
+        ));
+    }
+    let mut transaction = state
+        .database
+        .begin()
+        .await
+        .map_err(|_| ApiFailure::server(request_id.clone()))?;
+    sqlx::query("UPDATE hosted_vault_memberships SET role = $1::hosted_vault_role, updated_at = NOW() WHERE vault_id = $2 AND user_id = $3")
+        .bind(vault_role_name(payload.role))
+        .bind(vault_id)
+        .bind(user_id)
+        .execute(&mut *transaction)
+        .await
+        .map_err(|_| ApiFailure::server(request_id.clone()))?;
+    vault_activity_event(
+        &mut transaction,
+        vault_id,
+        Some(user_uuid(&actor.user)),
+        "member.role_changed",
+        Some("user"),
+        Some(&user_id.to_string()),
+        json!({"role": vault_role_name(payload.role), "byServerAdmin": true}),
+        &request_id,
+    )
+    .await?;
+    audit(
+        &mut transaction,
+        Some(&actor.user.id),
+        "admin.vault.member.update",
+        Some("vault"),
+        Some(&vault_id.to_string()),
+        "success",
+        &request_id,
+        json!({"userId": user_id, "role": vault_role_name(payload.role)}),
+    )
+    .await?;
+    transaction
+        .commit()
+        .await
+        .map_err(|_| ApiFailure::server(request_id.clone()))?;
+    Ok(Json(DataResponse::new(
+        load_vault_member(&state.database, vault_id, user_id, &request_id).await?,
+    )))
+}
+
+pub async fn admin_remove_vault_member(
+    State(state): State<AppState>,
+    Extension(request_id): Extension<String>,
+    headers: HeaderMap,
+    Path((vault_id, user_id)): Path<(Uuid, Uuid)>,
+) -> Result<StatusCode, ApiFailure> {
+    let actor = require_admin_csrf(&state, &headers, &request_id).await?;
+    require_vault_not_pending_delete(&state.database, vault_id, &request_id).await?;
+    let target = load_vault_member(&state.database, vault_id, user_id, &request_id).await?;
+    if target.owner {
+        return Err(ApiFailure::validation(
+            "The owner membership cannot be removed.",
+            request_id,
+        ));
+    }
+    let mut transaction = state
+        .database
+        .begin()
+        .await
+        .map_err(|_| ApiFailure::server(request_id.clone()))?;
+    sqlx::query("DELETE FROM hosted_vault_memberships WHERE vault_id = $1 AND user_id = $2")
+        .bind(vault_id)
+        .bind(user_id)
+        .execute(&mut *transaction)
+        .await
+        .map_err(|_| ApiFailure::server(request_id.clone()))?;
+    vault_activity_event(
+        &mut transaction,
+        vault_id,
+        Some(user_uuid(&actor.user)),
+        "member.removed",
+        Some("user"),
+        Some(&user_id.to_string()),
+        json!({"byServerAdmin": true}),
+        &request_id,
+    )
+    .await?;
+    audit(
+        &mut transaction,
+        Some(&actor.user.id),
+        "admin.vault.member.remove",
+        Some("vault"),
+        Some(&vault_id.to_string()),
+        "success",
+        &request_id,
+        json!({"userId": user_id}),
+    )
+    .await?;
+    transaction
+        .commit()
+        .await
+        .map_err(|_| ApiFailure::server(request_id))?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+pub async fn admin_vault_activity(
+    State(state): State<AppState>,
+    Extension(request_id): Extension<String>,
+    headers: HeaderMap,
+    Path(vault_id): Path<Uuid>,
+) -> Result<Json<DataResponse<Vec<HostedVaultActivityEvent>>>, ApiFailure> {
+    require_admin(&state, &headers, &request_id).await?;
+    require_vault_exists(&state.database, vault_id, &request_id).await?;
+    let rows = sqlx::query(
+        "SELECT a.id, u.display_name AS actor_display_name, a.event_type, a.target_type, a.target_id, a.created_at FROM hosted_vault_activity_events a LEFT JOIN users u ON u.id = a.actor_user_id WHERE a.vault_id = $1 ORDER BY a.created_at DESC LIMIT 100",
+    )
+    .bind(vault_id)
+    .fetch_all(&state.database)
+    .await
+    .map_err(|_| ApiFailure::server(request_id.clone()))?;
+    Ok(Json(DataResponse::new(
+        rows.iter().map(vault_activity_from_row).collect(),
+    )))
+}
+
+async fn require_vault_exists(
+    pool: &PgPool,
+    vault_id: Uuid,
+    request_id: &str,
+) -> Result<HostedVaultStatus, ApiFailure> {
+    let status = sqlx::query_scalar::<_, String>(
+        "SELECT status::text FROM hosted_vaults WHERE id = $1",
+    )
+    .bind(vault_id)
+    .fetch_optional(pool)
+    .await
+    .map_err(|_| ApiFailure::server(request_id.to_owned()))?
+    .ok_or_else(|| ApiFailure::not_found(request_id.to_owned()))?;
+    Ok(parse_vault_status(&status))
+}
+
+async fn require_vault_not_pending_delete(
+    pool: &PgPool,
+    vault_id: Uuid,
+    request_id: &str,
+) -> Result<(), ApiFailure> {
+    if require_vault_exists(pool, vault_id, request_id).await? == HostedVaultStatus::PendingDelete {
+        return Err(ApiFailure::vault_archived(request_id.to_owned()));
+    }
+    Ok(())
+}
+
+async fn load_admin_vault_detail(
+    pool: &PgPool,
+    vault_id: Uuid,
+    request_id: &str,
+) -> Result<HostedVaultAdminDetail, ApiFailure> {
+    let row = sqlx::query(
+        r#"
+        SELECT v.id, v.name, v.owner_user_id, owner.username AS owner_username,
+               owner.display_name AS owner_display_name, v.status::text AS status,
+               v.manifest_sequence, v.created_at, v.updated_at,
+               (SELECT COUNT(*) FROM hosted_vault_memberships m WHERE m.vault_id = v.id) AS members,
+               (SELECT COUNT(*) FROM hosted_file_entries f WHERE f.vault_id = v.id AND f.state = 'active') AS active_files,
+               (SELECT COUNT(*) FROM hosted_file_entries f WHERE f.vault_id = v.id AND f.state = 'trashed') AS trashed_files,
+               COALESCE((SELECT SUM(r.size_bytes) FROM hosted_file_revisions r WHERE r.vault_id = v.id), 0)::bigint AS storage_bytes
+        FROM hosted_vaults v
+        JOIN users owner ON owner.id = v.owner_user_id
+        WHERE v.id = $1
+        "#,
+    )
+    .bind(vault_id)
+    .fetch_optional(pool)
+    .await
+    .map_err(|_| ApiFailure::server(request_id.to_owned()))?
+    .ok_or_else(|| ApiFailure::not_found(request_id.to_owned()))?;
+    Ok(HostedVaultAdminDetail {
+        id: row.get::<Uuid, _>("id").to_string(),
+        name: row.get("name"),
+        owner_user_id: row.get::<Uuid, _>("owner_user_id").to_string(),
+        owner_username: row.get("owner_username"),
+        owner_display_name: row.get("owner_display_name"),
+        status: parse_vault_status(row.get::<String, _>("status").as_str()),
+        manifest_sequence: row.get("manifest_sequence"),
+        members: row.get("members"),
+        active_files: row.get("active_files"),
+        trashed_files: row.get("trashed_files"),
+        storage_bytes: row.get::<i64, _>("storage_bytes").max(0) as u64,
+        created_at: row
+            .get::<chrono::DateTime<chrono::Utc>, _>("created_at")
+            .to_rfc3339(),
+        updated_at: row
+            .get::<chrono::DateTime<chrono::Utc>, _>("updated_at")
+            .to_rfc3339(),
+    })
+}
+
 async fn authenticate_password(
     state: &AppState,
     username: &str,
@@ -3040,7 +3817,7 @@ fn validate_structural_operation(
     target: &HostedFileEntry,
     payload: &StructuralOperationRequest,
     request_id: &str,
-) -> Result<(), ApiFailure> {
+) -> Result<Option<String>, ApiFailure> {
     if payload.base_manifest_sequence < 0 {
         return Err(ApiFailure::validation(
             "Base manifest sequence cannot be negative.",
@@ -3122,6 +3899,7 @@ fn validate_structural_operation(
                     |error| ApiFailure::path_invalid(error.to_string(), request_id.to_owned()),
                 )?;
             }
+            return Ok(Some(new_prefix));
         }
         HostedStructuralOperationType::Trash if target.state != HostedFileState::Active => {
             return Err(ApiFailure::validation(
@@ -3139,7 +3917,7 @@ fn validate_structural_operation(
         }
         _ => {}
     }
-    Ok(())
+    Ok(None)
 }
 
 async fn load_structural_operation(
@@ -3150,7 +3928,7 @@ async fn load_structural_operation(
     request_id: &str,
 ) -> Result<Option<HostedStructuralOperationResult>, ApiFailure> {
     let row = sqlx::query(
-        "SELECT id, client_operation_id, operation_type, result_manifest_sequence, payload->>'targetFileId' AS target_file_id FROM hosted_structural_operations WHERE vault_id = $1 AND client_operation_id = $2",
+        "SELECT id, client_operation_id, operation_type, result_manifest_sequence, payload->>'targetFileId' AS target_file_id, payload->'rewrittenDocumentIds' AS rewritten_document_ids FROM hosted_structural_operations WHERE vault_id = $1 AND client_operation_id = $2",
     )
     .bind(vault_id)
     .bind(client_operation_id)
@@ -3164,6 +3942,10 @@ async fn load_structural_operation(
         target_file_id: row.get("target_file_id"),
         result_manifest_sequence: row.get("result_manifest_sequence"),
         already_applied,
+        rewritten_document_ids: row
+            .get::<Option<Value>, _>("rewritten_document_ids")
+            .and_then(|value| serde_json::from_value(value).ok())
+            .unwrap_or_default(),
     }))
 }
 
@@ -4088,6 +4870,10 @@ impl ApiFailure {
         }
     }
 
+    fn message(&self) -> &str {
+        &self.error.message
+    }
+
     fn server(request_id: String) -> Self {
         Self::new(
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -4315,7 +5101,7 @@ mod tests {
             .unwrap();
         database::migrate(&pool).await.unwrap();
         sqlx::query(
-            "TRUNCATE audit_events, invitations, native_sessions, sessions, credentials, users RESTART IDENTITY CASCADE",
+            "TRUNCATE audit_events, invitations, native_sessions, sessions, credentials, users, hosted_blobs RESTART IDENTITY CASCADE",
         )
         .execute(&pool)
         .await
@@ -5062,10 +5848,155 @@ mod tests {
         );
         assert_eq!(response_bytes(downloaded).await, b"asset bytes");
 
+        let index_note = request(
+            &app,
+            "POST",
+            &format!("/api/v1/vaults/{vault_id}/files"),
+            json!({
+                "name": "Index.md",
+                "kind": "document",
+                "documentType": "note",
+                "content": "Link: [welcome](Notes/Welcome.md) and ![[diagram.bin]]"
+            }),
+            Some(&member_cookie),
+            Some(&member_csrf),
+        )
+        .await;
+        assert_eq!(index_note.status(), StatusCode::CREATED);
+        let index_id = json_body(index_note).await["data"]["id"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+
+        let asset_references = request(
+            &app,
+            "GET",
+            &format!("/api/v1/vaults/{vault_id}/files/{asset_id}/references"),
+            json!({}),
+            Some(&admin_cookie),
+            None,
+        )
+        .await;
+        assert_eq!(asset_references.status(), StatusCode::OK);
+        let asset_references_body = json_body(asset_references).await;
+        let asset_reference_list = asset_references_body["data"].as_array().unwrap();
+        assert_eq!(asset_reference_list.len(), 1);
+        assert_eq!(asset_reference_list[0]["sourceRelativePath"], "Index.md");
+        assert_eq!(asset_reference_list[0]["referencedFileId"], asset_id);
+        assert_eq!(
+            asset_reference_list[0]["referencedRelativePath"],
+            "Notes/diagram.bin"
+        );
+
+        let demoted_for_preview = request(
+            &app,
+            "PATCH",
+            &format!("/api/v1/vaults/{vault_id}/members/{member_id}"),
+            json!({"role": "viewer"}),
+            Some(&admin_cookie),
+            Some(&admin_csrf),
+        )
+        .await;
+        assert_eq!(demoted_for_preview.status(), StatusCode::OK);
+        let viewer_preview = request(
+            &app,
+            "POST",
+            &format!("/api/v1/vaults/{vault_id}/operations/preview"),
+            json!({
+                "operationType": "rename",
+                "targetFileId": document_id,
+                "name": "Renamed.md"
+            }),
+            Some(&member_cookie),
+            Some(&member_csrf),
+        )
+        .await;
+        assert_eq!(viewer_preview.status(), StatusCode::FORBIDDEN);
+        assert_eq!(
+            json_body(viewer_preview).await["error"]["code"],
+            "vault_permission_denied"
+        );
+        let viewer_references = request(
+            &app,
+            "GET",
+            &format!("/api/v1/vaults/{vault_id}/files/{asset_id}/references"),
+            json!({}),
+            Some(&member_cookie),
+            None,
+        )
+        .await;
+        assert_eq!(viewer_references.status(), StatusCode::OK);
+        let promoted_after_preview = request(
+            &app,
+            "PATCH",
+            &format!("/api/v1/vaults/{vault_id}/members/{member_id}"),
+            json!({"role": "editor"}),
+            Some(&admin_cookie),
+            Some(&admin_csrf),
+        )
+        .await;
+        assert_eq!(promoted_after_preview.status(), StatusCode::OK);
+
+        let rename_preview = request(
+            &app,
+            "POST",
+            &format!("/api/v1/vaults/{vault_id}/operations/preview"),
+            json!({
+                "operationType": "rename",
+                "targetFileId": document_id,
+                "name": "Renamed.md"
+            }),
+            Some(&member_cookie),
+            Some(&member_csrf),
+        )
+        .await;
+        assert_eq!(rename_preview.status(), StatusCode::OK);
+        let rename_preview_body = json_body(rename_preview).await;
+        assert_eq!(
+            rename_preview_body["data"]["oldRelativePath"],
+            "Notes/Welcome.md"
+        );
+        assert_eq!(
+            rename_preview_body["data"]["newRelativePath"],
+            "Notes/Renamed.md"
+        );
+        assert_eq!(rename_preview_body["data"]["blockedReason"], Value::Null);
+        assert_eq!(rename_preview_body["data"]["nestedItemCount"], 0);
+        let preview_affected = rename_preview_body["data"]["affectedDocuments"]
+            .as_array()
+            .unwrap();
+        assert_eq!(preview_affected.len(), 1);
+        assert_eq!(preview_affected[0]["fileId"], index_id);
+        assert_eq!(preview_affected[0]["relativePath"], "Index.md");
+
+        let blocked_preview = request(
+            &app,
+            "POST",
+            &format!("/api/v1/vaults/{vault_id}/operations/preview"),
+            json!({
+                "operationType": "rename",
+                "targetFileId": document_id,
+                "name": "diagram.bin"
+            }),
+            Some(&member_cookie),
+            Some(&member_csrf),
+        )
+        .await;
+        assert_eq!(blocked_preview.status(), StatusCode::OK);
+        let blocked_preview_body = json_body(blocked_preview).await;
+        assert_eq!(
+            blocked_preview_body["data"]["blockedReason"],
+            "The destination path already exists."
+        );
+        assert_eq!(
+            blocked_preview_body["data"]["affectedDocuments"],
+            json!([])
+        );
+
         let rename_operation_id = Uuid::now_v7();
         let rename_payload = json!({
             "clientOperationId": rename_operation_id,
-            "baseManifestSequence": 6,
+            "baseManifestSequence": 7,
             "operationType": "rename",
             "targetFileId": document_id,
             "name": "Renamed.md"
@@ -5080,9 +6011,30 @@ mod tests {
         )
         .await;
         assert_eq!(renamed.status(), StatusCode::OK);
+        let renamed_body = json_body(renamed).await;
+        assert_eq!(renamed_body["data"]["resultManifestSequence"], 8);
         assert_eq!(
-            json_body(renamed).await["data"]["resultManifestSequence"],
-            7
+            renamed_body["data"]["rewrittenDocumentIds"],
+            json!([index_id])
+        );
+
+        let rewritten_index = request(
+            &app,
+            "GET",
+            &format!("/api/v1/vaults/{vault_id}/files/{index_id}"),
+            json!({}),
+            Some(&admin_cookie),
+            None,
+        )
+        .await;
+        let rewritten_index_body = json_body(rewritten_index).await;
+        assert_eq!(
+            rewritten_index_body["data"]["content"],
+            "Link: [welcome](Notes/Renamed.md) and ![[diagram.bin]]"
+        );
+        assert_eq!(
+            rewritten_index_body["data"]["file"]["currentRevision"]["sequence"],
+            2
         );
 
         let repeated_rename = request(
@@ -5095,9 +6047,11 @@ mod tests {
         )
         .await;
         assert_eq!(repeated_rename.status(), StatusCode::OK);
+        let repeated_rename_body = json_body(repeated_rename).await;
+        assert_eq!(repeated_rename_body["data"]["alreadyApplied"], true);
         assert_eq!(
-            json_body(repeated_rename).await["data"]["alreadyApplied"],
-            true
+            repeated_rename_body["data"]["rewrittenDocumentIds"],
+            json!([index_id])
         );
 
         let stale_move = request(
@@ -5127,7 +6081,7 @@ mod tests {
             &format!("/api/v1/vaults/{vault_id}/operations"),
             json!({
                 "clientOperationId": Uuid::now_v7(),
-                "baseManifestSequence": 7,
+                "baseManifestSequence": 8,
                 "operationType": "move",
                 "targetFileId": document_id,
                 "parentId": null
@@ -5137,6 +6091,10 @@ mod tests {
         )
         .await;
         assert_eq!(moved.status(), StatusCode::OK);
+        assert_eq!(
+            json_body(moved).await["data"]["rewrittenDocumentIds"],
+            json!([index_id])
+        );
 
         let moved_manifest = request(
             &app,
@@ -5156,7 +6114,7 @@ mod tests {
             .unwrap();
         assert_eq!(moved_document["relativePath"], "Renamed.md");
 
-        for (operation_type, sequence) in [("trash", 8), ("restore", 9), ("trash", 10)] {
+        for (operation_type, sequence) in [("trash", 9), ("restore", 10)] {
             let response = request(
                 &app,
                 "POST",
@@ -5174,13 +6132,52 @@ mod tests {
             assert_eq!(response.status(), StatusCode::OK);
         }
 
-        let editor_purge = request(
+        let trash_with_reference_removal = request(
             &app,
             "POST",
             &format!("/api/v1/vaults/{vault_id}/operations"),
             json!({
                 "clientOperationId": Uuid::now_v7(),
                 "baseManifestSequence": 11,
+                "operationType": "trash",
+                "targetFileId": document_id,
+                "removeReferences": true
+            }),
+            Some(&member_cookie),
+            Some(&member_csrf),
+        )
+        .await;
+        assert_eq!(trash_with_reference_removal.status(), StatusCode::OK);
+        assert_eq!(
+            json_body(trash_with_reference_removal).await["data"]["rewrittenDocumentIds"],
+            json!([index_id])
+        );
+        let scrubbed_index = request(
+            &app,
+            "GET",
+            &format!("/api/v1/vaults/{vault_id}/files/{index_id}"),
+            json!({}),
+            Some(&admin_cookie),
+            None,
+        )
+        .await;
+        let scrubbed_index_body = json_body(scrubbed_index).await;
+        assert_eq!(
+            scrubbed_index_body["data"]["content"],
+            "Link: welcome and ![[diagram.bin]]"
+        );
+        assert_eq!(
+            scrubbed_index_body["data"]["file"]["currentRevision"]["sequence"],
+            4
+        );
+
+        let editor_purge = request(
+            &app,
+            "POST",
+            &format!("/api/v1/vaults/{vault_id}/operations"),
+            json!({
+                "clientOperationId": Uuid::now_v7(),
+                "baseManifestSequence": 12,
                 "operationType": "purge",
                 "targetFileId": document_id
             }),
@@ -5196,7 +6193,7 @@ mod tests {
             &format!("/api/v1/vaults/{vault_id}/operations"),
             json!({
                 "clientOperationId": Uuid::now_v7(),
-                "baseManifestSequence": 11,
+                "baseManifestSequence": 12,
                 "operationType": "purge",
                 "targetFileId": document_id
             }),
@@ -5207,7 +6204,7 @@ mod tests {
         assert_eq!(admin_purge.status(), StatusCode::OK);
         assert_eq!(
             json_body(admin_purge).await["data"]["resultManifestSequence"],
-            12
+            13
         );
 
         let archived = request(
@@ -5285,6 +6282,175 @@ mod tests {
         .await;
         assert_eq!(
             json_body(pending_detail).await["data"]["status"],
+            "pending_delete"
+        );
+
+        let member_admin_vault = request(
+            &app,
+            "GET",
+            &format!("/api/v1/admin/vaults/{vault_id}"),
+            json!({}),
+            Some(&member_cookie),
+            None,
+        )
+        .await;
+        assert_eq!(member_admin_vault.status(), StatusCode::FORBIDDEN);
+
+        let admin_detail = request(
+            &app,
+            "GET",
+            &format!("/api/v1/admin/vaults/{vault_id}"),
+            json!({}),
+            Some(&admin_cookie),
+            None,
+        )
+        .await;
+        assert_eq!(admin_detail.status(), StatusCode::OK);
+        let admin_detail_body = json_body(admin_detail).await;
+        assert_eq!(admin_detail_body["data"]["name"], "Team Vault");
+        assert_eq!(admin_detail_body["data"]["status"], "pending_delete");
+        assert_eq!(admin_detail_body["data"]["members"], 2);
+        assert_eq!(admin_detail_body["data"]["activeFiles"], 4);
+        assert_eq!(admin_detail_body["data"]["ownerUsername"], "admin");
+        assert!(admin_detail_body["data"]["storageBytes"].as_u64().unwrap() > 0);
+
+        let pending_member_change = request(
+            &app,
+            "PATCH",
+            &format!("/api/v1/admin/vaults/{vault_id}/members/{member_id}"),
+            json!({"role": "viewer"}),
+            Some(&admin_cookie),
+            Some(&admin_csrf),
+        )
+        .await;
+        assert_eq!(pending_member_change.status(), StatusCode::CONFLICT);
+        assert_eq!(
+            json_body(pending_member_change).await["error"]["code"],
+            "vault_archived"
+        );
+
+        let admin_restore = request(
+            &app,
+            "PATCH",
+            &format!("/api/v1/admin/vaults/{vault_id}"),
+            json!({"status": "active"}),
+            Some(&admin_cookie),
+            Some(&admin_csrf),
+        )
+        .await;
+        assert_eq!(admin_restore.status(), StatusCode::OK);
+        assert_eq!(json_body(admin_restore).await["data"]["status"], "active");
+
+        let owner_role_change = request(
+            &app,
+            "PATCH",
+            &format!("/api/v1/admin/vaults/{vault_id}/members/{admin_id}"),
+            json!({"role": "viewer"}),
+            Some(&admin_cookie),
+            Some(&admin_csrf),
+        )
+        .await;
+        assert_eq!(owner_role_change.status(), StatusCode::BAD_REQUEST);
+
+        let admin_role_change = request(
+            &app,
+            "PATCH",
+            &format!("/api/v1/admin/vaults/{vault_id}/members/{member_id}"),
+            json!({"role": "viewer"}),
+            Some(&admin_cookie),
+            Some(&admin_csrf),
+        )
+        .await;
+        assert_eq!(admin_role_change.status(), StatusCode::OK);
+        assert_eq!(json_body(admin_role_change).await["data"]["role"], "viewer");
+
+        let admin_member_removal = request(
+            &app,
+            "DELETE",
+            &format!("/api/v1/admin/vaults/{vault_id}/members/{member_id}"),
+            json!({}),
+            Some(&admin_cookie),
+            Some(&admin_csrf),
+        )
+        .await;
+        assert_eq!(admin_member_removal.status(), StatusCode::NO_CONTENT);
+
+        let admin_member_add = request(
+            &app,
+            "POST",
+            &format!("/api/v1/admin/vaults/{vault_id}/members"),
+            json!({"userId": member_id, "role": "editor"}),
+            Some(&admin_cookie),
+            Some(&admin_csrf),
+        )
+        .await;
+        assert_eq!(admin_member_add.status(), StatusCode::CREATED);
+        let admin_members = request(
+            &app,
+            "GET",
+            &format!("/api/v1/admin/vaults/{vault_id}/members"),
+            json!({}),
+            Some(&admin_cookie),
+            None,
+        )
+        .await;
+        assert_eq!(admin_members.status(), StatusCode::OK);
+        assert_eq!(
+            json_body(admin_members).await["data"].as_array().unwrap().len(),
+            2
+        );
+
+        let admin_archive = request(
+            &app,
+            "PATCH",
+            &format!("/api/v1/admin/vaults/{vault_id}"),
+            json!({"status": "archived"}),
+            Some(&admin_cookie),
+            Some(&admin_csrf),
+        )
+        .await;
+        assert_eq!(admin_archive.status(), StatusCode::OK);
+        assert_eq!(json_body(admin_archive).await["data"]["status"], "archived");
+
+        let admin_vault_activity = request(
+            &app,
+            "GET",
+            &format!("/api/v1/admin/vaults/{vault_id}/activity"),
+            json!({}),
+            Some(&admin_cookie),
+            None,
+        )
+        .await;
+        assert_eq!(admin_vault_activity.status(), StatusCode::OK);
+        assert!(
+            json_body(admin_vault_activity).await["data"]
+                .as_array()
+                .unwrap()
+                .len()
+                >= 6
+        );
+
+        let admin_redelete = request(
+            &app,
+            "DELETE",
+            &format!("/api/v1/admin/vaults/{vault_id}"),
+            json!({}),
+            Some(&admin_cookie),
+            Some(&admin_csrf),
+        )
+        .await;
+        assert_eq!(admin_redelete.status(), StatusCode::NO_CONTENT);
+        let redeleted_detail = request(
+            &app,
+            "GET",
+            &format!("/api/v1/admin/vaults/{vault_id}"),
+            json!({}),
+            Some(&admin_cookie),
+            None,
+        )
+        .await;
+        assert_eq!(
+            json_body(redeleted_detail).await["data"]["status"],
             "pending_delete"
         );
 

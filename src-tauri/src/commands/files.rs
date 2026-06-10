@@ -3,9 +3,8 @@ use crate::models::note::{ConflictInfo, NoteContent, NoteFile, WriteResult};
 use crate::state::AppState;
 use base64::Engine as _;
 use collab_core::{normalize_relative_path as normalize_core_relative_path, sha256_text};
-use regex::{Captures, Regex};
 use serde::{Deserialize, Serialize};
-use std::path::{Component, Path, PathBuf};
+use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 use tauri::State;
 use walkdir::WalkDir;
@@ -59,16 +58,7 @@ pub struct PathChangePreview {
     pub blocked_reason: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub struct FileReference {
-    pub referenced_relative_path: String,
-    pub source_relative_path: String,
-    pub source_document_type: String,
-    pub reference_kind: String,
-    pub display_label: Option<String>,
-    pub context: Option<String>,
-}
+pub use collab_core::references::FileReference;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
@@ -381,124 +371,11 @@ fn unique_target_path(base_dir: &Path, file_name: &str) -> PathBuf {
 }
 
 fn path_matches_or_descends(candidate: &str, target: &str) -> bool {
-    candidate == target || candidate.starts_with(&format!("{target}/"))
+    collab_core::references::path_matches_or_descends(candidate, target)
 }
 
 fn remap_path(candidate: &str, old_path: &str, new_path: &str) -> Option<String> {
-    if candidate == old_path {
-        return Some(new_path.to_string());
-    }
-    candidate
-        .strip_prefix(&format!("{old_path}/"))
-        .map(|suffix| format!("{new_path}/{suffix}"))
-}
-
-fn split_path_suffix(value: &str) -> (&str, &str) {
-    match value.find(['?', '#']) {
-        Some(index) => (&value[..index], &value[index..]),
-        None => (value, ""),
-    }
-}
-
-fn relative_path_from_dir(base_dir: &Path, target: &Path) -> String {
-    let base_parts: Vec<_> = base_dir
-        .components()
-        .filter_map(|component| match component {
-            Component::Normal(part) => Some(part.to_string_lossy().to_string()),
-            _ => None,
-        })
-        .collect();
-    let target_parts: Vec<_> = target
-        .components()
-        .filter_map(|component| match component {
-            Component::Normal(part) => Some(part.to_string_lossy().to_string()),
-            _ => None,
-        })
-        .collect();
-
-    let mut common = 0;
-    while common < base_parts.len()
-        && common < target_parts.len()
-        && base_parts[common] == target_parts[common]
-    {
-        common += 1;
-    }
-
-    let mut parts: Vec<String> = Vec::new();
-    for _ in common..base_parts.len() {
-        parts.push("..".into());
-    }
-    for part in target_parts.iter().skip(common) {
-        parts.push(part.clone());
-    }
-
-    if parts.is_empty() {
-        ".".into()
-    } else {
-        parts.join("/")
-    }
-}
-
-fn format_rewritten_target(note_relative_path: &str, original_target_path: &str, rewritten_path: &str, suffix: &str) -> String {
-    if original_target_path.starts_with('/') {
-        return format!("/{rewritten_path}{suffix}");
-    }
-
-    let note_dir = normalize_relative_path(note_relative_path)
-        .ok()
-        .and_then(|path| path.parent().map(|parent| parent.to_path_buf()))
-        .unwrap_or_default();
-    let relative = relative_path_from_dir(&note_dir, Path::new(rewritten_path));
-    format!("{relative}{suffix}")
-}
-
-fn rewrite_target_reference(
-    raw_target: &str,
-    note_relative_path: &str,
-    old_path: &str,
-    new_path: Option<&str>,
-) -> Option<Option<String>> {
-    let trimmed = raw_target.trim();
-    if trimmed.is_empty()
-        || trimmed.starts_with("data:")
-        || trimmed.starts_with("blob:")
-        || trimmed.starts_with("//")
-        || trimmed.contains("://")
-    {
-        return None;
-    }
-
-    let (path_part, suffix) = split_path_suffix(trimmed);
-    let resolved = if path_part.starts_with('/') {
-        normalize_relative_path(path_part).ok()?
-    } else {
-        let note_dir = note_relative_path
-            .rsplit_once('/')
-            .map(|(dir, _)| dir)
-            .unwrap_or("");
-        normalize_relative_path(
-            if note_dir.is_empty() {
-                path_part.to_string()
-            } else {
-                format!("{note_dir}/{path_part}")
-            }
-            .as_str(),
-        )
-        .ok()?
-    };
-
-    let resolved_str = resolved.to_string_lossy().replace('\\', "/");
-    if !path_matches_or_descends(&resolved_str, old_path) {
-        return None;
-    }
-
-    match new_path {
-      Some(next_path) => {
-        let rewritten = remap_path(&resolved_str, old_path, next_path)?;
-        Some(Some(format_rewritten_target(note_relative_path, path_part, &rewritten, suffix)))
-      }
-      None => Some(None),
-    }
+    collab_core::references::remap_path(candidate, old_path, new_path)
 }
 
 fn replace_markdown_references(
@@ -507,306 +384,27 @@ fn replace_markdown_references(
     old_path: &str,
     new_path: Option<&str>,
 ) -> String {
-    let image_md = Regex::new(r"!\[([^\]\n]*?)\]\(([^)\n]*?)\)").unwrap();
-    let image_wiki = Regex::new(r"!\[\[([^\]|]+?)(\|([^\]]+?))?\]\]").unwrap();
-    let link_md = Regex::new(r"\[([^\]\n]+?)\]\(([^)\n]*?)\)").unwrap();
-    let wiki = Regex::new(r"\[\[([^\]|]+?)(\|([^\]]+?))?\]\]").unwrap();
-
-    let content = image_md.replace_all(content, |caps: &Captures| {
-        match rewrite_target_reference(&caps[2], note_relative_path, old_path, new_path) {
-            Some(Some(next_target)) => format!("![{}]({next_target})", &caps[1]),
-            Some(None) => String::new(),
-            None => caps[0].to_string(),
-        }
-    });
-
-    let content = image_wiki.replace_all(&content, |caps: &Captures| {
-        match rewrite_target_reference(&caps[1], note_relative_path, old_path, new_path) {
-            Some(Some(next_target)) => {
-                if let Some(label) = caps.get(3) {
-                    format!("![[{next_target}|{}]]", label.as_str())
-                } else {
-                    format!("![[{next_target}]]")
-                }
-            }
-            Some(None) => String::new(),
-            None => caps[0].to_string(),
-        }
-    });
-
-    let content_string = content.into_owned();
-    let content = link_md.replace_all(&content_string, |caps: &Captures| {
-        let full = caps.get(0).map(|m| m.as_str()).unwrap_or_default();
-        if full.starts_with("![") {
-            return full.to_string();
-        }
-        match rewrite_target_reference(&caps[2], note_relative_path, old_path, new_path) {
-            Some(Some(next_target)) => format!("[{}]({next_target})", &caps[1]),
-            Some(None) => caps[1].to_string(),
-            None => full.to_string(),
-        }
-    });
-
-    let content_string = content.into_owned();
-    wiki.replace_all(&content_string, |caps: &Captures| {
-        let full = caps.get(0).map(|m| m.as_str()).unwrap_or_default();
-        if full.starts_with("![[") {
-            return full.to_string();
-        }
-        match rewrite_target_reference(&caps[1], note_relative_path, old_path, new_path) {
-            Some(Some(next_target)) => {
-                if let Some(label) = caps.get(3) {
-                    format!("[[{next_target}|{}]]", label.as_str())
-                } else {
-                    format!("[[{next_target}]]")
-                }
-            }
-            Some(None) => caps.get(3).map(|label| label.as_str().to_string()).unwrap_or_else(|| caps[1].to_string()),
-            None => full.to_string(),
-        }
-    }).into_owned()
+    collab_core::references::rewrite_note_references(content, note_relative_path, old_path, new_path)
 }
 
-#[derive(Debug, Clone)]
-struct VaultReferenceLookupEntry {
-    relative_path: String,
-    name: String,
-    title: String,
-    is_note: bool,
-}
+use collab_core::references::ReferenceLookupEntry;
 
-fn build_reference_lookup(entries: &[NoteFile]) -> Vec<VaultReferenceLookupEntry> {
-    entries
-        .iter()
-        .filter(|entry| !entry.is_folder)
-        .map(|entry| {
-            let name = entry.name.clone();
-            let title = Path::new(&entry.relative_path)
-                .file_stem()
-                .and_then(|stem| stem.to_str())
-                .unwrap_or(&name)
-                .to_string();
-            VaultReferenceLookupEntry {
-                relative_path: entry.relative_path.clone(),
-                name,
-                title,
-                is_note: entry.extension.eq_ignore_ascii_case("md"),
-            }
-        })
-        .collect()
-}
-
-fn resolve_vault_note_target_reference(
-    raw_target: &str,
-    note_relative_path: &str,
-) -> Option<String> {
-    let trimmed = raw_target.trim();
-    if trimmed.is_empty()
-        || trimmed.starts_with("data:")
-        || trimmed.starts_with("blob:")
-        || trimmed.starts_with("//")
-        || trimmed.contains("://")
-    {
-        return None;
-    }
-
-    let (path_part, _) = split_path_suffix(trimmed);
-    let resolved = if path_part.starts_with('/') {
-        normalize_relative_path(path_part).ok()?
-    } else {
-        let note_dir = note_relative_path
-            .rsplit_once('/')
-            .map(|(dir, _)| dir)
-            .unwrap_or("");
-        normalize_relative_path(
-            if note_dir.is_empty() {
-                path_part.to_string()
-            } else {
-                format!("{note_dir}/{path_part}")
-            }
-            .as_str(),
-        )
-        .ok()?
-    };
-
-    Some(resolved.to_string_lossy().replace('\\', "/"))
-}
-
-fn resolve_vault_wikilink_reference(
-    raw_target: &str,
-    note_relative_path: &str,
-    lookup: &[VaultReferenceLookupEntry],
-) -> Option<String> {
-    let trimmed = raw_target.trim();
-    if trimmed.is_empty() {
-        return None;
-    }
-
-    let normalized = normalize_relative_path(split_path_suffix(trimmed).0)
-        .ok()?
-        .to_string_lossy()
-        .replace('\\', "/");
-    let normalized_lower = normalized.to_ascii_lowercase();
-
-    if let Some(entry) = lookup
-        .iter()
-        .find(|entry| entry.relative_path.eq_ignore_ascii_case(&normalized))
-    {
-        return Some(entry.relative_path.clone());
-    }
-
-    if let Some(path_like) = resolve_vault_note_target_reference(trimmed, note_relative_path) {
-        if let Some(entry) = lookup
+fn build_reference_lookup(entries: &[NoteFile]) -> Vec<ReferenceLookupEntry> {
+    collab_core::references::build_reference_lookup(
+        entries
             .iter()
-            .find(|entry| entry.relative_path.eq_ignore_ascii_case(&path_like))
-        {
-            return Some(entry.relative_path.clone());
-        }
-    }
-
-    if let Some(entry) = lookup
-        .iter()
-        .find(|entry| entry.name.eq_ignore_ascii_case(&normalized))
-    {
-        return Some(entry.relative_path.clone());
-    }
-
-    if !normalized.contains('/') {
-        if let Some(entry) = lookup
-            .iter()
-            .find(|entry| entry.is_note && entry.name.eq_ignore_ascii_case(&normalized))
-        {
-            return Some(entry.relative_path.clone());
-        }
-    }
-
-    if !normalized.contains('/') && Path::new(&normalized).extension().is_none() {
-        if let Some(entry) = lookup
-            .iter()
-            .find(|entry| entry.is_note && entry.title.eq_ignore_ascii_case(&normalized_lower))
-        {
-            return Some(entry.relative_path.clone());
-        }
-
-        let matching_titles: Vec<_> = lookup
-            .iter()
-            .filter(|entry| entry.title.eq_ignore_ascii_case(&normalized_lower))
-            .collect();
-        if matching_titles.len() == 1 {
-            return Some(matching_titles[0].relative_path.clone());
-        }
-    }
-
-    None
-}
-
-fn snippet_for_reference_context(label: &str, target: &str) -> String {
-    if label.trim().is_empty() {
-        target.to_string()
-    } else {
-        format!("{label} -> {target}")
-    }
+            .filter(|entry| !entry.is_folder)
+            .map(|entry| entry.relative_path.as_str()),
+    )
 }
 
 fn collect_note_references(
     content: &str,
     note_relative_path: &str,
-    lookup: &[VaultReferenceLookupEntry],
+    lookup: &[ReferenceLookupEntry],
     target_path: &str,
 ) -> Vec<FileReference> {
-    let image_md = Regex::new(r"!\[([^\]\n]*?)\]\(([^)\n]*?)\)").unwrap();
-    let image_wiki = Regex::new(r"!\[\[([^\]|]+?)(\|([^\]]+?))?\]\]").unwrap();
-    let link_md = Regex::new(r"\[([^\]\n]+?)\]\(([^)\n]*?)\)").unwrap();
-    let wiki = Regex::new(r"\[\[([^\]|]+?)(\|([^\]]+?))?\]\]").unwrap();
-    let mut references = Vec::new();
-
-    for caps in image_md.captures_iter(content) {
-        let Some(resolved) = resolve_vault_note_target_reference(&caps[2], note_relative_path) else {
-            continue;
-        };
-        if !path_matches_or_descends(&resolved, target_path) {
-            continue;
-        }
-        let label = caps.get(1).map(|value| value.as_str().trim()).unwrap_or_default();
-        references.push(FileReference {
-            referenced_relative_path: resolved,
-            source_relative_path: note_relative_path.to_string(),
-            source_document_type: "note".into(),
-            reference_kind: "note-markdown-link".into(),
-            display_label: if label.is_empty() { None } else { Some(label.to_string()) },
-            context: Some(snippet_for_reference_context(label, &caps[2])),
-        });
-    }
-
-    for caps in image_wiki.captures_iter(content) {
-        let Some(resolved) = resolve_vault_wikilink_reference(&caps[1], note_relative_path, lookup) else {
-            continue;
-        };
-        if !path_matches_or_descends(&resolved, target_path) {
-            continue;
-        }
-        let label = caps.get(3).map(|value| value.as_str().trim()).unwrap_or_default();
-        references.push(FileReference {
-            referenced_relative_path: resolved,
-            source_relative_path: note_relative_path.to_string(),
-            source_document_type: "note".into(),
-            reference_kind: "note-wikilink".into(),
-            display_label: if label.is_empty() { Some(caps[1].to_string()) } else { Some(label.to_string()) },
-            context: Some(snippet_for_reference_context(
-                if label.is_empty() { &caps[1] } else { label },
-                &caps[1],
-            )),
-        });
-    }
-
-    for caps in link_md.captures_iter(content) {
-        let Some(full) = caps.get(0) else { continue; };
-        if full.as_str().starts_with("![") {
-            continue;
-        }
-        let Some(resolved) = resolve_vault_note_target_reference(&caps[2], note_relative_path) else {
-            continue;
-        };
-        if !path_matches_or_descends(&resolved, target_path) {
-            continue;
-        }
-        let label = caps.get(1).map(|value| value.as_str().trim()).unwrap_or_default();
-        references.push(FileReference {
-            referenced_relative_path: resolved,
-            source_relative_path: note_relative_path.to_string(),
-            source_document_type: "note".into(),
-            reference_kind: "note-markdown-link".into(),
-            display_label: if label.is_empty() { None } else { Some(label.to_string()) },
-            context: Some(snippet_for_reference_context(label, &caps[2])),
-        });
-    }
-
-    for caps in wiki.captures_iter(content) {
-        let Some(full) = caps.get(0) else { continue; };
-        if full.as_str().starts_with("![[") {
-            continue;
-        }
-        let Some(resolved) = resolve_vault_wikilink_reference(&caps[1], note_relative_path, lookup) else {
-            continue;
-        };
-        if !path_matches_or_descends(&resolved, target_path) {
-            continue;
-        }
-        let label = caps.get(3).map(|value| value.as_str().trim()).unwrap_or_default();
-        references.push(FileReference {
-            referenced_relative_path: resolved,
-            source_relative_path: note_relative_path.to_string(),
-            source_document_type: "note".into(),
-            reference_kind: "note-wikilink".into(),
-            display_label: if label.is_empty() { Some(caps[1].to_string()) } else { Some(label.to_string()) },
-            context: Some(snippet_for_reference_context(
-                if label.is_empty() { &caps[1] } else { label },
-                &caps[1],
-            )),
-        });
-    }
-
-    references
+    collab_core::references::collect_note_references(content, note_relative_path, lookup, target_path)
 }
 
 fn collect_kanban_file_references(
@@ -814,48 +412,8 @@ fn collect_kanban_file_references(
     source_relative_path: &str,
     target_path: &str,
 ) -> Result<Vec<FileReference>, String> {
-    let value: serde_json::Value = serde_json::from_str(content).map_err(|e| e.to_string())?;
-    let Some(columns) = value.get("columns").and_then(|columns| columns.as_array()) else {
-        return Ok(Vec::new());
-    };
-
-    let mut references = Vec::new();
-    for column in columns {
-        let column_title = column
-            .get("title")
-            .and_then(|value| value.as_str())
-            .unwrap_or("Column");
-        let Some(cards) = column.get("cards").and_then(|cards| cards.as_array()) else {
-            continue;
-        };
-        for card in cards {
-            let card_title = card
-                .get("title")
-                .and_then(|value| value.as_str())
-                .unwrap_or("Card");
-            let attachment_paths = card
-                .get("attachmentPaths")
-                .and_then(|paths| paths.as_array())
-                .map(|paths| paths.iter().filter_map(|value| value.as_str()).collect::<Vec<_>>())
-                .unwrap_or_default();
-
-            for attachment_path in attachment_paths {
-                if !path_matches_or_descends(attachment_path, target_path) {
-                    continue;
-                }
-                references.push(FileReference {
-                    referenced_relative_path: attachment_path.to_string(),
-                    source_relative_path: source_relative_path.to_string(),
-                    source_document_type: "kanban".into(),
-                    reference_kind: "kanban-attachment".into(),
-                    display_label: Some(card_title.to_string()),
-                    context: Some(column_title.to_string()),
-                });
-            }
-        }
-    }
-
-    Ok(references)
+    collab_core::references::collect_kanban_references(content, source_relative_path, target_path)
+        .map_err(|error| error.to_string())
 }
 
 fn collect_canvas_file_references(
@@ -863,47 +421,8 @@ fn collect_canvas_file_references(
     source_relative_path: &str,
     target_path: &str,
 ) -> Result<Vec<FileReference>, String> {
-    let value: serde_json::Value = serde_json::from_str(content).map_err(|e| e.to_string())?;
-    let Some(nodes) = value.get("nodes").and_then(|nodes| nodes.as_array()) else {
-        return Ok(Vec::new());
-    };
-
-    let mut references = Vec::new();
-    for node in nodes {
-        let Some(node_type) = node.get("type").and_then(|value| value.as_str()) else {
-            continue;
-        };
-        if !matches!(node_type, "file" | "note") {
-            continue;
-        }
-        let Some(relative_path) = node.get("relativePath").and_then(|value| value.as_str()) else {
-            continue;
-        };
-        if !path_matches_or_descends(relative_path, target_path) {
-            continue;
-        }
-        references.push(FileReference {
-            referenced_relative_path: relative_path.to_string(),
-            source_relative_path: source_relative_path.to_string(),
-            source_document_type: "canvas".into(),
-            reference_kind: if node_type == "note" {
-                "canvas-note-node".into()
-            } else {
-                "canvas-file-node".into()
-            },
-            display_label: node
-                .get("id")
-                .and_then(|value| value.as_str())
-                .map(|value| value.to_string()),
-            context: Some(if node_type == "note" {
-                "Note card".to_string()
-            } else {
-                "File card".to_string()
-            }),
-        });
-    }
-
-    Ok(references)
+    collab_core::references::collect_canvas_references(content, source_relative_path, target_path)
+        .map_err(|error| error.to_string())
 }
 
 fn list_file_references_inner(
@@ -949,95 +468,13 @@ fn list_file_references_inner(
 }
 
 fn rewrite_kanban_references(content: &str, old_path: &str, new_path: Option<&str>) -> Result<String, String> {
-    let mut value: serde_json::Value = serde_json::from_str(content).map_err(|e| e.to_string())?;
-    let Some(columns) = value.get_mut("columns").and_then(|columns| columns.as_array_mut()) else {
-        return Ok(content.to_string());
-    };
-
-    for column in columns {
-        let Some(cards) = column.get_mut("cards").and_then(|cards| cards.as_array_mut()) else {
-            continue;
-        };
-        for card in cards {
-            let Some(card_obj) = card.as_object_mut() else { continue; };
-
-            let mut remaining_paths: Vec<String> = card_obj
-                .get("attachmentPaths")
-                .and_then(|paths| paths.as_array())
-                .map(|paths| {
-                    paths.iter().filter_map(|value| value.as_str()).filter_map(|path| {
-                        if !path_matches_or_descends(path, old_path) {
-                            return Some(path.to_string());
-                        }
-                        new_path.and_then(|next_path| remap_path(path, old_path, next_path))
-                    }).collect()
-                })
-                .unwrap_or_default();
-
-            if let Some(path) = card_obj.get("relativePath").and_then(|value| value.as_str()) {
-                if !remaining_paths.iter().any(|candidate| candidate == path) && !path_matches_or_descends(path, old_path) {
-                    remaining_paths.push(path.to_string());
-                }
-            }
-
-            if remaining_paths.is_empty() {
-                card_obj.remove("attachmentPaths");
-                card_obj.remove("relativePath");
-            } else {
-                let primary = remaining_paths.first().cloned();
-                card_obj.insert(
-                    "attachmentPaths".into(),
-                    serde_json::Value::Array(remaining_paths.into_iter().map(serde_json::Value::String).collect()),
-                );
-                if let Some(primary_path) = primary {
-                    card_obj.insert("relativePath".into(), serde_json::Value::String(primary_path));
-                }
-            }
-        }
-    }
-
-    serde_json::to_string_pretty(&value).map_err(|e| e.to_string())
+    collab_core::references::rewrite_kanban_references(content, old_path, new_path)
+        .map_err(|error| error.to_string())
 }
 
 fn rewrite_canvas_references(content: &str, old_path: &str, new_path: Option<&str>) -> Result<String, String> {
-    let mut value: serde_json::Value = serde_json::from_str(content).map_err(|e| e.to_string())?;
-    let Some(nodes) = value.get_mut("nodes").and_then(|nodes| nodes.as_array_mut()) else {
-        return Ok(content.to_string());
-    };
-
-    let mut next_nodes = Vec::with_capacity(nodes.len());
-    for mut node in nodes.drain(..) {
-        let should_keep = if let Some(node_obj) = node.as_object_mut() {
-            let node_type = node_obj.get("type").and_then(|value| value.as_str()).unwrap_or_default();
-            if matches!(node_type, "file" | "note") {
-                if let Some(relative_path) = node_obj.get("relativePath").and_then(|value| value.as_str()) {
-                    if path_matches_or_descends(relative_path, old_path) {
-                        if let Some(next_path) = new_path.and_then(|next| remap_path(relative_path, old_path, next)) {
-                            node_obj.insert("relativePath".into(), serde_json::Value::String(next_path));
-                            true
-                        } else {
-                            false
-                        }
-                    } else {
-                        true
-                    }
-                } else {
-                    true
-                }
-            } else {
-                true
-            }
-        } else {
-            true
-        };
-
-        if should_keep {
-            next_nodes.push(node);
-        }
-    }
-    *nodes = next_nodes;
-
-    serde_json::to_string_pretty(&value).map_err(|e| e.to_string())
+    collab_core::references::rewrite_canvas_references(content, old_path, new_path)
+        .map_err(|error| error.to_string())
 }
 
 fn move_image_overlay_if_needed(vault_path: &str, old_path: &str, new_path: &str) -> Result<(), String> {
@@ -2268,7 +1705,7 @@ mod tests {
         is_allowed_extension, normalize_relative_path, overlay_relative_path, parse_data_url,
         pdf_sidecar_relative_path,
         list_trash_entries_inner, move_path_to_trash, preview_path_change_inner, purge_trashed_item_inner,
-        read_note_from_path, read_vault_bytes, relative_path_from_dir, remap_path,
+        read_note_from_path, read_vault_bytes, remap_path,
         replace_markdown_references, resolve_vault_path, rewrite_all_references,
         rewrite_canvas_references, rewrite_kanban_references, sanitize_file_name,
         should_skip_walk_entry, restore_trashed_item_inner, unique_target_path, write_note_to_path,
@@ -2370,7 +1807,10 @@ mod tests {
 
     #[test]
     fn relative_path_from_dir_builds_relative_targets() {
-        let relative = relative_path_from_dir(Path::new("Notes/Daily"), Path::new("Pictures/image.png"));
+        let relative = collab_core::references::relative_path_from_dir(
+            Path::new("Notes/Daily"),
+            Path::new("Pictures/image.png"),
+        );
         assert_eq!(relative, "../../Pictures/image.png");
     }
 

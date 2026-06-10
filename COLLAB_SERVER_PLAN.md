@@ -15,7 +15,7 @@ This document is the source of truth for implementation progress. Update task ch
 | 0. Architecture and prerequisites | Complete | 100% |
 | 1. Server foundation and Compose | Complete | 100% |
 | 2. Authentication and administration | Complete | 100% |
-| 3. Hosted vault storage and permissions | In progress | 59% |
+| 3. Hosted vault storage and permissions | In progress | 72% |
 | 4. Native hosted-vault client | Not started | 0% |
 | 5. Live collaboration | Not started | 0% |
 | 6. Full offline synchronization | Not started | 0% |
@@ -203,10 +203,10 @@ surface before hosted vault mutations are exposed.
 - [x] Implement binary-asset upload, download, deduplication, and integrity checks.
 - [x] Implement create, rename, move, trash, restore, and purge operations.
 - [x] Implement server-side path normalization and traversal protection.
-- [ ] Implement reference-impact previews and reference rewrites.
+- [x] Implement reference-impact previews and reference rewrites.
 - [x] Implement snapshots, history listing, comparison inputs, and restore.
 - [x] Implement vault activity events.
-- [ ] Expand the admin web interface from read-only vault inventory to vault details, member management, archive/delete controls, storage usage, and activity views.
+- [x] Expand the admin web interface from read-only vault inventory to vault details, member management, archive/delete controls, storage usage, and activity views.
 - [ ] Implement hosted search and note indexing.
 - [ ] Implement local-vault ZIP import into hosted storage.
 - [ ] Implement hosted-vault export compatible with the existing local layout.
@@ -400,3 +400,5 @@ Add one entry whenever a meaningful server milestone lands.
 | 2026-06-10 | Phase 3 assets and structural operations | Added bounded integrity-checked binary uploads, authenticated raw downloads, blob deduplication, idempotent stable-ID rename/move/trash/restore/purge operations, manifest conflict detection, and admin-only purge | Rust checks and live PostgreSQL lifecycle coverage for hash rejection, asset deduplication/download, idempotency, stale-manifest conflicts, stable-ID moves, trash/restore, and purge authorization | Implement snapshots/history restore and reference-impact previews/rewrites |
 | 2026-06-10 | Phase 3 snapshots and history restore | Added labeled snapshots over immutable revisions, viewer-readable snapshot/history lists and historical text comparison inputs, and optimistic snapshot restore as a new revision | Rust checks and live PostgreSQL lifecycle coverage for historical reads, snapshot creation/listing, viewer mutation denial, stale restore rejection, restored content, and revision/manifest sequencing | Implement reference-impact previews and reference rewrites |
 | 2026-06-10 | Admin web visual refresh | Reworked the administration interface around shadcn-style primitives and shared Collab tokens; added persisted dark, midnight, warm, and light themes, accent selection, and compact density settings | Admin component tests, settings persistence coverage, TypeScript checks, and production admin build | Continue Phase 3 server and administration features |
+| 2026-06-10 | Phase 3 reference previews and rewrites | Moved note/kanban/canvas reference analysis and rewriting into shared `collab_core::references` (Tauri backend now delegates to it), added viewer-readable hosted file-reference listings, non-mutating role-checked structural-operation previews with blocked reasons and impact lists, and transactional reference rewrites with new revisions and activity on rename/move plus opt-in removal on trash | `cargo test --workspace` (133 tests) including the live PostgreSQL lifecycle with reference listing, preview, rewrite, replay, and viewer-denial coverage; `cargo check --workspace` | Expand the admin web vault management views and implement hosted search and note indexing |
+| 2026-06-10 | Phase 3 admin vault management | Added operator-authority `/api/v1/admin/vaults/{vaultId}` detail, lifecycle (archive/reactivate/restore/pending-delete), owner-protected member management, and activity endpoints with audit plus `byServerAdmin` activity records, and expanded the admin web vault inventory into a full detail view with storage usage, member role controls, lifecycle actions, and activity | Live PostgreSQL lifecycle coverage for admin detail/lifecycle/member/activity flows incl. non-admin denial and pending-delete guards; admin-web component tests (14), TypeScript check, production admin build, `cargo test --workspace` | Implement hosted search and note indexing |
