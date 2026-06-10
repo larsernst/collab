@@ -96,6 +96,15 @@ The owner is a distinguished user and always has administrative permissions. Own
 
 The server checks permissions for every REST mutation and every WebSocket subscription or update. UI checks are advisory only.
 
+Server administrators sit above the vault role hierarchy. An active server
+administrator can discover, read, download, import/export, and perform
+admin-level content operations in every hosted vault without receiving a vault
+membership. This implicit operator access does not make the server
+administrator the vault owner and does not bypass the protected owner
+membership; server-operator lifecycle and membership actions remain auditable
+through `/api/v1/admin/vaults`, while content mutations record normal vault
+activity with the acting server administrator.
+
 Phase 3 REST role enforcement is covered as a server-side endpoint matrix:
 viewers may use read, search, history, reference, and storage endpoints but are
 rejected by every mutation family; editors may perform content and structural

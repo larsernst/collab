@@ -1,6 +1,6 @@
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { App } from './App';
+import { App, fileToBase64, isSelectedFile } from './App';
 import { serverApi } from './api';
 
 vi.mock('./api', () => ({
@@ -32,6 +32,11 @@ vi.mock('./api', () => ({
     removeVaultMember: vi.fn(),
     vaultActivity: vi.fn(),
     vaultStorage: vi.fn(),
+    vaultFiles: vi.fn(),
+    fileRevisions: vi.fn(),
+    downloadFile: vi.fn(),
+    moveFile: vi.fn(),
+    restoreFileRevision: vi.fn(),
     importVault: vi.fn(),
     exportVault: vi.fn(),
     auditEvents: vi.fn(),
@@ -101,6 +106,8 @@ describe('admin application', () => {
       revisionCount: 0,
       snapshotCount: 0,
     });
+    vi.mocked(serverApi.vaultFiles).mockResolvedValue({ vaultId: 'vault-1', sequence: 0, files: [] });
+    vi.mocked(serverApi.fileRevisions).mockResolvedValue([]);
   });
 
   afterEach(() => {
@@ -329,6 +336,83 @@ describe('admin application', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Export ZIP' }));
     await waitFor(() => expect(serverApi.exportVault).toHaveBeenCalledWith('vault-1'));
     expect(URL.createObjectURL).toHaveBeenCalled();
+  });
+
+  it('validates and encodes selected ZIP browser files', async () => {
+    const archive = new window.File([new Uint8Array([80, 75])], 'vault.zip', { type: 'application/zip' });
+    Object.defineProperty(archive, 'arrayBuffer', {
+      value: vi.fn().mockResolvedValue(new Uint8Array([80, 75]).buffer),
+    });
+
+    expect(isSelectedFile(archive)).toBe(true);
+    expect(await fileToBase64(archive)).toBe('UEs=');
+  });
+
+  it('browses, moves, downloads, and restores hosted vault files', async () => {
+    vi.stubGlobal('crypto', { randomUUID: () => 'operation-1' });
+    vi.stubGlobal('URL', { createObjectURL: vi.fn(() => 'blob:file'), revokeObjectURL: vi.fn() });
+    vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => undefined);
+    vi.mocked(serverApi.bootstrapStatus).mockResolvedValue({ required: false });
+    vi.mocked(serverApi.me).mockResolvedValue(admin);
+    vi.mocked(serverApi.users).mockResolvedValue([admin]);
+    vi.mocked(serverApi.vaults).mockResolvedValue([{
+      id: 'vault-1', name: 'Team Vault', ownerDisplayName: 'Other Owner', status: 'active',
+      members: 1, storageBytes: 12, updatedAt: '2026-06-10T00:00:00Z',
+    }]);
+    vi.mocked(serverApi.vaultDetail).mockResolvedValue({
+      id: 'vault-1', name: 'Team Vault', ownerUserId: 'owner-1', ownerUsername: 'owner',
+      ownerDisplayName: 'Other Owner', status: 'active', manifestSequence: 4, members: 1,
+      activeFiles: 2, trashedFiles: 0, storageBytes: 12,
+      createdAt: '2026-06-09T00:00:00Z', updatedAt: '2026-06-10T00:00:00Z',
+    });
+    vi.mocked(serverApi.vaultMembers).mockResolvedValue([]);
+    vi.mocked(serverApi.vaultActivity).mockResolvedValue([]);
+    const currentRevision = { id: 'revision-2', sequence: 2, contentHash: 'hash-2', sizeBytes: 12, createdByDisplayName: 'Owner', createdAt: '2026-06-10T00:00:00Z' };
+    vi.mocked(serverApi.vaultFiles).mockResolvedValue({
+      vaultId: 'vault-1',
+      sequence: 4,
+      files: [
+        { id: 'folder-1', parentId: null, name: 'Notes', relativePath: 'Notes', kind: 'folder', documentType: null, state: 'active', currentRevision: null, createdAt: '2026-06-09T00:00:00Z', updatedAt: '2026-06-10T00:00:00Z' },
+        { id: 'file-1', parentId: 'folder-1', name: 'Test.md', relativePath: 'Notes/Test.md', kind: 'document', documentType: 'note', state: 'active', currentRevision, createdAt: '2026-06-09T00:00:00Z', updatedAt: '2026-06-10T00:00:00Z' },
+      ],
+    });
+    vi.mocked(serverApi.fileRevisions).mockResolvedValue([
+      currentRevision,
+      { ...currentRevision, id: 'revision-1', sequence: 1, contentHash: 'hash-1', sizeBytes: 8 },
+    ]);
+    vi.mocked(serverApi.downloadFile).mockResolvedValue(new Blob(['file']));
+    vi.mocked(serverApi.moveFile).mockResolvedValue({ resultManifestSequence: 5 });
+    vi.mocked(serverApi.restoreFileRevision).mockResolvedValue({});
+
+    render(<App />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Vaults' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Manage Team Vault' }));
+    expect(await screen.findByRole('button', { name: 'Notes' })).toBeTruthy();
+    expect(screen.queryByText('Test.md')).toBeNull();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Notes' }));
+    expect(await screen.findByText('Test.md')).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Vault root' })).toBeTruthy();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Vault root' }));
+    fireEvent.change(screen.getByLabelText('Search vault files'), { target: { value: 'test.md' } });
+    expect(await screen.findByText('Notes/Test.md')).toBeTruthy();
+    expect(screen.getByText('1 matches across the vault')).toBeTruthy();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Download Notes/Test.md' }));
+    await waitFor(() => expect(serverApi.downloadFile).toHaveBeenCalledWith('vault-1', 'file-1'));
+
+    fireEvent.click(screen.getByRole('button', { name: 'Move Notes/Test.md' }));
+    const moveDialog = await screen.findByRole('dialog', { name: 'Move Test.md' });
+    fireEvent.click(within(moveDialog).getByRole('button', { name: 'Move' }));
+    await waitFor(() => expect(serverApi.moveFile).toHaveBeenCalledWith('vault-1', expect.objectContaining({
+      operationType: 'move', targetFileId: 'file-1', parentId: 'folder-1',
+    })));
+
+    fireEvent.click(screen.getByRole('button', { name: 'History Notes/Test.md' }));
+    expect(await screen.findByText('Revision 1')).toBeTruthy();
+    fireEvent.click(screen.getAllByRole('button', { name: 'Restore' })[1]);
+    await waitFor(() => expect(serverApi.restoreFileRevision).toHaveBeenCalledWith('vault-1', 'file-1', 'revision-1', 2));
   });
 
   it('adds vault members and protects owner and pending-delete vaults', async () => {

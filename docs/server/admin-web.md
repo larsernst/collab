@@ -32,9 +32,11 @@ also create new hosted vaults through `POST /api/v1/vaults`, making the
 creating administrator the vault owner. Member mutations are disabled while a
 vault is pending deletion. The vault detail view also exposes detailed logical
 storage accounting plus bounded ZIP import for empty active vaults and ZIP
-export. Import/export retains vault-admin authorization; a server operator who
-is not a vault member can add themselves as an administrator before transferring
-content.
+export. Server administrators have implicit operator access to every hosted
+vault without being added as vault members. The vault detail view includes a
+file browser with path, kind, size, modified time, and state information plus
+single-file download, move, document revision history, and restore-as-new-
+revision actions.
 
 ## Purpose
 

@@ -613,14 +613,15 @@ pub async fn list_vaults(
     let rows = sqlx::query(
         r#"
         SELECT v.id, v.name, v.owner_user_id, owner.display_name AS owner_display_name,
-               m.role::text AS role, v.status::text AS status, v.manifest_sequence,
+               COALESCE(m.role::text, 'admin') AS role, v.status::text AS status, v.manifest_sequence,
                v.created_at, v.updated_at,
                (SELECT COUNT(*) FROM hosted_vault_memberships members WHERE members.vault_id = v.id) AS members,
                COALESCE((SELECT SUM(r.size_bytes) FROM hosted_file_revisions r WHERE r.vault_id = v.id), 0)::bigint AS storage_bytes
         FROM hosted_vaults v
-        JOIN hosted_vault_memberships m ON m.vault_id = v.id
+        JOIN users actor ON actor.id = $1
+        LEFT JOIN hosted_vault_memberships m ON m.vault_id = v.id AND m.user_id = actor.id
         JOIN users owner ON owner.id = v.owner_user_id
-        WHERE m.user_id = $1
+        WHERE m.user_id IS NOT NULL OR actor.role = 'admin'
         ORDER BY v.updated_at DESC
         "#,
     )
@@ -1349,6 +1350,116 @@ pub async fn get_text_revision(
     Ok(Json(DataResponse::new(
         load_text_revision_content(&state, vault_id, file_id, revision_id, &request_id).await?,
     )))
+}
+
+pub async fn restore_file_revision(
+    State(state): State<AppState>,
+    Extension(request_id): Extension<String>,
+    headers: HeaderMap,
+    Path((vault_id, file_id, source_revision_id)): Path<(Uuid, Uuid, Uuid)>,
+    Json(payload): Json<RestoreSnapshotRequest>,
+) -> Result<(StatusCode, Json<DataResponse<HostedTextDocument>>), ApiFailure> {
+    let actor = require_any_user(&state, &headers, &request_id).await?;
+    require_active_vault_role(
+        &state.database,
+        vault_id,
+        &actor.user,
+        HostedVaultRole::Editor,
+        &request_id,
+    )
+    .await?;
+    let actor_id = user_uuid(&actor.user);
+    let revision_id = Uuid::now_v7();
+    let mut transaction = state
+        .database
+        .begin()
+        .await
+        .map_err(|_| ApiFailure::server(request_id.clone()))?;
+    lock_active_vault(&mut transaction, vault_id, &request_id).await?;
+    let current = sqlx::query(
+        r#"
+        SELECT f.kind::text AS kind, f.state::text AS state, current.sequence,
+               source.blob_digest, source.content_hash, source.size_bytes
+        FROM hosted_file_entries f
+        LEFT JOIN hosted_file_revisions current ON current.id = f.current_revision_id
+        JOIN hosted_file_revisions source
+          ON source.vault_id = f.vault_id AND source.file_id = f.id AND source.id = $3
+        WHERE f.vault_id = $1 AND f.id = $2
+        FOR UPDATE OF f
+        "#,
+    )
+    .bind(vault_id)
+    .bind(file_id)
+    .bind(source_revision_id)
+    .fetch_optional(&mut *transaction)
+    .await
+    .map_err(|_| ApiFailure::server(request_id.clone()))?
+    .ok_or_else(|| ApiFailure::not_found(request_id.clone()))?;
+    if current.get::<String, _>("kind") != "document"
+        || current.get::<String, _>("state") != "active"
+    {
+        return Err(ApiFailure::validation(
+            "Only active text documents can restore previous revisions.",
+            request_id,
+        ));
+    }
+    let current_sequence = current.get::<Option<i64>, _>("sequence").unwrap_or(0);
+    if current_sequence != payload.expected_revision_sequence {
+        return Err(ApiFailure::revision_conflict(request_id));
+    }
+    let next_sequence = current_sequence + 1;
+    sqlx::query(
+        "INSERT INTO hosted_file_revisions (id, vault_id, file_id, sequence, blob_digest, content_hash, size_bytes, created_by) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
+    )
+    .bind(revision_id)
+    .bind(vault_id)
+    .bind(file_id)
+    .bind(next_sequence)
+    .bind(current.get::<String, _>("blob_digest"))
+    .bind(current.get::<String, _>("content_hash"))
+    .bind(current.get::<i64, _>("size_bytes"))
+    .bind(actor_id)
+    .execute(&mut *transaction)
+    .await
+    .map_err(|_| ApiFailure::server(request_id.clone()))?;
+    sqlx::query(
+        "UPDATE hosted_file_entries SET current_revision_id = $1, updated_at = NOW() WHERE id = $2",
+    )
+    .bind(revision_id)
+    .bind(file_id)
+    .execute(&mut *transaction)
+    .await
+    .map_err(|_| ApiFailure::server(request_id.clone()))?;
+    increment_manifest(&mut transaction, vault_id, &request_id).await?;
+    vault_activity_event(
+        &mut transaction,
+        vault_id,
+        Some(actor_id),
+        "file.revision_restored",
+        Some("file"),
+        Some(&file_id.to_string()),
+        json!({"sourceRevisionId": source_revision_id, "revisionSequence": next_sequence}),
+        &request_id,
+    )
+    .await?;
+    transaction
+        .commit()
+        .await
+        .map_err(|_| ApiFailure::server(request_id.clone()))?;
+    let file = load_vault_file_entry(&state.database, vault_id, file_id, &request_id).await?;
+    let content = load_blob_text(
+        &state,
+        file.current_revision
+            .as_ref()
+            .map(|revision| revision.content_hash.as_str())
+            .ok_or_else(|| ApiFailure::not_found(request_id.clone()))?,
+        &request_id,
+    )
+    .await?;
+    Ok((
+        StatusCode::CREATED,
+        Json(DataResponse::new(HostedTextDocument { file, content })),
+    ))
 }
 
 pub async fn list_file_snapshots(
@@ -3917,10 +4028,12 @@ async fn require_vault_access(
 ) -> Result<VaultAccess, ApiFailure> {
     let row = sqlx::query(
         r#"
-        SELECT m.role::text AS role, v.owner_user_id = $2 AS owner, v.status::text AS status
+        SELECT COALESCE(m.role::text, 'admin') AS role,
+               v.owner_user_id = $2 AS owner, v.status::text AS status
         FROM hosted_vaults v
-        JOIN hosted_vault_memberships m ON m.vault_id = v.id
-        WHERE v.id = $1 AND m.user_id = $2
+        JOIN users u ON u.id = $2
+        LEFT JOIN hosted_vault_memberships m ON m.vault_id = v.id AND m.user_id = u.id
+        WHERE v.id = $1 AND (m.user_id IS NOT NULL OR u.role = 'admin')
         "#,
     )
     .bind(vault_id)
@@ -3984,14 +4097,15 @@ async fn load_vault(
     let row = sqlx::query(
         r#"
         SELECT v.id, v.name, v.owner_user_id, owner.display_name AS owner_display_name,
-               m.role::text AS role, v.status::text AS status, v.manifest_sequence,
+               COALESCE(m.role::text, 'admin') AS role, v.status::text AS status, v.manifest_sequence,
                v.created_at, v.updated_at,
                (SELECT COUNT(*) FROM hosted_vault_memberships members WHERE members.vault_id = v.id) AS members,
                COALESCE((SELECT SUM(r.size_bytes) FROM hosted_file_revisions r WHERE r.vault_id = v.id), 0)::bigint AS storage_bytes
         FROM hosted_vaults v
-        JOIN hosted_vault_memberships m ON m.vault_id = v.id
+        JOIN users actor ON actor.id = $2
+        LEFT JOIN hosted_vault_memberships m ON m.vault_id = v.id AND m.user_id = actor.id
         JOIN users owner ON owner.id = v.owner_user_id
-        WHERE v.id = $1 AND m.user_id = $2
+        WHERE v.id = $1 AND (m.user_id IS NOT NULL OR actor.role = 'admin')
         "#,
     )
     .bind(vault_id)
@@ -6035,6 +6149,7 @@ mod tests {
         )
         .await;
         assert_eq!(new_password.status(), StatusCode::OK);
+        let (invited_cookie, invited_csrf) = session_cookies(&new_password);
 
         let native_login = request(
             &app,
@@ -6159,6 +6274,136 @@ mod tests {
         )
         .await;
         assert_eq!(forbidden_overview.status(), StatusCode::FORBIDDEN);
+
+        let member_owned_vault = request(
+            &app,
+            "POST",
+            "/api/v1/vaults",
+            json!({"name": "Member Owned Vault"}),
+            Some(&invited_cookie),
+            Some(&invited_csrf),
+        )
+        .await;
+        assert_eq!(member_owned_vault.status(), StatusCode::CREATED);
+        let member_owned_vault_id = json_body(member_owned_vault).await["data"]["id"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        let operator_document = request(
+            &app,
+            "POST",
+            &format!("/api/v1/vaults/{member_owned_vault_id}/files"),
+            json!({
+                "name": "Operator.md",
+                "kind": "document",
+                "documentType": "note",
+                "content": "original"
+            }),
+            Some(&admin_cookie),
+            Some(&admin_csrf),
+        )
+        .await;
+        assert_eq!(operator_document.status(), StatusCode::CREATED);
+        let operator_document_body = json_body(operator_document).await;
+        let operator_document_id = operator_document_body["data"]["id"].as_str().unwrap();
+        let original_operator_revision_id = operator_document_body["data"]["currentRevision"]["id"]
+            .as_str()
+            .unwrap();
+        let operator_write = request(
+            &app,
+            "POST",
+            &format!(
+                "/api/v1/vaults/{member_owned_vault_id}/files/{operator_document_id}/revisions"
+            ),
+            json!({"expectedRevisionSequence": 1, "content": "updated"}),
+            Some(&admin_cookie),
+            Some(&admin_csrf),
+        )
+        .await;
+        assert_eq!(operator_write.status(), StatusCode::CREATED);
+        let operator_restore = request(
+            &app,
+            "POST",
+            &format!(
+                "/api/v1/vaults/{member_owned_vault_id}/files/{operator_document_id}/revisions/{original_operator_revision_id}"
+            ),
+            json!({"expectedRevisionSequence": 2}),
+            Some(&admin_cookie),
+            Some(&admin_csrf),
+        )
+        .await;
+        assert_eq!(operator_restore.status(), StatusCode::CREATED);
+        let operator_restore_body = json_body(operator_restore).await;
+        assert_eq!(operator_restore_body["data"]["content"], "original");
+        assert_eq!(
+            operator_restore_body["data"]["file"]["currentRevision"]["sequence"],
+            3
+        );
+        let member_owned_manifest = request(
+            &app,
+            "GET",
+            &format!("/api/v1/vaults/{member_owned_vault_id}/manifest"),
+            json!({}),
+            Some(&admin_cookie),
+            None,
+        )
+        .await;
+        assert_eq!(member_owned_manifest.status(), StatusCode::OK);
+        let operator_folder = request(
+            &app,
+            "POST",
+            &format!("/api/v1/vaults/{member_owned_vault_id}/files"),
+            json!({"name": "Moved", "kind": "folder", "content": ""}),
+            Some(&admin_cookie),
+            Some(&admin_csrf),
+        )
+        .await;
+        assert_eq!(operator_folder.status(), StatusCode::CREATED);
+        let operator_folder_id = json_body(operator_folder).await["data"]["id"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        let operator_move = request(
+            &app,
+            "POST",
+            &format!("/api/v1/vaults/{member_owned_vault_id}/operations"),
+            json!({
+                "clientOperationId": Uuid::now_v7(),
+                "baseManifestSequence": 4,
+                "operationType": "move",
+                "targetFileId": operator_document_id,
+                "parentId": operator_folder_id
+            }),
+            Some(&admin_cookie),
+            Some(&admin_csrf),
+        )
+        .await;
+        assert_eq!(operator_move.status(), StatusCode::OK);
+        let operator_download = request(
+            &app,
+            "GET",
+            &format!("/api/v1/vaults/{member_owned_vault_id}/files/{operator_document_id}/content"),
+            json!({}),
+            Some(&admin_cookie),
+            None,
+        )
+        .await;
+        assert_eq!(operator_download.status(), StatusCode::OK);
+        assert_eq!(response_bytes(operator_download).await, b"original");
+        let admin_all_vaults = request(
+            &app,
+            "GET",
+            "/api/v1/vaults",
+            json!({}),
+            Some(&admin_cookie),
+            None,
+        )
+        .await;
+        assert!(json_body(admin_all_vaults).await["data"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|vault| vault["id"] == member_owned_vault_id));
 
         let vault = request(
             &app,
@@ -6729,7 +6974,7 @@ mod tests {
             .fetch_one(&pool)
             .await
             .unwrap();
-        assert_eq!(blob_count, 3);
+        assert_eq!(blob_count, 5);
 
         let downloaded = request(
             &app,

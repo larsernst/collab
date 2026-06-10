@@ -116,7 +116,7 @@ pub fn build_router(state: AppState) -> Router {
         )
         .route(
             "/api/v1/vaults/{vault_id}/files/{file_id}/revisions/{revision_id}",
-            get(api::get_text_revision),
+            get(api::get_text_revision).post(api::restore_file_revision),
         )
         .route(
             "/api/v1/vaults/{vault_id}/files/{file_id}/snapshots",

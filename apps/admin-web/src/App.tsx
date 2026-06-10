@@ -2,13 +2,19 @@ import {
   Activity,
   Boxes,
   CircleAlert,
+  ChevronRight,
   Database,
   Download,
+  File as FileIcon,
+  Folder,
+  FolderOpen,
   Gauge,
   KeyRound,
   LogOut,
+  Move as MoveIcon,
   Plus,
   RefreshCw,
+  Search,
   Server,
   Settings,
   ShieldCheck,
@@ -16,7 +22,7 @@ import {
   Upload,
   Users,
 } from 'lucide-react';
-import { FormEvent, useCallback, useEffect, useState } from 'react';
+import { FormEvent, useCallback, useEffect, useMemo, useState } from 'react';
 import { serverApi } from './api';
 import { useAdminAppearance, type AdminAccent, type AdminTheme } from './theme';
 import type {
@@ -24,6 +30,8 @@ import type {
   AuditEvent,
   HostedVaultActivityEvent,
   HostedVaultAdminDetail,
+  HostedFileEntry,
+  HostedFileRevision,
   HostedVaultMember,
   HostedVaultStorage,
   HostedVaultSummary,
@@ -33,6 +41,19 @@ import type {
 import { Badge, Button, Card, Checkbox, ConfirmDialog, Input, PromptDialog, SelectMenu, Separator, Switch } from './ui';
 
 type View = 'dashboard' | 'users' | 'vaults' | 'audit' | 'settings';
+
+export function isSelectedFile(value: FormDataEntryValue | null): value is File {
+  return value instanceof globalThis.File && value.size > 0;
+}
+
+export async function fileToBase64(file: File) {
+  const bytes = new Uint8Array(await file.arrayBuffer());
+  let binary = '';
+  for (let offset = 0; offset < bytes.length; offset += 32_768) {
+    binary += String.fromCharCode(...bytes.subarray(offset, offset + 32_768));
+  }
+  return btoa(binary);
+}
 
 export function App() {
   const invitationToken = new URLSearchParams(window.location.search).get('invite');
@@ -441,6 +462,14 @@ function VaultDetailPage({ vaultId, onBack }: { vaultId: string; onBack: () => v
   const [members, setMembers] = useState<HostedVaultMember[]>([]);
   const [activity, setActivity] = useState<HostedVaultActivityEvent[]>([]);
   const [storage, setStorage] = useState<HostedVaultStorage | null>(null);
+  const [files, setFiles] = useState<HostedFileEntry[]>([]);
+  const [manifestSequence, setManifestSequence] = useState(0);
+  const [currentFolderId, setCurrentFolderId] = useState<string | null>(null);
+  const [fileSearch, setFileSearch] = useState('');
+  const [historyFile, setHistoryFile] = useState<HostedFileEntry | null>(null);
+  const [revisions, setRevisions] = useState<HostedFileRevision[]>([]);
+  const [moveFile, setMoveFile] = useState<HostedFileEntry | null>(null);
+  const [moveParentId, setMoveParentId] = useState('');
   const [users, setUsers] = useState<ServerUser[]>([]);
   const [newMemberId, setNewMemberId] = useState('');
   const [newMemberRole, setNewMemberRole] = useState('viewer');
@@ -456,18 +485,21 @@ function VaultDetailPage({ vaultId, onBack }: { vaultId: string; onBack: () => v
   const load = useCallback(async () => {
     setError('');
     try {
-      const [nextDetail, nextMembers, nextActivity, nextUsers, nextStorage] = await Promise.all([
+      const [nextDetail, nextMembers, nextActivity, nextUsers, nextStorage, nextManifest] = await Promise.all([
         serverApi.vaultDetail(vaultId),
         serverApi.vaultMembers(vaultId),
         serverApi.vaultActivity(vaultId),
         serverApi.users(),
         serverApi.vaultStorage(vaultId).catch(() => null),
+        serverApi.vaultFiles(vaultId),
       ]);
       setDetail(nextDetail);
       setMembers(nextMembers);
       setActivity(nextActivity);
       setUsers(nextUsers);
       setStorage(nextStorage);
+      setFiles(nextManifest.files);
+      setManifestSequence(nextManifest.sequence);
     } catch (reason) {
       setError(String(reason));
     }
@@ -498,18 +530,14 @@ function VaultDetailPage({ vaultId, onBack }: { vaultId: string; onBack: () => v
 
   async function importVault(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    const file = new FormData(event.currentTarget).get('archive');
-    if (!(file instanceof File) || file.size === 0) return;
+    const form = event.currentTarget;
+    const file = new FormData(form).get('archive');
+    if (!isSelectedFile(file)) return;
     setImporting(true);
     setError('');
     try {
-      const bytes = new Uint8Array(await file.arrayBuffer());
-      let binary = '';
-      for (let offset = 0; offset < bytes.length; offset += 32_768) {
-        binary += String.fromCharCode(...bytes.subarray(offset, offset + 32_768));
-      }
-      await serverApi.importVault(vaultId, btoa(binary));
-      event.currentTarget.reset();
+      await serverApi.importVault(vaultId, await fileToBase64(file));
+      form.reset();
       await load();
     } catch (reason) {
       setError(String(reason));
@@ -531,6 +559,74 @@ function VaultDetailPage({ vaultId, onBack }: { vaultId: string; onBack: () => v
     } catch (reason) {
       setError(String(reason));
     }
+  }
+
+  async function downloadFile(file: HostedFileEntry) {
+    setError('');
+    try {
+      const blob = await serverApi.downloadFile(vaultId, file.id);
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = file.name;
+      link.click();
+      URL.revokeObjectURL(url);
+    } catch (reason) {
+      setError(String(reason));
+    }
+  }
+
+  async function showHistory(file: HostedFileEntry) {
+    setError('');
+    try {
+      setHistoryFile(file);
+      setRevisions(await serverApi.fileRevisions(vaultId, file.id));
+    } catch (reason) {
+      setError(String(reason));
+    }
+  }
+
+  async function moveSelectedFile(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!moveFile) return;
+    await run(() => serverApi.moveFile(vaultId, {
+      clientOperationId: crypto.randomUUID(),
+      baseManifestSequence: manifestSequence,
+      operationType: 'move',
+      targetFileId: moveFile.id,
+      parentId: moveParentId || null,
+    }));
+    setMoveFile(null);
+    setMoveParentId('');
+  }
+
+  const filesById = useMemo(() => new Map(files.map((file) => [file.id, file])), [files]);
+  const currentFolder = currentFolderId ? filesById.get(currentFolderId) : null;
+  const breadcrumbs = useMemo(() => {
+    const folders: HostedFileEntry[] = [];
+    let folder = currentFolder;
+    while (folder) {
+      folders.unshift(folder);
+      folder = folder.parentId ? filesById.get(folder.parentId) : undefined;
+    }
+    return folders;
+  }, [currentFolder, filesById]);
+  const normalizedSearch = fileSearch.trim().toLocaleLowerCase();
+  const visibleFiles = useMemo(() => {
+    const matching = normalizedSearch
+      ? files.filter((file) => file.relativePath.toLocaleLowerCase().includes(normalizedSearch))
+      : files.filter((file) => file.parentId === currentFolderId);
+    return [...matching].sort((left, right) => {
+      if (left.kind === 'folder' && right.kind !== 'folder') return -1;
+      if (left.kind !== 'folder' && right.kind === 'folder') return 1;
+      return left.name.localeCompare(right.name, undefined, { sensitivity: 'base' });
+    });
+  }, [currentFolderId, files, normalizedSearch]);
+
+  function openFolder(folderId: string | null) {
+    setCurrentFolderId(folderId);
+    setFileSearch('');
+    setHistoryFile(null);
   }
 
   const pendingDelete = detail?.status === 'pending_delete';
@@ -593,8 +689,87 @@ function VaultDetailPage({ vaultId, onBack }: { vaultId: string; onBack: () => v
             </form>
             <Button variant="outline" size="sm" onClick={() => void exportVault()} disabled={detail.status === 'pending_delete'}><Download size={16} />Export ZIP</Button>
           </div>
-          <p className="subtle">Import requires an empty active vault. Import/export follows vault-admin permissions; server administrators can add themselves as a vault admin above when needed.</p>
+          <p className="subtle">Import requires an empty active vault. Server administrators can transfer content across every hosted vault.</p>
         </Panel>
+        <Panel title="Vault files" icon={<Folder size={17} />}>
+          <div className="file-browser-toolbar">
+            <nav className="file-breadcrumbs" aria-label="Vault file path">
+              <Button variant="ghost" size="sm" onClick={() => openFolder(null)} aria-current={currentFolderId === null ? 'page' : undefined}>
+                <FolderOpen size={15} />Vault root
+              </Button>
+              {breadcrumbs.map((folder) => (
+                <span key={folder.id}>
+                  <ChevronRight size={14} />
+                  <Button variant="ghost" size="sm" onClick={() => openFolder(folder.id)} aria-current={currentFolderId === folder.id ? 'page' : undefined}>{folder.name}</Button>
+                </span>
+              ))}
+            </nav>
+            <label className="file-search">
+              <Search size={15} />
+              <Input
+                type="search"
+                value={fileSearch}
+                placeholder="Search all vault files"
+                aria-label="Search vault files"
+                onChange={(event) => setFileSearch(event.target.value)}
+              />
+            </label>
+          </div>
+          <p className="subtle file-browser-summary">
+            {normalizedSearch
+              ? `${visibleFiles.length} matches across the vault`
+              : `${visibleFiles.length} entries in ${currentFolder?.relativePath ?? 'Vault root'}`}
+          </p>
+          <div className="file-browser">
+            <div className="file-row file-header">
+              <span>{normalizedSearch ? 'Path' : 'Name'}</span><span>Size</span><span>Modified</span><span>State</span><span>Actions</span>
+            </div>
+            {visibleFiles.map((file) => (
+              <div className="file-row" key={file.id}>
+                <div className="file-name">
+                  {file.kind === 'folder' ? <Folder size={16} /> : <FileIcon size={16} />}
+                  <span>
+                    {file.kind === 'folder'
+                      ? <button type="button" className="file-open-button" onClick={() => openFolder(file.id)}>{normalizedSearch ? file.relativePath : file.name}</button>
+                      : <strong>{normalizedSearch ? file.relativePath : file.name}</strong>}
+                    <small>{file.kind}{file.documentType ? ` · ${file.documentType}` : ''}</small>
+                  </span>
+                </div>
+                <span>{file.currentRevision ? formatBytes(file.currentRevision.sizeBytes) : '—'}</span>
+                <span>{new Date(file.updatedAt).toLocaleString()}</span>
+                <Badge variant={file.state === 'active' ? 'success' : 'destructive'}>{file.state}</Badge>
+                <div className="actions">
+                  <Button aria-label={`Download ${file.relativePath}`} variant="outline" size="sm" disabled={file.kind === 'folder' || file.state !== 'active'} onClick={() => void downloadFile(file)}><Download size={15} />Download</Button>
+                  <Button aria-label={`Move ${file.relativePath}`} variant="outline" size="sm" disabled={file.state !== 'active'} onClick={() => { setMoveFile(file); setMoveParentId(file.parentId ?? ''); }}><MoveIcon size={15} />Move</Button>
+                  <Button aria-label={`History ${file.relativePath}`} variant="outline" size="sm" disabled={file.kind !== 'document' || file.state !== 'active'} onClick={() => void showHistory(file)}>History</Button>
+                </div>
+              </div>
+            ))}
+            {visibleFiles.length === 0 && <div className="file-browser-empty">{normalizedSearch ? 'No files match this search.' : 'This folder is empty.'}</div>}
+          </div>
+        </Panel>
+        {historyFile && (
+          <Panel title={`Revision history · ${historyFile.relativePath}`} icon={<Activity size={17} />}>
+            <div className="audit-list">
+              {revisions.map((revision) => (
+                <div className="audit-row" key={revision.id}>
+                  <div className="grow"><strong>Revision {revision.sequence}</strong><small>{formatBytes(revision.sizeBytes)} · {revision.createdByDisplayName ?? 'System'} · {new Date(revision.createdAt).toLocaleString()}</small></div>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    disabled={revision.id === historyFile.currentRevision?.id || detail.status !== 'active' || historyFile.state !== 'active'}
+                    onClick={() => void run(async () => {
+                      await serverApi.restoreFileRevision(vaultId, historyFile.id, revision.id, historyFile.currentRevision?.sequence ?? 0);
+                      setHistoryFile(null);
+                    })}
+                  >
+                    Restore
+                  </Button>
+                </div>
+              ))}
+            </div>
+          </Panel>
+        )}
         <Panel title={`${members.length} members`} icon={<Users size={17} />}>
           <div className="user-list">
             {members.map((member) => (
@@ -690,6 +865,30 @@ function VaultDetailPage({ vaultId, onBack }: { vaultId: string; onBack: () => v
             void run(() => serverApi.updateVault(vaultId, { name }));
           }}
         />
+      )}
+      {moveFile && (
+        <div className="dialog-backdrop" role="presentation">
+          <Card className="dialog" role="dialog" aria-modal="true" aria-label={`Move ${moveFile.name}`}>
+            <h2>Move {moveFile.name}</h2>
+            <p className="subtle">Choose a destination folder. References are rewritten by the hosted-vault operation.</p>
+            <form onSubmit={moveSelectedFile}>
+              <label className="field"><span>Destination</span>
+                <SelectMenu
+                  label="Destination folder"
+                  value={moveParentId}
+                  options={[
+                    { value: '', label: 'Vault root' },
+                    ...files
+                      .filter((file) => file.kind === 'folder' && file.state === 'active' && file.id !== moveFile.id && !file.relativePath.startsWith(`${moveFile.relativePath}/`))
+                      .map((file) => ({ value: file.id, label: file.relativePath })),
+                  ]}
+                  onChange={setMoveParentId}
+                />
+              </label>
+              <div className="dialog-actions"><Button type="button" variant="outline" onClick={() => setMoveFile(null)}>Cancel</Button><Button>Move</Button></div>
+            </form>
+          </Card>
+        </div>
       )}
     </>
   );

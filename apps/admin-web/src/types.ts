@@ -127,3 +127,34 @@ export interface HostedVaultImportResult {
   importedBytes: number;
   resultManifestSequence: number;
 }
+
+export type HostedFileKind = 'folder' | 'document' | 'asset';
+export type HostedFileState = 'active' | 'trashed' | 'tombstoned';
+
+export interface HostedFileRevision {
+  id: string;
+  sequence: number;
+  contentHash: string;
+  sizeBytes: number;
+  createdByDisplayName: string | null;
+  createdAt: string;
+}
+
+export interface HostedFileEntry {
+  id: string;
+  parentId: string | null;
+  name: string;
+  relativePath: string;
+  kind: HostedFileKind;
+  documentType: 'note' | 'kanban' | 'canvas' | null;
+  state: HostedFileState;
+  currentRevision: HostedFileRevision | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface HostedVaultManifest {
+  vaultId: string;
+  sequence: number;
+  files: HostedFileEntry[];
+}

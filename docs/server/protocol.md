@@ -134,6 +134,12 @@ rejected while a vault is pending deletion. Every administration vault mutation
 records both an audit event and a vault activity event flagged
 `byServerAdmin`.
 
+Active server administrators also receive implicit vault-admin access on
+hosted-vault content endpoints. This lets the administration interface browse,
+download, move, import/export, and inspect or restore document revisions in
+every vault without creating operator memberships. Implicit access never makes
+the operator the distinguished vault owner.
+
 Vault management:
 
 - `GET|POST /api/v1/vaults`
@@ -154,6 +160,10 @@ The viewer-readable storage endpoint reports current active and trash bytes,
 retained revision bytes, unique per-vault blob bytes, and file, revision, and
 snapshot counts. `storageBytes` on vault summaries remains the retained
 revision byte total for compatibility with administration views.
+
+`POST /api/v1/vaults/{vaultId}/files/{fileId}/revisions/{revisionId}` restores
+an older text-document revision by creating a new current revision. It requires
+the expected current revision sequence and never rewinds or deletes history.
 
 The initial Phase 3 vault-management slice is implemented. Creating a vault
 makes the authenticated user its owner and administrator. Listings expose only

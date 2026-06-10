@@ -4,9 +4,12 @@ import type {
   CreatedInvitation,
   HostedVaultActivityEvent,
   HostedVaultAdminDetail,
+  HostedFileEntry,
+  HostedFileRevision,
   HostedVaultImportResult,
   HostedVaultMember,
   HostedVaultStorage,
+  HostedVaultManifest,
   HostedVaultSummary,
   Invitation,
   ServerUser,
@@ -120,6 +123,21 @@ export const serverApi = {
     api<void>(`/api/v1/admin/vaults/${id}/members/${userId}`, { method: 'DELETE' }),
   vaultActivity: (id: string) => api<HostedVaultActivityEvent[]>(`/api/v1/admin/vaults/${id}/activity`),
   vaultStorage: (id: string) => api<HostedVaultStorage>(`/api/v1/vaults/${id}/storage`),
+  vaultFiles: (id: string) => api<HostedVaultManifest>(`/api/v1/vaults/${id}/manifest`),
+  fileRevisions: (vaultId: string, fileId: string) =>
+    api<HostedFileRevision[]>(`/api/v1/vaults/${vaultId}/files/${fileId}/revisions`),
+  downloadFile: (vaultId: string, fileId: string) =>
+    apiBlob(`/api/v1/vaults/${vaultId}/files/${fileId}/content`),
+  moveFile: (vaultId: string, payload: Record<string, unknown>) =>
+    api<{ resultManifestSequence: number }>(`/api/v1/vaults/${vaultId}/operations`, {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
+  restoreFileRevision: (vaultId: string, fileId: string, revisionId: string, expectedRevisionSequence: number) =>
+    api<unknown>(`/api/v1/vaults/${vaultId}/files/${fileId}/revisions/${revisionId}`, {
+      method: 'POST',
+      body: JSON.stringify({ expectedRevisionSequence }),
+    }),
   importVault: (id: string, archiveBase64: string) =>
     api<HostedVaultImportResult>(`/api/v1/vaults/${id}/import`, {
       method: 'POST',
