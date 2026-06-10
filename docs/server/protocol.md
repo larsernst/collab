@@ -126,6 +126,13 @@ Vault management:
 - `POST /api/v1/vaults/{vaultId}/import`
 - `POST /api/v1/vaults/{vaultId}/export`
 
+The initial Phase 3 vault-management slice is implemented. Creating a vault
+makes the authenticated user its owner and administrator. Listings expose only
+vaults where the authenticated user has a persisted membership. Vault
+administrators can rename vaults and manage viewer/editor memberships; only the
+owner can grant or remove administrators, archive a vault, or mark it pending
+deletion. Archived and pending-delete vaults reject membership mutations.
+
 Files and history:
 
 - `GET /api/v1/vaults/{vaultId}/manifest`
@@ -139,6 +146,19 @@ Files and history:
 - `POST /api/v1/vaults/{vaultId}/uploads/{uploadId}/complete`
 - `GET /api/v1/vaults/{vaultId}/activity`
 - `GET /api/v1/vaults/{vaultId}/search`
+
+The Phase 3 manifest and text-revision slice implements:
+
+- `GET /manifest` and `GET /files` with stable file IDs and derived relative
+  paths.
+- `POST /files` for folders and text-backed note, Kanban, and canvas documents.
+- `GET /files/{fileId}` for the current materialized text content.
+- `GET|POST /files/{fileId}/revisions` for history and optimistic writes using
+  `expectedRevisionSequence`.
+
+Each successful create or text revision increments the vault manifest sequence
+and records vault activity. Text payloads use the content-addressed blob store.
+Viewer reads are allowed; mutations require editor access and an active vault.
 
 Operations that modify structure are submitted to `/operations` with a stable target file ID, `clientOperationId`, and `baseManifestSequence`.
 

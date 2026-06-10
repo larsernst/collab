@@ -169,9 +169,129 @@ pub struct HostedVaultSummary {
     pub id: String,
     pub name: String,
     pub owner_display_name: String,
+    pub status: HostedVaultStatus,
     pub members: i64,
     pub storage_bytes: u64,
     pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
+#[serde(rename_all = "lowercase")]
+pub enum HostedVaultRole {
+    Viewer,
+    Editor,
+    Admin,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum HostedVaultStatus {
+    Active,
+    Archived,
+    PendingDelete,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct HostedVault {
+    pub id: String,
+    pub name: String,
+    pub owner_user_id: String,
+    pub owner_display_name: String,
+    pub role: HostedVaultRole,
+    pub status: HostedVaultStatus,
+    pub manifest_sequence: i64,
+    pub members: i64,
+    pub storage_bytes: u64,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct HostedVaultMember {
+    pub user_id: String,
+    pub username: String,
+    pub display_name: String,
+    pub role: HostedVaultRole,
+    pub owner: bool,
+    pub created_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct HostedVaultActivityEvent {
+    pub id: String,
+    pub actor_display_name: Option<String>,
+    pub event_type: String,
+    pub target_type: Option<String>,
+    pub target_id: Option<String>,
+    pub created_at: String,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum HostedFileKind {
+    Folder,
+    Document,
+    Asset,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum HostedDocumentType {
+    Note,
+    Kanban,
+    Canvas,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum HostedFileState {
+    Active,
+    Trashed,
+    Tombstoned,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct HostedFileEntry {
+    pub id: String,
+    pub parent_id: Option<String>,
+    pub name: String,
+    pub relative_path: String,
+    pub kind: HostedFileKind,
+    pub document_type: Option<HostedDocumentType>,
+    pub state: HostedFileState,
+    pub current_revision: Option<HostedFileRevision>,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct HostedFileRevision {
+    pub id: String,
+    pub sequence: i64,
+    pub content_hash: String,
+    pub size_bytes: u64,
+    pub created_by_display_name: Option<String>,
+    pub created_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct HostedVaultManifest {
+    pub vault_id: String,
+    pub sequence: i64,
+    pub files: Vec<HostedFileEntry>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct HostedTextDocument {
+    pub file: HostedFileEntry,
+    pub content: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

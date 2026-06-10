@@ -15,7 +15,7 @@ This document is the source of truth for implementation progress. Update task ch
 | 0. Architecture and prerequisites | Complete | 100% |
 | 1. Server foundation and Compose | Complete | 100% |
 | 2. Authentication and administration | Complete | 100% |
-| 3. Hosted vault storage and permissions | Not started | 0% |
+| 3. Hosted vault storage and permissions | In progress | 41% |
 | 4. Native hosted-vault client | Not started | 0% |
 | 5. Live collaboration | Not started | 0% |
 | 6. Full offline synchronization | Not started | 0% |
@@ -194,18 +194,18 @@ surface before hosted vault mutations are exposed.
 
 ### Tasks
 
-- [ ] Implement vault, membership, file-manifest, revision, blob, trash, snapshot, and activity tables.
+- [x] Implement vault, membership, file-manifest, revision, blob, trash, snapshot, and activity tables.
 - [ ] Implement server-side role enforcement for every vault operation.
-- [ ] Implement hosted-vault create, list, rename, archive, and delete.
-- [ ] Implement member invite, removal, and role updates.
-- [ ] Implement file and folder listing using stable file IDs and relative paths.
-- [ ] Implement text-document read and optimistic write operations.
+- [x] Implement hosted-vault create, list, rename, archive, and delete.
+- [x] Implement member invite, removal, and role updates.
+- [x] Implement file and folder listing using stable file IDs and relative paths.
+- [x] Implement text-document read and optimistic write operations.
 - [ ] Implement binary-asset upload, download, deduplication, and integrity checks.
 - [ ] Implement create, rename, move, trash, restore, and purge operations.
-- [ ] Implement server-side path normalization and traversal protection.
+- [x] Implement server-side path normalization and traversal protection.
 - [ ] Implement reference-impact previews and reference rewrites.
 - [ ] Implement snapshots, history listing, comparison inputs, and restore.
-- [ ] Implement vault activity events.
+- [x] Implement vault activity events.
 - [ ] Expand the admin web interface from read-only vault inventory to vault details, member management, archive/delete controls, storage usage, and activity views.
 - [ ] Implement hosted search and note indexing.
 - [ ] Implement local-vault ZIP import into hosted storage.
@@ -395,3 +395,5 @@ Add one entry whenever a meaningful server milestone lands.
 | 2026-06-09 | Phase 2 | Implemented the first secure administration slice: identity/session/audit schema, Argon2id credentials, one-time bootstrap, browser login/logout, CSRF, login rate limiting, disabled-user/session revocation behavior, admin APIs, and a server-hosted Collab-style dashboard | Focused Rust and admin-web tests, live PostgreSQL bootstrap/login/admin/CSRF/revocation lifecycle, production admin build, Compose image build, and live Caddy API flow | Add invitations, rotating native refresh tokens, password self-service, operational/storage summaries, browser automation/accessibility coverage, and native login |
 | 2026-06-09 | Phase 2 complete | Added expiring one-time invitations, dedicated password change/reset flows, opaque native access tokens with rotating refresh-token reuse detection, OS credential-store-backed desktop login, storage and operational dashboard summaries, read-only vault inventory, user activity inspection, and complete admin management flows | Security-focused live PostgreSQL lifecycle tests, Rust workspace checks, admin/browser-flow and accessibility-oriented tests, TypeScript checks, production admin build, and Compose configuration validation; final image rebuild was blocked by a crates.io network failure | Begin Phase 3 hosted vault storage and permissions |
 | 2026-06-09 | Phase 2 account lifecycle | Added account re-enable and permanent deletion controls, with durable primary-administrator identification and server-side protection from disable/delete operations | Admin-web management-flow tests, Rust checks, and live PostgreSQL lifecycle tests | Begin Phase 3 hosted vault storage and permissions |
+| 2026-06-10 | Phase 3 foundation | Added canonical hosted-vault, membership, file/revision/blob/trash/snapshot/operation/activity tables; authenticated vault lifecycle and membership APIs; owner/admin role enforcement; real admin inventory/counts; and vault activity records | Rust checks, admin production build, migration idempotency, and live PostgreSQL lifecycle coverage for membership visibility, viewer denial, owner protection, archive enforcement, activity, and pending deletion | Implement stable-ID file manifests and text-document revision operations |
+| 2026-06-10 | Phase 3 files and text revisions | Added strict portable hosted-path normalization, stable-ID file manifests with derived relative paths, folder and text-document creation, current-document reads, optimistic revision writes/history, content-addressed text blobs, manifest sequencing, and same-vault relational constraints | Shared path tests, Rust checks, and live PostgreSQL lifecycle coverage for viewer denial, path rejection/collision, document reads, stale-write conflicts, revision history, manifest increments, activity, and archive enforcement | Implement binary upload/download and structural rename/move/trash/restore/purge operations |

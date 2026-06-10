@@ -267,7 +267,7 @@ function UsersPage({ currentUser }: { currentUser: ServerUser }) {
 function VaultsPage() {
   const [vaults, setVaults] = useState<HostedVaultSummary[]>([]);
   useEffect(() => void serverApi.vaults().then(setVaults), []);
-  return <><PageHeader eyebrow="HOSTED CONTENT" title="Vaults" subtitle="Read-only hosted-vault inventory, ready for Phase 3 management actions." />{vaults.length === 0 ? <div className="empty-state"><Boxes size={34} /><h2>No hosted vaults yet</h2><p>Hosted vaults will appear here as soon as the Phase 3 storage APIs create them.</p></div> : <Panel title={`${vaults.length} hosted vaults`} icon={<Boxes size={17} />}><div className="audit-list">{vaults.map((vault) => <div className="audit-row" key={vault.id}><div className="grow"><strong>{vault.name}</strong><small>{vault.ownerDisplayName} · {vault.members} members · {formatBytes(vault.storageBytes)}</small></div></div>)}</div></Panel>}</>;
+  return <><PageHeader eyebrow="HOSTED CONTENT" title="Vaults" subtitle="Read-only inventory backed by canonical hosted-vault storage." />{vaults.length === 0 ? <div className="empty-state"><Boxes size={34} /><h2>No hosted vaults yet</h2><p>Hosted vaults created through the Phase 3 API will appear here.</p></div> : <Panel title={`${vaults.length} hosted vaults`} icon={<Boxes size={17} />}><div className="audit-list">{vaults.map((vault) => <div className="audit-row" key={vault.id}><div className="grow"><strong>{vault.name}</strong><small>{vault.ownerDisplayName} · {vault.members} members · {formatBytes(vault.storageBytes)}</small></div><span className={`status ${vault.status === 'active' ? 'active' : 'disabled'}`}>{vault.status.replace('_', ' ')}</span></div>)}</div></Panel>}</>;
 }
 
 function AuditPage() {

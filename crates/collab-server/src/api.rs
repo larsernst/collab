@@ -14,12 +14,16 @@ use axum::{
 };
 use collab_protocol::{
     AdminOverview, ApiError, AuditEvent, BootstrapStatus, BrowserSession, CreatedInvitation,
-    DataResponse, ErrorCode, ErrorResponse, HealthState, HostedVaultSummary, Invitation,
-    NativeSession, OperationalWarning, ServerUser, ServerUserRole, StorageSummary,
+    DataResponse, ErrorCode, ErrorResponse, HealthState, HostedDocumentType, HostedFileEntry,
+    HostedFileKind, HostedFileRevision, HostedFileState, HostedTextDocument, HostedVault,
+    HostedVaultActivityEvent, HostedVaultManifest, HostedVaultMember, HostedVaultRole,
+    HostedVaultStatus, HostedVaultSummary, Invitation, NativeSession, OperationalWarning,
+    ServerUser, ServerUserRole, StorageSummary,
 };
 use serde::Deserialize;
 use serde_json::{json, Value};
 use sqlx::{PgPool, Postgres, Row, Transaction};
+use std::collections::HashMap;
 use uuid::Uuid;
 
 #[derive(Debug, Deserialize)]
@@ -98,6 +102,50 @@ pub struct ChangePasswordRequest {
 #[serde(rename_all = "camelCase")]
 pub struct ResetPasswordRequest {
     pub new_password: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CreateVaultRequest {
+    pub name: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateVaultRequest {
+    pub name: Option<String>,
+    pub status: Option<HostedVaultStatus>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AddVaultMemberRequest {
+    pub user_id: Uuid,
+    pub role: HostedVaultRole,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateVaultMemberRequest {
+    pub role: HostedVaultRole,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CreateVaultFileRequest {
+    pub parent_id: Option<Uuid>,
+    pub name: String,
+    pub kind: HostedFileKind,
+    pub document_type: Option<HostedDocumentType>,
+    #[serde(default)]
+    pub content: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WriteTextRevisionRequest {
+    pub expected_revision_sequence: i64,
+    pub content: String,
 }
 
 pub async fn bootstrap_status(
@@ -492,6 +540,782 @@ pub async fn change_password(
     Ok(StatusCode::NO_CONTENT)
 }
 
+pub async fn list_vaults(
+    State(state): State<AppState>,
+    Extension(request_id): Extension<String>,
+    headers: HeaderMap,
+) -> Result<Json<DataResponse<Vec<HostedVault>>>, ApiFailure> {
+    let actor = require_authenticated_user(&state, &headers, &request_id).await?;
+    let rows = sqlx::query(
+        r#"
+        SELECT v.id, v.name, v.owner_user_id, owner.display_name AS owner_display_name,
+               m.role::text AS role, v.status::text AS status, v.manifest_sequence,
+               v.created_at, v.updated_at,
+               (SELECT COUNT(*) FROM hosted_vault_memberships members WHERE members.vault_id = v.id) AS members,
+               COALESCE((SELECT SUM(r.size_bytes) FROM hosted_file_revisions r WHERE r.vault_id = v.id), 0)::bigint AS storage_bytes
+        FROM hosted_vaults v
+        JOIN hosted_vault_memberships m ON m.vault_id = v.id
+        JOIN users owner ON owner.id = v.owner_user_id
+        WHERE m.user_id = $1
+        ORDER BY v.updated_at DESC
+        "#,
+    )
+    .bind(user_uuid(&actor.user))
+    .fetch_all(&state.database)
+    .await
+    .map_err(|_| ApiFailure::server(request_id.clone()))?;
+    Ok(Json(DataResponse::new(
+        rows.iter().map(vault_from_row).collect(),
+    )))
+}
+
+pub async fn create_vault(
+    State(state): State<AppState>,
+    Extension(request_id): Extension<String>,
+    headers: HeaderMap,
+    Json(payload): Json<CreateVaultRequest>,
+) -> Result<(StatusCode, Json<DataResponse<HostedVault>>), ApiFailure> {
+    let actor = require_any_user(&state, &headers, &request_id).await?;
+    let name = validate_vault_name(&payload.name, &request_id)?;
+    let vault_id = Uuid::now_v7();
+    let actor_id = user_uuid(&actor.user);
+    let mut transaction = state
+        .database
+        .begin()
+        .await
+        .map_err(|_| ApiFailure::server(request_id.clone()))?;
+    sqlx::query("INSERT INTO hosted_vaults (id, name, owner_user_id) VALUES ($1, $2, $3)")
+        .bind(vault_id)
+        .bind(&name)
+        .bind(actor_id)
+        .execute(&mut *transaction)
+        .await
+        .map_err(|_| ApiFailure::server(request_id.clone()))?;
+    sqlx::query(
+        "INSERT INTO hosted_vault_memberships (vault_id, user_id, role) VALUES ($1, $2, 'admin')",
+    )
+    .bind(vault_id)
+    .bind(actor_id)
+    .execute(&mut *transaction)
+    .await
+    .map_err(|_| ApiFailure::server(request_id.clone()))?;
+    vault_activity_event(
+        &mut transaction,
+        vault_id,
+        Some(actor_id),
+        "vault.created",
+        Some("vault"),
+        Some(&vault_id.to_string()),
+        json!({}),
+        &request_id,
+    )
+    .await?;
+    audit(
+        &mut transaction,
+        Some(&actor.user.id),
+        "vault.create",
+        Some("vault"),
+        Some(&vault_id.to_string()),
+        "success",
+        &request_id,
+        json!({}),
+    )
+    .await?;
+    transaction
+        .commit()
+        .await
+        .map_err(|_| ApiFailure::server(request_id.clone()))?;
+    Ok((
+        StatusCode::CREATED,
+        Json(DataResponse::new(
+            load_vault(&state.database, vault_id, actor_id, &request_id).await?,
+        )),
+    ))
+}
+
+pub async fn get_vault(
+    State(state): State<AppState>,
+    Extension(request_id): Extension<String>,
+    headers: HeaderMap,
+    Path(vault_id): Path<Uuid>,
+) -> Result<Json<DataResponse<HostedVault>>, ApiFailure> {
+    let actor = require_authenticated_user(&state, &headers, &request_id).await?;
+    Ok(Json(DataResponse::new(
+        load_vault(
+            &state.database,
+            vault_id,
+            user_uuid(&actor.user),
+            &request_id,
+        )
+        .await?,
+    )))
+}
+
+pub async fn update_vault(
+    State(state): State<AppState>,
+    Extension(request_id): Extension<String>,
+    headers: HeaderMap,
+    Path(vault_id): Path<Uuid>,
+    Json(payload): Json<UpdateVaultRequest>,
+) -> Result<Json<DataResponse<HostedVault>>, ApiFailure> {
+    let actor = require_any_user(&state, &headers, &request_id).await?;
+    let access = require_vault_access(
+        &state.database,
+        vault_id,
+        user_uuid(&actor.user),
+        HostedVaultRole::Admin,
+        &request_id,
+    )
+    .await?;
+    let name = payload
+        .name
+        .as_deref()
+        .map(|value| validate_vault_name(value, &request_id))
+        .transpose()?;
+    if payload.status == Some(HostedVaultStatus::PendingDelete) {
+        return Err(ApiFailure::validation(
+            "Use DELETE to mark a vault for deletion.",
+            request_id,
+        ));
+    }
+    if payload.status.is_some() && !access.owner {
+        return Err(ApiFailure::vault_permission_denied(request_id));
+    }
+    let reactivating = access.status == HostedVaultStatus::Archived
+        && payload.status == Some(HostedVaultStatus::Active)
+        && name.is_none();
+    if access.status != HostedVaultStatus::Active && !reactivating {
+        return Err(ApiFailure::vault_archived(request_id));
+    }
+    let status = payload.status.map(vault_status_name);
+    let mut transaction = state
+        .database
+        .begin()
+        .await
+        .map_err(|_| ApiFailure::server(request_id.clone()))?;
+    sqlx::query(
+        r#"
+        UPDATE hosted_vaults SET
+          name = COALESCE($1, name),
+          status = COALESCE($2::hosted_vault_status, status),
+          archived_at = CASE
+            WHEN $2 = 'archived' THEN NOW()
+            WHEN $2 = 'active' THEN NULL
+            ELSE archived_at
+          END,
+          updated_at = NOW()
+        WHERE id = $3
+        "#,
+    )
+    .bind(name.as_deref())
+    .bind(status)
+    .bind(vault_id)
+    .execute(&mut *transaction)
+    .await
+    .map_err(|_| ApiFailure::server(request_id.clone()))?;
+    vault_activity_event(
+        &mut transaction,
+        vault_id,
+        Some(user_uuid(&actor.user)),
+        if payload.status.is_some() {
+            "vault.status_changed"
+        } else {
+            "vault.renamed"
+        },
+        Some("vault"),
+        Some(&vault_id.to_string()),
+        json!({"status": status, "name": name}),
+        &request_id,
+    )
+    .await?;
+    transaction
+        .commit()
+        .await
+        .map_err(|_| ApiFailure::server(request_id.clone()))?;
+    Ok(Json(DataResponse::new(
+        load_vault(
+            &state.database,
+            vault_id,
+            user_uuid(&actor.user),
+            &request_id,
+        )
+        .await?,
+    )))
+}
+
+pub async fn delete_vault(
+    State(state): State<AppState>,
+    Extension(request_id): Extension<String>,
+    headers: HeaderMap,
+    Path(vault_id): Path<Uuid>,
+) -> Result<StatusCode, ApiFailure> {
+    let actor = require_any_user(&state, &headers, &request_id).await?;
+    let access = require_vault_access(
+        &state.database,
+        vault_id,
+        user_uuid(&actor.user),
+        HostedVaultRole::Admin,
+        &request_id,
+    )
+    .await?;
+    if !access.owner {
+        return Err(ApiFailure::vault_permission_denied(request_id));
+    }
+    let mut transaction = state
+        .database
+        .begin()
+        .await
+        .map_err(|_| ApiFailure::server(request_id.clone()))?;
+    sqlx::query(
+        "UPDATE hosted_vaults SET status = 'pending_delete', pending_delete_at = NOW(), updated_at = NOW() WHERE id = $1",
+    )
+    .bind(vault_id)
+    .execute(&mut *transaction)
+    .await
+    .map_err(|_| ApiFailure::server(request_id.clone()))?;
+    vault_activity_event(
+        &mut transaction,
+        vault_id,
+        Some(user_uuid(&actor.user)),
+        "vault.pending_delete",
+        Some("vault"),
+        Some(&vault_id.to_string()),
+        json!({}),
+        &request_id,
+    )
+    .await?;
+    transaction
+        .commit()
+        .await
+        .map_err(|_| ApiFailure::server(request_id))?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+pub async fn list_vault_members(
+    State(state): State<AppState>,
+    Extension(request_id): Extension<String>,
+    headers: HeaderMap,
+    Path(vault_id): Path<Uuid>,
+) -> Result<Json<DataResponse<Vec<HostedVaultMember>>>, ApiFailure> {
+    let actor = require_authenticated_user(&state, &headers, &request_id).await?;
+    require_vault_access(
+        &state.database,
+        vault_id,
+        user_uuid(&actor.user),
+        HostedVaultRole::Viewer,
+        &request_id,
+    )
+    .await?;
+    Ok(Json(DataResponse::new(
+        load_vault_members(&state.database, vault_id, &request_id).await?,
+    )))
+}
+
+pub async fn add_vault_member(
+    State(state): State<AppState>,
+    Extension(request_id): Extension<String>,
+    headers: HeaderMap,
+    Path(vault_id): Path<Uuid>,
+    Json(payload): Json<AddVaultMemberRequest>,
+) -> Result<(StatusCode, Json<DataResponse<HostedVaultMember>>), ApiFailure> {
+    let actor = require_any_user(&state, &headers, &request_id).await?;
+    let access =
+        require_active_vault_admin(&state.database, vault_id, &actor.user, &request_id).await?;
+    if payload.role == HostedVaultRole::Admin && !access.owner {
+        return Err(ApiFailure::vault_permission_denied(request_id));
+    }
+    let mut transaction = state
+        .database
+        .begin()
+        .await
+        .map_err(|_| ApiFailure::server(request_id.clone()))?;
+    let inserted = sqlx::query(
+        "INSERT INTO hosted_vault_memberships (vault_id, user_id, role) SELECT $1, id, $3::hosted_vault_role FROM users WHERE id = $2 AND status = 'active' ON CONFLICT DO NOTHING",
+    )
+    .bind(vault_id).bind(payload.user_id).bind(vault_role_name(payload.role))
+    .execute(&mut *transaction).await.map_err(|_| ApiFailure::server(request_id.clone()))?;
+    if inserted.rows_affected() == 0 {
+        return Err(ApiFailure::validation(
+            "The user does not exist, is disabled, or is already a member.",
+            request_id,
+        ));
+    }
+    vault_activity_event(
+        &mut transaction,
+        vault_id,
+        Some(user_uuid(&actor.user)),
+        "member.added",
+        Some("user"),
+        Some(&payload.user_id.to_string()),
+        json!({"role": vault_role_name(payload.role)}),
+        &request_id,
+    )
+    .await?;
+    transaction
+        .commit()
+        .await
+        .map_err(|_| ApiFailure::server(request_id.clone()))?;
+    Ok((
+        StatusCode::CREATED,
+        Json(DataResponse::new(
+            load_vault_member(&state.database, vault_id, payload.user_id, &request_id).await?,
+        )),
+    ))
+}
+
+pub async fn update_vault_member(
+    State(state): State<AppState>,
+    Extension(request_id): Extension<String>,
+    headers: HeaderMap,
+    Path((vault_id, user_id)): Path<(Uuid, Uuid)>,
+    Json(payload): Json<UpdateVaultMemberRequest>,
+) -> Result<Json<DataResponse<HostedVaultMember>>, ApiFailure> {
+    let actor = require_any_user(&state, &headers, &request_id).await?;
+    let access =
+        require_active_vault_admin(&state.database, vault_id, &actor.user, &request_id).await?;
+    let target = load_vault_member(&state.database, vault_id, user_id, &request_id).await?;
+    if target.owner
+        || (payload.role == HostedVaultRole::Admin && !access.owner)
+        || (target.role == HostedVaultRole::Admin && !access.owner)
+    {
+        return Err(ApiFailure::vault_permission_denied(request_id));
+    }
+    let mut transaction = state
+        .database
+        .begin()
+        .await
+        .map_err(|_| ApiFailure::server(request_id.clone()))?;
+    sqlx::query("UPDATE hosted_vault_memberships SET role = $1::hosted_vault_role, updated_at = NOW() WHERE vault_id = $2 AND user_id = $3")
+        .bind(vault_role_name(payload.role)).bind(vault_id).bind(user_id).execute(&mut *transaction).await.map_err(|_| ApiFailure::server(request_id.clone()))?;
+    vault_activity_event(
+        &mut transaction,
+        vault_id,
+        Some(user_uuid(&actor.user)),
+        "member.role_changed",
+        Some("user"),
+        Some(&user_id.to_string()),
+        json!({"role": vault_role_name(payload.role)}),
+        &request_id,
+    )
+    .await?;
+    transaction
+        .commit()
+        .await
+        .map_err(|_| ApiFailure::server(request_id.clone()))?;
+    Ok(Json(DataResponse::new(
+        load_vault_member(&state.database, vault_id, user_id, &request_id).await?,
+    )))
+}
+
+pub async fn remove_vault_member(
+    State(state): State<AppState>,
+    Extension(request_id): Extension<String>,
+    headers: HeaderMap,
+    Path((vault_id, user_id)): Path<(Uuid, Uuid)>,
+) -> Result<StatusCode, ApiFailure> {
+    let actor = require_any_user(&state, &headers, &request_id).await?;
+    let access =
+        require_active_vault_admin(&state.database, vault_id, &actor.user, &request_id).await?;
+    let target = load_vault_member(&state.database, vault_id, user_id, &request_id).await?;
+    if target.owner || (target.role == HostedVaultRole::Admin && !access.owner) {
+        return Err(ApiFailure::vault_permission_denied(request_id));
+    }
+    let mut transaction = state
+        .database
+        .begin()
+        .await
+        .map_err(|_| ApiFailure::server(request_id.clone()))?;
+    sqlx::query("DELETE FROM hosted_vault_memberships WHERE vault_id = $1 AND user_id = $2")
+        .bind(vault_id)
+        .bind(user_id)
+        .execute(&mut *transaction)
+        .await
+        .map_err(|_| ApiFailure::server(request_id.clone()))?;
+    vault_activity_event(
+        &mut transaction,
+        vault_id,
+        Some(user_uuid(&actor.user)),
+        "member.removed",
+        Some("user"),
+        Some(&user_id.to_string()),
+        json!({}),
+        &request_id,
+    )
+    .await?;
+    transaction
+        .commit()
+        .await
+        .map_err(|_| ApiFailure::server(request_id))?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+pub async fn vault_activity(
+    State(state): State<AppState>,
+    Extension(request_id): Extension<String>,
+    headers: HeaderMap,
+    Path(vault_id): Path<Uuid>,
+) -> Result<Json<DataResponse<Vec<HostedVaultActivityEvent>>>, ApiFailure> {
+    let actor = require_authenticated_user(&state, &headers, &request_id).await?;
+    require_vault_access(
+        &state.database,
+        vault_id,
+        user_uuid(&actor.user),
+        HostedVaultRole::Viewer,
+        &request_id,
+    )
+    .await?;
+    let rows = sqlx::query(
+        "SELECT a.id, u.display_name AS actor_display_name, a.event_type, a.target_type, a.target_id, a.created_at FROM hosted_vault_activity_events a LEFT JOIN users u ON u.id = a.actor_user_id WHERE a.vault_id = $1 ORDER BY a.created_at DESC LIMIT 100",
+    ).bind(vault_id).fetch_all(&state.database).await.map_err(|_| ApiFailure::server(request_id.clone()))?;
+    Ok(Json(DataResponse::new(
+        rows.iter().map(vault_activity_from_row).collect(),
+    )))
+}
+
+pub async fn vault_manifest(
+    State(state): State<AppState>,
+    Extension(request_id): Extension<String>,
+    headers: HeaderMap,
+    Path(vault_id): Path<Uuid>,
+) -> Result<Json<DataResponse<HostedVaultManifest>>, ApiFailure> {
+    let actor = require_authenticated_user(&state, &headers, &request_id).await?;
+    require_vault_access(
+        &state.database,
+        vault_id,
+        user_uuid(&actor.user),
+        HostedVaultRole::Viewer,
+        &request_id,
+    )
+    .await?;
+    Ok(Json(DataResponse::new(
+        load_vault_manifest(&state.database, vault_id, &request_id).await?,
+    )))
+}
+
+pub async fn list_vault_files(
+    State(state): State<AppState>,
+    Extension(request_id): Extension<String>,
+    headers: HeaderMap,
+    Path(vault_id): Path<Uuid>,
+) -> Result<Json<DataResponse<Vec<HostedFileEntry>>>, ApiFailure> {
+    let actor = require_authenticated_user(&state, &headers, &request_id).await?;
+    require_vault_access(
+        &state.database,
+        vault_id,
+        user_uuid(&actor.user),
+        HostedVaultRole::Viewer,
+        &request_id,
+    )
+    .await?;
+    Ok(Json(DataResponse::new(
+        load_vault_manifest(&state.database, vault_id, &request_id)
+            .await?
+            .files,
+    )))
+}
+
+pub async fn create_vault_file(
+    State(state): State<AppState>,
+    Extension(request_id): Extension<String>,
+    headers: HeaderMap,
+    Path(vault_id): Path<Uuid>,
+    Json(payload): Json<CreateVaultFileRequest>,
+) -> Result<(StatusCode, Json<DataResponse<HostedFileEntry>>), ApiFailure> {
+    let actor = require_any_user(&state, &headers, &request_id).await?;
+    require_active_vault_role(
+        &state.database,
+        vault_id,
+        &actor.user,
+        HostedVaultRole::Editor,
+        &request_id,
+    )
+    .await?;
+    let (name, normalized_name) = collab_core::normalize_hosted_name(&payload.name)
+        .map_err(|error| ApiFailure::path_invalid(error.to_string(), request_id.clone()))?;
+    validate_file_kind(
+        payload.kind,
+        payload.document_type,
+        &payload.content,
+        &request_id,
+    )?;
+    let parent_path =
+        validate_parent_folder(&state.database, vault_id, payload.parent_id, &request_id).await?;
+    let relative_path = if parent_path.is_empty() {
+        name.clone()
+    } else {
+        format!("{parent_path}/{name}")
+    };
+    collab_core::normalize_hosted_path(&relative_path)
+        .map_err(|error| ApiFailure::path_invalid(error.to_string(), request_id.clone()))?;
+
+    let content = (payload.kind == HostedFileKind::Document).then(|| payload.content.into_bytes());
+    let digest = if let Some(content) = content.as_deref() {
+        Some(
+            state
+                .blobs
+                .put(content)
+                .await
+                .map_err(|_| ApiFailure::server(request_id.clone()))?,
+        )
+    } else {
+        None
+    };
+    let file_id = Uuid::now_v7();
+    let revision_id = digest.as_ref().map(|_| Uuid::now_v7());
+    let actor_id = user_uuid(&actor.user);
+    let mut transaction = state
+        .database
+        .begin()
+        .await
+        .map_err(|_| ApiFailure::server(request_id.clone()))?;
+    lock_active_vault(&mut transaction, vault_id, &request_id).await?;
+    let inserted = sqlx::query(
+        r#"
+        INSERT INTO hosted_file_entries
+          (id, vault_id, parent_id, name, normalized_name, kind, document_type, created_by)
+        VALUES ($1, $2, $3, $4, $5, $6::hosted_file_kind, $7::hosted_document_type, $8)
+        "#,
+    )
+    .bind(file_id)
+    .bind(vault_id)
+    .bind(payload.parent_id)
+    .bind(&name)
+    .bind(&normalized_name)
+    .bind(file_kind_name(payload.kind))
+    .bind(payload.document_type.map(document_type_name))
+    .bind(actor_id)
+    .execute(&mut *transaction)
+    .await;
+    if let Err(error) = inserted {
+        return Err(map_path_database_error(error, request_id));
+    }
+    if let (Some(content), Some(digest), Some(revision_id)) =
+        (content.as_deref(), digest.as_deref(), revision_id)
+    {
+        insert_blob_record(
+            &mut transaction,
+            digest,
+            content.len(),
+            "text/plain",
+            &request_id,
+        )
+        .await?;
+        sqlx::query(
+            "INSERT INTO hosted_file_revisions (id, vault_id, file_id, sequence, blob_digest, content_hash, size_bytes, created_by) VALUES ($1, $2, $3, 1, $4, $4, $5, $6)",
+        )
+        .bind(revision_id)
+        .bind(vault_id)
+        .bind(file_id)
+        .bind(digest)
+        .bind(content.len() as i64)
+        .bind(actor_id)
+        .execute(&mut *transaction)
+        .await
+        .map_err(|_| ApiFailure::server(request_id.clone()))?;
+        sqlx::query("UPDATE hosted_file_entries SET current_revision_id = $1 WHERE id = $2")
+            .bind(revision_id)
+            .bind(file_id)
+            .execute(&mut *transaction)
+            .await
+            .map_err(|_| ApiFailure::server(request_id.clone()))?;
+    }
+    increment_manifest(&mut transaction, vault_id, &request_id).await?;
+    vault_activity_event(
+        &mut transaction,
+        vault_id,
+        Some(actor_id),
+        "file.created",
+        Some("file"),
+        Some(&file_id.to_string()),
+        json!({"path": relative_path, "kind": file_kind_name(payload.kind)}),
+        &request_id,
+    )
+    .await?;
+    transaction
+        .commit()
+        .await
+        .map_err(|_| ApiFailure::server(request_id.clone()))?;
+    Ok((
+        StatusCode::CREATED,
+        Json(DataResponse::new(
+            load_vault_file_entry(&state.database, vault_id, file_id, &request_id).await?,
+        )),
+    ))
+}
+
+pub async fn get_vault_file(
+    State(state): State<AppState>,
+    Extension(request_id): Extension<String>,
+    headers: HeaderMap,
+    Path((vault_id, file_id)): Path<(Uuid, Uuid)>,
+) -> Result<Json<DataResponse<HostedTextDocument>>, ApiFailure> {
+    let actor = require_authenticated_user(&state, &headers, &request_id).await?;
+    require_vault_access(
+        &state.database,
+        vault_id,
+        user_uuid(&actor.user),
+        HostedVaultRole::Viewer,
+        &request_id,
+    )
+    .await?;
+    let file = load_vault_file_entry(&state.database, vault_id, file_id, &request_id).await?;
+    if file.kind != HostedFileKind::Document {
+        return Err(ApiFailure::validation(
+            "Only text documents can be read through this endpoint.",
+            request_id,
+        ));
+    }
+    let digest = file
+        .current_revision
+        .as_ref()
+        .map(|revision| revision.content_hash.as_str())
+        .ok_or_else(|| ApiFailure::not_found(request_id.clone()))?;
+    let bytes = state
+        .blobs
+        .get(digest)
+        .await
+        .map_err(|_| ApiFailure::server(request_id.clone()))?
+        .ok_or_else(|| ApiFailure::server(request_id.clone()))?;
+    let content = String::from_utf8(bytes).map_err(|_| ApiFailure::server(request_id.clone()))?;
+    Ok(Json(DataResponse::new(HostedTextDocument {
+        file,
+        content,
+    })))
+}
+
+pub async fn list_file_revisions(
+    State(state): State<AppState>,
+    Extension(request_id): Extension<String>,
+    headers: HeaderMap,
+    Path((vault_id, file_id)): Path<(Uuid, Uuid)>,
+) -> Result<Json<DataResponse<Vec<HostedFileRevision>>>, ApiFailure> {
+    let actor = require_authenticated_user(&state, &headers, &request_id).await?;
+    require_vault_access(
+        &state.database,
+        vault_id,
+        user_uuid(&actor.user),
+        HostedVaultRole::Viewer,
+        &request_id,
+    )
+    .await?;
+    Ok(Json(DataResponse::new(
+        load_file_revisions(&state.database, vault_id, file_id, &request_id).await?,
+    )))
+}
+
+pub async fn write_text_revision(
+    State(state): State<AppState>,
+    Extension(request_id): Extension<String>,
+    headers: HeaderMap,
+    Path((vault_id, file_id)): Path<(Uuid, Uuid)>,
+    Json(payload): Json<WriteTextRevisionRequest>,
+) -> Result<(StatusCode, Json<DataResponse<HostedTextDocument>>), ApiFailure> {
+    let actor = require_any_user(&state, &headers, &request_id).await?;
+    require_active_vault_role(
+        &state.database,
+        vault_id,
+        &actor.user,
+        HostedVaultRole::Editor,
+        &request_id,
+    )
+    .await?;
+    let content = payload.content.into_bytes();
+    let digest = state
+        .blobs
+        .put(&content)
+        .await
+        .map_err(|_| ApiFailure::server(request_id.clone()))?;
+    let actor_id = user_uuid(&actor.user);
+    let revision_id = Uuid::now_v7();
+    let mut transaction = state
+        .database
+        .begin()
+        .await
+        .map_err(|_| ApiFailure::server(request_id.clone()))?;
+    lock_active_vault(&mut transaction, vault_id, &request_id).await?;
+    let current = sqlx::query(
+        r#"
+        SELECT f.kind::text AS kind, f.state::text AS state, r.sequence
+        FROM hosted_file_entries f
+        LEFT JOIN hosted_file_revisions r ON r.id = f.current_revision_id
+        WHERE f.vault_id = $1 AND f.id = $2
+        FOR UPDATE OF f
+        "#,
+    )
+    .bind(vault_id)
+    .bind(file_id)
+    .fetch_optional(&mut *transaction)
+    .await
+    .map_err(|_| ApiFailure::server(request_id.clone()))?
+    .ok_or_else(|| ApiFailure::not_found(request_id.clone()))?;
+    if current.get::<String, _>("kind") != "document"
+        || current.get::<String, _>("state") != "active"
+    {
+        return Err(ApiFailure::validation(
+            "Only active text documents can be written.",
+            request_id,
+        ));
+    }
+    let current_sequence = current.get::<Option<i64>, _>("sequence").unwrap_or(0);
+    if current_sequence != payload.expected_revision_sequence {
+        return Err(ApiFailure::revision_conflict(request_id));
+    }
+    let next_sequence = current_sequence + 1;
+    insert_blob_record(
+        &mut transaction,
+        &digest,
+        content.len(),
+        "text/plain",
+        &request_id,
+    )
+    .await?;
+    sqlx::query(
+        "INSERT INTO hosted_file_revisions (id, vault_id, file_id, sequence, blob_digest, content_hash, size_bytes, created_by) VALUES ($1, $2, $3, $4, $5, $5, $6, $7)",
+    )
+    .bind(revision_id)
+    .bind(vault_id)
+    .bind(file_id)
+    .bind(next_sequence)
+    .bind(&digest)
+    .bind(content.len() as i64)
+    .bind(actor_id)
+    .execute(&mut *transaction)
+    .await
+    .map_err(|_| ApiFailure::server(request_id.clone()))?;
+    sqlx::query(
+        "UPDATE hosted_file_entries SET current_revision_id = $1, updated_at = NOW() WHERE id = $2",
+    )
+    .bind(revision_id)
+    .bind(file_id)
+    .execute(&mut *transaction)
+    .await
+    .map_err(|_| ApiFailure::server(request_id.clone()))?;
+    increment_manifest(&mut transaction, vault_id, &request_id).await?;
+    vault_activity_event(
+        &mut transaction,
+        vault_id,
+        Some(actor_id),
+        "file.revision_created",
+        Some("file"),
+        Some(&file_id.to_string()),
+        json!({"revisionSequence": next_sequence}),
+        &request_id,
+    )
+    .await?;
+    transaction
+        .commit()
+        .await
+        .map_err(|_| ApiFailure::server(request_id.clone()))?;
+    let file = load_vault_file_entry(&state.database, vault_id, file_id, &request_id).await?;
+    Ok((
+        StatusCode::CREATED,
+        Json(DataResponse::new(HostedTextDocument {
+            file,
+            content: String::from_utf8(content).expect("request JSON strings are UTF-8"),
+        })),
+    ))
+}
+
 pub async fn overview(
     State(state): State<AppState>,
     Extension(request_id): Extension<String>,
@@ -505,7 +1329,8 @@ pub async fn overview(
           (SELECT COUNT(*) FROM users WHERE status = 'active') AS active_users,
           ((SELECT COUNT(*) FROM sessions WHERE revoked_at IS NULL AND expires_at > NOW())
            + (SELECT COUNT(*) FROM native_sessions WHERE revoked_at IS NULL AND refresh_expires_at > NOW())) AS active_sessions,
-          (SELECT COUNT(*) FROM invitations WHERE accepted_at IS NULL AND revoked_at IS NULL AND expires_at > NOW()) AS pending_invitations
+          (SELECT COUNT(*) FROM invitations WHERE accepted_at IS NULL AND revoked_at IS NULL AND expires_at > NOW()) AS pending_invitations,
+          (SELECT COUNT(*) FROM hosted_vaults WHERE status <> 'pending_delete') AS hosted_vaults
         "#,
     )
     .fetch_one(&state.database)
@@ -554,7 +1379,7 @@ pub async fn overview(
         active_users: counts.get("active_users"),
         active_sessions: counts.get("active_sessions"),
         pending_invitations: counts.get("pending_invitations"),
-        hosted_vaults: 0,
+        hosted_vaults: counts.get("hosted_vaults"),
         storage: StorageSummary {
             database_bytes,
             blob_bytes,
@@ -733,6 +1558,19 @@ pub async fn delete_user(
     if is_primary_admin(&state.database, user_id, &request_id).await? {
         return Err(ApiFailure::validation(
             "The primary administrator account cannot be deleted.",
+            request_id,
+        ));
+    }
+    let owns_vault = sqlx::query_scalar::<_, bool>(
+        "SELECT EXISTS(SELECT 1 FROM hosted_vaults WHERE owner_user_id = $1)",
+    )
+    .bind(user_id)
+    .fetch_one(&state.database)
+    .await
+    .map_err(|_| ApiFailure::server(request_id.clone()))?;
+    if owns_vault {
+        return Err(ApiFailure::validation(
+            "Transfer or delete this user's hosted vaults before deleting the account.",
             request_id,
         ));
     }
@@ -993,7 +1831,23 @@ pub async fn hosted_vaults(
     headers: HeaderMap,
 ) -> Result<Json<DataResponse<Vec<HostedVaultSummary>>>, ApiFailure> {
     require_admin(&state, &headers, &request_id).await?;
-    Ok(Json(DataResponse::new(Vec::new())))
+    let rows = sqlx::query(
+        r#"
+        SELECT v.id, v.name, owner.display_name AS owner_display_name, v.status::text AS status,
+               v.updated_at,
+               (SELECT COUNT(*) FROM hosted_vault_memberships members WHERE members.vault_id = v.id) AS members,
+               COALESCE((SELECT SUM(r.size_bytes) FROM hosted_file_revisions r WHERE r.vault_id = v.id), 0)::bigint AS storage_bytes
+        FROM hosted_vaults v
+        JOIN users owner ON owner.id = v.owner_user_id
+        ORDER BY v.updated_at DESC
+        "#,
+    )
+    .fetch_all(&state.database)
+    .await
+    .map_err(|_| ApiFailure::server(request_id.clone()))?;
+    Ok(Json(DataResponse::new(
+        rows.iter().map(vault_summary_from_row).collect(),
+    )))
 }
 
 pub async fn audit_events(
@@ -1158,6 +2012,600 @@ async fn is_primary_admin(
         .ok_or_else(|| ApiFailure::not_found(request_id.to_owned()))
 }
 
+#[derive(Debug)]
+struct VaultAccess {
+    role: HostedVaultRole,
+    owner: bool,
+    status: HostedVaultStatus,
+}
+
+fn user_uuid(user: &ServerUser) -> Uuid {
+    Uuid::parse_str(&user.id).expect("database UUID is valid")
+}
+
+fn validate_vault_name(name: &str, request_id: &str) -> Result<String, ApiFailure> {
+    let name = name.trim();
+    if name.is_empty() || name.len() > 128 || name.chars().any(char::is_control) {
+        return Err(ApiFailure::validation(
+            "Vault name must be between 1 and 128 printable characters.",
+            request_id.to_owned(),
+        ));
+    }
+    Ok(name.to_owned())
+}
+
+fn vault_role_name(role: HostedVaultRole) -> &'static str {
+    match role {
+        HostedVaultRole::Viewer => "viewer",
+        HostedVaultRole::Editor => "editor",
+        HostedVaultRole::Admin => "admin",
+    }
+}
+
+fn parse_vault_role(role: &str) -> HostedVaultRole {
+    match role {
+        "admin" => HostedVaultRole::Admin,
+        "editor" => HostedVaultRole::Editor,
+        _ => HostedVaultRole::Viewer,
+    }
+}
+
+fn vault_status_name(status: HostedVaultStatus) -> &'static str {
+    match status {
+        HostedVaultStatus::Active => "active",
+        HostedVaultStatus::Archived => "archived",
+        HostedVaultStatus::PendingDelete => "pending_delete",
+    }
+}
+
+fn parse_vault_status(status: &str) -> HostedVaultStatus {
+    match status {
+        "archived" => HostedVaultStatus::Archived,
+        "pending_delete" => HostedVaultStatus::PendingDelete,
+        _ => HostedVaultStatus::Active,
+    }
+}
+
+async fn require_vault_access(
+    pool: &PgPool,
+    vault_id: Uuid,
+    user_id: Uuid,
+    minimum_role: HostedVaultRole,
+    request_id: &str,
+) -> Result<VaultAccess, ApiFailure> {
+    let row = sqlx::query(
+        r#"
+        SELECT m.role::text AS role, v.owner_user_id = $2 AS owner, v.status::text AS status
+        FROM hosted_vaults v
+        JOIN hosted_vault_memberships m ON m.vault_id = v.id
+        WHERE v.id = $1 AND m.user_id = $2
+        "#,
+    )
+    .bind(vault_id)
+    .bind(user_id)
+    .fetch_optional(pool)
+    .await
+    .map_err(|_| ApiFailure::server(request_id.to_owned()))?
+    .ok_or_else(|| ApiFailure::not_found(request_id.to_owned()))?;
+    let access = VaultAccess {
+        role: parse_vault_role(row.get::<String, _>("role").as_str()),
+        owner: row.get("owner"),
+        status: parse_vault_status(row.get::<String, _>("status").as_str()),
+    };
+    if access.role < minimum_role {
+        return Err(ApiFailure::vault_permission_denied(request_id.to_owned()));
+    }
+    Ok(access)
+}
+
+async fn require_active_vault_admin(
+    pool: &PgPool,
+    vault_id: Uuid,
+    user: &ServerUser,
+    request_id: &str,
+) -> Result<VaultAccess, ApiFailure> {
+    let access = require_vault_access(
+        pool,
+        vault_id,
+        user_uuid(user),
+        HostedVaultRole::Admin,
+        request_id,
+    )
+    .await?;
+    if access.status != HostedVaultStatus::Active {
+        return Err(ApiFailure::vault_archived(request_id.to_owned()));
+    }
+    Ok(access)
+}
+
+async fn require_active_vault_role(
+    pool: &PgPool,
+    vault_id: Uuid,
+    user: &ServerUser,
+    minimum_role: HostedVaultRole,
+    request_id: &str,
+) -> Result<VaultAccess, ApiFailure> {
+    let access =
+        require_vault_access(pool, vault_id, user_uuid(user), minimum_role, request_id).await?;
+    if access.status != HostedVaultStatus::Active {
+        return Err(ApiFailure::vault_archived(request_id.to_owned()));
+    }
+    Ok(access)
+}
+
+async fn load_vault(
+    pool: &PgPool,
+    vault_id: Uuid,
+    user_id: Uuid,
+    request_id: &str,
+) -> Result<HostedVault, ApiFailure> {
+    let row = sqlx::query(
+        r#"
+        SELECT v.id, v.name, v.owner_user_id, owner.display_name AS owner_display_name,
+               m.role::text AS role, v.status::text AS status, v.manifest_sequence,
+               v.created_at, v.updated_at,
+               (SELECT COUNT(*) FROM hosted_vault_memberships members WHERE members.vault_id = v.id) AS members,
+               COALESCE((SELECT SUM(r.size_bytes) FROM hosted_file_revisions r WHERE r.vault_id = v.id), 0)::bigint AS storage_bytes
+        FROM hosted_vaults v
+        JOIN hosted_vault_memberships m ON m.vault_id = v.id
+        JOIN users owner ON owner.id = v.owner_user_id
+        WHERE v.id = $1 AND m.user_id = $2
+        "#,
+    )
+    .bind(vault_id)
+    .bind(user_id)
+    .fetch_optional(pool)
+    .await
+    .map_err(|_| ApiFailure::server(request_id.to_owned()))?
+    .ok_or_else(|| ApiFailure::not_found(request_id.to_owned()))?;
+    Ok(vault_from_row(&row))
+}
+
+fn vault_from_row(row: &sqlx::postgres::PgRow) -> HostedVault {
+    HostedVault {
+        id: row.get::<Uuid, _>("id").to_string(),
+        name: row.get("name"),
+        owner_user_id: row.get::<Uuid, _>("owner_user_id").to_string(),
+        owner_display_name: row.get("owner_display_name"),
+        role: parse_vault_role(row.get::<String, _>("role").as_str()),
+        status: parse_vault_status(row.get::<String, _>("status").as_str()),
+        manifest_sequence: row.get("manifest_sequence"),
+        members: row.get("members"),
+        storage_bytes: row.get::<i64, _>("storage_bytes").max(0) as u64,
+        created_at: row
+            .get::<chrono::DateTime<chrono::Utc>, _>("created_at")
+            .to_rfc3339(),
+        updated_at: row
+            .get::<chrono::DateTime<chrono::Utc>, _>("updated_at")
+            .to_rfc3339(),
+    }
+}
+
+fn vault_summary_from_row(row: &sqlx::postgres::PgRow) -> HostedVaultSummary {
+    HostedVaultSummary {
+        id: row.get::<Uuid, _>("id").to_string(),
+        name: row.get("name"),
+        owner_display_name: row.get("owner_display_name"),
+        status: parse_vault_status(row.get::<String, _>("status").as_str()),
+        members: row.get("members"),
+        storage_bytes: row.get::<i64, _>("storage_bytes").max(0) as u64,
+        updated_at: row
+            .get::<chrono::DateTime<chrono::Utc>, _>("updated_at")
+            .to_rfc3339(),
+    }
+}
+
+async fn load_vault_members(
+    pool: &PgPool,
+    vault_id: Uuid,
+    request_id: &str,
+) -> Result<Vec<HostedVaultMember>, ApiFailure> {
+    let rows = sqlx::query(
+        r#"
+        SELECT u.id AS user_id, u.username, u.display_name, m.role::text AS role,
+               v.owner_user_id = u.id AS owner, m.created_at
+        FROM hosted_vault_memberships m
+        JOIN users u ON u.id = m.user_id
+        JOIN hosted_vaults v ON v.id = m.vault_id
+        WHERE m.vault_id = $1
+        ORDER BY owner DESC, u.display_name ASC
+        "#,
+    )
+    .bind(vault_id)
+    .fetch_all(pool)
+    .await
+    .map_err(|_| ApiFailure::server(request_id.to_owned()))?;
+    Ok(rows.iter().map(vault_member_from_row).collect())
+}
+
+async fn load_vault_member(
+    pool: &PgPool,
+    vault_id: Uuid,
+    user_id: Uuid,
+    request_id: &str,
+) -> Result<HostedVaultMember, ApiFailure> {
+    let row = sqlx::query(
+        r#"
+        SELECT u.id AS user_id, u.username, u.display_name, m.role::text AS role,
+               v.owner_user_id = u.id AS owner, m.created_at
+        FROM hosted_vault_memberships m
+        JOIN users u ON u.id = m.user_id
+        JOIN hosted_vaults v ON v.id = m.vault_id
+        WHERE m.vault_id = $1 AND m.user_id = $2
+        "#,
+    )
+    .bind(vault_id)
+    .bind(user_id)
+    .fetch_optional(pool)
+    .await
+    .map_err(|_| ApiFailure::server(request_id.to_owned()))?
+    .ok_or_else(|| ApiFailure::not_found(request_id.to_owned()))?;
+    Ok(vault_member_from_row(&row))
+}
+
+fn vault_member_from_row(row: &sqlx::postgres::PgRow) -> HostedVaultMember {
+    HostedVaultMember {
+        user_id: row.get::<Uuid, _>("user_id").to_string(),
+        username: row.get("username"),
+        display_name: row.get("display_name"),
+        role: parse_vault_role(row.get::<String, _>("role").as_str()),
+        owner: row.get("owner"),
+        created_at: row
+            .get::<chrono::DateTime<chrono::Utc>, _>("created_at")
+            .to_rfc3339(),
+    }
+}
+
+async fn vault_activity_event(
+    transaction: &mut Transaction<'_, Postgres>,
+    vault_id: Uuid,
+    actor_user_id: Option<Uuid>,
+    event_type: &str,
+    target_type: Option<&str>,
+    target_id: Option<&str>,
+    metadata: Value,
+    request_id: &str,
+) -> Result<(), ApiFailure> {
+    sqlx::query(
+        "INSERT INTO hosted_vault_activity_events (id, vault_id, actor_user_id, event_type, target_type, target_id, metadata) VALUES ($1, $2, $3, $4, $5, $6, $7)",
+    )
+    .bind(Uuid::now_v7())
+    .bind(vault_id)
+    .bind(actor_user_id)
+    .bind(event_type)
+    .bind(target_type)
+    .bind(target_id)
+    .bind(metadata)
+    .execute(&mut **transaction)
+    .await
+    .map_err(|_| ApiFailure::server(request_id.to_owned()))?;
+    Ok(())
+}
+
+fn vault_activity_from_row(row: &sqlx::postgres::PgRow) -> HostedVaultActivityEvent {
+    HostedVaultActivityEvent {
+        id: row.get::<Uuid, _>("id").to_string(),
+        actor_display_name: row.get("actor_display_name"),
+        event_type: row.get("event_type"),
+        target_type: row.get("target_type"),
+        target_id: row.get("target_id"),
+        created_at: row
+            .get::<chrono::DateTime<chrono::Utc>, _>("created_at")
+            .to_rfc3339(),
+    }
+}
+
+fn file_kind_name(kind: HostedFileKind) -> &'static str {
+    match kind {
+        HostedFileKind::Folder => "folder",
+        HostedFileKind::Document => "document",
+        HostedFileKind::Asset => "asset",
+    }
+}
+
+fn parse_file_kind(kind: &str) -> HostedFileKind {
+    match kind {
+        "folder" => HostedFileKind::Folder,
+        "asset" => HostedFileKind::Asset,
+        _ => HostedFileKind::Document,
+    }
+}
+
+fn document_type_name(document_type: HostedDocumentType) -> &'static str {
+    match document_type {
+        HostedDocumentType::Note => "note",
+        HostedDocumentType::Kanban => "kanban",
+        HostedDocumentType::Canvas => "canvas",
+    }
+}
+
+fn parse_document_type(document_type: Option<String>) -> Option<HostedDocumentType> {
+    document_type.map(|value| match value.as_str() {
+        "kanban" => HostedDocumentType::Kanban,
+        "canvas" => HostedDocumentType::Canvas,
+        _ => HostedDocumentType::Note,
+    })
+}
+
+fn parse_file_state(state: &str) -> HostedFileState {
+    match state {
+        "trashed" => HostedFileState::Trashed,
+        "tombstoned" => HostedFileState::Tombstoned,
+        _ => HostedFileState::Active,
+    }
+}
+
+fn validate_file_kind(
+    kind: HostedFileKind,
+    document_type: Option<HostedDocumentType>,
+    content: &str,
+    request_id: &str,
+) -> Result<(), ApiFailure> {
+    match kind {
+        HostedFileKind::Folder if document_type.is_none() && content.is_empty() => Ok(()),
+        HostedFileKind::Document if document_type.is_some() => Ok(()),
+        HostedFileKind::Asset => Err(ApiFailure::validation(
+            "Binary assets must use the upload API.",
+            request_id.to_owned(),
+        )),
+        _ => Err(ApiFailure::validation(
+            "Folders cannot have document content, and documents require a document type.",
+            request_id.to_owned(),
+        )),
+    }
+}
+
+async fn validate_parent_folder(
+    pool: &PgPool,
+    vault_id: Uuid,
+    parent_id: Option<Uuid>,
+    request_id: &str,
+) -> Result<String, ApiFailure> {
+    let Some(parent_id) = parent_id else {
+        return Ok(String::new());
+    };
+    let manifest = load_vault_manifest(pool, vault_id, request_id).await?;
+    let parent = manifest
+        .files
+        .into_iter()
+        .find(|file| file.id == parent_id.to_string())
+        .ok_or_else(|| ApiFailure::not_found(request_id.to_owned()))?;
+    if parent.kind != HostedFileKind::Folder || parent.state != HostedFileState::Active {
+        return Err(ApiFailure::path_invalid(
+            "The parent must be an active folder.",
+            request_id.to_owned(),
+        ));
+    }
+    Ok(parent.relative_path)
+}
+
+async fn lock_active_vault(
+    transaction: &mut Transaction<'_, Postgres>,
+    vault_id: Uuid,
+    request_id: &str,
+) -> Result<i64, ApiFailure> {
+    let row = sqlx::query(
+        "SELECT status::text AS status, manifest_sequence FROM hosted_vaults WHERE id = $1 FOR UPDATE",
+    )
+    .bind(vault_id)
+    .fetch_optional(&mut **transaction)
+    .await
+    .map_err(|_| ApiFailure::server(request_id.to_owned()))?
+    .ok_or_else(|| ApiFailure::not_found(request_id.to_owned()))?;
+    if row.get::<String, _>("status") != "active" {
+        return Err(ApiFailure::vault_archived(request_id.to_owned()));
+    }
+    Ok(row.get("manifest_sequence"))
+}
+
+async fn increment_manifest(
+    transaction: &mut Transaction<'_, Postgres>,
+    vault_id: Uuid,
+    request_id: &str,
+) -> Result<i64, ApiFailure> {
+    sqlx::query_scalar(
+        "UPDATE hosted_vaults SET manifest_sequence = manifest_sequence + 1, updated_at = NOW() WHERE id = $1 RETURNING manifest_sequence",
+    )
+    .bind(vault_id)
+    .fetch_one(&mut **transaction)
+    .await
+    .map_err(|_| ApiFailure::server(request_id.to_owned()))
+}
+
+async fn insert_blob_record(
+    transaction: &mut Transaction<'_, Postgres>,
+    digest: &str,
+    size: usize,
+    media_type: &str,
+    request_id: &str,
+) -> Result<(), ApiFailure> {
+    sqlx::query(
+        "INSERT INTO hosted_blobs (digest, size_bytes, media_type, storage_key) VALUES ($1, $2, $3, $1) ON CONFLICT (digest) DO NOTHING",
+    )
+    .bind(digest)
+    .bind(size as i64)
+    .bind(media_type)
+    .execute(&mut **transaction)
+    .await
+    .map_err(|_| ApiFailure::server(request_id.to_owned()))?;
+    Ok(())
+}
+
+fn map_path_database_error(error: sqlx::Error, request_id: String) -> ApiFailure {
+    if error
+        .as_database_error()
+        .and_then(|value| value.code())
+        .as_deref()
+        == Some("23505")
+    {
+        ApiFailure::new(
+            StatusCode::CONFLICT,
+            ErrorCode::PathConflict,
+            "A file with that name already exists in the folder.",
+            request_id,
+        )
+    } else {
+        ApiFailure::server(request_id)
+    }
+}
+
+async fn load_vault_manifest(
+    pool: &PgPool,
+    vault_id: Uuid,
+    request_id: &str,
+) -> Result<HostedVaultManifest, ApiFailure> {
+    let sequence =
+        sqlx::query_scalar::<_, i64>("SELECT manifest_sequence FROM hosted_vaults WHERE id = $1")
+            .bind(vault_id)
+            .fetch_optional(pool)
+            .await
+            .map_err(|_| ApiFailure::server(request_id.to_owned()))?
+            .ok_or_else(|| ApiFailure::not_found(request_id.to_owned()))?;
+    let rows = sqlx::query(
+        r#"
+        SELECT f.id, f.parent_id, f.name, f.kind::text AS kind,
+               f.document_type::text AS document_type, f.state::text AS state,
+               f.created_at, f.updated_at,
+               r.id AS revision_id, r.sequence AS revision_sequence,
+               r.content_hash, r.size_bytes, r.created_at AS revision_created_at,
+               creator.display_name AS revision_creator_display_name
+        FROM hosted_file_entries f
+        LEFT JOIN hosted_file_revisions r ON r.id = f.current_revision_id
+        LEFT JOIN users creator ON creator.id = r.created_by
+        WHERE f.vault_id = $1
+        ORDER BY f.created_at ASC
+        "#,
+    )
+    .bind(vault_id)
+    .fetch_all(pool)
+    .await
+    .map_err(|_| ApiFailure::server(request_id.to_owned()))?;
+    let paths = rows
+        .iter()
+        .map(|row| {
+            (
+                row.get::<Uuid, _>("id"),
+                (
+                    row.get::<Option<Uuid>, _>("parent_id"),
+                    row.get::<String, _>("name"),
+                ),
+            )
+        })
+        .collect::<HashMap<_, _>>();
+    let files = rows
+        .iter()
+        .map(|row| file_entry_from_row(row, &paths))
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|_| ApiFailure::server(request_id.to_owned()))?;
+    Ok(HostedVaultManifest {
+        vault_id: vault_id.to_string(),
+        sequence,
+        files,
+    })
+}
+
+fn file_entry_from_row(
+    row: &sqlx::postgres::PgRow,
+    paths: &HashMap<Uuid, (Option<Uuid>, String)>,
+) -> Result<HostedFileEntry, ()> {
+    let id: Uuid = row.get("id");
+    let mut current = Some(id);
+    let mut names = Vec::new();
+    for _ in 0..=paths.len() {
+        let Some(file_id) = current else {
+            names.reverse();
+            return Ok(HostedFileEntry {
+                id: id.to_string(),
+                parent_id: row
+                    .get::<Option<Uuid>, _>("parent_id")
+                    .map(|value| value.to_string()),
+                name: row.get("name"),
+                relative_path: names.join("/"),
+                kind: parse_file_kind(row.get::<String, _>("kind").as_str()),
+                document_type: parse_document_type(row.get("document_type")),
+                state: parse_file_state(row.get::<String, _>("state").as_str()),
+                current_revision: revision_from_current_row(row),
+                created_at: row
+                    .get::<chrono::DateTime<chrono::Utc>, _>("created_at")
+                    .to_rfc3339(),
+                updated_at: row
+                    .get::<chrono::DateTime<chrono::Utc>, _>("updated_at")
+                    .to_rfc3339(),
+            });
+        };
+        let (parent_id, name) = paths.get(&file_id).ok_or(())?;
+        names.push(name.clone());
+        current = *parent_id;
+    }
+    Err(())
+}
+
+fn revision_from_current_row(row: &sqlx::postgres::PgRow) -> Option<HostedFileRevision> {
+    Some(HostedFileRevision {
+        id: row.get::<Option<Uuid>, _>("revision_id")?.to_string(),
+        sequence: row.get("revision_sequence"),
+        content_hash: row.get("content_hash"),
+        size_bytes: row.get::<i64, _>("size_bytes").max(0) as u64,
+        created_by_display_name: row.get("revision_creator_display_name"),
+        created_at: row
+            .get::<chrono::DateTime<chrono::Utc>, _>("revision_created_at")
+            .to_rfc3339(),
+    })
+}
+
+async fn load_vault_file_entry(
+    pool: &PgPool,
+    vault_id: Uuid,
+    file_id: Uuid,
+    request_id: &str,
+) -> Result<HostedFileEntry, ApiFailure> {
+    load_vault_manifest(pool, vault_id, request_id)
+        .await?
+        .files
+        .into_iter()
+        .find(|file| file.id == file_id.to_string())
+        .ok_or_else(|| ApiFailure::not_found(request_id.to_owned()))
+}
+
+async fn load_file_revisions(
+    pool: &PgPool,
+    vault_id: Uuid,
+    file_id: Uuid,
+    request_id: &str,
+) -> Result<Vec<HostedFileRevision>, ApiFailure> {
+    let rows = sqlx::query(
+        r#"
+        SELECT r.id, r.sequence, r.content_hash, r.size_bytes, r.created_at,
+               creator.display_name AS created_by_display_name
+        FROM hosted_file_revisions r
+        LEFT JOIN users creator ON creator.id = r.created_by
+        WHERE r.vault_id = $1 AND r.file_id = $2
+        ORDER BY r.sequence DESC
+        "#,
+    )
+    .bind(vault_id)
+    .bind(file_id)
+    .fetch_all(pool)
+    .await
+    .map_err(|_| ApiFailure::server(request_id.to_owned()))?;
+    if rows.is_empty() {
+        return Err(ApiFailure::not_found(request_id.to_owned()));
+    }
+    Ok(rows
+        .iter()
+        .map(|row| HostedFileRevision {
+            id: row.get::<Uuid, _>("id").to_string(),
+            sequence: row.get("sequence"),
+            content_hash: row.get("content_hash"),
+            size_bytes: row.get::<i64, _>("size_bytes").max(0) as u64,
+            created_by_display_name: row.get("created_by_display_name"),
+            created_at: row
+                .get::<chrono::DateTime<chrono::Utc>, _>("created_at")
+                .to_rfc3339(),
+        })
+        .collect())
+}
+
 fn invitation_from_row(row: &sqlx::postgres::PgRow) -> Invitation {
     Invitation {
         id: row.get::<Uuid, _>("id").to_string(),
@@ -1251,6 +2699,18 @@ async fn require_native_user(
         .await
         .map_err(|_| ApiFailure::server(request_id.to_owned()))?
         .ok_or_else(|| ApiFailure::authentication_required(request_id.to_owned()))
+}
+
+async fn require_authenticated_user(
+    state: &AppState,
+    headers: &HeaderMap,
+    request_id: &str,
+) -> Result<AuthenticatedUser, ApiFailure> {
+    if headers.contains_key(header::AUTHORIZATION) {
+        require_native_user(state, headers, request_id).await
+    } else {
+        require_user(state, headers, request_id).await
+    }
 }
 
 async fn require_any_user(
@@ -1623,6 +3083,42 @@ impl ApiFailure {
             StatusCode::NOT_FOUND,
             ErrorCode::ResourceNotFound,
             "The requested resource was not found.",
+            request_id,
+        )
+    }
+
+    fn vault_permission_denied(request_id: String) -> Self {
+        Self::new(
+            StatusCode::FORBIDDEN,
+            ErrorCode::VaultPermissionDenied,
+            "You do not have permission to perform this vault operation.",
+            request_id,
+        )
+    }
+
+    fn vault_archived(request_id: String) -> Self {
+        Self::new(
+            StatusCode::CONFLICT,
+            ErrorCode::VaultArchived,
+            "The vault is archived or pending deletion.",
+            request_id,
+        )
+    }
+
+    fn path_invalid(message: impl Into<String>, request_id: String) -> Self {
+        Self::new(
+            StatusCode::BAD_REQUEST,
+            ErrorCode::PathInvalid,
+            message,
+            request_id,
+        )
+    }
+
+    fn revision_conflict(request_id: String) -> Self {
+        Self::new(
+            StatusCode::CONFLICT,
+            ErrorCode::RevisionConflict,
+            "The document has changed since the supplied revision.",
             request_id,
         )
     }
@@ -2034,7 +3530,7 @@ mod tests {
         )
         .await;
         assert_eq!(member_login.status(), StatusCode::OK);
-        let (member_cookie, _) = session_cookies(&member_login);
+        let (member_cookie, member_csrf) = session_cookies(&member_login);
         let forbidden_overview = request(
             &app,
             "GET",
@@ -2045,6 +3541,332 @@ mod tests {
         )
         .await;
         assert_eq!(forbidden_overview.status(), StatusCode::FORBIDDEN);
+
+        let vault = request(
+            &app,
+            "POST",
+            "/api/v1/vaults",
+            json!({"name": "Team Vault"}),
+            Some(&admin_cookie),
+            Some(&admin_csrf),
+        )
+        .await;
+        assert_eq!(vault.status(), StatusCode::CREATED);
+        let vault_body = json_body(vault).await;
+        let vault_id = vault_body["data"]["id"].as_str().unwrap();
+        assert_eq!(vault_body["data"]["role"], "admin");
+        assert_eq!(vault_body["data"]["status"], "active");
+
+        let member_vaults_before = request(
+            &app,
+            "GET",
+            "/api/v1/vaults",
+            json!({}),
+            Some(&member_cookie),
+            None,
+        )
+        .await;
+        assert_eq!(json_body(member_vaults_before).await["data"], json!([]));
+
+        let added_member = request(
+            &app,
+            "POST",
+            &format!("/api/v1/vaults/{vault_id}/members"),
+            json!({"userId": member_id, "role": "viewer"}),
+            Some(&admin_cookie),
+            Some(&admin_csrf),
+        )
+        .await;
+        assert_eq!(added_member.status(), StatusCode::CREATED);
+        assert_eq!(json_body(added_member).await["data"]["role"], "viewer");
+
+        let member_vaults = request(
+            &app,
+            "GET",
+            "/api/v1/vaults",
+            json!({}),
+            Some(&member_cookie),
+            None,
+        )
+        .await;
+        assert_eq!(json_body(member_vaults).await["data"][0]["id"], vault_id);
+
+        let viewer_rename = request(
+            &app,
+            "PATCH",
+            &format!("/api/v1/vaults/{vault_id}"),
+            json!({"name": "Denied Rename"}),
+            Some(&member_cookie),
+            Some(&member_csrf),
+        )
+        .await;
+        assert_eq!(viewer_rename.status(), StatusCode::FORBIDDEN);
+        assert_eq!(
+            json_body(viewer_rename).await["error"]["code"],
+            "vault_permission_denied"
+        );
+
+        let viewer_create_file = request(
+            &app,
+            "POST",
+            &format!("/api/v1/vaults/{vault_id}/files"),
+            json!({"name": "Denied", "kind": "folder", "content": ""}),
+            Some(&member_cookie),
+            Some(&member_csrf),
+        )
+        .await;
+        assert_eq!(viewer_create_file.status(), StatusCode::FORBIDDEN);
+        assert_eq!(
+            json_body(viewer_create_file).await["error"]["code"],
+            "vault_permission_denied"
+        );
+
+        let owner_removal = request(
+            &app,
+            "DELETE",
+            &format!("/api/v1/vaults/{vault_id}/members/{admin_id}"),
+            json!({}),
+            Some(&admin_cookie),
+            Some(&admin_csrf),
+        )
+        .await;
+        assert_eq!(owner_removal.status(), StatusCode::FORBIDDEN);
+
+        let promoted_member = request(
+            &app,
+            "PATCH",
+            &format!("/api/v1/vaults/{vault_id}/members/{member_id}"),
+            json!({"role": "editor"}),
+            Some(&admin_cookie),
+            Some(&admin_csrf),
+        )
+        .await;
+        assert_eq!(promoted_member.status(), StatusCode::OK);
+        assert_eq!(json_body(promoted_member).await["data"]["role"], "editor");
+
+        let invalid_path = request(
+            &app,
+            "POST",
+            &format!("/api/v1/vaults/{vault_id}/files"),
+            json!({"name": ".collab", "kind": "folder", "content": ""}),
+            Some(&admin_cookie),
+            Some(&admin_csrf),
+        )
+        .await;
+        assert_eq!(invalid_path.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(
+            json_body(invalid_path).await["error"]["code"],
+            "path_invalid"
+        );
+
+        let folder = request(
+            &app,
+            "POST",
+            &format!("/api/v1/vaults/{vault_id}/files"),
+            json!({"name": "Notes", "kind": "folder", "content": ""}),
+            Some(&member_cookie),
+            Some(&member_csrf),
+        )
+        .await;
+        assert_eq!(folder.status(), StatusCode::CREATED);
+        let folder_id = json_body(folder).await["data"]["id"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+
+        let document = request(
+            &app,
+            "POST",
+            &format!("/api/v1/vaults/{vault_id}/files"),
+            json!({
+                "parentId": folder_id,
+                "name": "Welcome.md",
+                "kind": "document",
+                "documentType": "note",
+                "content": "# Welcome"
+            }),
+            Some(&member_cookie),
+            Some(&member_csrf),
+        )
+        .await;
+        assert_eq!(document.status(), StatusCode::CREATED);
+        let document_body = json_body(document).await;
+        let document_id = document_body["data"]["id"].as_str().unwrap().to_owned();
+        assert_eq!(document_body["data"]["relativePath"], "Notes/Welcome.md");
+        assert_eq!(document_body["data"]["currentRevision"]["sequence"], 1);
+
+        let duplicate_name = request(
+            &app,
+            "POST",
+            &format!("/api/v1/vaults/{vault_id}/files"),
+            json!({
+                "parentId": folder_id,
+                "name": "welcome.md",
+                "kind": "document",
+                "documentType": "note",
+                "content": "duplicate"
+            }),
+            Some(&member_cookie),
+            Some(&member_csrf),
+        )
+        .await;
+        assert_eq!(duplicate_name.status(), StatusCode::CONFLICT);
+        assert_eq!(
+            json_body(duplicate_name).await["error"]["code"],
+            "path_conflict"
+        );
+
+        let read_document = request(
+            &app,
+            "GET",
+            &format!("/api/v1/vaults/{vault_id}/files/{document_id}"),
+            json!({}),
+            Some(&admin_cookie),
+            None,
+        )
+        .await;
+        assert_eq!(read_document.status(), StatusCode::OK);
+        assert_eq!(
+            json_body(read_document).await["data"]["content"],
+            "# Welcome"
+        );
+
+        let stale_write = request(
+            &app,
+            "POST",
+            &format!("/api/v1/vaults/{vault_id}/files/{document_id}/revisions"),
+            json!({"expectedRevisionSequence": 0, "content": "# Stale"}),
+            Some(&member_cookie),
+            Some(&member_csrf),
+        )
+        .await;
+        assert_eq!(stale_write.status(), StatusCode::CONFLICT);
+        assert_eq!(
+            json_body(stale_write).await["error"]["code"],
+            "revision_conflict"
+        );
+
+        let written = request(
+            &app,
+            "POST",
+            &format!("/api/v1/vaults/{vault_id}/files/{document_id}/revisions"),
+            json!({"expectedRevisionSequence": 1, "content": "# Updated"}),
+            Some(&member_cookie),
+            Some(&member_csrf),
+        )
+        .await;
+        assert_eq!(written.status(), StatusCode::CREATED);
+        assert_eq!(
+            json_body(written).await["data"]["file"]["currentRevision"]["sequence"],
+            2
+        );
+
+        let manifest = request(
+            &app,
+            "GET",
+            &format!("/api/v1/vaults/{vault_id}/manifest"),
+            json!({}),
+            Some(&admin_cookie),
+            None,
+        )
+        .await;
+        assert_eq!(manifest.status(), StatusCode::OK);
+        let manifest_body = json_body(manifest).await;
+        assert_eq!(manifest_body["data"]["sequence"], 3);
+        assert_eq!(manifest_body["data"]["files"].as_array().unwrap().len(), 2);
+
+        let revisions = request(
+            &app,
+            "GET",
+            &format!("/api/v1/vaults/{vault_id}/files/{document_id}/revisions"),
+            json!({}),
+            Some(&admin_cookie),
+            None,
+        )
+        .await;
+        assert_eq!(revisions.status(), StatusCode::OK);
+        assert_eq!(
+            json_body(revisions).await["data"].as_array().unwrap().len(),
+            2
+        );
+
+        let archived = request(
+            &app,
+            "PATCH",
+            &format!("/api/v1/vaults/{vault_id}"),
+            json!({"status": "archived"}),
+            Some(&admin_cookie),
+            Some(&admin_csrf),
+        )
+        .await;
+        assert_eq!(archived.status(), StatusCode::OK);
+        assert_eq!(json_body(archived).await["data"]["status"], "archived");
+
+        let archived_member_mutation = request(
+            &app,
+            "PATCH",
+            &format!("/api/v1/vaults/{vault_id}/members/{member_id}"),
+            json!({"role": "viewer"}),
+            Some(&admin_cookie),
+            Some(&admin_csrf),
+        )
+        .await;
+        assert_eq!(archived_member_mutation.status(), StatusCode::CONFLICT);
+        assert_eq!(
+            json_body(archived_member_mutation).await["error"]["code"],
+            "vault_archived"
+        );
+
+        let archived_write = request(
+            &app,
+            "POST",
+            &format!("/api/v1/vaults/{vault_id}/files/{document_id}/revisions"),
+            json!({"expectedRevisionSequence": 2, "content": "# Archived"}),
+            Some(&member_cookie),
+            Some(&member_csrf),
+        )
+        .await;
+        assert_eq!(archived_write.status(), StatusCode::CONFLICT);
+        assert_eq!(
+            json_body(archived_write).await["error"]["code"],
+            "vault_archived"
+        );
+
+        let activity = request(
+            &app,
+            "GET",
+            &format!("/api/v1/vaults/{vault_id}/activity"),
+            json!({}),
+            Some(&member_cookie),
+            None,
+        )
+        .await;
+        assert_eq!(activity.status(), StatusCode::OK);
+        assert!(json_body(activity).await["data"].as_array().unwrap().len() >= 4);
+
+        let pending_delete = request(
+            &app,
+            "DELETE",
+            &format!("/api/v1/vaults/{vault_id}"),
+            json!({}),
+            Some(&admin_cookie),
+            Some(&admin_csrf),
+        )
+        .await;
+        assert_eq!(pending_delete.status(), StatusCode::NO_CONTENT);
+        let pending_detail = request(
+            &app,
+            "GET",
+            &format!("/api/v1/vaults/{vault_id}"),
+            json!({}),
+            Some(&admin_cookie),
+            None,
+        )
+        .await;
+        assert_eq!(
+            json_body(pending_detail).await["data"]["status"],
+            "pending_delete"
+        );
 
         let disabled = request(
             &app,

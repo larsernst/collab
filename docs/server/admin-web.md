@@ -30,8 +30,9 @@ Phase 2 delivers:
 - A dashboard showing server health, version, uptime, storage summaries, and
   counts for users, sessions, invitations, and hosted vaults.
 - Recent redacted audit events and actionable operational warnings.
-- A read-only hosted-vault inventory with name, owner, member count, status,
-  storage usage when available, and last activity.
+- A read-only hosted-vault inventory backed by the Phase 3 canonical vault
+  tables, with name, owner, member count, status, storage usage when available,
+  and last activity.
 
 Phase 3 expands the same interface with:
 

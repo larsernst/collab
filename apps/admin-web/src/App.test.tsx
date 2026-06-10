@@ -121,6 +121,25 @@ describe('admin application', () => {
     expect(screen.getByTitle('Sign out')).toBeTruthy();
   });
 
+  it('shows canonical hosted-vault status in the administration inventory', async () => {
+    vi.mocked(serverApi.bootstrapStatus).mockResolvedValue({ required: false });
+    vi.mocked(serverApi.me).mockResolvedValue(admin);
+    vi.mocked(serverApi.vaults).mockResolvedValue([{
+      id: 'vault-1',
+      name: 'Archived Vault',
+      ownerDisplayName: 'Admin User',
+      status: 'archived',
+      members: 2,
+      storageBytes: 1024,
+      updatedAt: '2026-06-10T00:00:00Z',
+    }]);
+    render(<App />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Vaults' }));
+    expect(await screen.findByText('Archived Vault')).toBeTruthy();
+    expect(screen.getByText('archived')).toBeTruthy();
+    expect(screen.getByText(/2 members/)).toBeTruthy();
+  });
+
   it('creates a one-time invitation link through the user-management flow', async () => {
     vi.mocked(serverApi.bootstrapStatus).mockResolvedValue({ required: false });
     vi.mocked(serverApi.me).mockResolvedValue(admin);

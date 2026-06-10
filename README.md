@@ -124,13 +124,17 @@ Collab-style admin web interface, and a minimal desktop server connection flow.
 - Liveness and readiness endpoints plus automatic SQL migrations
 - Content-addressed filesystem blob storage behind a storage abstraction
 - PostgreSQL-backed users, credentials, browser/native sessions, invitations, and audit events
+- Canonical hosted-vault and membership storage with authenticated lifecycle,
+  role-management, activity, and administration inventory APIs
+- Stable-ID hosted file manifests, portable hosted-path validation, and
+  optimistic text-document revisions backed by content-addressed blobs
 - Argon2id password hashing, one-time administrator bootstrap, CSRF protection, and login rate limiting
 - Collab-style admin web interface served at `/admin/`
 - Dashboard storage/warning summaries, user creation/invitations, password reset, disable/re-enable/delete controls, session revocation, activity inspection, and redacted audit views
 - Desktop server login in Settings with memory-only access tokens and refresh tokens stored in the OS credential store
 
-Hosted vault storage and live/offline synchronization remain under active
-development. Progress is tracked in
+Hosted binary assets, structural file operations, and live/offline
+synchronization remain under active development. Progress is tracked in
 [COLLAB_SERVER_PLAN.md](./COLLAB_SERVER_PLAN.md).
 
 ### Vault Management And Security

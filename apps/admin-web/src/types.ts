@@ -67,6 +67,7 @@ export interface HostedVaultSummary {
   id: string;
   name: string;
   ownerDisplayName: string;
+  status: 'active' | 'archived' | 'pending_delete';
   members: number;
   storageBytes: number;
   updatedAt: string;
