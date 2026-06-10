@@ -134,6 +134,11 @@ pub fn run() {
             commands::files::create_folder,
             // web
             commands::web::fetch_link_preview,
+            // hosted server connection
+            commands::server::connect_server,
+            commands::server::reconnect_server,
+            commands::server::disconnect_server,
+            commands::server::server_connection_status,
             // templates
             commands::templates::list_kanban_templates,
             commands::templates::save_kanban_template,

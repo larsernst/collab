@@ -9,10 +9,10 @@ shared-folder collaboration works through vault metadata, while a self-hosted
 collaboration server is being built for authenticated users, hosted vaults,
 server-backed permissions, and future live/offline synchronization.
 
-The server foundation is complete. Authentication and administration are in
-progress and currently include PostgreSQL-backed identities, Argon2id
-credentials, secure browser sessions, audit events, and a Collab-style admin web
-interface.
+The server foundation plus authentication and administration phases are
+complete. They include PostgreSQL-backed identities, Argon2id credentials,
+secure browser and native sessions, expiring invitations, audit events, a
+Collab-style admin web interface, and a minimal desktop server connection flow.
 
 ## Highlights
 
@@ -24,7 +24,7 @@ interface.
 - Dedicated image viewer/editor with additive annotation overlays and permanent crop/rotate/resize/export flows
 - Shared-folder collaboration with presence, chat, per-file history snapshots, permissions, and conflict dialogs
 - Self-hosted Docker Compose server foundation with PostgreSQL, persistent blob storage, Caddy, health checks, and migrations
-- Server administration web interface with first-admin bootstrap, login, dashboard, user management, session revocation, and audit views
+- Server administration web interface with first-admin bootstrap, invitations, dashboard, user/password/session lifecycle management, activity inspection, and audit views
 - Vault encryption with Argon2id + AES-256-GCM
 - Theming, font, motion, calendar, zoom, and web preview settings
 - Native desktop packaging through Tauri, including Flatpak support and in-app updates where supported
@@ -123,13 +123,13 @@ interface.
 - Persistent PostgreSQL, blob-storage, backup, and gateway volumes
 - Liveness and readiness endpoints plus automatic SQL migrations
 - Content-addressed filesystem blob storage behind a storage abstraction
-- PostgreSQL-backed users, credentials, browser sessions, invitations, and audit events
+- PostgreSQL-backed users, credentials, browser/native sessions, invitations, and audit events
 - Argon2id password hashing, one-time administrator bootstrap, CSRF protection, and login rate limiting
 - Collab-style admin web interface served at `/admin/`
-- Dashboard, user creation, disabling, session revocation, and redacted audit views
+- Dashboard storage/warning summaries, user creation/invitations, password reset, disable/re-enable/delete controls, session revocation, activity inspection, and redacted audit views
+- Desktop server login in Settings with memory-only access tokens and refresh tokens stored in the OS credential store
 
-Hosted vault storage, native hosted-vault login, invitations, rotating native
-refresh tokens, and live/offline synchronization remain under active
+Hosted vault storage and live/offline synchronization remain under active
 development. Progress is tracked in
 [COLLAB_SERVER_PLAN.md](./COLLAB_SERVER_PLAN.md).
 
@@ -218,6 +218,7 @@ src-tauri/src/commands/
   ui.rs
   update.rs
   web.rs
+  server.rs
 
 compose.yaml          Local server/PostgreSQL/Caddy stack
 Dockerfile.server     Cached multi-stage server and admin-web image

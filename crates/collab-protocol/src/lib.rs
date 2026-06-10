@@ -102,6 +102,7 @@ pub struct ServerUser {
     pub created_at: String,
     pub last_login_at: Option<String>,
     pub active_sessions: i64,
+    pub is_primary_admin: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -119,7 +120,64 @@ pub struct BrowserSession {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
+pub struct NativeSession {
+    pub user: ServerUser,
+    pub access_token: String,
+    pub refresh_token: String,
+    pub access_expires_at: String,
+    pub refresh_expires_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct Invitation {
+    pub id: String,
+    pub username: String,
+    pub display_name: String,
+    pub role: ServerUserRole,
+    pub created_at: String,
+    pub expires_at: String,
+    pub accepted_at: Option<String>,
+    pub revoked_at: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct CreatedInvitation {
+    pub invitation: Invitation,
+    pub token: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct StorageSummary {
+    pub database_bytes: i64,
+    pub blob_bytes: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct OperationalWarning {
+    pub code: String,
+    pub message: String,
+    pub severity: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct HostedVaultSummary {
+    pub id: String,
+    pub name: String,
+    pub owner_display_name: String,
+    pub members: i64,
+    pub storage_bytes: u64,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
 pub struct AdminOverview {
+    pub health: HealthState,
     pub server_version: String,
     pub protocol_version: u32,
     pub uptime_seconds: u64,
@@ -128,6 +186,8 @@ pub struct AdminOverview {
     pub active_sessions: i64,
     pub pending_invitations: i64,
     pub hosted_vaults: i64,
+    pub storage: StorageSummary,
+    pub operational_warnings: Vec<OperationalWarning>,
     pub recent_audit_events: Vec<AuditEvent>,
 }
 

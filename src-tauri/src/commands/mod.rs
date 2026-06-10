@@ -8,3 +8,4 @@ pub mod crypto;
 pub mod update;
 pub mod templates;
 pub mod web;
+pub mod server;

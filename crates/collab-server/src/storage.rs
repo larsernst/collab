@@ -10,6 +10,7 @@ pub trait BlobStorage: Send + Sync {
     async fn exists(&self, digest: &str) -> Result<bool, StorageError>;
     async fn delete(&self, digest: &str) -> Result<(), StorageError>;
     async fn health_check(&self) -> Result<(), StorageError>;
+    async fn total_bytes(&self) -> Result<u64, StorageError>;
 }
 
 #[derive(Debug, Clone)]
@@ -91,6 +92,29 @@ impl BlobStorage for FileSystemBlobStorage {
         fs::remove_file(probe).await?;
         Ok(())
     }
+
+    async fn total_bytes(&self) -> Result<u64, StorageError> {
+        let root = self.root.clone();
+        tokio::task::spawn_blocking(move || {
+            let mut total = 0_u64;
+            let mut pending = vec![root];
+            while let Some(path) = pending.pop() {
+                for entry in std::fs::read_dir(path)? {
+                    let entry = entry?;
+                    let metadata = entry.metadata()?;
+                    if metadata.is_dir() {
+                        pending.push(entry.path());
+                    } else {
+                        total = total.saturating_add(metadata.len());
+                    }
+                }
+            }
+            Ok::<_, std::io::Error>(total)
+        })
+        .await
+        .map_err(|error| StorageError::Task(error.to_string()))?
+        .map_err(StorageError::Io)
+    }
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -99,6 +123,8 @@ pub enum StorageError {
     InvalidDigest,
     #[error(transparent)]
     Io(#[from] std::io::Error),
+    #[error("storage task failed: {0}")]
+    Task(String),
 }
 
 #[cfg(test)]

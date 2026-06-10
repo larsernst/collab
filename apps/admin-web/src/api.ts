@@ -1,4 +1,4 @@
-import type { AdminOverview, AuditEvent, ServerUser } from './types';
+import type { AdminOverview, AuditEvent, CreatedInvitation, HostedVaultSummary, Invitation, ServerUser } from './types';
 
 interface DataResponse<T> {
   data: T;
@@ -45,6 +45,11 @@ export const serverApi = {
       method: 'POST',
       body: JSON.stringify(payload),
     }),
+  acceptInvitation: (token: string, password: string) =>
+    api<{ user: ServerUser; csrfToken: string }>(`/api/v1/auth/invitations/${encodeURIComponent(token)}/accept`, {
+      method: 'POST',
+      body: JSON.stringify({ password }),
+    }),
   logout: () => api<void>('/api/v1/auth/logout', { method: 'POST' }),
   me: () => api<ServerUser>('/api/v1/users/me'),
   overview: () => api<AdminOverview>('/api/v1/admin/overview'),
@@ -56,7 +61,18 @@ export const serverApi = {
       method: 'PATCH',
       body: JSON.stringify(payload),
     }),
+  deleteUser: (id: string) => api<void>(`/api/v1/admin/users/${id}`, { method: 'DELETE' }),
   revokeSessions: (id: string) =>
     api<void>(`/api/v1/admin/users/${id}/revoke-sessions`, { method: 'POST' }),
+  resetPassword: (id: string, newPassword: string) =>
+    api<void>(`/api/v1/admin/users/${id}/reset-password`, {
+      method: 'POST',
+      body: JSON.stringify({ newPassword }),
+    }),
+  userActivity: (id: string) => api<AuditEvent[]>(`/api/v1/admin/users/${id}/activity`),
+  invitations: () => api<Invitation[]>('/api/v1/admin/invitations'),
+  createInvitation: (payload: Record<string, unknown>) =>
+    api<CreatedInvitation>('/api/v1/admin/invitations', { method: 'POST', body: JSON.stringify(payload) }),
+  vaults: () => api<HostedVaultSummary[]>('/api/v1/admin/vaults'),
   auditEvents: () => api<AuditEvent[]>('/api/v1/admin/audit-events'),
 };

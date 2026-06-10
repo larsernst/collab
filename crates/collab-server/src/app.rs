@@ -55,15 +55,36 @@ pub fn build_router(state: AppState) -> Router {
         .route("/api/v1/auth/bootstrap-status", get(api::bootstrap_status))
         .route("/api/v1/auth/bootstrap", post(api::bootstrap))
         .route("/api/v1/auth/login", post(api::login))
+        .route("/api/v1/auth/native/login", post(api::native_login))
+        .route("/api/v1/auth/refresh", post(api::refresh))
+        .route("/api/v1/auth/native/logout", post(api::native_logout))
+        .route("/api/v1/auth/invitations/{token}/accept", post(api::accept_invitation))
         .route("/api/v1/auth/logout", post(api::logout))
         .route("/api/v1/users/me", get(api::me))
+        .route("/api/v1/users/me/password", post(api::change_password))
         .route("/api/v1/admin/overview", get(api::overview))
         .route("/api/v1/admin/users", get(api::list_users).post(api::create_user))
-        .route("/api/v1/admin/users/{user_id}", patch(api::update_user))
+        .route(
+            "/api/v1/admin/users/{user_id}",
+            patch(api::update_user).delete(api::delete_user),
+        )
         .route(
             "/api/v1/admin/users/{user_id}/revoke-sessions",
             post(api::revoke_user_sessions),
         )
+        .route(
+            "/api/v1/admin/users/{user_id}/reset-password",
+            post(api::reset_user_password),
+        )
+        .route(
+            "/api/v1/admin/users/{user_id}/activity",
+            get(api::user_activity),
+        )
+        .route(
+            "/api/v1/admin/invitations",
+            get(api::list_invitations).post(api::create_invitation),
+        )
+        .route("/api/v1/admin/vaults", get(api::hosted_vaults))
         .route("/api/v1/admin/audit-events", get(api::audit_events))
         .nest_service("/admin", admin_assets)
         .layer(SetResponseHeaderLayer::if_not_present(

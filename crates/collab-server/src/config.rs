@@ -22,6 +22,8 @@ pub struct ServerConfig {
     pub admin_web_dir: PathBuf,
     pub browser_secure_cookies: bool,
     pub session_ttl_hours: i64,
+    pub native_access_ttl_minutes: i64,
+    pub native_refresh_ttl_days: i64,
     pub log_filter: String,
     pub log_format: LogFormat,
 }
@@ -36,6 +38,8 @@ impl Default for ServerConfig {
             admin_web_dir: PathBuf::from("apps/admin-web/dist"),
             browser_secure_cookies: false,
             session_ttl_hours: 12,
+            native_access_ttl_minutes: 15,
+            native_refresh_ttl_days: 30,
             log_filter: "collab_server=info,tower_http=info".into(),
             log_format: LogFormat::Pretty,
         }
@@ -93,6 +97,16 @@ impl ServerConfig {
                 .parse()
                 .map_err(|_| ConfigError::Invalid("COLLAB_SESSION_TTL_HOURS"))?;
         }
+        if let Ok(value) = env::var("COLLAB_NATIVE_ACCESS_TTL_MINUTES") {
+            self.native_access_ttl_minutes = value
+                .parse()
+                .map_err(|_| ConfigError::Invalid("COLLAB_NATIVE_ACCESS_TTL_MINUTES"))?;
+        }
+        if let Ok(value) = env::var("COLLAB_NATIVE_REFRESH_TTL_DAYS") {
+            self.native_refresh_ttl_days = value
+                .parse()
+                .map_err(|_| ConfigError::Invalid("COLLAB_NATIVE_REFRESH_TTL_DAYS"))?;
+        }
         if let Ok(value) = env::var("COLLAB_LOG") {
             self.log_filter = value;
         }
@@ -123,6 +137,12 @@ impl ServerConfig {
         }
         if self.session_ttl_hours <= 0 || self.session_ttl_hours > 24 * 30 {
             return Err(ConfigError::Invalid("COLLAB_SESSION_TTL_HOURS"));
+        }
+        if self.native_access_ttl_minutes <= 0 || self.native_access_ttl_minutes > 24 * 60 {
+            return Err(ConfigError::Invalid("COLLAB_NATIVE_ACCESS_TTL_MINUTES"));
+        }
+        if self.native_refresh_ttl_days <= 0 || self.native_refresh_ttl_days > 365 {
+            return Err(ConfigError::Invalid("COLLAB_NATIVE_REFRESH_TTL_DAYS"));
         }
         Ok(())
     }

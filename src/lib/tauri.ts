@@ -33,6 +33,19 @@ export interface LinkPreviewData {
   embedBlockReason?: string | null;
 }
 
+export interface ServerConnectionStatus {
+  connected: boolean;
+  serverUrl: string | null;
+  user: {
+    id: string;
+    username: string;
+    displayName: string;
+    role: 'member' | 'admin';
+    status: 'active' | 'disabled';
+  } | null;
+  accessExpiresAt: string | null;
+}
+
 export const tauriCommands = {
   // Vault
   openVault: (path: string) => invoke<VaultMeta>('open_vault', { path }),
@@ -258,6 +271,14 @@ export const tauriCommands = {
   isAppImage: () => invoke<boolean>('is_appimage'),
   isFlatpak: () => invoke<boolean>('is_flatpak'),
   shouldDisableBlur: () => invoke<boolean>('should_disable_blur'),
+
+  // Hosted server connection. Refresh credentials remain in the OS credential store.
+  connectServer: (serverUrl: string, username: string, password: string) =>
+    invoke<ServerConnectionStatus>('connect_server', { serverUrl, username, password }),
+  reconnectServer: (serverUrl: string) =>
+    invoke<ServerConnectionStatus>('reconnect_server', { serverUrl }),
+  disconnectServer: () => invoke<void>('disconnect_server'),
+  serverConnectionStatus: () => invoke<ServerConnectionStatus>('server_connection_status'),
 
   // Update
   checkForUpdate: () => invoke<UpdateInfo>('check_for_update'),

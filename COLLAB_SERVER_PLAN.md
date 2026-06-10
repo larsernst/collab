@@ -14,7 +14,7 @@ This document is the source of truth for implementation progress. Update task ch
 | --- | --- | --- |
 | 0. Architecture and prerequisites | Complete | 100% |
 | 1. Server foundation and Compose | Complete | 100% |
-| 2. Authentication and administration | In progress | 45% |
+| 2. Authentication and administration | Complete | 100% |
 | 3. Hosted vault storage and permissions | Not started | 0% |
 | 4. Native hosted-vault client | Not started | 0% |
 | 5. Live collaboration | Not started | 0% |
@@ -152,10 +152,10 @@ surface before hosted vault mutations are exposed.
 
 - [x] Implement the user, credential, session, invitation, and audit-event tables.
 - [x] Add one-time first-administrator bootstrap.
-- [ ] Add admin-created users and expiring invitation links.
+- [x] Add admin-created users and expiring invitation links.
 - [x] Hash passwords using Argon2id with configurable secure defaults.
-- [ ] Implement login, token refresh, logout, and session revocation.
-- [ ] Implement password change and administrator password reset.
+- [x] Implement login, token refresh, logout, and session revocation.
+- [x] Implement password change and administrator password reset.
 - [x] Implement disabled-user behavior.
 - [x] Add login rate limiting and basic abuse protection.
 - [x] Add authenticated `/api/v1/auth`, `/api/v1/users`, and administration endpoints.
@@ -163,25 +163,25 @@ surface before hosted vault mutations are exposed.
 - [x] Add audit events for authentication and user-administration actions.
 - [x] Add a server-hosted admin web interface using the Collab visual language.
 - [x] Add secure browser authentication for the admin interface using hardened HTTP-only cookies and CSRF protection.
-- [ ] Add an admin dashboard with:
+- [x] Add an admin dashboard with:
   - Server health, version, uptime, and storage summary.
   - User, active-session, invitation, and hosted-vault counts.
   - Recent redacted audit events and operational warnings.
   - Read-only hosted-vault inventory ready for Phase 3 management actions.
-- [ ] Add web user-management flows for create, invite, disable, reset password, revoke sessions, and inspect user activity.
+- [x] Add web user-management flows for create, invite, disable, reset password, revoke sessions, and inspect user activity.
 - [x] Add authenticated administration summary and audit-event endpoints.
-- [ ] Add frontend tests, accessibility checks, and browser-level admin-flow tests.
-- [ ] Define native credential storage using the operating system credential store.
-- [ ] Add a minimal native login and server-connection flow.
+- [x] Add frontend tests, accessibility checks, and browser-level admin-flow tests.
+- [x] Define native credential storage using the operating system credential store.
+- [x] Add a minimal native login and server-connection flow.
 
 ### Completion Gate
 
-- [ ] A fresh deployment can bootstrap an administrator and create or invite users.
-- [ ] Revoked, expired, disabled, and forged sessions cannot access protected endpoints.
-- [ ] Authentication secrets do not appear in logs or application state persistence.
-- [ ] Security-focused integration tests cover all authentication flows.
-- [ ] An administrator can securely bootstrap and manage users through the web interface.
-- [ ] The dashboard exposes useful health, audit, and vault summaries without exposing raw secrets or unrestricted server logs.
+- [x] A fresh deployment can bootstrap an administrator and create or invite users.
+- [x] Revoked, expired, disabled, and forged sessions cannot access protected endpoints.
+- [x] Authentication secrets do not appear in logs or application state persistence.
+- [x] Security-focused integration tests cover all authentication flows.
+- [x] An administrator can securely bootstrap and manage users through the web interface.
+- [x] The dashboard exposes useful health, audit, and vault summaries without exposing raw secrets or unrestricted server logs.
 - [x] Non-admin users cannot access admin pages or administration APIs.
 
 ---
@@ -393,3 +393,5 @@ Add one entry whenever a meaningful server milestone lands.
 | 2026-06-09 | Phase 1 | Added the Rust workspace, shared core/protocol crates, standalone server, PostgreSQL migrations, blob storage, cached server image, Compose stack, Caddy gateway, health checks, and development docs | `cargo test --workspace` (114 tests), live PostgreSQL migration test, `cargo check --workspace`, `pnpm test` (594 tests), TypeScript check, Compose health/persistence recreation checks, and `./scripts/server-smoke.sh` | Begin Phase 2 authentication and administration |
 | 2026-06-09 | Phase 2 planning | Added a server-hosted Collab-style admin web interface for user management, health, audit data, and phased vault administration | Reviewed authentication, authorization, logging, and Phase 3 API boundaries | Implement authentication and the admin web foundation together |
 | 2026-06-09 | Phase 2 | Implemented the first secure administration slice: identity/session/audit schema, Argon2id credentials, one-time bootstrap, browser login/logout, CSRF, login rate limiting, disabled-user/session revocation behavior, admin APIs, and a server-hosted Collab-style dashboard | Focused Rust and admin-web tests, live PostgreSQL bootstrap/login/admin/CSRF/revocation lifecycle, production admin build, Compose image build, and live Caddy API flow | Add invitations, rotating native refresh tokens, password self-service, operational/storage summaries, browser automation/accessibility coverage, and native login |
+| 2026-06-09 | Phase 2 complete | Added expiring one-time invitations, dedicated password change/reset flows, opaque native access tokens with rotating refresh-token reuse detection, OS credential-store-backed desktop login, storage and operational dashboard summaries, read-only vault inventory, user activity inspection, and complete admin management flows | Security-focused live PostgreSQL lifecycle tests, Rust workspace checks, admin/browser-flow and accessibility-oriented tests, TypeScript checks, production admin build, and Compose configuration validation; final image rebuild was blocked by a crates.io network failure | Begin Phase 3 hosted vault storage and permissions |
+| 2026-06-09 | Phase 2 account lifecycle | Added account re-enable and permanent deletion controls, with durable primary-administrator identification and server-side protection from disable/delete operations | Admin-web management-flow tests, Rust checks, and live PostgreSQL lifecycle tests | Begin Phase 3 hosted vault storage and permissions |

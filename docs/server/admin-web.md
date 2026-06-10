@@ -2,13 +2,12 @@
 
 ## Implementation Status
 
-The initial Phase 2 administration slice is implemented. It includes bootstrap,
-browser login/logout, the dashboard shell, user creation, disabling, session
-revocation, read-only vault inventory, and redacted audit views.
-
-Still pending in Phase 2: invitations, password self-service and dedicated reset
-controls, richer storage/operational summaries, browser automation,
-accessibility auditing, and the native login flow.
+Phase 2 administration is implemented. It includes bootstrap, browser
+login/logout, user creation and expiring invitations, disabling/re-enabling,
+account deletion, password resets, session revocation, per-user activity inspection, storage and
+operational summaries, read-only vault inventory, and redacted audit views.
+The first bootstrapped administrator is permanently marked as the primary
+administrator and cannot be disabled or deleted.
 
 ## Purpose
 
@@ -26,7 +25,8 @@ editor.
 Phase 2 delivers:
 
 - First-administrator bootstrap and admin login.
-- User creation, invitations, disabling, password resets, and session revocation.
+- User creation, invitations, disabling/re-enabling, protected account deletion,
+  password resets, and session revocation.
 - A dashboard showing server health, version, uptime, storage summaries, and
   counts for users, sessions, invitations, and hosted vaults.
 - Recent redacted audit events and actionable operational warnings.
@@ -69,13 +69,14 @@ Initial routes:
 - Admin pages and APIs require a server-verified active administrator session.
 - A strict Content Security Policy forbids arbitrary scripts and remote content.
 - Authentication state and secrets are never persisted in browser local storage.
-- Login, bootstrap, invitation, and password-reset endpoints are rate-limited.
+- Login and native-login endpoints are rate-limited. Invitation secrets are
+  random, stored only as hashes, expire, and can be accepted only once.
 - Every administration mutation creates an audit event.
 
 The browser never receives raw container logs, environment variables, stack
-traces, authorization headers, cookies, tokens, password material, or invitation
-secrets. The dashboard consumes typed, redacted audit events and operational
-summaries produced by the server.
+traces, authorization headers, cookies, refresh tokens, or password material.
+The raw invitation secret is returned only once to the administrator that
+creates it so it can be shared with the intended user.
 
 ## Dashboard Data
 
@@ -99,7 +100,8 @@ work.
 - API contract tests for every dashboard and administration endpoint.
 - Authorization tests proving non-admin sessions cannot access pages or APIs.
 - CSRF, cookie, rate-limit, redaction, and session-revocation tests.
-- Browser-level tests for bootstrap, login, user creation, invitation, disabling,
-  session revocation, logout, and dashboard degraded states.
+- Browser-level tests for bootstrap, login, user creation, invitation,
+  disabling/re-enabling, protected deletion, session revocation, logout, and
+  dashboard degraded states.
 - Accessibility checks for keyboard navigation, labels, focus management,
   contrast, loading states, empty states, and error states.

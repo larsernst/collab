@@ -9,7 +9,7 @@ import { Input } from '../ui/input';
 import { Button } from '../ui/button';
 import { Badge } from '../ui/badge';
 import { cn } from '../../lib/utils';
-import { Palette, Type, User, Monitor, Info, CalendarDays, Keyboard, Search, SlidersHorizontal, Layout } from 'lucide-react';
+import { Palette, Type, User, Monitor, Info, CalendarDays, Keyboard, Search, SlidersHorizontal, Layout, Server } from 'lucide-react';
 import { toast } from 'sonner';
 import AboutTab from './AboutTab';
 import ShortcutsTab from './ShortcutsTab';
@@ -20,6 +20,7 @@ import SettingsDisplaySection from './SettingsDisplaySection';
 import SettingsGeneralSection from './SettingsGeneralSection';
 import SettingsProfileSection from './SettingsProfileSection';
 import SettingsEditorSection from './SettingsEditorSection';
+import SettingsServerSection from './SettingsServerSection';
 import { useUpdateStore } from '../../store/updateStore';
 
 // ─── Tabs sidebar ─────────────────────────────────────────────────────────────
@@ -32,6 +33,7 @@ const TABS = [
   { id: 'canvas',     label: 'Canvas',     icon: <Layout size={15} />, keywords: ['canvas', 'web card', 'embed', 'preview', 'links'] },
   { id: 'calendar',   label: 'Calendar',   icon: <CalendarDays size={15} />, keywords: ['date', 'week', 'format'] },
   { id: 'profile',    label: 'Profile',    icon: <User size={15} />, keywords: ['name', 'identity', 'presence', 'user'] },
+  { id: 'server',     label: 'Server',     icon: <Server size={15} />, keywords: ['hosted', 'login', 'connection', 'account'] },
   { id: 'shortcuts',  label: 'Shortcuts',  icon: <Keyboard size={15} />, keywords: ['keyboard', 'hotkeys', 'bindings'] },
   { id: 'about',      label: 'About',      icon: <Info size={15} />, keywords: ['version', 'update', 'app'] },
 ] as const;
@@ -260,6 +262,8 @@ export default function SettingsModal() {
                 }}
               />
             )}
+
+            {activeTab === 'server' && <SettingsServerSection />}
 
             {/* ── About ── */}
             {activeTab === 'about' && <AboutTab />}

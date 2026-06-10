@@ -1,7 +1,16 @@
 use crate::models::{note::NoteMetadata, vault::VaultMeta};
+use collab_protocol::ServerUser;
 use notify::RecommendedWatcher;
 use notify_debouncer_mini::Debouncer;
 use parking_lot::RwLock;
+
+#[derive(Debug, Clone)]
+pub struct ServerSessionState {
+    pub server_url: String,
+    pub access_token: String,
+    pub access_expires_at: String,
+    pub user: ServerUser,
+}
 
 pub struct AppState {
     pub active_vault: RwLock<Option<VaultMeta>>,
@@ -10,6 +19,8 @@ pub struct AppState {
     /// AES-256 key derived from the vault password. Present only while the
     /// vault is unlocked. Cleared whenever a new vault is opened.
     pub encryption_key: RwLock<Option<[u8; 32]>>,
+    /// Native server access tokens are intentionally memory-only.
+    pub server_session: RwLock<Option<ServerSessionState>>,
 }
 
 impl AppState {
@@ -19,6 +30,7 @@ impl AppState {
             watcher: parking_lot::Mutex::new(None),
             note_index: RwLock::new(Vec::new()),
             encryption_key: RwLock::new(None),
+            server_session: RwLock::new(None),
         }
     }
 }

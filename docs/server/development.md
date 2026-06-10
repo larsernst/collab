@@ -64,6 +64,8 @@ Supported environment variables:
 - `COLLAB_ADMIN_WEB_DIR`
 - `COLLAB_BROWSER_SECURE_COOKIES`: use `true` behind production HTTPS
 - `COLLAB_SESSION_TTL_HOURS`
+- `COLLAB_NATIVE_ACCESS_TTL_MINUTES`
+- `COLLAB_NATIVE_REFRESH_TTL_DAYS`
 - `COLLAB_LOG`
 - `COLLAB_LOG_FORMAT`: `pretty` or `json`
 
@@ -87,10 +89,12 @@ COLLAB_TEST_DATABASE_URL=postgres://collab:collab@127.0.0.1:5432/collab_test \
   cargo test -p collab-server
 ```
 
-The live database test covers migration idempotency plus the browser bootstrap,
-login, administrator authorization, CSRF, disabled-user, and session-revocation
-lifecycle. Use a disposable test database because the lifecycle test truncates
-the Phase 2 identity tables before running.
+The live database test covers migration idempotency plus browser bootstrap,
+invitations, login, password reset, disable/re-enable/delete protection,
+administrator authorization, CSRF, native
+login and refresh rotation/reuse detection, expired and forged tokens,
+disabled-user behavior, and session revocation. Use a disposable test database
+because the lifecycle test truncates the Phase 2 identity tables before running.
 
 ## Health Endpoints
 

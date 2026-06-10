@@ -85,7 +85,7 @@ pub async fn authenticate_session(
         r#"
         SELECT
             u.id, u.username, u.display_name, u.role::text AS role, u.status::text AS status,
-            u.created_at, u.last_login_at, s.id AS session_id, s.csrf_hash,
+            u.created_at, u.last_login_at, u.is_primary_admin, s.id AS session_id, s.csrf_hash,
             (SELECT COUNT(*) FROM sessions active
              WHERE active.user_id = u.id AND active.revoked_at IS NULL AND active.expires_at > NOW())
              AS active_sessions
@@ -113,6 +113,43 @@ pub async fn authenticate_session(
     }))
 }
 
+pub async fn authenticate_native_access_token(
+    pool: &PgPool,
+    raw_token: &str,
+) -> Result<Option<AuthenticatedUser>, sqlx::Error> {
+    let row = sqlx::query(
+        r#"
+        SELECT
+            u.id, u.username, u.display_name, u.role::text AS role, u.status::text AS status,
+            u.created_at, u.last_login_at, u.is_primary_admin, s.id AS session_id, ''::text AS csrf_hash,
+            ((SELECT COUNT(*) FROM sessions active
+              WHERE active.user_id = u.id AND active.revoked_at IS NULL AND active.expires_at > NOW())
+             + (SELECT COUNT(*) FROM native_sessions active
+                WHERE active.user_id = u.id AND active.revoked_at IS NULL
+                  AND active.refresh_expires_at > NOW())) AS active_sessions
+        FROM native_sessions s
+        JOIN users u ON u.id = s.user_id
+        WHERE s.access_token_hash = $1 AND s.revoked_at IS NULL
+          AND s.access_expires_at > NOW() AND s.refresh_expires_at > NOW()
+        "#,
+    )
+    .bind(hash_secret(raw_token))
+    .fetch_optional(pool)
+    .await?;
+
+    let Some(row) = row else {
+        return Ok(None);
+    };
+    if parse_status(row.get::<String, _>("status").as_str()) == ServerUserStatus::Disabled {
+        return Ok(None);
+    }
+    Ok(Some(AuthenticatedUser {
+        user: user_from_row(&row),
+        session_id: row.get("session_id"),
+        csrf_hash: String::new(),
+    }))
+}
+
 pub fn user_from_row(row: &sqlx::postgres::PgRow) -> ServerUser {
     ServerUser {
         id: row.get::<Uuid, _>("id").to_string(),
@@ -127,6 +164,7 @@ pub fn user_from_row(row: &sqlx::postgres::PgRow) -> ServerUser {
             .get::<Option<chrono::DateTime<chrono::Utc>>, _>("last_login_at")
             .map(|value| value.to_rfc3339()),
         active_sessions: row.get("active_sessions"),
+        is_primary_admin: row.get("is_primary_admin"),
     }
 }
 

@@ -84,13 +84,20 @@ Authentication and administration:
 - `GET /api/v1/auth/bootstrap-status`
 - `POST /api/v1/auth/bootstrap`
 - `POST /api/v1/auth/login`
+- `POST /api/v1/auth/native/login`
 - `POST /api/v1/auth/refresh`
 - `POST /api/v1/auth/logout`
+- `POST /api/v1/auth/native/logout`
+- `POST /api/v1/auth/invitations/{token}/accept`
 - `POST /api/v1/auth/ws-ticket`
 - `GET /api/v1/users/me`
+- `POST /api/v1/users/me/password`
 - `GET|POST /api/v1/admin/users`
-- `PATCH /api/v1/admin/users/{userId}`
+- `PATCH|DELETE /api/v1/admin/users/{userId}`
 - `POST /api/v1/admin/users/{userId}/revoke-sessions`
+- `POST /api/v1/admin/users/{userId}/reset-password`
+- `GET /api/v1/admin/users/{userId}/activity`
+- `GET|POST /api/v1/admin/invitations`
 - `POST /api/v1/admin/invitations`
 - `GET /api/v1/admin/overview`
 - `GET /api/v1/admin/audit-events`
@@ -99,8 +106,12 @@ Authentication and administration:
 
 Browser administration uses the same administration resources but authenticates
 with a hardened same-origin browser session and CSRF protection. Native clients
-continue to use token-based sessions. Administration collection endpoints are
-cursor-paginated and return only typed, redacted data.
+use short-lived opaque access tokens and rotating opaque refresh tokens. Reuse
+of a rotated refresh token revokes its native session. The desktop keeps access
+tokens in memory and refresh tokens in the operating system credential store.
+Administration collection endpoints return only typed, redacted data.
+The first bootstrapped administrator is marked as the primary administrator;
+status updates cannot disable it and the user deletion endpoint rejects it.
 
 Vault management:
 
