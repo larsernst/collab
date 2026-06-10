@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { api } from './api';
+import { api, serverApi } from './api';
 
 describe('admin API client', () => {
   afterEach(() => {
@@ -41,5 +41,22 @@ describe('admin API client', () => {
       ),
     );
     await expect(api('/api/test')).rejects.toThrow('Denied (request-1)');
+  });
+
+  it('bypasses browser caches when checking whether bootstrap is required', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ data: { required: false } }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      }),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+
+    await serverApi.bootstrapStatus();
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      '/api/v1/auth/bootstrap-status',
+      expect.objectContaining({ cache: 'no-store' }),
+    );
   });
 });

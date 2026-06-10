@@ -34,7 +34,7 @@ export async function api<T>(path: string, init: RequestInit = {}): Promise<T> {
 }
 
 export const serverApi = {
-  bootstrapStatus: () => api<{ required: boolean }>('/api/v1/auth/bootstrap-status'),
+  bootstrapStatus: () => api<{ required: boolean }>('/api/v1/auth/bootstrap-status', { cache: 'no-store' }),
   bootstrap: (payload: Record<string, unknown>) =>
     api<{ user: ServerUser; csrfToken: string }>('/api/v1/auth/bootstrap', {
       method: 'POST',

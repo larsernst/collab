@@ -103,11 +103,15 @@ pub struct ResetPasswordRequest {
 pub async fn bootstrap_status(
     State(state): State<AppState>,
     Extension(request_id): Extension<String>,
-) -> ApiResult<BootstrapStatus> {
+) -> Result<Response, ApiFailure> {
     let required = !administrator_exists(&state.database)
         .await
         .map_err(|_| ApiFailure::server(request_id))?;
-    Ok(Json(DataResponse::new(BootstrapStatus { required })))
+    let mut response = Json(DataResponse::new(BootstrapStatus { required })).into_response();
+    response
+        .headers_mut()
+        .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    Ok(response)
 }
 
 pub async fn bootstrap(
@@ -1563,8 +1567,6 @@ fn append_expired_cookie(response: &mut Response, name: &str, secure: bool) {
     );
 }
 
-type ApiResult<T> = Result<Json<DataResponse<T>>, ApiFailure>;
-
 #[derive(Debug)]
 pub struct ApiFailure {
     status: StatusCode,
@@ -1753,7 +1755,11 @@ mod tests {
                 .await
                 .unwrap(),
         );
-        let app = build_router(AppState::new(ServerConfig::default(), pool.clone(), blobs));
+        let app = build_router(AppState::new(
+            ServerConfig::default(),
+            pool.clone(),
+            blobs.clone(),
+        ));
 
         let status = request(
             &app,
@@ -1765,6 +1771,7 @@ mod tests {
         )
         .await;
         assert_eq!(status.status(), StatusCode::OK);
+        assert_eq!(status.headers()[header::CACHE_CONTROL], "no-store");
         assert_eq!(json_body(status).await["data"]["required"], true);
 
         let bootstrap = request(
@@ -1787,6 +1794,24 @@ mod tests {
                 .fetch_one(&pool)
                 .await
                 .unwrap();
+
+        let restarted_app =
+            build_router(AppState::new(ServerConfig::default(), pool.clone(), blobs));
+        let restarted_status = request(
+            &restarted_app,
+            "GET",
+            "/api/v1/auth/bootstrap-status",
+            json!({}),
+            None,
+            None,
+        )
+        .await;
+        assert_eq!(restarted_status.status(), StatusCode::OK);
+        assert_eq!(
+            restarted_status.headers()[header::CACHE_CONTROL],
+            "no-store"
+        );
+        assert_eq!(json_body(restarted_status).await["data"]["required"], false);
 
         let duplicate_bootstrap = request(
             &app,

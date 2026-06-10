@@ -83,6 +83,10 @@ Authentication and administration:
 
 - `GET /api/v1/auth/bootstrap-status`
 - `POST /api/v1/auth/bootstrap`
+
+Bootstrap-status responses use `Cache-Control: no-store` so browsers and
+gateways cannot replay the initial first-run result after an administrator has
+been created or the server has restarted.
 - `POST /api/v1/auth/login`
 - `POST /api/v1/auth/native/login`
 - `POST /api/v1/auth/refresh`
