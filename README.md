@@ -134,6 +134,10 @@ Collab-style admin web interface, and a minimal desktop server connection flow.
   operations with manifest conflict detection
 - Hosted text revision history, labeled snapshots, historical comparison
   content, and optimistic snapshot restore as a new revision
+- Ranked hosted-note search backed by a self-repairing PostgreSQL full-text
+  index with title, frontmatter-tag, and excerpt results
+- Admin-only bounded local-vault ZIP import and active-current-content ZIP
+  export compatible with the normal local vault layout
 - Argon2id password hashing, one-time administrator bootstrap, CSRF protection, and login rate limiting
 - Collab-style shadcn admin web interface served at `/admin/`, with persisted
   theme, accent, and density settings

@@ -30,6 +30,11 @@ Snapshots label immutable revisions without changing current content. Restoring
 a snapshot creates a new revision that references the preserved snapshot blob,
 so no history is overwritten.
 
+Active note revisions are represented in a derived PostgreSQL full-text index.
+Index rows reference the exact current revision, contain searchable title,
+content, and frontmatter tags, and are repaired or removed when search detects
+that the current hosted revision or file state has changed.
+
 ## File Kinds and Document Types
 
 `FileEntry.kind` is one of:
@@ -91,6 +96,25 @@ The owner is a distinguished user and always has administrative permissions. Own
 
 The server checks permissions for every REST mutation and every WebSocket subscription or update. UI checks are advisory only.
 
+Phase 3 REST role enforcement is covered as a server-side endpoint matrix:
+viewers may use read, search, history, reference, and storage endpoints but are
+rejected by every mutation family; editors may perform content and structural
+mutations except purge; admins may purge, import/export, rename vaults, and
+manage viewer/editor memberships; owner checks protect archive/delete and
+admin-role membership changes.
+
+## Storage Accounting
+
+`GET /api/v1/vaults/{vaultId}/storage` exposes logical per-vault accounting:
+
+- `activeBytes` and `trashBytes` count current revisions by file state.
+- `retainedRevisionBytes` counts all retained revision payloads.
+- `uniqueBlobBytes` deduplicates identical retained payloads within the vault.
+- File, revision, and snapshot counts expose the retained object footprint.
+
+Global physical blob usage may be lower because the blob store deduplicates
+content across vaults. Vault summaries keep using retained revision bytes.
+
 ## Import and Export
 
 Import:
@@ -102,12 +126,20 @@ Import:
 - Generate stable hosted IDs and hosted revisions during import.
 - Report rejected or repaired entries before committing the import.
 
+The initial API accepts bounded ZIP imports only into empty active hosted
+vaults. It rejects unsafe or duplicate normalized paths, symlinks, excessive
+entry counts, oversized files/expanded archives, and invalid UTF-8 text
+documents before database commit. Runtime `.collab/` content is ignored.
+
 Export:
 
 - Produce a ZIP that opens as a normal local vault.
 - Materialize current notes, Kanban boards, canvases, assets, and compatible sidecars.
 - Include a compatible `.collab/vault.json`, snapshots/history, templates, and trash according to export options.
 - Exclude sessions, credentials, server audit records, ephemeral awareness, internal CRDT logs, and runtime presence.
+
+The initial export materializes active folders and each active file's current
+revision. Snapshot/history and trash export options remain follow-up work.
 
 ## Compatibility Rules
 

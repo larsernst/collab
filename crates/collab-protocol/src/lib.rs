@@ -209,6 +209,19 @@ pub struct HostedVault {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
+pub struct HostedVaultStorage {
+    pub active_bytes: u64,
+    pub trash_bytes: u64,
+    pub retained_revision_bytes: u64,
+    pub unique_blob_bytes: u64,
+    pub active_files: i64,
+    pub trashed_files: i64,
+    pub revision_count: i64,
+    pub snapshot_count: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
 pub struct HostedVaultAdminDetail {
     pub id: String,
     pub name: String,
@@ -327,6 +340,26 @@ pub struct HostedSnapshot {
     pub revision: HostedFileRevision,
     pub created_by_display_name: Option<String>,
     pub created_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct HostedSearchResult {
+    pub file_id: String,
+    pub relative_path: String,
+    pub title: String,
+    pub excerpt: String,
+    pub tags: Vec<String>,
+    pub rank: f32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct HostedVaultImportResult {
+    pub imported_files: u64,
+    pub imported_folders: u64,
+    pub imported_bytes: u64,
+    pub result_manifest_sequence: i64,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]

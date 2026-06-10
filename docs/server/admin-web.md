@@ -31,7 +31,8 @@ reactivate, restore, and pending-delete lifecycle controls. The inventory can
 also create new hosted vaults through `POST /api/v1/vaults`, making the
 creating administrator the vault owner. Member mutations are disabled while a
 vault is pending deletion. Import/export and storage-management actions remain
-open Phase 3 work.
+available through the hosted-vault API; adding dedicated controls for those
+operations to the administration interface is a later UX enhancement.
 
 ## Purpose
 
@@ -62,10 +63,11 @@ Phase 3 expands the same interface with:
 
 - Hosted-vault details and activity.
 - Member and role management.
-- Archive, delete, import, export, and storage-management actions.
+- Archive and delete actions plus storage-usage visibility.
 
-Later phases may add collaboration metrics, backup state, and upgrade guidance.
-Editing vault content remains outside the admin interface.
+Later phases may add import/export controls, collaboration metrics, backup
+state, and upgrade guidance. Editing vault content remains outside the admin
+interface.
 
 ## Application Shape
 

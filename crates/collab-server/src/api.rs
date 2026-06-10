@@ -8,7 +8,7 @@ use crate::{
 };
 use axum::{
     body::Body,
-    extract::{Extension, Path, State},
+    extract::{Extension, Path, Query, State},
     http::{header, HeaderMap, HeaderValue, StatusCode},
     response::{IntoResponse, Response},
     Json,
@@ -18,17 +18,20 @@ use collab_protocol::{
     AdminOverview, ApiError, AuditEvent, BootstrapStatus, BrowserSession, CreatedInvitation,
     DataResponse, ErrorCode, ErrorResponse, HealthState, HostedDocumentType, HostedFileEntry,
     HostedFileKind, HostedFileReference, HostedFileRevision, HostedFileState,
-    HostedReferenceImpact, HostedRevisionContent, HostedSnapshot,
+    HostedReferenceImpact, HostedRevisionContent, HostedSearchResult, HostedSnapshot,
     HostedStructuralOperationPreview, HostedStructuralOperationResult,
     HostedStructuralOperationType, HostedTextDocument, HostedVault, HostedVaultActivityEvent,
-    HostedVaultAdminDetail, HostedVaultManifest, HostedVaultMember, HostedVaultRole,
-    HostedVaultStatus, HostedVaultSummary, Invitation, NativeSession, OperationalWarning,
-    ServerUser, ServerUserRole, StorageSummary,
+    HostedVaultAdminDetail, HostedVaultImportResult, HostedVaultManifest, HostedVaultMember,
+    HostedVaultRole, HostedVaultStatus, HostedVaultStorage, HostedVaultSummary, Invitation,
+    NativeSession, OperationalWarning, ServerUser, ServerUserRole, StorageSummary,
 };
 use serde::Deserialize;
 use serde_json::{json, Value};
 use sqlx::{PgPool, Postgres, Row, Transaction};
-use std::collections::HashMap;
+use std::{
+    collections::{HashMap, HashSet},
+    io::{Cursor, Read, Write},
+};
 use uuid::Uuid;
 
 #[derive(Debug, Deserialize)]
@@ -196,6 +199,17 @@ pub struct StructuralOperationPreviewRequest {
     pub target_file_id: Uuid,
     pub name: Option<String>,
     pub parent_id: Option<Uuid>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct VaultSearchQuery {
+    pub q: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ImportVaultZipRequest {
+    pub archive_base64: String,
 }
 
 pub async fn bootstrap_status(
@@ -1042,6 +1056,70 @@ pub async fn vault_manifest(
     )))
 }
 
+pub async fn vault_storage(
+    State(state): State<AppState>,
+    Extension(request_id): Extension<String>,
+    headers: HeaderMap,
+    Path(vault_id): Path<Uuid>,
+) -> Result<Json<DataResponse<HostedVaultStorage>>, ApiFailure> {
+    let actor = require_authenticated_user(&state, &headers, &request_id).await?;
+    require_vault_access(
+        &state.database,
+        vault_id,
+        user_uuid(&actor.user),
+        HostedVaultRole::Viewer,
+        &request_id,
+    )
+    .await?;
+    let row = sqlx::query(
+        r#"
+        SELECT
+          COALESCE((
+            SELECT SUM(r.size_bytes)
+            FROM hosted_file_entries f
+            JOIN hosted_file_revisions r ON r.id = f.current_revision_id
+            WHERE f.vault_id = $1 AND f.state = 'active'
+          ), 0)::bigint AS active_bytes,
+          COALESCE((
+            SELECT SUM(r.size_bytes)
+            FROM hosted_file_entries f
+            JOIN hosted_file_revisions r ON r.id = f.current_revision_id
+            WHERE f.vault_id = $1 AND f.state = 'trashed'
+          ), 0)::bigint AS trash_bytes,
+          COALESCE((
+            SELECT SUM(r.size_bytes) FROM hosted_file_revisions r WHERE r.vault_id = $1
+          ), 0)::bigint AS retained_revision_bytes,
+          COALESCE((
+            SELECT SUM(blobs.size_bytes)
+            FROM (
+              SELECT blob_digest, MAX(size_bytes) AS size_bytes
+              FROM hosted_file_revisions
+              WHERE vault_id = $1
+              GROUP BY blob_digest
+            ) blobs
+          ), 0)::bigint AS unique_blob_bytes,
+          (SELECT COUNT(*) FROM hosted_file_entries f WHERE f.vault_id = $1 AND f.state = 'active') AS active_files,
+          (SELECT COUNT(*) FROM hosted_file_entries f WHERE f.vault_id = $1 AND f.state = 'trashed') AS trashed_files,
+          (SELECT COUNT(*) FROM hosted_file_revisions r WHERE r.vault_id = $1) AS revision_count,
+          (SELECT COUNT(*) FROM hosted_snapshots s WHERE s.vault_id = $1) AS snapshot_count
+        "#,
+    )
+    .bind(vault_id)
+    .fetch_one(&state.database)
+    .await
+    .map_err(|_| ApiFailure::server(request_id))?;
+    Ok(Json(DataResponse::new(HostedVaultStorage {
+        active_bytes: row.get::<i64, _>("active_bytes").max(0) as u64,
+        trash_bytes: row.get::<i64, _>("trash_bytes").max(0) as u64,
+        retained_revision_bytes: row.get::<i64, _>("retained_revision_bytes").max(0) as u64,
+        unique_blob_bytes: row.get::<i64, _>("unique_blob_bytes").max(0) as u64,
+        active_files: row.get("active_files"),
+        trashed_files: row.get("trashed_files"),
+        revision_count: row.get("revision_count"),
+        snapshot_count: row.get("snapshot_count"),
+    })))
+}
+
 pub async fn list_vault_files(
     State(state): State<AppState>,
     Extension(request_id): Extension<String>,
@@ -1842,8 +1920,14 @@ pub async fn apply_structural_operation(
         _ => None,
     };
     let rewrites = if let Some(new_path) = rewrite_destination {
-        compute_reference_rewrites(&state, &manifest, &target.relative_path, new_path, &request_id)
-            .await?
+        compute_reference_rewrites(
+            &state,
+            &manifest,
+            &target.relative_path,
+            new_path,
+            &request_id,
+        )
+        .await?
     } else {
         Vec::new()
     };
@@ -1855,7 +1939,12 @@ pub async fn apply_structural_operation(
             .put(&bytes)
             .await
             .map_err(|_| ApiFailure::server(request_id.clone()))?;
-        planned_revisions.push((rewrite.file_id, rewrite.revision_sequence, digest, bytes.len()));
+        planned_revisions.push((
+            rewrite.file_id,
+            rewrite.revision_sequence,
+            digest,
+            bytes.len(),
+        ));
     }
 
     let actor_id = user_uuid(&actor.user);
@@ -2140,14 +2229,20 @@ pub async fn preview_structural_operation(
         }
     };
     let affected_documents = if let Some(new_path) = rewrite_destination {
-        compute_reference_rewrites(&state, &manifest, &target.relative_path, new_path, &request_id)
-            .await?
-            .into_iter()
-            .map(|rewrite| HostedReferenceImpact {
-                file_id: rewrite.file_id.to_string(),
-                relative_path: rewrite.relative_path,
-            })
-            .collect()
+        compute_reference_rewrites(
+            &state,
+            &manifest,
+            &target.relative_path,
+            new_path,
+            &request_id,
+        )
+        .await?
+        .into_iter()
+        .map(|rewrite| HostedReferenceImpact {
+            file_id: rewrite.file_id.to_string(),
+            relative_path: rewrite.relative_path,
+        })
+        .collect()
     } else {
         Vec::new()
     };
@@ -2272,6 +2367,302 @@ pub async fn list_file_references(
             .then(a.display_label.cmp(&b.display_label))
     });
     Ok(Json(DataResponse::new(references)))
+}
+
+pub async fn search_vault(
+    State(state): State<AppState>,
+    Extension(request_id): Extension<String>,
+    headers: HeaderMap,
+    Path(vault_id): Path<Uuid>,
+    Query(query): Query<VaultSearchQuery>,
+) -> Result<Json<DataResponse<Vec<HostedSearchResult>>>, ApiFailure> {
+    let actor = require_authenticated_user(&state, &headers, &request_id).await?;
+    require_vault_access(
+        &state.database,
+        vault_id,
+        user_uuid(&actor.user),
+        HostedVaultRole::Viewer,
+        &request_id,
+    )
+    .await?;
+    let query = query.q.trim();
+    if query.is_empty() {
+        return Ok(Json(DataResponse::new(Vec::new())));
+    }
+    if query.chars().count() > 200 {
+        return Err(ApiFailure::validation(
+            "Search queries must be at most 200 characters.",
+            request_id,
+        ));
+    }
+    let manifest = load_vault_manifest(&state.database, vault_id, &request_id).await?;
+    ensure_hosted_note_index(&state, &manifest, &request_id).await?;
+    let rows = sqlx::query(
+        r#"
+        SELECT file_id, title, content, tags,
+               (
+                 ts_rank(search_vector, plainto_tsquery('simple', $2))
+                 + CASE WHEN title ILIKE $3 THEN 0.5 ELSE 0 END
+               )::REAL AS rank
+        FROM hosted_note_index
+        WHERE vault_id = $1
+          AND (
+            search_vector @@ plainto_tsquery('simple', $2)
+            OR title ILIKE $3
+            OR content ILIKE $3
+            OR EXISTS (SELECT 1 FROM unnest(tags) tag WHERE tag ILIKE $3)
+          )
+        ORDER BY rank DESC, indexed_at DESC
+        LIMIT 50
+        "#,
+    )
+    .bind(vault_id)
+    .bind(query)
+    .bind(format!("%{query}%"))
+    .fetch_all(&state.database)
+    .await
+    .map_err(|_| ApiFailure::server(request_id.clone()))?;
+    let paths = manifest
+        .files
+        .iter()
+        .map(|file| (file.id.as_str(), file.relative_path.as_str()))
+        .collect::<HashMap<_, _>>();
+    Ok(Json(DataResponse::new(
+        rows.iter()
+            .filter_map(|row| {
+                let file_id = row.get::<Uuid, _>("file_id").to_string();
+                Some(HostedSearchResult {
+                    relative_path: paths.get(file_id.as_str())?.to_string(),
+                    file_id,
+                    title: row.get("title"),
+                    excerpt: search_excerpt(row.get::<String, _>("content").as_str(), query, 180),
+                    tags: row.get("tags"),
+                    rank: row.get("rank"),
+                })
+            })
+            .collect(),
+    )))
+}
+
+struct VaultImportEntry {
+    relative_path: String,
+    name: String,
+    parent_path: Option<String>,
+    kind: HostedFileKind,
+    document_type: Option<HostedDocumentType>,
+    content: Option<Vec<u8>>,
+    digest: Option<String>,
+}
+
+pub async fn import_vault_zip(
+    State(state): State<AppState>,
+    Extension(request_id): Extension<String>,
+    headers: HeaderMap,
+    Path(vault_id): Path<Uuid>,
+    Json(payload): Json<ImportVaultZipRequest>,
+) -> Result<(StatusCode, Json<DataResponse<HostedVaultImportResult>>), ApiFailure> {
+    let actor = require_any_user(&state, &headers, &request_id).await?;
+    require_active_vault_role(
+        &state.database,
+        vault_id,
+        &actor.user,
+        HostedVaultRole::Admin,
+        &request_id,
+    )
+    .await?;
+    let archive_bytes = STANDARD.decode(payload.archive_base64).map_err(|_| {
+        ApiFailure::validation("Vault import is not valid base64.", request_id.clone())
+    })?;
+    if archive_bytes.len() > state.config.max_file_bytes {
+        return Err(ApiFailure::quota_exceeded(request_id));
+    }
+    let manifest = load_vault_manifest(&state.database, vault_id, &request_id).await?;
+    if manifest
+        .files
+        .iter()
+        .any(|file| file.state == HostedFileState::Active)
+    {
+        return Err(ApiFailure::validation(
+            "ZIP import currently requires an empty hosted vault.",
+            request_id,
+        ));
+    }
+    let mut entries = parse_vault_zip(&archive_bytes, state.config.max_file_bytes, &request_id)?;
+    let mut imported_bytes = 0usize;
+    for entry in &mut entries {
+        if let Some(content) = entry.content.as_deref() {
+            imported_bytes += content.len();
+            entry.digest = Some(
+                state
+                    .blobs
+                    .put(content)
+                    .await
+                    .map_err(|_| ApiFailure::server(request_id.clone()))?,
+            );
+        }
+    }
+    let actor_id = user_uuid(&actor.user);
+    let mut transaction = state
+        .database
+        .begin()
+        .await
+        .map_err(|_| ApiFailure::server(request_id.clone()))?;
+    lock_active_vault(&mut transaction, vault_id, &request_id).await?;
+    let mut path_ids = HashMap::<String, Uuid>::new();
+    for entry in &entries {
+        let file_id = Uuid::now_v7();
+        let parent_id = entry
+            .parent_path
+            .as_ref()
+            .and_then(|path| path_ids.get(path))
+            .copied();
+        let (_, normalized_name) = collab_core::normalize_hosted_name(&entry.name)
+            .map_err(|error| ApiFailure::path_invalid(error.to_string(), request_id.clone()))?;
+        sqlx::query(
+            "INSERT INTO hosted_file_entries (id, vault_id, parent_id, name, normalized_name, kind, document_type, created_by) VALUES ($1, $2, $3, $4, $5, $6::hosted_file_kind, $7::hosted_document_type, $8)",
+        )
+        .bind(file_id)
+        .bind(vault_id)
+        .bind(parent_id)
+        .bind(&entry.name)
+        .bind(normalized_name)
+        .bind(file_kind_name(entry.kind))
+        .bind(entry.document_type.map(document_type_name))
+        .bind(actor_id)
+        .execute(&mut *transaction)
+        .await
+        .map_err(|error| map_path_database_error(error, request_id.clone()))?;
+        if let (Some(content), Some(digest)) = (entry.content.as_deref(), entry.digest.as_deref()) {
+            let revision_id = Uuid::now_v7();
+            let media_type = if entry.kind == HostedFileKind::Document {
+                "text/plain"
+            } else {
+                "application/octet-stream"
+            };
+            insert_blob_record(
+                &mut transaction,
+                digest,
+                content.len(),
+                media_type,
+                &request_id,
+            )
+            .await?;
+            sqlx::query(
+                "INSERT INTO hosted_file_revisions (id, vault_id, file_id, sequence, blob_digest, content_hash, size_bytes, created_by) VALUES ($1, $2, $3, 1, $4, $4, $5, $6)",
+            )
+            .bind(revision_id)
+            .bind(vault_id)
+            .bind(file_id)
+            .bind(digest)
+            .bind(content.len() as i64)
+            .bind(actor_id)
+            .execute(&mut *transaction)
+            .await
+            .map_err(|_| ApiFailure::server(request_id.clone()))?;
+            sqlx::query("UPDATE hosted_file_entries SET current_revision_id = $1 WHERE id = $2")
+                .bind(revision_id)
+                .bind(file_id)
+                .execute(&mut *transaction)
+                .await
+                .map_err(|_| ApiFailure::server(request_id.clone()))?;
+        }
+        path_ids.insert(entry.relative_path.clone(), file_id);
+    }
+    let result_manifest_sequence =
+        increment_manifest(&mut transaction, vault_id, &request_id).await?;
+    let imported_folders = entries
+        .iter()
+        .filter(|entry| entry.kind == HostedFileKind::Folder)
+        .count() as u64;
+    let imported_files = entries.len() as u64 - imported_folders;
+    vault_activity_event(
+        &mut transaction,
+        vault_id,
+        Some(actor_id),
+        "vault.imported",
+        Some("vault"),
+        Some(&vault_id.to_string()),
+        json!({"files": imported_files, "folders": imported_folders, "bytes": imported_bytes}),
+        &request_id,
+    )
+    .await?;
+    transaction
+        .commit()
+        .await
+        .map_err(|_| ApiFailure::server(request_id.clone()))?;
+    Ok((
+        StatusCode::CREATED,
+        Json(DataResponse::new(HostedVaultImportResult {
+            imported_files,
+            imported_folders,
+            imported_bytes: imported_bytes as u64,
+            result_manifest_sequence,
+        })),
+    ))
+}
+
+pub async fn export_vault_zip(
+    State(state): State<AppState>,
+    Extension(request_id): Extension<String>,
+    headers: HeaderMap,
+    Path(vault_id): Path<Uuid>,
+) -> Result<Response, ApiFailure> {
+    let actor = require_authenticated_user(&state, &headers, &request_id).await?;
+    require_vault_access(
+        &state.database,
+        vault_id,
+        user_uuid(&actor.user),
+        HostedVaultRole::Admin,
+        &request_id,
+    )
+    .await?;
+    let manifest = load_vault_manifest(&state.database, vault_id, &request_id).await?;
+    let mut archive = zip::ZipWriter::new(Cursor::new(Vec::new()));
+    let options = zip::write::SimpleFileOptions::default()
+        .compression_method(zip::CompressionMethod::Deflated);
+    for file in manifest
+        .files
+        .iter()
+        .filter(|file| file.state == HostedFileState::Active)
+    {
+        if file.kind == HostedFileKind::Folder {
+            archive
+                .add_directory(format!("{}/", file.relative_path), options)
+                .map_err(|_| ApiFailure::server(request_id.clone()))?;
+            continue;
+        }
+        let digest = file
+            .current_revision
+            .as_ref()
+            .map(|revision| revision.content_hash.as_str())
+            .ok_or_else(|| ApiFailure::server(request_id.clone()))?;
+        let bytes = state
+            .blobs
+            .get(digest)
+            .await
+            .map_err(|_| ApiFailure::server(request_id.clone()))?
+            .ok_or_else(|| ApiFailure::server(request_id.clone()))?;
+        archive
+            .start_file(&file.relative_path, options)
+            .map_err(|_| ApiFailure::server(request_id.clone()))?;
+        archive
+            .write_all(&bytes)
+            .map_err(|_| ApiFailure::server(request_id.clone()))?;
+    }
+    let bytes = archive
+        .finish()
+        .map_err(|_| ApiFailure::server(request_id.clone()))?
+        .into_inner();
+    let mut response = Response::new(Body::from(bytes));
+    response.headers_mut().insert(
+        header::CONTENT_TYPE,
+        HeaderValue::from_static("application/zip"),
+    );
+    response.headers_mut().insert(
+        header::CONTENT_DISPOSITION,
+        HeaderValue::from_static("attachment; filename=\"collab-vault.zip\""),
+    );
+    Ok(response)
 }
 
 struct ReferenceRewrite {
@@ -3241,14 +3632,13 @@ async fn require_vault_exists(
     vault_id: Uuid,
     request_id: &str,
 ) -> Result<HostedVaultStatus, ApiFailure> {
-    let status = sqlx::query_scalar::<_, String>(
-        "SELECT status::text FROM hosted_vaults WHERE id = $1",
-    )
-    .bind(vault_id)
-    .fetch_optional(pool)
-    .await
-    .map_err(|_| ApiFailure::server(request_id.to_owned()))?
-    .ok_or_else(|| ApiFailure::not_found(request_id.to_owned()))?;
+    let status =
+        sqlx::query_scalar::<_, String>("SELECT status::text FROM hosted_vaults WHERE id = $1")
+            .bind(vault_id)
+            .fetch_optional(pool)
+            .await
+            .map_err(|_| ApiFailure::server(request_id.to_owned()))?
+            .ok_or_else(|| ApiFailure::not_found(request_id.to_owned()))?;
     Ok(parse_vault_status(&status))
 }
 
@@ -4425,6 +4815,314 @@ async fn load_text_revision_content(
     })
 }
 
+fn indexed_note_title(content: &str, filename: &str) -> String {
+    if content.starts_with("---") {
+        if let Some(end) = content[3..].find("---") {
+            for line in content[3..end + 3].lines() {
+                if let Some(title) = line.strip_prefix("title:") {
+                    let title = title.trim().trim_matches(['"', '\'']);
+                    if !title.is_empty() {
+                        return title.to_owned();
+                    }
+                }
+            }
+        }
+    }
+    content
+        .lines()
+        .find_map(|line| line.strip_prefix("# ").map(str::trim))
+        .filter(|title| !title.is_empty())
+        .unwrap_or_else(|| filename.trim_end_matches(".md"))
+        .to_owned()
+}
+
+fn indexed_note_tags(content: &str) -> Vec<String> {
+    if !content.starts_with("---") {
+        return Vec::new();
+    }
+    let Some(end) = content[3..].find("---") else {
+        return Vec::new();
+    };
+    let mut tags = Vec::new();
+    let mut in_tags = false;
+    for line in content[3..end + 3].lines() {
+        if let Some(value) = line.trim_start().strip_prefix("tags:") {
+            let value = value.trim();
+            if value.starts_with('[') {
+                tags.extend(
+                    value
+                        .trim_matches(['[', ']'])
+                        .split(',')
+                        .map(|tag| tag.trim().trim_matches(['"', '\'']).to_owned())
+                        .filter(|tag| !tag.is_empty()),
+                );
+            } else {
+                in_tags = true;
+            }
+        } else if in_tags {
+            if let Some(tag) = line.trim().strip_prefix("- ") {
+                let tag = tag.trim().trim_matches(['"', '\'']);
+                if !tag.is_empty() {
+                    tags.push(tag.to_owned());
+                }
+            } else {
+                break;
+            }
+        }
+    }
+    tags
+}
+
+fn search_excerpt(content: &str, query: &str, max_chars: usize) -> String {
+    let lower_content = content.to_lowercase();
+    let lower_query = query.to_lowercase();
+    let match_char = lower_content
+        .find(&lower_query)
+        .map(|position| lower_content[..position].chars().count())
+        .unwrap_or(0);
+    let start_char = match_char.saturating_sub(max_chars / 3);
+    let excerpt = content
+        .chars()
+        .skip(start_char)
+        .take(max_chars)
+        .collect::<String>();
+    let excerpt = excerpt.split_whitespace().collect::<Vec<_>>().join(" ");
+    if content.chars().skip(start_char).count() > max_chars {
+        format!("{excerpt}...")
+    } else {
+        excerpt
+    }
+}
+
+async fn ensure_hosted_note_index(
+    state: &AppState,
+    manifest: &HostedVaultManifest,
+    request_id: &str,
+) -> Result<(), ApiFailure> {
+    let vault_id = Uuid::parse_str(&manifest.vault_id).expect("stored vault IDs are valid UUIDs");
+    sqlx::query(
+        r#"
+        DELETE FROM hosted_note_index index_row
+        WHERE index_row.vault_id = $1
+          AND NOT EXISTS (
+            SELECT 1 FROM hosted_file_entries file
+            WHERE file.id = index_row.file_id
+              AND file.vault_id = index_row.vault_id
+              AND file.state = 'active'
+              AND file.kind = 'document'
+              AND file.document_type = 'note'
+              AND file.current_revision_id = index_row.revision_id
+          )
+        "#,
+    )
+    .bind(vault_id)
+    .execute(&state.database)
+    .await
+    .map_err(|_| ApiFailure::server(request_id.to_owned()))?;
+    for file in manifest.files.iter().filter(|file| {
+        file.state == HostedFileState::Active
+            && file.kind == HostedFileKind::Document
+            && file.document_type == Some(HostedDocumentType::Note)
+    }) {
+        let Some(revision) = file.current_revision.as_ref() else {
+            continue;
+        };
+        let file_id = Uuid::parse_str(&file.id).expect("stored file IDs are valid UUIDs");
+        let revision_id =
+            Uuid::parse_str(&revision.id).expect("stored revision IDs are valid UUIDs");
+        let indexed_revision = sqlx::query_scalar::<_, Uuid>(
+            "SELECT revision_id FROM hosted_note_index WHERE file_id = $1",
+        )
+        .bind(file_id)
+        .fetch_optional(&state.database)
+        .await
+        .map_err(|_| ApiFailure::server(request_id.to_owned()))?;
+        if indexed_revision == Some(revision_id) {
+            continue;
+        }
+        let content = load_blob_text(state, &revision.content_hash, request_id).await?;
+        let title = indexed_note_title(&content, &file.name);
+        let tags = indexed_note_tags(&content);
+        let search_text = format!("{title} {} {content}", tags.join(" "));
+        sqlx::query(
+            r#"
+            INSERT INTO hosted_note_index
+              (file_id, vault_id, revision_id, title, content, tags, search_vector)
+            VALUES ($1, $2, $3, $4, $5, $6, to_tsvector('simple', $7))
+            ON CONFLICT (file_id) DO UPDATE SET
+              revision_id = EXCLUDED.revision_id,
+              title = EXCLUDED.title,
+              content = EXCLUDED.content,
+              tags = EXCLUDED.tags,
+              search_vector = EXCLUDED.search_vector,
+              indexed_at = NOW()
+            "#,
+        )
+        .bind(file_id)
+        .bind(vault_id)
+        .bind(revision_id)
+        .bind(title)
+        .bind(content)
+        .bind(tags)
+        .bind(search_text)
+        .execute(&state.database)
+        .await
+        .map_err(|_| ApiFailure::server(request_id.to_owned()))?;
+    }
+    Ok(())
+}
+
+fn parse_vault_zip(
+    bytes: &[u8],
+    max_file_bytes: usize,
+    request_id: &str,
+) -> Result<Vec<VaultImportEntry>, ApiFailure> {
+    let mut archive = zip::ZipArchive::new(Cursor::new(bytes)).map_err(|_| {
+        ApiFailure::validation(
+            "Vault import is not a valid ZIP archive.",
+            request_id.to_owned(),
+        )
+    })?;
+    if archive.len() > 1000 {
+        return Err(ApiFailure::quota_exceeded(request_id.to_owned()));
+    }
+    let mut files = Vec::<(String, Vec<u8>)>::new();
+    let mut explicit_folders = HashSet::<String>::new();
+    let mut comparison_paths = HashSet::<String>::new();
+    let mut expanded_bytes = 0usize;
+    for index in 0..archive.len() {
+        let mut entry = archive.by_index(index).map_err(|_| {
+            ApiFailure::validation("Vault ZIP entry could not be read.", request_id.to_owned())
+        })?;
+        if entry
+            .unix_mode()
+            .is_some_and(|mode| mode & 0o170000 == 0o120000)
+        {
+            return Err(ApiFailure::validation(
+                "Vault ZIP symlinks are not supported.",
+                request_id.to_owned(),
+            ));
+        }
+        let raw_name = entry.name().trim_end_matches('/');
+        if raw_name.is_empty() {
+            continue;
+        }
+        if raw_name
+            .split('/')
+            .next()
+            .is_some_and(|name| name.eq_ignore_ascii_case(".collab"))
+        {
+            continue;
+        }
+        let path = collab_core::normalize_hosted_path(raw_name)
+            .map_err(|error| ApiFailure::path_invalid(error.to_string(), request_id.to_owned()))?;
+        let comparison = path.to_lowercase();
+        if !comparison_paths.insert(comparison) {
+            return Err(ApiFailure::validation(
+                "Vault ZIP contains duplicate normalized paths.",
+                request_id.to_owned(),
+            ));
+        }
+        if entry.is_dir() {
+            explicit_folders.insert(path);
+            continue;
+        }
+        if entry.size() > max_file_bytes as u64 {
+            return Err(ApiFailure::quota_exceeded(request_id.to_owned()));
+        }
+        let mut content = Vec::with_capacity(entry.size() as usize);
+        entry.read_to_end(&mut content).map_err(|_| {
+            ApiFailure::validation(
+                "Vault ZIP entry could not be expanded.",
+                request_id.to_owned(),
+            )
+        })?;
+        expanded_bytes = expanded_bytes.saturating_add(content.len());
+        if expanded_bytes > max_file_bytes.saturating_mul(4) {
+            return Err(ApiFailure::quota_exceeded(request_id.to_owned()));
+        }
+        files.push((path, content));
+    }
+    let mut folders = explicit_folders;
+    for (path, _) in &files {
+        let mut parts = path.split('/').collect::<Vec<_>>();
+        parts.pop();
+        while !parts.is_empty() {
+            folders.insert(parts.join("/"));
+            parts.pop();
+        }
+    }
+    let file_paths = files
+        .iter()
+        .map(|(path, _)| path.to_lowercase())
+        .collect::<HashSet<_>>();
+    if folders
+        .iter()
+        .any(|folder| file_paths.contains(&folder.to_lowercase()))
+    {
+        return Err(ApiFailure::validation(
+            "Vault ZIP contains a path used as both a file and folder.",
+            request_id.to_owned(),
+        ));
+    }
+    let mut entries = folders
+        .into_iter()
+        .map(|path| import_entry(path, HostedFileKind::Folder, None, None))
+        .collect::<Vec<_>>();
+    for (path, content) in files {
+        let (kind, document_type) = imported_file_kind(&path);
+        if kind == HostedFileKind::Document && String::from_utf8(content.clone()).is_err() {
+            return Err(ApiFailure::validation(
+                "Imported text documents must be valid UTF-8.",
+                request_id.to_owned(),
+            ));
+        }
+        entries.push(import_entry(path, kind, document_type, Some(content)));
+    }
+    entries.sort_by_key(|entry| {
+        (
+            entry.relative_path.matches('/').count(),
+            entry.kind != HostedFileKind::Folder,
+            entry.relative_path.to_lowercase(),
+        )
+    });
+    Ok(entries)
+}
+
+fn import_entry(
+    relative_path: String,
+    kind: HostedFileKind,
+    document_type: Option<HostedDocumentType>,
+    content: Option<Vec<u8>>,
+) -> VaultImportEntry {
+    let (parent_path, name) = relative_path
+        .rsplit_once('/')
+        .map(|(parent, name)| (Some(parent.to_owned()), name.to_owned()))
+        .unwrap_or_else(|| (None, relative_path.clone()));
+    VaultImportEntry {
+        relative_path,
+        name,
+        parent_path,
+        kind,
+        document_type,
+        content,
+        digest: None,
+    }
+}
+
+fn imported_file_kind(path: &str) -> (HostedFileKind, Option<HostedDocumentType>) {
+    let lower = path.to_ascii_lowercase();
+    if lower.ends_with(".md") {
+        (HostedFileKind::Document, Some(HostedDocumentType::Note))
+    } else if lower.ends_with(".kanban") {
+        (HostedFileKind::Document, Some(HostedDocumentType::Kanban))
+    } else if lower.ends_with(".canvas") {
+        (HostedFileKind::Document, Some(HostedDocumentType::Canvas))
+    } else {
+        (HostedFileKind::Asset, None)
+    }
+}
+
 fn invitation_from_row(row: &sqlx::postgres::PgRow) -> Invitation {
     Invitation {
         id: row.get::<Uuid, _>("id").to_string(),
@@ -4982,7 +5680,9 @@ impl IntoResponse for ApiFailure {
 
 #[cfg(test)]
 mod tests {
-    use super::cookie;
+    use super::{
+        cookie, indexed_note_tags, indexed_note_title, parse_vault_zip, search_excerpt, STANDARD,
+    };
     use crate::auth::hash_secret;
     use crate::{
         app::{build_router, AppState},
@@ -4995,10 +5695,14 @@ mod tests {
         http::{header, HeaderMap, HeaderValue, Request, StatusCode},
         Router,
     };
+    use base64::Engine;
     use http_body_util::BodyExt;
     use serde_json::{json, Value};
     use sqlx::{postgres::PgPoolOptions, Row};
-    use std::sync::Arc;
+    use std::{
+        io::{Cursor, Read, Write},
+        sync::Arc,
+    };
     use tower::ServiceExt;
     use uuid::Uuid;
 
@@ -5011,6 +5715,30 @@ mod tests {
         );
         assert_eq!(cookie(&headers, "collab_session"), Some("secret"));
         assert_eq!(cookie(&headers, "session"), None);
+    }
+
+    #[test]
+    fn hosted_note_index_extracts_metadata_and_unicode_safe_excerpts() {
+        let content = "---\ntitle: \"Search title\"\ntags: [alpha, beta]\n---\n# Ignored\nA café search term appears here.";
+        assert_eq!(indexed_note_title(content, "Fallback.md"), "Search title");
+        assert_eq!(indexed_note_tags(content), vec!["alpha", "beta"]);
+        assert!(search_excerpt(content, "café", 30).contains("café"));
+    }
+
+    #[test]
+    fn vault_zip_parser_rejects_traversal_and_builds_implicit_folders() {
+        let valid = STANDARD
+            .decode(zip_base64(&[("Notes/Test.md", b"# Test")]))
+            .unwrap();
+        let entries = parse_vault_zip(&valid, 1024, "request").unwrap();
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].relative_path, "Notes");
+        assert_eq!(entries[1].relative_path, "Notes/Test.md");
+
+        let invalid = STANDARD
+            .decode(zip_base64(&[("../escape.md", b"no")]))
+            .unwrap();
+        assert!(parse_vault_zip(&invalid, 1024, "request").is_err());
     }
 
     async fn request(
@@ -5071,6 +5799,17 @@ mod tests {
             .unwrap()
             .to_bytes()
             .to_vec()
+    }
+
+    fn zip_base64(entries: &[(&str, &[u8])]) -> String {
+        let mut writer = zip::ZipWriter::new(Cursor::new(Vec::new()));
+        let options = zip::write::SimpleFileOptions::default()
+            .compression_method(zip::CompressionMethod::Deflated);
+        for (name, content) in entries {
+            writer.start_file(*name, options).unwrap();
+            writer.write_all(content).unwrap();
+        }
+        STANDARD.encode(writer.finish().unwrap().into_inner())
     }
 
     fn session_cookies(response: &axum::response::Response) -> (String, String) {
@@ -5743,16 +6482,128 @@ mod tests {
         .await;
         assert_eq!(demoted_member.status(), StatusCode::OK);
 
-        let viewer_snapshot = request(
+        let viewer_storage = request(
             &app,
-            "POST",
-            &format!("/api/v1/vaults/{vault_id}/files/{document_id}/snapshots"),
-            json!({"label": "Denied"}),
+            "GET",
+            &format!("/api/v1/vaults/{vault_id}/storage"),
+            json!({}),
             Some(&member_cookie),
-            Some(&member_csrf),
+            None,
         )
         .await;
-        assert_eq!(viewer_snapshot.status(), StatusCode::FORBIDDEN);
+        assert_eq!(viewer_storage.status(), StatusCode::OK);
+        let viewer_storage_body = json_body(viewer_storage).await;
+        assert!(viewer_storage_body["data"]["activeBytes"].as_u64().unwrap() > 0);
+        assert!(
+            viewer_storage_body["data"]["retainedRevisionBytes"]
+                .as_u64()
+                .unwrap()
+                >= viewer_storage_body["data"]["uniqueBlobBytes"]
+                    .as_u64()
+                    .unwrap()
+        );
+        assert_eq!(viewer_storage_body["data"]["snapshotCount"], 1);
+
+        let viewer_mutation_cases = [
+            (
+                "PATCH",
+                format!("/api/v1/vaults/{vault_id}"),
+                json!({"name": "Denied"}),
+            ),
+            ("DELETE", format!("/api/v1/vaults/{vault_id}"), json!({})),
+            (
+                "POST",
+                format!("/api/v1/vaults/{vault_id}/members"),
+                json!({"userId": admin_id, "role": "viewer"}),
+            ),
+            (
+                "PATCH",
+                format!("/api/v1/vaults/{vault_id}/members/{member_id}"),
+                json!({"role": "editor"}),
+            ),
+            (
+                "DELETE",
+                format!("/api/v1/vaults/{vault_id}/members/{member_id}"),
+                json!({}),
+            ),
+            (
+                "POST",
+                format!("/api/v1/vaults/{vault_id}/files"),
+                json!({"name": "Denied", "kind": "folder", "content": ""}),
+            ),
+            (
+                "POST",
+                format!("/api/v1/vaults/{vault_id}/files/{document_id}/revisions"),
+                json!({"expectedRevisionSequence": 3, "content": "Denied"}),
+            ),
+            (
+                "POST",
+                format!("/api/v1/vaults/{vault_id}/files/{document_id}/snapshots"),
+                json!({"label": "Denied"}),
+            ),
+            (
+                "POST",
+                format!(
+                    "/api/v1/vaults/{vault_id}/files/{document_id}/snapshots/{snapshot_id}/restore"
+                ),
+                json!({"expectedRevisionSequence": 3}),
+            ),
+            (
+                "POST",
+                format!("/api/v1/vaults/{vault_id}/uploads"),
+                json!({
+                    "name": "denied.bin",
+                    "mediaType": "application/octet-stream",
+                    "contentBase64": "",
+                    "expectedHash": "0".repeat(64)
+                }),
+            ),
+            (
+                "POST",
+                format!("/api/v1/vaults/{vault_id}/operations"),
+                json!({
+                    "clientOperationId": Uuid::now_v7(),
+                    "baseManifestSequence": 0,
+                    "operationType": "trash",
+                    "targetFileId": document_id
+                }),
+            ),
+            (
+                "POST",
+                format!("/api/v1/vaults/{vault_id}/operations/preview"),
+                json!({"operationType": "trash", "targetFileId": document_id}),
+            ),
+            (
+                "POST",
+                format!("/api/v1/vaults/{vault_id}/import"),
+                json!({"archiveBase64": ""}),
+            ),
+            (
+                "GET",
+                format!("/api/v1/vaults/{vault_id}/export"),
+                json!({}),
+            ),
+        ];
+        for (method, uri, body) in viewer_mutation_cases {
+            let denied = request(
+                &app,
+                method,
+                &uri,
+                body,
+                Some(&member_cookie),
+                Some(&member_csrf),
+            )
+            .await;
+            assert_eq!(
+                denied.status(),
+                StatusCode::FORBIDDEN,
+                "viewer unexpectedly accessed {method} {uri}"
+            );
+            assert_eq!(
+                json_body(denied).await["error"]["code"],
+                "vault_permission_denied"
+            );
+        }
 
         let re_promoted_member = request(
             &app,
@@ -5764,6 +6615,35 @@ mod tests {
         )
         .await;
         assert_eq!(re_promoted_member.status(), StatusCode::OK);
+
+        for (method, uri, body) in [
+            (
+                "PATCH",
+                format!("/api/v1/vaults/{vault_id}"),
+                json!({"name": "Denied editor rename"}),
+            ),
+            ("DELETE", format!("/api/v1/vaults/{vault_id}"), json!({})),
+            (
+                "POST",
+                format!("/api/v1/vaults/{vault_id}/members"),
+                json!({"userId": admin_id, "role": "viewer"}),
+            ),
+        ] {
+            let denied = request(
+                &app,
+                method,
+                &uri,
+                body,
+                Some(&member_cookie),
+                Some(&member_csrf),
+            )
+            .await;
+            assert_eq!(
+                denied.status(),
+                StatusCode::FORBIDDEN,
+                "editor unexpectedly accessed admin/owner operation {method} {uri}"
+            );
+        }
 
         let bad_asset = request(
             &app,
@@ -5867,6 +6747,26 @@ mod tests {
             .as_str()
             .unwrap()
             .to_owned();
+
+        let hosted_search = request(
+            &app,
+            "GET",
+            &format!("/api/v1/vaults/{vault_id}/search?q=Link"),
+            json!({}),
+            Some(&member_cookie),
+            None,
+        )
+        .await;
+        assert_eq!(hosted_search.status(), StatusCode::OK);
+        let hosted_search_body = json_body(hosted_search).await;
+        assert_eq!(hosted_search_body["data"].as_array().unwrap().len(), 1);
+        assert_eq!(hosted_search_body["data"][0]["fileId"], index_id);
+        assert_eq!(hosted_search_body["data"][0]["relativePath"], "Index.md");
+        assert_eq!(hosted_search_body["data"][0]["title"], "Index");
+        assert!(hosted_search_body["data"][0]["excerpt"]
+            .as_str()
+            .unwrap()
+            .contains("Link"));
 
         let asset_references = request(
             &app,
@@ -5988,10 +6888,7 @@ mod tests {
             blocked_preview_body["data"]["blockedReason"],
             "The destination path already exists."
         );
-        assert_eq!(
-            blocked_preview_body["data"]["affectedDocuments"],
-            json!([])
-        );
+        assert_eq!(blocked_preview_body["data"]["affectedDocuments"], json!([]));
 
         let rename_operation_id = Uuid::now_v7();
         let rename_payload = json!({
@@ -6036,6 +6933,20 @@ mod tests {
             rewritten_index_body["data"]["file"]["currentRevision"]["sequence"],
             2
         );
+
+        let rewritten_search = request(
+            &app,
+            "GET",
+            &format!("/api/v1/vaults/{vault_id}/search?q=Renamed.md"),
+            json!({}),
+            Some(&admin_cookie),
+            None,
+        )
+        .await;
+        assert_eq!(rewritten_search.status(), StatusCode::OK);
+        let rewritten_search_body = json_body(rewritten_search).await;
+        assert_eq!(rewritten_search_body["data"].as_array().unwrap().len(), 1);
+        assert_eq!(rewritten_search_body["data"][0]["fileId"], index_id);
 
         let repeated_rename = request(
             &app,
@@ -6206,6 +7117,103 @@ mod tests {
             json_body(admin_purge).await["data"]["resultManifestSequence"],
             13
         );
+
+        let import_vault = request(
+            &app,
+            "POST",
+            "/api/v1/vaults",
+            json!({"name": "Imported Vault"}),
+            Some(&admin_cookie),
+            Some(&admin_csrf),
+        )
+        .await;
+        assert_eq!(import_vault.status(), StatusCode::CREATED);
+        let import_vault_id = json_body(import_vault).await["data"]["id"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        let import_member = request(
+            &app,
+            "POST",
+            &format!("/api/v1/vaults/{import_vault_id}/members"),
+            json!({"userId": member_id, "role": "editor"}),
+            Some(&admin_cookie),
+            Some(&admin_csrf),
+        )
+        .await;
+        assert_eq!(import_member.status(), StatusCode::CREATED);
+        let denied_import = request(
+            &app,
+            "POST",
+            &format!("/api/v1/vaults/{import_vault_id}/import"),
+            json!({"archiveBase64": zip_base64(&[("Denied.md", b"denied")])}),
+            Some(&member_cookie),
+            Some(&member_csrf),
+        )
+        .await;
+        assert_eq!(denied_import.status(), StatusCode::FORBIDDEN);
+        let imported = request(
+            &app,
+            "POST",
+            &format!("/api/v1/vaults/{import_vault_id}/import"),
+            json!({"archiveBase64": zip_base64(&[
+                ("Notes/Imported.md", b"# Imported\nsearchable archive"),
+                ("Pictures/image.bin", b"asset")
+            ])}),
+            Some(&admin_cookie),
+            Some(&admin_csrf),
+        )
+        .await;
+        assert_eq!(imported.status(), StatusCode::CREATED);
+        let imported_body = json_body(imported).await;
+        assert_eq!(imported_body["data"]["importedFiles"], 2);
+        assert_eq!(imported_body["data"]["importedFolders"], 2);
+
+        let imported_search = request(
+            &app,
+            "GET",
+            &format!("/api/v1/vaults/{import_vault_id}/search?q=searchable"),
+            json!({}),
+            Some(&admin_cookie),
+            None,
+        )
+        .await;
+        assert_eq!(imported_search.status(), StatusCode::OK);
+        assert_eq!(
+            json_body(imported_search).await["data"][0]["relativePath"],
+            "Notes/Imported.md"
+        );
+
+        let exported = request(
+            &app,
+            "GET",
+            &format!("/api/v1/vaults/{import_vault_id}/export"),
+            json!({}),
+            Some(&admin_cookie),
+            None,
+        )
+        .await;
+        assert_eq!(exported.status(), StatusCode::OK);
+        assert_eq!(exported.headers()[header::CONTENT_TYPE], "application/zip");
+        let exported_bytes = response_bytes(exported).await;
+        let mut exported_zip = zip::ZipArchive::new(Cursor::new(exported_bytes)).unwrap();
+        let mut imported_note = String::new();
+        exported_zip
+            .by_name("Notes/Imported.md")
+            .unwrap()
+            .read_to_string(&mut imported_note)
+            .unwrap();
+        assert_eq!(imported_note, "# Imported\nsearchable archive");
+        let denied_export = request(
+            &app,
+            "GET",
+            &format!("/api/v1/vaults/{import_vault_id}/export"),
+            json!({}),
+            Some(&member_cookie),
+            None,
+        )
+        .await;
+        assert_eq!(denied_export.status(), StatusCode::FORBIDDEN);
 
         let archived = request(
             &app,
@@ -6396,7 +7404,10 @@ mod tests {
         .await;
         assert_eq!(admin_members.status(), StatusCode::OK);
         assert_eq!(
-            json_body(admin_members).await["data"].as_array().unwrap().len(),
+            json_body(admin_members).await["data"]
+                .as_array()
+                .unwrap()
+                .len(),
             2
         );
 

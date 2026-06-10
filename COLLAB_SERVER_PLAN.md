@@ -15,7 +15,7 @@ This document is the source of truth for implementation progress. Update task ch
 | 0. Architecture and prerequisites | Complete | 100% |
 | 1. Server foundation and Compose | Complete | 100% |
 | 2. Authentication and administration | Complete | 100% |
-| 3. Hosted vault storage and permissions | In progress | 72% |
+| 3. Hosted vault storage and permissions | Complete | 100% |
 | 4. Native hosted-vault client | Not started | 0% |
 | 5. Live collaboration | Not started | 0% |
 | 6. Full offline synchronization | Not started | 0% |
@@ -195,7 +195,7 @@ surface before hosted vault mutations are exposed.
 ### Tasks
 
 - [x] Implement vault, membership, file-manifest, revision, blob, trash, snapshot, and activity tables.
-- [ ] Implement server-side role enforcement for every vault operation.
+- [x] Implement server-side role enforcement for every vault operation.
 - [x] Implement hosted-vault create, list, rename, archive, and delete.
 - [x] Implement member invite, removal, and role updates.
 - [x] Implement file and folder listing using stable file IDs and relative paths.
@@ -207,19 +207,19 @@ surface before hosted vault mutations are exposed.
 - [x] Implement snapshots, history listing, comparison inputs, and restore.
 - [x] Implement vault activity events.
 - [x] Expand the admin web interface from read-only vault inventory to vault details, member management, archive/delete controls, storage usage, and activity views.
-- [ ] Implement hosted search and note indexing.
-- [ ] Implement local-vault ZIP import into hosted storage.
-- [ ] Implement hosted-vault export compatible with the existing local layout.
-- [ ] Implement storage accounting.
-- [ ] Add versioned `/api/v1/vaults` endpoints.
+- [x] Implement hosted search and note indexing.
+- [x] Implement local-vault ZIP import into hosted storage.
+- [x] Implement hosted-vault export compatible with the existing local layout.
+- [x] Implement storage accounting.
+- [x] Add versioned `/api/v1/vaults` endpoints.
 
 ### Completion Gate
 
-- [ ] Authenticated clients can fully manage an online hosted vault through the API.
-- [ ] Viewers cannot mutate data through any REST endpoint.
-- [ ] Editors and admins are limited according to documented role rules.
-- [ ] Imports and exports round-trip into valid local vaults.
-- [ ] All mutations produce consistent manifests, revisions, and audit/activity records.
+- [x] Authenticated clients can fully manage an online hosted vault through the API.
+- [x] Viewers cannot mutate data through any REST endpoint.
+- [x] Editors and admins are limited according to documented role rules.
+- [x] Imports and exports round-trip into valid local vaults.
+- [x] All mutations produce consistent manifests, revisions, and audit/activity records.
 
 ---
 
@@ -402,3 +402,6 @@ Add one entry whenever a meaningful server milestone lands.
 | 2026-06-10 | Admin web visual refresh | Reworked the administration interface around shadcn-style primitives and shared Collab tokens; added persisted dark, midnight, warm, and light themes, accent selection, and compact density settings | Admin component tests, settings persistence coverage, TypeScript checks, and production admin build | Continue Phase 3 server and administration features |
 | 2026-06-10 | Phase 3 reference previews and rewrites | Moved note/kanban/canvas reference analysis and rewriting into shared `collab_core::references` (Tauri backend now delegates to it), added viewer-readable hosted file-reference listings, non-mutating role-checked structural-operation previews with blocked reasons and impact lists, and transactional reference rewrites with new revisions and activity on rename/move plus opt-in removal on trash | `cargo test --workspace` (133 tests) including the live PostgreSQL lifecycle with reference listing, preview, rewrite, replay, and viewer-denial coverage; `cargo check --workspace` | Expand the admin web vault management views and implement hosted search and note indexing |
 | 2026-06-10 | Phase 3 admin vault management | Added operator-authority `/api/v1/admin/vaults/{vaultId}` detail, lifecycle (archive/reactivate/restore/pending-delete), owner-protected member management, and activity endpoints with audit plus `byServerAdmin` activity records, and expanded the admin web vault inventory into a full detail view with storage usage, member role controls, lifecycle actions, and activity | Live PostgreSQL lifecycle coverage for admin detail/lifecycle/member/activity flows incl. non-admin denial and pending-delete guards; admin-web component tests (14), TypeScript check, production admin build, `cargo test --workspace` | Implement hosted search and note indexing |
+| 2026-06-10 | Phase 3 hosted search | Added a persistent PostgreSQL full-text note index with title/frontmatter-tag extraction, ranked viewer-readable vault search, Unicode-safe excerpts, and lazy repair/removal of missing or stale index rows from current hosted note revisions | Index metadata/excerpt unit coverage, live PostgreSQL lifecycle search and stale-revision repair coverage, migration idempotency, Rust workspace checks, and Compose smoke verification | Implement local-vault ZIP import and hosted-vault export |
+| 2026-06-10 | Phase 3 ZIP import and export | Added admin-only bounded ZIP import for empty hosted vaults with portable-path, traversal, symlink, duplicate, entry-count, expanded-size, and UTF-8 validation; added active-current-content ZIP export compatible with the normal local vault layout | Archive parser tests plus live PostgreSQL lifecycle coverage for authorization, import, hosted search after import, export, and content round-trip; Rust workspace checks and Compose smoke verification | Implement storage accounting and close remaining Phase 3 authorization/versioning gates |
+| 2026-06-10 | Phase 3 complete | Added viewer-readable per-vault logical storage accounting, audited every versioned hosted-vault route, and added explicit viewer/editor server-side authorization matrix coverage across all mutation families and elevated admin/owner operations | Live PostgreSQL authorization/storage lifecycle coverage plus Rust workspace checks | Begin Phase 4 native hosted-vault client |

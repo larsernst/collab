@@ -140,8 +140,20 @@ Vault management:
 - `GET|PATCH|DELETE /api/v1/vaults/{vaultId}`
 - `GET|POST /api/v1/vaults/{vaultId}/members`
 - `PATCH|DELETE /api/v1/vaults/{vaultId}/members/{userId}`
+- `GET /api/v1/vaults/{vaultId}/storage`
 - `POST /api/v1/vaults/{vaultId}/import`
-- `POST /api/v1/vaults/{vaultId}/export`
+- `GET /api/v1/vaults/{vaultId}/export`
+
+The initial import/export implementation is admin-only. Import accepts a
+bounded base64-encoded ZIP into an empty active hosted vault, validates the
+entire archive before metadata commit, ignores runtime `.collab/` content, and
+generates stable hosted IDs and initial revisions. Export returns an
+`application/zip` containing active folders and current file content.
+
+The viewer-readable storage endpoint reports current active and trash bytes,
+retained revision bytes, unique per-vault blob bytes, and file, revision, and
+snapshot counts. `storageBytes` on vault summaries remains the retained
+revision byte total for compatibility with administration views.
 
 The initial Phase 3 vault-management slice is implemented. Creating a vault
 makes the authenticated user its owner and administrator. Listings expose only
@@ -179,6 +191,12 @@ The Phase 3 manifest and text-revision slice implements:
 Each successful create or text revision increments the vault manifest sequence
 and records vault activity. Text payloads use the content-addressed blob store.
 Viewer reads are allowed; mutations require editor access and an active vault.
+
+`GET /search?q={query}` is viewer-readable and searches the current active
+hosted note revisions. Results include stable file IDs, derived paths, titles,
+frontmatter tags, excerpts, and full-text relevance ranks. The server repairs
+missing or stale persisted index rows from current note revisions before
+querying, so existing hosted vaults do not require a manual reindex operation.
 
 The binary and structural-operation slice also implements:
 

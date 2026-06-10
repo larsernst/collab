@@ -89,6 +89,10 @@ pub fn build_router(state: AppState) -> Router {
             get(api::vault_manifest),
         )
         .route(
+            "/api/v1/vaults/{vault_id}/storage",
+            get(api::vault_storage),
+        )
+        .route(
             "/api/v1/vaults/{vault_id}/files",
             get(api::list_vault_files).post(api::create_vault_file),
         )
@@ -131,6 +135,15 @@ pub fn build_router(state: AppState) -> Router {
         .route(
             "/api/v1/vaults/{vault_id}/operations/preview",
             post(api::preview_structural_operation),
+        )
+        .route("/api/v1/vaults/{vault_id}/search", get(api::search_vault))
+        .route(
+            "/api/v1/vaults/{vault_id}/import",
+            post(api::import_vault_zip),
+        )
+        .route(
+            "/api/v1/vaults/{vault_id}/export",
+            get(api::export_vault_zip),
         )
         .route("/api/v1/admin/overview", get(api::overview))
         .route("/api/v1/admin/users", get(api::list_users).post(api::create_user))

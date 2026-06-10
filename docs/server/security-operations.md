@@ -89,7 +89,14 @@ decoding and verifies the supplied SHA-256 digest before committing metadata.
 Request-body and concurrent-upload limits remain required before production
 exposure.
 
-Archive import extracts into an isolated staging location, validates every entry, and commits metadata only after validation succeeds.
+Future streaming archive import should extract into an isolated staging
+location, validate every entry, and commit metadata only after validation
+succeeds.
+
+The initial hosted ZIP endpoint validates entries in memory before commit,
+rejects symlinks and unsafe portable paths, limits archives to 1,000 entries,
+limits individual files with `COLLAB_MAX_FILE_BYTES`, and limits expanded
+content to four times that value.
 
 ## Compatibility Policy
 
