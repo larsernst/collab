@@ -296,6 +296,7 @@ describe('CanvasPage save behavior', () => {
       expect.stringContaining('"type": "text"'),
       'user-1',
       'Test User',
+      undefined,
     );
     expect(useEditorStore.getState().openTabs[0]).toEqual(
       expect.objectContaining({

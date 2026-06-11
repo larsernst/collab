@@ -13,9 +13,6 @@ const transportMocks = vi.hoisted(() => ({
   sendChatMessage: vi.fn(async () => {}),
   readChatMessages: vi.fn(async () => []),
   readVaultConfig: vi.fn(async () => ({ id: 'config-1', name: 'Vault', knownUsers: [], owner: 'user-1', members: [] })),
-  createSnapshot: vi.fn(async () => ({ id: 'snap-1', relativePath: 'Notes/a.md', authorId: 'user-1', authorName: 'Test User', timestamp: 1, hash: 'hash-1' })),
-  listSnapshots: vi.fn(async () => []),
-  readSnapshot: vi.fn(async () => ''),
   onPresenceChanged: vi.fn(() => () => {}),
   onChatUpdated: vi.fn(() => () => {}),
   onConfigChanged: vi.fn(() => () => {}),
@@ -41,9 +38,6 @@ vi.mock('../../lib/collabTransport', () => {
     sendChatMessage = transportMocks.sendChatMessage;
     readChatMessages = transportMocks.readChatMessages;
     readVaultConfig = transportMocks.readVaultConfig;
-    createSnapshot = transportMocks.createSnapshot;
-    listSnapshots = transportMocks.listSnapshots;
-    readSnapshot = transportMocks.readSnapshot;
     onPresenceChanged = transportMocks.onPresenceChanged;
     onChatUpdated = transportMocks.onChatUpdated;
     onConfigChanged = transportMocks.onConfigChanged;

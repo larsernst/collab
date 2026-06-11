@@ -30,6 +30,7 @@ import { Input } from '../components/ui/input';
 import { Textarea } from '../components/ui/textarea';
 import { cn } from '../lib/utils';
 import { tauriCommands } from '../lib/tauri';
+import { createVaultClient } from '../lib/vaultClient';
 import { useEditorStore } from '../store/editorStore';
 import { useVaultStore } from '../store/vaultStore';
 import { enqueuePdfRender } from './pdfRenderQueue';
@@ -707,7 +708,7 @@ export default function PdfView({ relativePath }: Props) {
     setInteractionMode('none');
 
     void Promise.all([
-      tauriCommands.readNoteAssetDataUrl(vault.path, relativePath),
+      createVaultClient(vault).readAssetDataUrl(relativePath),
       tauriCommands.readPdfSidecarState(vault.path, relativePath).catch(() => EMPTY_PDF_STATE),
     ])
       .then(async ([dataUrl, sidecar]) => {
@@ -1146,9 +1147,10 @@ export default function PdfView({ relativePath }: Props) {
       return;
     }
 
-    const note = await tauriCommands.readNote(vault.path, targetPath);
+    const client = createVaultClient(vault);
+    const note = await client.readDocument(targetPath);
     const nextContent = appendMarkdownBlock(note.content, block);
-    await tauriCommands.writeNote(vault.path, targetPath, nextContent, note.hash);
+    await client.writeDocument(targetPath, nextContent, note.version);
     if (targetOpenTab) {
       setActiveTab(targetPath);
     } else {
@@ -1168,12 +1170,13 @@ export default function PdfView({ relativePath }: Props) {
       return;
     }
 
-    const canvasDoc = await tauriCommands.readNote(vault.path, targetPath);
+    const client = createVaultClient(vault);
+    const canvasDoc = await client.readDocument(targetPath);
     const currentCanvas = canvasDoc.content.trim()
       ? (JSON.parse(canvasDoc.content) as CanvasData)
       : { nodes: [], edges: [], viewport: { x: 0, y: 0, zoom: 1 } };
     const nextCanvas = mutate(currentCanvas);
-    await tauriCommands.writeNote(vault.path, targetPath, JSON.stringify(nextCanvas, null, 2), canvasDoc.hash);
+    await client.writeDocument(targetPath, JSON.stringify(nextCanvas, null, 2), canvasDoc.version);
     toast.success(`Inserted into ${targetPath}`);
   }, [openTabs, vault]);
 

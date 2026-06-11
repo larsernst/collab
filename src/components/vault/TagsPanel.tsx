@@ -4,7 +4,7 @@ import { useNoteIndexStore } from '../../store/noteIndexStore';
 import { useEditorStore } from '../../store/editorStore';
 import { useUiStore } from '../../store/uiStore';
 import { useVaultStore } from '../../store/vaultStore';
-import { tauriCommands } from '../../lib/tauri';
+import { createVaultClient, type VaultClient } from '../../lib/vaultClient';
 import { addTagToContent, removeTagFromContent, getTagsFromContent } from '../../lib/frontmatter';
 import { Button } from '../ui/button';
 import { Input } from '../ui/input';
@@ -13,27 +13,27 @@ import type { NoteMetadata } from '../../types/note';
 
 // ── Helpers ────────────────────────────────────────────────────────────────────
 
-/** Mutate tags on a note that is NOT the active editor tab (read → write via IPC). */
+/** Mutate tags on a note that is NOT the active editor tab (read → write via the selected client). */
 async function patchNoteTag(
-  vaultPath: string,
+  client: VaultClient,
   note: NoteMetadata,
   action: 'add' | 'remove',
   tag: string,
   updateNote: (path: string, meta: NoteMetadata) => void,
 ): Promise<void> {
-  const nc = await tauriCommands.readNote(vaultPath, note.relativePath);
+  const doc = await client.readDocument(note.relativePath);
   const patched =
     action === 'add'
-      ? addTagToContent(nc.content, tag)
-      : removeTagFromContent(nc.content, tag);
-  const result = await tauriCommands.writeNote(vaultPath, note.relativePath, patched, nc.hash, nc.content);
+      ? addTagToContent(doc.content, tag)
+      : removeTagFromContent(doc.content, tag);
+  const result = await client.writeDocument(note.relativePath, patched, doc.version, doc.content);
   if (result.conflict) {
     toast.error(`Conflict saving ${note.title} — please reload it.`);
     return;
   }
   const savedContent = result.mergedContent ?? patched;
   const newTags = getTagsFromContent(savedContent);
-  updateNote(note.relativePath, { ...note, tags: newTags, hash: result.hash });
+  updateNote(note.relativePath, { ...note, tags: newTags, hash: result.version });
 }
 
 // ── Component ──────────────────────────────────────────────────────────────────
@@ -111,7 +111,7 @@ export default function TagsPanel() {
     } else {
       setBusy(key);
       try {
-        await patchNoteTag(vault.path, note, action, tag, updateNote);
+        await patchNoteTag(createVaultClient(vault), note, action, tag, updateNote);
       } catch (e) {
         toast.error('Failed to update tags: ' + e);
       } finally {

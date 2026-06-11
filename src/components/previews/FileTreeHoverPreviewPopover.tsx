@@ -3,7 +3,7 @@ import { useEffect, useState } from 'react';
 import { FileImage, FileText, Loader2 } from 'lucide-react';
 
 import { getPdfPreviewDataUrl } from '../../lib/pdfPreview';
-import { tauriCommands } from '../../lib/tauri';
+import { createVaultClient } from '../../lib/vaultClient';
 import { getVaultDocumentTitle } from '../../lib/vaultLinks';
 import { useVaultStore } from '../../store/vaultStore';
 
@@ -56,9 +56,10 @@ export function FileTreeHoverPreviewPopover({
     setLoading(true);
     setError(null);
 
+    const client = createVaultClient(vault);
     const loader = type === 'pdf'
-      ? getPdfPreviewDataUrl(vault.path, relativePath)
-      : tauriCommands.readNoteAssetDataUrl(vault.path, relativePath);
+      ? getPdfPreviewDataUrl(client, relativePath)
+      : client.readAssetDataUrl(relativePath);
 
     void loader
       .then((rendered) => {

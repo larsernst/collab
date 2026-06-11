@@ -1,7 +1,7 @@
 import { useCollabStore } from '../../store/collabStore';
 import { useVaultStore } from '../../store/vaultStore';
 import { useEditorStore } from '../../store/editorStore';
-import { tauriCommands } from '../../lib/tauri';
+import { createVaultClient } from '../../lib/vaultClient';
 import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter,
 } from '../ui/dialog';
@@ -20,8 +20,8 @@ export function ConflictDialog() {
 
   const resolve = async (content: string) => {
     try {
-      const result = await tauriCommands.writeNote(vault.path, conflict.relativePath, content);
-      markSaved(conflict.relativePath, result.hash);
+      const result = await createVaultClient(vault).writeDocument(conflict.relativePath, content);
+      markSaved(conflict.relativePath, result.version);
       dismissConflict(conflict.relativePath);
       toast.success('Conflict resolved');
     } catch (e) {

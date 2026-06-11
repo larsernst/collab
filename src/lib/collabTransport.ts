@@ -1,5 +1,5 @@
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
-import type { ChatMessage, PresenceEntry, SnapshotMeta } from '../types/collab';
+import type { ChatMessage, PresenceEntry } from '../types/collab';
 import type { VaultConfig } from '../types/vault';
 import { tauriCommands } from './tauri';
 
@@ -20,16 +20,6 @@ export interface CollabTransport {
   sendChatMessage(msg: ChatMessage): Promise<void>;
   readChatMessages(limit: number): Promise<ChatMessage[]>;
   readVaultConfig(): Promise<VaultConfig>;
-
-  createSnapshot(
-    relativePath: string,
-    content: string,
-    authorId: string,
-    authorName: string,
-    label?: string,
-  ): Promise<SnapshotMeta>;
-  listSnapshots(relativePath: string): Promise<SnapshotMeta[]>;
-  readSnapshot(relativePath: string, snapshotId: string): Promise<string>;
 
   onPresenceChanged(cb: () => void): Unsubscribe;
   onChatUpdated(cb: () => void): Unsubscribe;
@@ -61,24 +51,6 @@ export class FileSystemTransport implements CollabTransport {
 
   readVaultConfig() {
     return tauriCommands.getVaultConfig(this.vaultPath);
-  }
-
-  createSnapshot(
-    relativePath: string,
-    content: string,
-    authorId: string,
-    authorName: string,
-    label?: string,
-  ) {
-    return tauriCommands.createSnapshot(this.vaultPath, relativePath, content, authorId, authorName, label);
-  }
-
-  listSnapshots(relativePath: string) {
-    return tauriCommands.listSnapshots(this.vaultPath, relativePath);
-  }
-
-  readSnapshot(relativePath: string, snapshotId: string) {
-    return tauriCommands.readSnapshot(this.vaultPath, relativePath, snapshotId);
   }
 
   onPresenceChanged(cb: () => void): Unsubscribe {

@@ -1,7 +1,7 @@
-import { useEffect, useCallback, useRef, useState, createContext, useContext } from 'react';
+import { useEffect, useCallback, useMemo, useRef, useState, createContext, useContext } from 'react';
 import { listen } from '@tauri-apps/api/event';
 import { LayoutDashboard } from 'lucide-react';
-import { tauriCommands } from '../lib/tauri';
+import { createVaultClient } from '../lib/vaultClient';
 import { useVaultStore } from '../store/vaultStore';
 import { useCollabStore } from '../store/collabStore';
 import { normalizeKanbanBoard, runKanbanAutomations, type KanbanBoard } from '../types/kanban';
@@ -44,6 +44,7 @@ function makeDefaultBoard(): KanbanBoard {
 
 export default function KanbanPage({ relativePath }: { relativePath: string | null }) {
   const { vault } = useVaultStore();
+  const client = useMemo(() => (vault ? createVaultClient(vault) : null), [vault]);
   const { markDirty, markSaved, setSavedHash } = useEditorStore();
   const { peers, addConflict, myUserId, myUserName } = useCollabStore();
   const collabTransport = useCollabContext();
@@ -61,13 +62,12 @@ export default function KanbanPage({ relativePath }: { relativePath: string | nu
   }, []);
 
   const saveBoard = useCallback(async (newBoard: KanbanBoard) => {
-    if (!vault || !relativePath) return;
+    if (!client || !relativePath) return;
     markWriteStarted();
     try {
       const automatedBoard = runKanbanAutomations(normalizeKanbanBoard(newBoard), 'onBoardSave');
       const serialized = JSON.stringify(automatedBoard, null, 2);
-      const result = await tauriCommands.writeNote(
-        vault.path,
+      const result = await client.writeDocument(
         relativePath,
         serialized,
         hashRef.current,
@@ -86,16 +86,15 @@ export default function KanbanPage({ relativePath }: { relativePath: string | nu
           ? automatedBoard
           : runKanbanAutomations(normalizeKanbanBoard(JSON.parse(mergedSerialized) as KanbanBoard), 'onBoardSave');
         if (mergedSerialized !== serialized) {
-          markLoaded(result.hash);
+          markLoaded(result.version);
         }
         setBoard(mergedBoard);
         savedBoardContentRef.current = mergedSerialized;
-        hashRef.current = result.hash;
+        hashRef.current = result.version;
         isDirtyRef.current = false;
-        markSaved(relativePath, result.hash);
-        if (shouldCreateSnapshot(result.hash)) {
-          tauriCommands.createSnapshot(
-            vault.path,
+        markSaved(relativePath, result.version);
+        if (shouldCreateSnapshot(result.version)) {
+          client.createSnapshot(
             relativePath,
             mergedSerialized,
             myUserId,
@@ -104,7 +103,7 @@ export default function KanbanPage({ relativePath }: { relativePath: string | nu
         }
       }
     } catch {}
-  }, [addConflict, markSaved, markWriteStarted, myUserId, myUserName, relativePath, shouldCreateSnapshot, vault?.path]);
+  }, [addConflict, client, markSaved, markWriteStarted, myUserId, myUserName, relativePath, shouldCreateSnapshot]);
 
   const updateBoard = useCallback((updater: (b: KanbanBoard) => KanbanBoard) => {
     setBoard(prev => {
@@ -119,30 +118,30 @@ export default function KanbanPage({ relativePath }: { relativePath: string | nu
   }, [markDirty, relativePath, saveBoard]);
 
   const loadBoard = useCallback(async (isInitial = false) => {
-    if (!vault || !relativePath) return;
+    if (!client || !relativePath) return;
     try {
-      const { content, hash } = await tauriCommands.readNote(vault.path, relativePath);
+      const { content, version } = await client.readDocument(relativePath);
       if (!isMountedRef.current) return;
       if (content.trim()) {
         const parsed: KanbanBoard = JSON.parse(content);
         setBoard(runKanbanAutomations(normalizeKanbanBoard(parsed), 'onBoardOpen'));
         savedBoardContentRef.current = content;
         isDirtyRef.current = false;
-        markLoaded(hash);
-        setSavedHash(relativePath, hash);
+        markLoaded(version);
+        setSavedHash(relativePath, version);
       } else if (isInitial) {
         const def = makeDefaultBoard();
         setBoard(def);
-        const result = await tauriCommands.writeNote(
-          vault.path, relativePath, JSON.stringify(def, null, 2), undefined,
+        const result = await client.writeDocument(
+          relativePath, JSON.stringify(def, null, 2), undefined,
         );
         savedBoardContentRef.current = JSON.stringify(def, null, 2);
         isDirtyRef.current = false;
-        markLoaded(result.hash);
-        setSavedHash(relativePath, result.hash);
+        markLoaded(result.version);
+        setSavedHash(relativePath, result.version);
       }
     } catch {}
-  }, [markLoaded, relativePath, setSavedHash, vault?.path]);
+  }, [client, markLoaded, relativePath, setSavedHash]);
 
   useEffect(() => {
     loadBoard(true);
@@ -151,7 +150,7 @@ export default function KanbanPage({ relativePath }: { relativePath: string | nu
   // ── Collab: reload on peer edits ─────────────────────────────────────────
 
   useEffect(() => {
-    if (!vault || !relativePath) return;
+    if (!client || !client.capabilities.filesystemWatch || !relativePath) return;
     let unsub: (() => void) | undefined;
     listen<{ path: string }>('vault:file-modified', (event) => {
       if (event.payload.path !== relativePath) return;
@@ -160,7 +159,7 @@ export default function KanbanPage({ relativePath }: { relativePath: string | nu
       loadBoard(false);
     }).then(u => { unsub = u; });
     return () => { unsub?.(); };
-  }, [vault?.path, relativePath, loadBoard]);
+  }, [client, relativePath, loadBoard, lastWriteRef]);
 
   // ── Known users (for assignee picker) ────────────────────────────────────
 

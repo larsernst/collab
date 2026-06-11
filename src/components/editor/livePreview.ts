@@ -65,7 +65,7 @@ import {
 import { Checkbox } from '../ui/checkbox';
 import { resolveNoteAssetTarget, isLikelyImagePath, type NoteAssetTarget } from '../../lib/noteAssets';
 import { useVaultStore } from '../../store/vaultStore';
-import { tauriCommands } from '../../lib/tauri';
+import { createVaultClient } from '../../lib/vaultClient';
 import { MathPlot2D } from './MathPlot2D';
 import { MathPlot3D } from './MathPlot3D';
 import { parseMathPlots } from './mathPlotSpec';
@@ -520,10 +520,10 @@ class ImageWidget extends WidgetType {
 
     img.dataset.pending = 'true';
 
-    const vaultPath = useVaultStore.getState().vault?.path;
-    if (!vaultPath) return wrap;
+    const vault = useVaultStore.getState().vault;
+    if (!vault) return wrap;
 
-    void tauriCommands.readNoteAssetDataUrl(vaultPath, this.target.value)
+    void createVaultClient(vault).readAssetDataUrl(this.target.value)
       .then((src) => {
         if (!src || !img.isConnected) return;
         img.src = src;

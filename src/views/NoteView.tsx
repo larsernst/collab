@@ -4,7 +4,6 @@ import { useVaultStore } from '../store/vaultStore';
 import { useEditorStore } from '../store/editorStore';
 import type { NoteEditorViewState } from '../store/editorStore';
 import { useCollabStore } from '../store/collabStore';
-import { tauriCommands } from '../lib/tauri';
 import { MarkdownEditor, type MarkdownEditorHandle } from '../components/editor/MarkdownEditor';
 import { EditorToolbar } from '../components/editor/EditorToolbar';
 import { toast } from 'sonner';
@@ -16,6 +15,7 @@ import {
 import { useUiStore } from '../store/uiStore';
 import { extractHttpUrls, prefetchWebPreviews } from '../lib/webPreviewCache';
 import { useDocumentSessionState } from '../lib/documentSession';
+import { createVaultClient } from '../lib/vaultClient';
 import { useNoteSnippetStore } from '../store/noteSnippetStore';
 import { findSearchJumpRange } from '../lib/searchNavigation';
 
@@ -60,6 +60,7 @@ export default function NoteView({ relativePath }: { relativePath: string }) {
   const loadSnippets = useNoteSnippetStore((state) => state.loadSnippets);
   const editorRef = useRef<MarkdownEditorHandle | null>(null);
   const savedContentRef = useRef<string | null>(null);
+  const client = useMemo(() => (vault ? createVaultClient(vault) : null), [vault]);
   const { hashRef, markLoaded, shouldSkipAutosave, markWriteStarted, shouldCreateSnapshot } = useDocumentSessionState();
   const initialViewState = useMemo<NoteEditorViewState | null>(
     () => useEditorStore.getState().noteViewStates[relativePath] ?? null,
@@ -67,14 +68,14 @@ export default function NoteView({ relativePath }: { relativePath: string }) {
   );
 
   const loadNote = () => {
-    if (!vault || !relativePath) return;
+    if (!client || !relativePath) return;
     setContent(null);
-    tauriCommands.readNote(vault.path, relativePath)
-      .then((nc) => {
-        setContent(nc.content);
-        savedContentRef.current = nc.content;
-        markLoaded(nc.hash);
-        setSavedHash(relativePath, nc.hash);
+    client.readDocument(relativePath)
+      .then((doc) => {
+        setContent(doc.content);
+        savedContentRef.current = doc.content;
+        markLoaded(doc.version);
+        setSavedHash(relativePath, doc.version);
       })
       .catch((e) => toast.error('Failed to open note: ' + e));
   };
@@ -82,9 +83,11 @@ export default function NoteView({ relativePath }: { relativePath: string }) {
   useEffect(() => { loadNote(); }, [relativePath, vault?.path]);
 
   useEffect(() => {
-    if (!vault) return;
-    void loadSnippets(vault.path);
-  }, [loadSnippets, vault?.path]);
+    if (!client) return;
+    // Vault-scoped snippets are a native-filesystem concept; hosted vaults fall
+    // back to app-scoped snippets only.
+    void loadSnippets(client.capabilities.nativeFilesystem ? vault?.path : null);
+  }, [client, loadSnippets, vault?.path]);
 
   useEffect(() => {
     if (!content || !webPreviewsEnabled || !hoverWebLinkPreviewsEnabled || !backgroundWebPreviewPrefetchEnabled) return;
@@ -159,23 +162,23 @@ export default function NoteView({ relativePath }: { relativePath: string }) {
   // Auto-reload when another user edits the same file (no local dirty changes)
   const isDirtyRef = useRef(false);
   useEffect(() => {
-    if (!vault) return;
+    if (!client || !client.capabilities.filesystemWatch) return;
     const unlisten = listen<{ path: string }>('vault:file-modified', async (event) => {
       const changedPath = event.payload?.path;
       if (changedPath !== relativePath) return;
       if (isDirtyRef.current) return;
       try {
-        const nc = await tauriCommands.readNote(vault.path, relativePath);
-        if (nc.hash !== hashRef.current) {
-          setContent(nc.content);
-          savedContentRef.current = nc.content;
-          markLoaded(nc.hash);
-          setSavedHash(relativePath, nc.hash);
+        const doc = await client.readDocument(relativePath);
+        if (doc.version !== hashRef.current) {
+          setContent(doc.content);
+          savedContentRef.current = doc.content;
+          markLoaded(doc.version);
+          setSavedHash(relativePath, doc.version);
         }
       } catch {}
     });
     return () => { unlisten.then((u) => u()); };
-  }, [relativePath, vault?.path]);
+  }, [client, relativePath, vault?.path]);
 
   const handleChange = (newContent: string) => {
     setContent(newContent);
@@ -204,11 +207,10 @@ export default function NoteView({ relativePath }: { relativePath: string }) {
   }, [content, shouldSkipAutosave]);
 
   const handleSave = async (newContent: string, manual = false) => {
-    if (!vault) return;
+    if (!client) return;
     try {
       markWriteStarted();
-      const result = await tauriCommands.writeNote(
-        vault.path,
+      const result = await client.writeDocument(
         relativePath,
         newContent,
         hashRef.current,
@@ -221,16 +223,16 @@ export default function NoteView({ relativePath }: { relativePath: string }) {
 
       const savedContent = result.mergedContent ?? newContent;
       if (savedContent !== newContent) {
-        markLoaded(result.hash);
+        markLoaded(result.version);
         setContent(savedContent);
       }
       savedContentRef.current = savedContent;
-      hashRef.current = result.hash;
+      hashRef.current = result.version;
       isDirtyRef.current = false;
-      markSaved(relativePath, result.hash);
+      markSaved(relativePath, result.version);
 
-      if (manual && shouldCreateSnapshot(result.hash)) {
-        tauriCommands.createSnapshot(vault.path, relativePath, savedContent, myUserId, myUserName)
+      if (manual && shouldCreateSnapshot(result.version)) {
+        client.createSnapshot(relativePath, savedContent, myUserId, myUserName)
           .catch(() => {});
       }
 
@@ -243,7 +245,7 @@ export default function NoteView({ relativePath }: { relativePath: string }) {
           parts[parts.length - 1] = sanitized + '.md';
           const newPath = parts.join('/');
           try {
-            await tauriCommands.renameNote(vault.path, relativePath, newPath);
+            await client.renameMove(relativePath, newPath);
             renameTab(relativePath, newPath, sanitized);
             await refreshFileTree();
           } catch {

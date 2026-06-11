@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo } from 'react';
 import { toast } from 'sonner';
 
 import { tauriCommands } from '../../lib/tauri';
+import { createVaultClient } from '../../lib/vaultClient';
 import type {
   ImageOverlayDocument,
   PermanentImageEdits,
@@ -153,7 +154,7 @@ export function useImageDocumentSession({
     setTextInteraction(null);
     setArrowInteraction(null);
 
-    tauriCommands.readNoteAssetDataUrl(vault.path, relativePath)
+    createVaultClient(vault).readAssetDataUrl(relativePath)
       .then(async (dataUrl) => {
         const decoded = await loadImage(dataUrl);
         if (cancelled) return;
@@ -353,7 +354,7 @@ export function useImageDocumentSession({
       await refreshFileTree();
 
       if (overwrite) {
-        const refreshedDataUrl = await tauriCommands.readNoteAssetDataUrl(vault.path, savedRelativePath);
+        const refreshedDataUrl = await createVaultClient(vault).readAssetDataUrl(savedRelativePath);
         const refreshedImage = await loadImage(refreshedDataUrl);
         setSrc(refreshedDataUrl);
         setImage(refreshedImage);

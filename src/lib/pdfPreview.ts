@@ -1,5 +1,6 @@
 import { getDocument, GlobalWorkerOptions } from 'pdfjs-dist';
 import { tauriCommands } from './tauri';
+import { LocalVaultClient, type VaultClient } from './vaultClient';
 
 const workerUrl = new URL('pdfjs-dist/build/pdf.worker.mjs', import.meta.url).toString();
 GlobalWorkerOptions.workerSrc = workerUrl;
@@ -46,36 +47,41 @@ export async function renderPdfPreviewFromDataUrl(dataUrl: string) {
 
 type PdfPreviewLoaderDeps = {
   readCachedDocumentPreviewDataUrl: typeof tauriCommands.readCachedDocumentPreviewDataUrl;
-  readNoteAssetDataUrl: typeof tauriCommands.readNoteAssetDataUrl;
   writeCachedDocumentPreviewDataUrl: typeof tauriCommands.writeCachedDocumentPreviewDataUrl;
   renderPdfPreviewFromDataUrl: typeof renderPdfPreviewFromDataUrl;
 };
 
 export async function loadPdfPreviewDataUrl(
-  vaultPath: string,
+  client: VaultClient,
   relativePath: string,
   deps: PdfPreviewLoaderDeps = {
     readCachedDocumentPreviewDataUrl: tauriCommands.readCachedDocumentPreviewDataUrl,
-    readNoteAssetDataUrl: tauriCommands.readNoteAssetDataUrl,
     writeCachedDocumentPreviewDataUrl: tauriCommands.writeCachedDocumentPreviewDataUrl,
     renderPdfPreviewFromDataUrl,
   },
 ) {
-  const cached = await deps.readCachedDocumentPreviewDataUrl(vaultPath, relativePath);
-  if (cached) return cached;
+  // The persistent document-preview cache is a native-filesystem feature;
+  // hosted vaults render previews on demand from the authenticated asset.
+  const cacheVaultPath = client instanceof LocalVaultClient ? client.vault.path : null;
+  if (cacheVaultPath) {
+    const cached = await deps.readCachedDocumentPreviewDataUrl(cacheVaultPath, relativePath);
+    if (cached) return cached;
+  }
 
-  const sourceDataUrl = await deps.readNoteAssetDataUrl(vaultPath, relativePath);
+  const sourceDataUrl = await client.readAssetDataUrl(relativePath);
   const renderedPreview = await deps.renderPdfPreviewFromDataUrl(sourceDataUrl);
-  void deps.writeCachedDocumentPreviewDataUrl(vaultPath, relativePath, renderedPreview).catch(() => {});
+  if (cacheVaultPath) {
+    void deps.writeCachedDocumentPreviewDataUrl(cacheVaultPath, relativePath, renderedPreview).catch(() => {});
+  }
   return renderedPreview;
 }
 
-export async function getPdfPreviewDataUrl(vaultPath: string, relativePath: string) {
-  const key = `${vaultPath}::${relativePath}`;
+export async function getPdfPreviewDataUrl(client: VaultClient, relativePath: string) {
+  const key = `${client.id}::${relativePath}`;
   const existing = inFlightVaultPreviewLoads.get(key);
   if (existing) return existing;
 
-  const promise = loadPdfPreviewDataUrl(vaultPath, relativePath)
+  const promise = loadPdfPreviewDataUrl(client, relativePath)
     .finally(() => {
       inFlightVaultPreviewLoads.delete(key);
     });

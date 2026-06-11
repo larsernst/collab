@@ -3,6 +3,7 @@ import { useEffect, useState } from 'react';
 import { FileText, Loader2 } from 'lucide-react';
 
 import { getPdfPreviewDataUrl } from '../../lib/pdfPreview';
+import { createVaultClient } from '../../lib/vaultClient';
 import { getVaultDocumentTitle } from '../../lib/vaultLinks';
 import { useVaultStore } from '../../store/vaultStore';
 
@@ -30,7 +31,7 @@ export function PdfLinkPreviewPopover({ anchorRect, relativePath, enabled }: Pdf
     setLoading(true);
     setError(null);
 
-    void getPdfPreviewDataUrl(vault.path, relativePath)
+    void getPdfPreviewDataUrl(createVaultClient(vault), relativePath)
       .then((rendered) => {
         if (cancelled) return;
         setPreviewSrc(rendered);

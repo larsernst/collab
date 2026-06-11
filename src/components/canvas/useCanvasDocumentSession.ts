@@ -1,8 +1,8 @@
 import { listen } from '@tauri-apps/api/event';
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { Node as FlowNode, Viewport } from '@xyflow/react';
 
-import { tauriCommands } from '../../lib/tauri';
+import { createVaultClient } from '../../lib/vaultClient';
 import type { CanvasData, CanvasEdge } from '../../types/canvas';
 import type { VaultMeta } from '../../types/vault';
 import type { CanvasNodeData } from './CanvasNodeTypes';
@@ -100,20 +100,21 @@ export function useCanvasDocumentSession({
   markWriteStarted,
   shouldCreateSnapshot,
 }: UseCanvasDocumentSessionOptions) {
+  const client = useMemo(() => (vault ? createVaultClient(vault) : null), [vault]);
   const saveTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const pendingViewportRef = useRef<Viewport | null>(null);
   const savedCanvasContentRef = useRef<string | null>(null);
   const [loadRevision, setLoadRevision] = useState(0);
 
   const loadCanvas = useCallback(async (isInitial = false) => {
-    if (!vault || !relativePath) return;
+    if (!client || !relativePath) return;
 
     try {
-      const { content, hash } = await tauriCommands.readNote(vault.path, relativePath);
+      const { content, version } = await client.readDocument(relativePath);
       if (!isMountedRef.current) return;
 
       let canvas = EMPTY_CANVAS;
-      let currentHash = hash;
+      let currentHash = version;
 
       if (content.trim()) {
         canvas = JSON.parse(content) as CanvasData;
@@ -125,20 +126,19 @@ export function useCanvasDocumentSession({
 
         if (sanitized.changed) {
           try {
-            const repairedResult = await tauriCommands.writeNote(
-              vault.path,
+            const repairedResult = await client.writeDocument(
               relativePath,
               sanitizedContent,
               currentHash ?? undefined,
               content,
             );
-            currentHash = repairedResult.hash;
+            currentHash = repairedResult.version;
           } catch {}
         }
       } else if (isInitial) {
         const blank = EMPTY_CANVAS;
-        const result = await tauriCommands.writeNote(vault.path, relativePath, JSON.stringify(blank, null, 2));
-        currentHash = result.hash;
+        const result = await client.writeDocument(relativePath, JSON.stringify(blank, null, 2));
+        currentHash = result.version;
         canvas = blank;
         savedCanvasContentRef.current = JSON.stringify(blank, null, 2);
       }
@@ -155,6 +155,7 @@ export function useCanvasDocumentSession({
     } catch {}
   }, [
     buildFlowNode,
+    client,
     isDirtyRef,
     isMountedRef,
     markLoaded,
@@ -165,7 +166,6 @@ export function useCanvasDocumentSession({
     setSavedHash,
     setViewport,
     toFlowEdge,
-    vault,
   ]);
 
   useEffect(() => {
@@ -183,7 +183,7 @@ export function useCanvasDocumentSession({
   }, [loadRevision, reactFlow]);
 
   useEffect(() => {
-    if (!vault || !relativePath) return;
+    if (!client || !client.capabilities.filesystemWatch || !relativePath) return;
     let unsub: (() => void) | undefined;
 
     listen<{ path: string }>('vault:file-modified', (event) => {
@@ -198,10 +198,10 @@ export function useCanvasDocumentSession({
     return () => {
       unsub?.();
     };
-  }, [isDirtyRef, lastWriteRef, loadCanvas, relativePath, vault]);
+  }, [client, isDirtyRef, lastWriteRef, loadCanvas, relativePath]);
 
   const saveCanvas = useCallback(async () => {
-    if (!vault || !relativePath) return;
+    if (!client || !relativePath) return;
     const payload: CanvasData = {
       nodes: nodes.map(fromFlowNode),
       edges: edges.map(fromFlowEdge),
@@ -211,8 +211,7 @@ export function useCanvasDocumentSession({
 
     markWriteStarted();
     try {
-      const result = await tauriCommands.writeNote(
-        vault.path,
+      const result = await client.writeDocument(
         relativePath,
         serialized,
         hashRef.current ?? undefined,
@@ -225,7 +224,7 @@ export function useCanvasDocumentSession({
       if (isMountedRef.current) {
         const mergedSerialized = result.mergedContent ?? serialized;
         if (mergedSerialized !== serialized) {
-          markLoaded(result.hash);
+          markLoaded(result.version);
           const mergedCanvas = JSON.parse(mergedSerialized) as CanvasData;
           resetPreviewState();
           setViewport(mergedCanvas.viewport ?? EMPTY_CANVAS.viewport);
@@ -235,12 +234,11 @@ export function useCanvasDocumentSession({
           setLoadRevision((prev) => prev + 1);
         }
         savedCanvasContentRef.current = mergedSerialized;
-        hashRef.current = result.hash;
+        hashRef.current = result.version;
         isDirtyRef.current = false;
-        markSaved(relativePath, result.hash);
-        if (shouldCreateSnapshot(result.hash)) {
-          tauriCommands.createSnapshot(
-            vault.path,
+        markSaved(relativePath, result.version);
+        if (shouldCreateSnapshot(result.version)) {
+          client.createSnapshot(
             relativePath,
             mergedSerialized,
             myUserId,
@@ -251,20 +249,27 @@ export function useCanvasDocumentSession({
     } catch {}
   }, [
     addConflict,
+    buildFlowNode,
+    client,
     edges,
     fromFlowEdge,
     fromFlowNode,
     hashRef,
     isDirtyRef,
     isMountedRef,
+    markLoaded,
     markSaved,
     markWriteStarted,
     myUserId,
     myUserName,
     nodes,
     relativePath,
+    resetPreviewState,
+    setEdges,
+    setNodes,
+    setViewport,
     shouldCreateSnapshot,
-    vault,
+    toFlowEdge,
     viewport,
   ]);
 

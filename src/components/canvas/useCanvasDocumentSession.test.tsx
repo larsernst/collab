@@ -281,6 +281,7 @@ describe('useCanvasDocumentSession', () => {
       }, null, 2),
       'user-1',
       'User',
+      undefined,
     );
   });
 });

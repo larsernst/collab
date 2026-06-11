@@ -27,11 +27,13 @@ vi.mock('./tauri', () => ({
     purgeTrashedItem: vi.fn(),
     purgeAllTrash: vi.fn(),
     searchNotes: vi.fn(),
+    createSnapshot: vi.fn(),
     listSnapshots: vi.fn(),
     readSnapshot: vi.fn(),
     restoreSnapshot: vi.fn(),
     deleteSnapshot: vi.fn(),
     clearSnapshotHistory: vi.fn(),
+    readNoteAssetDataUrl: vi.fn(),
     hostedVaultRequest: vi.fn(),
     hostedVaultAssetDataUrl: vi.fn(),
     watchVault: vi.fn(),
@@ -175,11 +177,13 @@ describe('LocalVaultClient', () => {
     await client.purgeTrash('trash-2', true);
     await client.purgeAllTrash();
     await client.search('test');
+    await client.createSnapshot('Notes/Test.md', '# Test', 'user-1', 'Alice', 'Checkpoint');
     await client.listSnapshots('Notes/Test.md');
     await client.readSnapshot('Notes/Test.md', 'snapshot-1');
     await client.restoreSnapshot('Notes/Test.md', 'snapshot-1', 'user-1', 'Alice');
     await client.deleteSnapshot('Notes/Test.md', 'snapshot-1');
     await client.clearSnapshotHistory('Notes/Test.md');
+    await client.readAssetDataUrl('Pictures/diagram.png');
 
     expect(tauriCommands.listVaultFiles).toHaveBeenCalledWith('/vault');
     expect(tauriCommands.createNote).toHaveBeenCalledWith('/vault', 'Test.md');
@@ -194,11 +198,13 @@ describe('LocalVaultClient', () => {
     expect(tauriCommands.purgeTrashedItem).toHaveBeenCalledWith('/vault', 'trash-2', true);
     expect(tauriCommands.purgeAllTrash).toHaveBeenCalledWith('/vault');
     expect(tauriCommands.searchNotes).toHaveBeenCalledWith('/vault', 'test');
+    expect(tauriCommands.createSnapshot).toHaveBeenCalledWith('/vault', 'Notes/Test.md', '# Test', 'user-1', 'Alice', 'Checkpoint');
     expect(tauriCommands.listSnapshots).toHaveBeenCalledWith('/vault', 'Notes/Test.md');
     expect(tauriCommands.readSnapshot).toHaveBeenCalledWith('/vault', 'Notes/Test.md', 'snapshot-1');
     expect(tauriCommands.restoreSnapshot).toHaveBeenCalledWith('/vault', 'Notes/Test.md', 'snapshot-1', 'user-1', 'Alice');
     expect(tauriCommands.deleteSnapshot).toHaveBeenCalledWith('/vault', 'Notes/Test.md', 'snapshot-1');
     expect(tauriCommands.clearSnapshotHistory).toHaveBeenCalledWith('/vault', 'Notes/Test.md');
+    expect(tauriCommands.readNoteAssetDataUrl).toHaveBeenCalledWith('/vault', 'Pictures/diagram.png');
   });
 });
 
@@ -210,7 +216,7 @@ describe('HostedVaultClient', () => {
     const client = new HostedVaultClient(hostedVault);
 
     expect(client.capabilities).toEqual(HOSTED_VAULT_CAPABILITIES);
-    expect(client.runtime).toEqual({ authenticatedAssets: expect.any(Object) });
+    expect(client.runtime).toEqual({});
     await expect(client.listFiles()).resolves.toEqual([
       expect.objectContaining({
         relativePath: 'Notes',
@@ -420,6 +426,33 @@ describe('HostedVaultClient', () => {
         targetFileId: 'file-1',
         removeReferences: true,
       }),
+    );
+  });
+
+  it('labels the current hosted revision when creating a snapshot without sending content', async () => {
+    const snapshot = {
+      id: 'snapshot-9',
+      label: 'Checkpoint',
+      revision: hostedDocument.currentRevision,
+      createdByDisplayName: 'Alice',
+      createdAt: '2026-06-11T09:00:00Z',
+    };
+    vi.mocked(tauriCommands.hostedVaultRequest).mockReset();
+    vi.mocked(tauriCommands.hostedVaultRequest)
+      .mockResolvedValueOnce(mockHostedManifest())
+      .mockResolvedValueOnce(snapshot);
+    const client = new HostedVaultClient(hostedVault);
+
+    await expect(
+      client.createSnapshot('Notes/Test.md', 'ignored body', 'ignored', 'ignored', 'Checkpoint'),
+    ).resolves.toEqual(
+      expect.objectContaining({ id: 'snapshot-9', label: 'Checkpoint', hash: 'hash-3', authorName: 'Alice' }),
+    );
+    expect(tauriCommands.hostedVaultRequest).toHaveBeenLastCalledWith(
+      'https://collab.example.test',
+      'POST',
+      '/api/v1/vaults/hosted-vault/files/file-1/snapshots',
+      { revisionId: 'revision-3', label: 'Checkpoint' },
     );
   });
 

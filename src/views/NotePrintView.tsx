@@ -3,7 +3,7 @@ import { Printer, X } from 'lucide-react';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 
 import { MarkdownPreview } from '../components/editor/MarkdownPreview';
-import { tauriCommands } from '../lib/tauri';
+import { createVaultClient } from '../lib/vaultClient';
 import { useVaultStore } from '../store/vaultStore';
 import { Button } from '../components/ui/button';
 import { getVaultDocumentTitle } from '../lib/vaultLinks';
@@ -40,10 +40,10 @@ export default function NotePrintView({
     if (!vault) return;
     let cancelled = false;
 
-    tauriCommands.readNote(vault.path, relativePath)
-      .then((note) => {
+    createVaultClient(vault).readDocument(relativePath)
+      .then((doc) => {
         if (cancelled) return;
-        setContent(note.content);
+        setContent(doc.content);
       })
       .catch((err) => {
         if (cancelled) return;

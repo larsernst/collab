@@ -45,16 +45,11 @@ export interface VaultArchiveExportCapability {
   exportTo(destinationPath: string): Promise<void>;
 }
 
-export interface AuthenticatedAssetCapability {
-  readDataUrl(relativePath: string): Promise<string>;
-}
-
 export interface VaultRuntimeCapabilities {
   watch?: VaultWatchCapability;
   encryption?: VaultEncryptionCapability;
   externalAssetImport?: ExternalAssetImportCapability;
   archiveExport?: VaultArchiveExportCapability;
-  authenticatedAssets?: AuthenticatedAssetCapability;
 }
 
 export interface VaultDocument {
@@ -100,11 +95,24 @@ export interface VaultClient {
   purgeTrash(entryId: string, removeReferences?: boolean): Promise<void>;
   purgeAllTrash(): Promise<void>;
   search(query: string): Promise<SearchResult[]>;
+  createSnapshot(
+    relativePath: string,
+    content: string,
+    authorId: string,
+    authorName: string,
+    label?: string,
+  ): Promise<SnapshotMeta>;
   listSnapshots(relativePath: string): Promise<SnapshotMeta[]>;
   readSnapshot(relativePath: string, snapshotId: string): Promise<string>;
   restoreSnapshot(relativePath: string, snapshotId: string, authorId: string, authorName: string): Promise<VaultWriteResult>;
   deleteSnapshot(relativePath: string, snapshotId: string): Promise<void>;
   clearSnapshotHistory(relativePath: string): Promise<void>;
+  /**
+   * Returns a `data:` URL for a vault asset (image, PDF, …). Local vaults read
+   * from disk; hosted vaults stream the blob through the authenticated gateway
+   * so bearer tokens never reach the webview.
+   */
+  readAssetDataUrl(relativePath: string): Promise<string>;
 }
 
 export const LOCAL_VAULT_CAPABILITIES: VaultClientCapabilities = {
@@ -270,15 +278,9 @@ function pathOperation(oldPath: string, newPath: string): PathChangePreview['ope
 export class HostedVaultClient implements VaultClient {
   readonly kind = 'hosted';
   readonly capabilities = HOSTED_VAULT_CAPABILITIES;
-  readonly runtime: VaultRuntimeCapabilities;
+  readonly runtime: VaultRuntimeCapabilities = {};
 
-  constructor(readonly vault: HostedVaultMeta) {
-    this.runtime = {
-      authenticatedAssets: {
-        readDataUrl: (relativePath) => this.readAssetDataUrl(relativePath),
-      },
-    };
-  }
+  constructor(readonly vault: HostedVaultMeta) {}
 
   get id() {
     return this.vault.id;
@@ -519,6 +521,32 @@ export class HostedVaultClient implements VaultClient {
     }));
   }
 
+  async createSnapshot(
+    relativePath: string,
+    _content: string,
+    _authorId: string,
+    _authorName: string,
+    label?: string,
+  ): Promise<SnapshotMeta> {
+    // Hosted snapshots label the file's current immutable revision rather than
+    // persisting caller-supplied content, so identity comes from the session.
+    const manifest = await this.manifest();
+    const file = this.findByPath(manifest, relativePath);
+    const snapshot = await this.request<HostedSnapshot>('POST', `/files/${file.id}/snapshots`, {
+      revisionId: file.currentRevision?.id ?? null,
+      label: label ?? null,
+    });
+    return {
+      id: snapshot.id,
+      relativePath,
+      authorId: '',
+      authorName: snapshot.createdByDisplayName ?? 'Unknown user',
+      timestamp: timestamp(snapshot.createdAt),
+      hash: snapshot.revision.contentHash,
+      label: snapshot.label ?? undefined,
+    };
+  }
+
   async listSnapshots(relativePath: string): Promise<SnapshotMeta[]> {
     const manifest = await this.manifest();
     const file = this.findByPath(manifest, relativePath);
@@ -701,6 +729,16 @@ export class LocalVaultClient implements VaultClient {
     return tauriCommands.searchNotes(this.vault.path, query);
   }
 
+  createSnapshot(
+    relativePath: string,
+    content: string,
+    authorId: string,
+    authorName: string,
+    label?: string,
+  ) {
+    return tauriCommands.createSnapshot(this.vault.path, relativePath, content, authorId, authorName, label);
+  }
+
   listSnapshots(relativePath: string) {
     return tauriCommands.listSnapshots(this.vault.path, relativePath);
   }
@@ -724,6 +762,10 @@ export class LocalVaultClient implements VaultClient {
 
   clearSnapshotHistory(relativePath: string) {
     return tauriCommands.clearSnapshotHistory(this.vault.path, relativePath);
+  }
+
+  readAssetDataUrl(relativePath: string) {
+    return tauriCommands.readNoteAssetDataUrl(this.vault.path, relativePath);
   }
 }
 

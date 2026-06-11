@@ -12,6 +12,8 @@ import {
 } from 'lucide-react';
 import { toast } from 'sonner';
 import { tauriCommands } from '../../lib/tauri';
+import { createVaultClient } from '../../lib/vaultClient';
+import { useVaultStore } from '../../store/vaultStore';
 import type { KanbanBoard } from '../../types/kanban';
 import type { KanbanTemplate, TemplateSource } from '../../types/template';
 import type { NoteFile } from '../../types/vault';
@@ -143,6 +145,7 @@ export default function KanbanTemplatesModal({
   onOpenChange,
   onTemplateApplied,
 }: Props) {
+  const vault = useVaultStore((state) => state.vault);
   const [templates, setTemplates] = useState<KanbanTemplate[]>([]);
   const [loading, setLoading] = useState(false);
   const [createName, setCreateName] = useState('');
@@ -189,9 +192,9 @@ export default function KanbanTemplatesModal({
 
   async function handleCreateFromBoard() {
     const templateName = createName.trim();
-    if (!templateName || !selectedBoardPath) return;
+    if (!templateName || !selectedBoardPath || !vault) return;
     try {
-      const { content } = await tauriCommands.readNote(vaultPath, selectedBoardPath);
+      const { content } = await createVaultClient(vault).readDocument(selectedBoardPath);
       const board = JSON.parse(content) as KanbanBoard;
       await tauriCommands.saveKanbanTemplate(vaultPath, createSource, templateName, board);
       setCreateName('');

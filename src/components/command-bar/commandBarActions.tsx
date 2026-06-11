@@ -17,7 +17,7 @@ import {
 import { toast } from 'sonner';
 
 import { dispatchEditorToolbarAction } from '../../lib/editorToolbarActions';
-import { tauriCommands } from '../../lib/tauri';
+import { createVaultClient } from '../../lib/vaultClient';
 import type { ActiveView, DateFormat } from '../../store/uiStore';
 import type { PendingSearchJump } from '../../store/editorStore';
 import type { NoteMetadata, SearchResult } from '../../types/note';
@@ -118,7 +118,7 @@ export const ACTIONS: Action[] = [
       const name = query.replace(/^new\s+note\s*/i, '').trim() || 'Untitled';
       if (!ctx.vault) return;
       try {
-        const file = await tauriCommands.createNote(ctx.vault.path, `${name}.md`);
+        const file = await createVaultClient(ctx.vault).createDocument(`${name}.md`);
         await ctx.refreshFileTree();
         ctx.openTab(file.relativePath, name, 'note');
         ctx.setActiveView('editor');
@@ -137,7 +137,7 @@ export const ACTIONS: Action[] = [
       const name = query.replace(/^new\s+canvas\s*/i, '').trim() || 'Canvas';
       if (!ctx.vault) return;
       try {
-        const file = await tauriCommands.createNote(ctx.vault.path, `${name}.canvas`);
+        const file = await createVaultClient(ctx.vault).createDocument(`${name}.canvas`);
         await ctx.refreshFileTree();
         ctx.openTab(file.relativePath, name, 'canvas');
         ctx.setActiveView('canvas');
@@ -264,7 +264,7 @@ export const ACTIONS: Action[] = [
       const name = query.replace(/^new\s+kanban\s*/i, '').trim() || 'Board';
       if (!ctx.vault) return;
       try {
-        const file = await tauriCommands.createNote(ctx.vault.path, `${name}.kanban`);
+        const file = await createVaultClient(ctx.vault).createDocument(`${name}.kanban`);
         await ctx.refreshFileTree();
         ctx.openTab(file.relativePath, name, 'kanban');
         ctx.setActiveView('kanban');

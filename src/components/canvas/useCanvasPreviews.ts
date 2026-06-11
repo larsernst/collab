@@ -2,7 +2,7 @@ import { openUrl } from '@tauri-apps/plugin-opener';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { Node as FlowNode } from '@xyflow/react';
 
-import { tauriCommands } from '../../lib/tauri';
+import { createVaultClient } from '../../lib/vaultClient';
 import { prefetchWebPreviews, requestWebPreview as requestCachedWebPreview } from '../../lib/webPreviewCache';
 import type { VaultMeta } from '../../types/vault';
 import type { CanvasNode, CanvasWebDisplayMode, WebCanvasNode } from '../../types/canvas';
@@ -148,18 +148,19 @@ export function useCanvasPreviews({
           };
         }
       } else if ('relativePath' in node && vault) {
+        const client = createVaultClient(vault);
         const path = node.relativePath;
         const extension = path.split('.').pop()?.toLowerCase() ?? '';
         if (node.type === 'file' && isImageExtension(extension)) {
-          nextPreview = { imageSrc: await tauriCommands.readNoteAssetDataUrl(vault.path, path) };
+          nextPreview = { imageSrc: await client.readAssetDataUrl(path) };
         } else if (node.type === 'file' && extension === 'pdf') {
-          const pdfDataUrl = await tauriCommands.readNoteAssetDataUrl(vault.path, path);
+          const pdfDataUrl = await client.readAssetDataUrl(path);
           nextPreview = { imageSrc: await renderPdfPreview(pdfDataUrl) };
         } else if (node.type === 'note') {
-          const { content } = await tauriCommands.readNote(vault.path, path);
+          const { content } = await client.readDocument(path);
           nextPreview = { excerpt: cleanPreviewText(content), markdownContent: content };
         } else if (canPreviewText(extension)) {
-          const { content } = await tauriCommands.readNote(vault.path, path);
+          const { content } = await client.readDocument(path);
           nextPreview = { excerpt: cleanPreviewText(content) };
         }
       }

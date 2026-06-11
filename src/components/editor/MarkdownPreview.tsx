@@ -22,7 +22,7 @@ import hljs from 'highlight.js';
 import DOMPurify from 'dompurify';
 import { useUiStore } from '../../store/uiStore';
 import { useVaultStore } from '../../store/vaultStore';
-import { tauriCommands } from '../../lib/tauri';
+import { createVaultClient } from '../../lib/vaultClient';
 import { WebLinkPreviewPopover } from '../previews/WebLinkPreviewPopover';
 import { extractHttpUrls, prefetchWebPreviews } from '../../lib/webPreviewCache';
 import { resolveNoteAssetTarget } from '../../lib/noteAssets';
@@ -193,6 +193,7 @@ function isPreviewableHttpUrl(value: string | null | undefined) {
 function PreviewInner({ content, className = '', onWikilinkClick, currentDocumentRelativePath }: MarkdownPreviewProps) {
   const { webPreviewsEnabled, hoverWebLinkPreviewsEnabled, backgroundWebPreviewPrefetchEnabled } = useUiStore();
   const vault = useVaultStore((state) => state.vault);
+  const client = useMemo(() => (vault ? createVaultClient(vault) : null), [vault]);
   const fileTree = useVaultStore((state) => state.fileTree);
   const rootRef = useRef<HTMLDivElement | null>(null);
   const [hoveredUrl, setHoveredUrl] = useState<string | null>(null);
@@ -228,14 +229,14 @@ function PreviewInner({ content, className = '', onWikilinkClick, currentDocumen
 
     for (const image of images) {
       const rawSrc = image.getAttribute('src');
-      if (!rawSrc || !vault?.path || !currentDocumentRelativePath) continue;
+      if (!rawSrc || !client || !currentDocumentRelativePath) continue;
       const target = resolveNoteAssetTarget(rawSrc, currentDocumentRelativePath, fileTree);
       if (!target || target.kind !== 'vault') continue;
 
       image.dataset.assetKind = 'vault';
       image.dataset.assetValue = target.value;
 
-      void tauriCommands.readNoteAssetDataUrl(vault.path, target.value)
+      void client.readAssetDataUrl(target.value)
         .then((dataUrl) => {
           if (cancelled || !image.isConnected) return;
           image.src = dataUrl;
@@ -249,7 +250,7 @@ function PreviewInner({ content, className = '', onWikilinkClick, currentDocumen
     return () => {
       cancelled = true;
     };
-  }, [currentDocumentRelativePath, html, vault?.path]);
+  }, [client, currentDocumentRelativePath, html]);
 
   function handleClick(e: React.MouseEvent<HTMLDivElement>) {
     if (!onWikilinkClick) return;

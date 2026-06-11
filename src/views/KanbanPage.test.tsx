@@ -198,6 +198,7 @@ describe('KanbanPage save behavior', () => {
       expect.stringContaining('"Test card"'),
       'user-1',
       'Test User',
+      undefined,
     );
     expect(useEditorStore.getState().openTabs[0]).toEqual(
       expect.objectContaining({
