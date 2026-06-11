@@ -262,6 +262,23 @@ surface before hosted vault mutations are exposed.
 
 ---
 
+## Phase 4 Cleanup: Bugs To Fix And Small Additions Before Moving On
+
+**Objective:** Bugs that now exist need to be fixed before moving to the next phase.
+
+### Tasks
+
+- [ ] Auto Login error even when the user was never connected to a server
+- [ ] `Create Hosted Vault` button still appears / works even when not connected to a server
+- [ ] Auto Login error pops up twice
+- [ ] Save username when login gets disrupted
+- [ ] People with the "viewer" permission get a "could not save" error when attempting to write into a note. -> maybe disable editing all together for them / implement a read-only-mode
+- [ ] Need login / logout controls in the startup dialog
+- [ ] Need a way to add documents, images, notes to the hosted vault
+- [ ] Add drag and drop to add files into the Vault (limited to images, pdfs and markdown files)
+
+---
+
 ## Phase 5: Live Collaboration
 
 **Objective:** Add true live co-editing and rich awareness for hosted text-backed documents.
