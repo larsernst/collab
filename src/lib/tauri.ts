@@ -35,6 +35,7 @@ export interface LinkPreviewData {
 export interface ServerConnectionStatus {
   connected: boolean;
   serverUrl: string | null;
+  allowInvalidCertificates: boolean;
   user: {
     id: string;
     username: string;
@@ -272,12 +273,16 @@ export const tauriCommands = {
   shouldDisableBlur: () => invoke<boolean>('should_disable_blur'),
 
   // Hosted server connection. Refresh credentials remain in the OS credential store.
-  connectServer: (serverUrl: string, username: string, password: string) =>
-    invoke<ServerConnectionStatus>('connect_server', { serverUrl, username, password }),
-  reconnectServer: (serverUrl: string) =>
-    invoke<ServerConnectionStatus>('reconnect_server', { serverUrl }),
+  connectServer: (serverUrl: string, username: string, password: string, allowInvalidCertificates = false) =>
+    invoke<ServerConnectionStatus>('connect_server', { serverUrl, username, password, allowInvalidCertificates }),
+  reconnectServer: (serverUrl: string, allowInvalidCertificates = false) =>
+    invoke<ServerConnectionStatus>('reconnect_server', { serverUrl, allowInvalidCertificates }),
   disconnectServer: () => invoke<void>('disconnect_server'),
   serverConnectionStatus: () => invoke<ServerConnectionStatus>('server_connection_status'),
+  hostedVaultRequest: <T>(serverUrl: string, method: 'GET' | 'POST' | 'PATCH' | 'DELETE', path: string, body?: unknown) =>
+    invoke<T>('hosted_vault_request', { serverUrl, method, path, body: body ?? null }),
+  hostedVaultAssetDataUrl: (serverUrl: string, vaultId: string, fileId: string) =>
+    invoke<string>('hosted_vault_asset_data_url', { serverUrl, vaultId, fileId }),
 
   // Update
   checkForUpdate: () => invoke<UpdateInfo>('check_for_update'),

@@ -139,6 +139,8 @@ pub fn run() {
             commands::server::reconnect_server,
             commands::server::disconnect_server,
             commands::server::server_connection_status,
+            commands::server::hosted_vault_request,
+            commands::server::hosted_vault_asset_data_url,
             // templates
             commands::templates::list_kanban_templates,
             commands::templates::save_kanban_template,

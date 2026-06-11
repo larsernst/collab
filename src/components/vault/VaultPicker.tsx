@@ -1,16 +1,44 @@
 import { useEffect } from 'react';
-import { FolderOpen, Plus, Clock, ArrowRight } from 'lucide-react';
+import { FolderOpen, Plus, Clock, ArrowRight, Server, RefreshCw, Settings } from 'lucide-react';
 import { AppLogo } from '../ui/AppLogo';
 import { Button } from '../ui/button';
 import { Separator } from '../ui/separator';
 import { useVaultStore } from '../../store/vaultStore';
+import { useServerStore } from '../../store/serverStore';
+import { useUiStore } from '../../store/uiStore';
 import { tauriCommands } from '../../lib/tauri';
+import { hostedVaultMeta, vaultKind } from '../../types/vault';
 import { toast } from 'sonner';
 
 export default function VaultPicker() {
-  const { openVault, loadRecentVaults, recentVaults, isLoading } = useVaultStore();
+  const { openVault, openHostedVault, loadRecentVaults, recentVaults, isLoading } = useVaultStore();
+  const { status, hostedVaults, isLoading: isServerLoading, error, refresh, loadHostedVaults } = useServerStore();
+  const { openSettings } = useUiStore();
+  const activeHostedVaults = hostedVaults.filter((vault) => vault.status === 'active');
+  const localRecentVaults = recentVaults.filter((vault) => vaultKind(vault) === 'local').slice(0, 5);
 
-  useEffect(() => { loadRecentVaults(); }, []);
+  useEffect(() => {
+    loadRecentVaults();
+    refresh().catch(() => {});
+  }, []);
+
+  const openHosted = async (vaultId: string) => {
+    if (!status?.serverUrl) return;
+    const hosted = hostedVaults.find((vault) => vault.id === vaultId);
+    if (!hosted) return;
+    try {
+      await openHostedVault(hostedVaultMeta(status.serverUrl, hosted));
+    } catch (reason) {
+      toast.error(`Failed to open hosted vault: ${reason}`);
+    }
+  };
+
+  const openServerSettings = () => {
+    openSettings();
+    window.setTimeout(() => {
+      window.dispatchEvent(new CustomEvent('settings:open-tab', { detail: { tab: 'server' } }));
+    });
+  };
 
   const handleOpenDialog = async () => {
     try {
@@ -45,7 +73,7 @@ export default function VaultPicker() {
         <div className="absolute bottom-0 right-1/4 w-[400px] h-[300px] rounded-full bg-blue-500/6 blur-[100px]" />
       </div>
 
-      <div className="relative w-full max-w-md px-4">
+      <div className="relative w-full max-w-2xl px-4">
         {/* Logo block */}
         <div className="text-center mb-8 app-fade-slide-in">
           <div className="inline-flex items-center justify-center w-14 h-14 rounded-2xl bg-primary/15 border border-primary/20 mb-4 glow-primary-sm app-fade-scale-in">
@@ -77,7 +105,71 @@ export default function VaultPicker() {
             </Button>
           </div>
 
-          {recentVaults.length > 0 && (
+          <div className="flex items-center gap-2 mt-5 mb-3">
+            <Separator className="flex-1 bg-border/40" />
+            <span className="flex items-center gap-1 text-[11px] text-muted-foreground uppercase tracking-widest shrink-0">
+              <Server size={10} />
+              Hosted
+            </span>
+            <Separator className="flex-1 bg-border/40" />
+          </div>
+
+          {status?.connected && status.serverUrl ? (
+            <div className="space-y-2">
+              <div className="flex items-center justify-between gap-3 rounded-lg border border-border/40 bg-card/30 px-3 py-2">
+                <div className="min-w-0">
+                  <p className="truncate text-xs font-medium">{status.user?.displayName}</p>
+                  <p className="truncate text-[10px] text-muted-foreground">{status.serverUrl}</p>
+                </div>
+                <Button
+                  size="icon"
+                  variant="ghost"
+                  className="size-7"
+                  disabled={isServerLoading}
+                  onClick={() => loadHostedVaults().catch((reason) => toast.error(String(reason)))}
+                  title="Refresh hosted vaults"
+                >
+                  <RefreshCw size={12} className={isServerLoading ? 'animate-spin' : undefined} />
+                </Button>
+              </div>
+              {activeHostedVaults.map((vault) => (
+                <button
+                  key={vault.id}
+                  onClick={() => openHosted(vault.id)}
+                  disabled={isLoading || isServerLoading}
+                  className="group flex w-full items-center gap-3 rounded-lg border border-transparent px-3 py-2.5 text-left transition-all app-motion-base hover:border-primary/25 hover:bg-primary/5"
+                >
+                  <div className="flex size-7 shrink-0 items-center justify-center rounded-md border border-primary/20 bg-primary/10">
+                    <Server size={12} className="text-primary" />
+                  </div>
+                  <div className="min-w-0 flex-1">
+                    <div className="truncate text-sm font-medium text-foreground">{vault.name}</div>
+                    <div className="truncate text-[11px] text-muted-foreground">
+                      {vault.role} · {vault.members} members · {vault.ownerDisplayName}
+                    </div>
+                  </div>
+                  <ArrowRight size={13} className="shrink-0 text-muted-foreground opacity-0 transition-all app-motion-base group-hover:translate-x-0.5 group-hover:opacity-60" />
+                </button>
+              ))}
+              {!isServerLoading && activeHostedVaults.length === 0 && (
+                <p className="py-2 text-center text-xs text-muted-foreground">No active hosted vaults are available.</p>
+              )}
+              {error && <p className="text-xs text-destructive">{error}</p>}
+            </div>
+          ) : (
+            <button
+              onClick={openServerSettings}
+              className="flex w-full items-center gap-3 rounded-lg border border-dashed border-border/60 px-3 py-3 text-left transition-colors hover:border-primary/30 hover:bg-primary/5"
+            >
+              <Settings size={14} className="text-muted-foreground" />
+              <div>
+                <p className="text-sm font-medium">Connect a Collab server</p>
+                <p className="text-[11px] text-muted-foreground">Sign in from Settings to open hosted vaults.</p>
+              </div>
+            </button>
+          )}
+
+          {localRecentVaults.length > 0 && (
             <>
               <div className="flex items-center gap-2 mt-5 mb-3">
                 <Separator className="flex-1 bg-border/40" />
@@ -89,7 +181,7 @@ export default function VaultPicker() {
               </div>
 
               <div className="space-y-1">
-                {recentVaults.slice(0, 5).map((v) => (
+                {localRecentVaults.map((v) => (
                   <button
                     key={v.id}
                     onClick={() => openVault(v.path)}
@@ -115,7 +207,7 @@ export default function VaultPicker() {
         </div>
 
         <p className="text-center text-[11px] text-muted-foreground/40 mt-4">
-          All data stored locally · Collaboration via shared folders
+          Local-first vaults · Optional hosted collaboration
         </p>
       </div>
     </div>

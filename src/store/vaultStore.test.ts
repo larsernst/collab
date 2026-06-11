@@ -10,6 +10,7 @@ const tauriCommandsMock = vi.hoisted(() => ({
   removeRecentVault: vi.fn(),
   isFlatpak: vi.fn(),
   showOpenVaultDialog: vi.fn(),
+  hostedVaultRequest: vi.fn(),
 }));
 
 vi.mock('../lib/tauri', () => ({
@@ -136,5 +137,73 @@ describe('vaultStore Flatpak reopen fallback', () => {
 
     expect(sorted.map((node) => node.name)).toEqual(['Beta', 'Ordner', 'Alpha.md', 'äther.md', 'zeta.md']);
     expect(sorted[1]?.children?.map((node) => node.name)).toEqual(['Ähre.md', 'alpha.md', 'zulu.md']);
+  });
+
+  it('refreshes hosted file trees without starting a local filesystem watcher', async () => {
+    useVaultStore.setState({
+      vault: {
+        kind: 'hosted',
+        id: 'hosted-vault',
+        hostedVaultId: 'hosted-vault',
+        serverUrl: 'https://collab.example.test',
+        role: 'editor',
+        name: 'Hosted Vault',
+        path: 'hosted://hosted-vault',
+        lastOpened: 1,
+        isEncrypted: false,
+      },
+    });
+    tauriCommandsMock.hostedVaultRequest.mockResolvedValue([
+      {
+        id: 'file-1',
+        parentId: null,
+        name: 'Hosted.md',
+        relativePath: 'Hosted.md',
+        kind: 'document',
+        documentType: 'note',
+        state: 'active',
+        currentRevision: null,
+        createdAt: '2026-06-11T08:00:00Z',
+        updatedAt: '2026-06-11T08:00:00Z',
+      },
+    ]);
+
+    await useVaultStore.getState().refreshFileTree();
+    expect(useVaultStore.getState().fileTree).toEqual([
+      expect.objectContaining({ relativePath: 'Hosted.md' }),
+    ]);
+
+    useVaultStore.getState().closeVault();
+
+    expect(tauriCommandsMock.watchVault).not.toHaveBeenCalled();
+    expect(tauriCommandsMock.unwatchVault).not.toHaveBeenCalled();
+  });
+
+  it('opens hosted vault metadata through HostedVaultClient without local IPC', async () => {
+    const hosted = {
+      kind: 'hosted' as const,
+      id: 'hosted-vault',
+      hostedVaultId: 'hosted-vault',
+      serverUrl: 'https://collab.example.test',
+      role: 'editor' as const,
+      name: 'Hosted Vault',
+      path: 'hosted://hosted-vault',
+      lastOpened: 1,
+      isEncrypted: false,
+    };
+    tauriCommandsMock.hostedVaultRequest.mockResolvedValue([]);
+
+    await useVaultStore.getState().openHostedVault(hosted);
+
+    expect(useVaultStore.getState().vault).toEqual(hosted);
+    expect(useVaultStore.getState().lastOpenedVaultPath).toBeNull();
+    expect(tauriCommandsMock.hostedVaultRequest).toHaveBeenCalledWith(
+      'https://collab.example.test',
+      'GET',
+      '/api/v1/vaults/hosted-vault/files',
+      undefined,
+    );
+    expect(tauriCommandsMock.openVault).not.toHaveBeenCalled();
+    expect(tauriCommandsMock.watchVault).not.toHaveBeenCalled();
   });
 });

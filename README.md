@@ -143,6 +143,10 @@ Collab-style admin web interface, and a minimal desktop server connection flow.
   theme, accent, and density settings
 - Dashboard storage/warning summaries, user creation/invitations, password reset, disable/re-enable/delete controls, session revocation, activity inspection, and redacted audit views
 - Desktop server login in Settings with memory-only access tokens and refresh tokens stored in the OS credential store
+- TLS certificates are verified by default. Private servers using self-signed
+  certificates can explicitly enable **Allow untrusted TLS certificates** in
+  Server Settings; installing the private CA on the device remains the safer
+  production approach.
 
 Reference-aware operations, search/import/export, and live/offline
 synchronization remain under active development. Progress is tracked in

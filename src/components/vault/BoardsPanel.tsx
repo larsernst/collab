@@ -5,6 +5,7 @@ import { useVaultStore } from '../../store/vaultStore';
 import { useEditorStore } from '../../store/editorStore';
 import { useUiStore } from '../../store/uiStore';
 import { tauriCommands } from '../../lib/tauri';
+import { createVaultClient } from '../../lib/vaultClient';
 import type { NoteFile } from '../../types/vault';
 import type { KanbanTemplate } from '../../types/template';
 import { Tooltip, TooltipContent, TooltipTrigger } from '../ui/tooltip';
@@ -122,7 +123,7 @@ export default function BoardsPanel({ kind }: Props) {
     setCreating(false);
     const relativePath = ensureBoardPath(name, kind);
     try {
-      await tauriCommands.createNote(vault.path, relativePath);
+      await createVaultClient(vault).createDocument(relativePath);
       await refreshFileTree();
       openTab(relativePath, relativePath.split('/').pop() ?? relativePath, kind);
       setActiveView(kind);
@@ -130,7 +131,7 @@ export default function BoardsPanel({ kind }: Props) {
   };
 
   useEffect(() => {
-    if (!creating || kind !== 'kanban' || !vault) return;
+    if (!creating || kind !== 'kanban' || !vault || !createVaultClient(vault).capabilities.nativeFilesystem) return;
 
     let cancelled = false;
     const vaultPath = vault.path;
@@ -171,7 +172,7 @@ export default function BoardsPanel({ kind }: Props) {
     try {
       let file: NoteFile;
       if (createTemplate === '__blank__') {
-        file = await tauriCommands.createNote(vault.path, relativePath);
+        file = await createVaultClient(vault).createDocument(relativePath);
       } else {
         const template = visibleTemplateChoices.find(
           (entry) => `${entry.source}::${entry.name}` === createTemplate,
@@ -190,7 +191,7 @@ export default function BoardsPanel({ kind }: Props) {
   const deleteBoardFile = useCallback(async (file: NoteFile, removeReferences = false) => {
     if (!vault) return;
     try {
-      await tauriCommands.deleteNote(vault.path, file.relativePath, removeReferences);
+      await createVaultClient(vault).deletePermanently(file.relativePath, removeReferences);
       closeTab(file.relativePath);
       await refreshFileTree();
       toast.success(`Deleted ${file.name}`);
@@ -202,7 +203,7 @@ export default function BoardsPanel({ kind }: Props) {
   const moveBoardToTrash = useCallback(async (file: NoteFile) => {
     if (!vault) return;
     try {
-      await tauriCommands.moveNoteToTrash(vault.path, file.relativePath, null, null, deleteRemoveReferences);
+      await createVaultClient(vault).moveToTrash(file.relativePath, deleteRemoveReferences);
       closeTab(file.relativePath);
       await refreshFileTree();
       toast.success(`Moved ${file.name} to trash`);
@@ -228,7 +229,7 @@ export default function BoardsPanel({ kind }: Props) {
     if (!vault || !templateBoard || kind !== 'kanban') return;
     setTemplateBoard(null);
     try {
-      const { content } = await tauriCommands.readNote(vault.path, templateBoard.relativePath);
+      const { content } = await createVaultClient(vault).readDocument(templateBoard.relativePath);
       const board = JSON.parse(content) as KanbanBoard;
       await tauriCommands.saveKanbanTemplate(vault.path, 'vault', templateName, board);
       toast.success(`Saved "${templateName}" to vault templates`);
@@ -239,7 +240,7 @@ export default function BoardsPanel({ kind }: Props) {
 
   const renderBoardActions = useCallback((board: NoteFile) => (
     <>
-      {kind === 'kanban' && (
+      {kind === 'kanban' && vault && createVaultClient(vault).capabilities.nativeFilesystem && (
         <DropdownMenuItem onSelect={() => handleSaveAsTemplate(board)}>
           <Sparkles />
           Save as Template

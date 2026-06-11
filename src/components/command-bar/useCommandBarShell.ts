@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 
-import { tauriCommands } from '../../lib/tauri';
 import { completeNerdFontIconQuery } from '../../lib/nerdFontIcons';
+import { createVaultClient } from '../../lib/vaultClient';
 import { useEditorStore } from '../../store/editorStore';
 import { useNoteIndexStore } from '../../store/noteIndexStore';
 import { useUiStore } from '../../store/uiStore';
@@ -63,7 +63,7 @@ export function useCommandBarShell() {
     }
     const timer = window.setTimeout(async () => {
       try {
-        const results = await tauriCommands.searchNotes(vault.path, mode.query);
+        const results = await createVaultClient(vault).search(mode.query);
         setSearchResults(results);
       } catch {
         // Silent fallback keeps the command bar responsive if IPC search fails.

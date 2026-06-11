@@ -7,6 +7,7 @@ use parking_lot::RwLock;
 #[derive(Debug, Clone)]
 pub struct ServerSessionState {
     pub server_url: String,
+    pub allow_invalid_certificates: bool,
     pub access_token: String,
     pub access_expires_at: String,
     pub user: ServerUser,

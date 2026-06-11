@@ -12,7 +12,7 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog';
 import { cn } from '@/lib/utils';
-import { tauriCommands } from '@/lib/tauri';
+import { createVaultClient } from '@/lib/vaultClient';
 import { useCollabStore } from '@/store/collabStore';
 import { useEditorStore } from '@/store/editorStore';
 import { useVaultStore } from '@/store/vaultStore';
@@ -175,6 +175,8 @@ export function VersionHistoryModal({
     () => snapshots.find((snapshot) => snapshot.id === selectedSnapshotId) ?? null,
     [selectedSnapshotId, snapshots],
   );
+  const client = vault ? createVaultClient(vault) : null;
+  const canDeleteHistory = client?.capabilities.destructiveSnapshotHistory ?? false;
 
   const loadSnapshots = useCallback(async () => {
     if (!open || !vault?.path || !relativePath) {
@@ -185,7 +187,7 @@ export function VersionHistoryModal({
 
     setLoadingSnapshots(true);
     try {
-      const list = await tauriCommands.listSnapshots(vault.path, relativePath);
+      const list = await createVaultClient(vault).listSnapshots(relativePath);
       setSnapshots(list);
       setSelectedSnapshotId((current) => current && list.some((snapshot) => snapshot.id === current)
         ? current
@@ -213,8 +215,8 @@ export function VersionHistoryModal({
     let cancelled = false;
     setLoadingComparison(true);
     void Promise.all([
-      tauriCommands.readSnapshot(vault.path, relativePath, selectedSnapshotId),
-      tauriCommands.readNote(vault.path, relativePath).then((note) => note.content),
+      createVaultClient(vault).readSnapshot(relativePath, selectedSnapshotId),
+      createVaultClient(vault).readDocument(relativePath).then((note) => note.content),
     ])
       .then(([snapshotText, currentText]) => {
         if (cancelled) return;
@@ -264,7 +266,7 @@ export function VersionHistoryModal({
     if (!vault?.path || !relativePath || !selectedSnapshot) return;
     setRestoringId(selectedSnapshot.id);
     try {
-      await tauriCommands.restoreSnapshot(vault.path, relativePath, selectedSnapshot.id, myUserId, myUserName);
+      await createVaultClient(vault).restoreSnapshot(relativePath, selectedSnapshot.id, myUserId, myUserName);
       setForceReloadPath(relativePath);
       await loadSnapshots();
     } finally {
@@ -276,7 +278,7 @@ export function VersionHistoryModal({
     if (!vault?.path || !relativePath) return;
     setDeletingSnapshotId(snapshot.id);
     try {
-      await tauriCommands.deleteSnapshot(vault.path, relativePath, snapshot.id);
+      await createVaultClient(vault).deleteSnapshot(relativePath, snapshot.id);
       await loadSnapshots();
       toast.success('Snapshot removed');
     } catch (error) {
@@ -291,7 +293,7 @@ export function VersionHistoryModal({
     if (!vault?.path || !relativePath) return;
     setClearingHistory(true);
     try {
-      await tauriCommands.clearSnapshotHistory(vault.path, relativePath);
+      await createVaultClient(vault).clearSnapshotHistory(relativePath);
       setSelectedSnapshotId(null);
       setSnapshotContent(null);
       setCurrentContent(null);
@@ -338,15 +340,17 @@ export function VersionHistoryModal({
               </DialogDescription>
             </div>
             <div className="flex items-center gap-2">
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() => setDangerAction({ type: 'clear-history' })}
-                disabled={snapshots.length === 0 || clearingHistory || loadingSnapshots}
-              >
-                <Trash2 size={14} />
-                Clear history
-              </Button>
+              {canDeleteHistory && (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setDangerAction({ type: 'clear-history' })}
+                  disabled={snapshots.length === 0 || clearingHistory || loadingSnapshots}
+                >
+                  <Trash2 size={14} />
+                  Clear history
+                </Button>
+              )}
               <Button variant="ghost" size="sm" onClick={() => onOpenChange(false)}>
                 Close
               </Button>
@@ -396,16 +400,18 @@ export function VersionHistoryModal({
                             {snapshot.authorName} · {relativeTime(snapshot.timestamp)}
                           </span>
                         </button>
-                        <Button
-                          variant="ghost"
-                          size="icon-xs"
-                          className="mt-0.5 shrink-0 text-muted-foreground hover:text-destructive"
-                          disabled={deletingSnapshotId === snapshot.id || clearingHistory}
-                          onClick={() => setDangerAction({ type: 'delete-snapshot', snapshot })}
-                          title="Delete snapshot"
-                        >
-                          <Trash2 size={12} />
-                        </Button>
+                        {canDeleteHistory && (
+                          <Button
+                            variant="ghost"
+                            size="icon-xs"
+                            className="mt-0.5 shrink-0 text-muted-foreground hover:text-destructive"
+                            disabled={deletingSnapshotId === snapshot.id || clearingHistory}
+                            onClick={() => setDangerAction({ type: 'delete-snapshot', snapshot })}
+                            title="Delete snapshot"
+                          >
+                            <Trash2 size={12} />
+                          </Button>
+                        )}
                       </div>
                     );
                   })}

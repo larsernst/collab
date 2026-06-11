@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { RotateCcw, Trash2, Trash, RefreshCw } from 'lucide-react';
 import { toast } from 'sonner';
 
-import { tauriCommands } from '../../lib/tauri';
+import { createVaultClient } from '../../lib/vaultClient';
 import { useVaultStore } from '../../store/vaultStore';
 import type { TrashEntry } from '../../types/vault';
 import { ConfirmDeleteDialog, RestoreTrashDialog } from './VaultDialogs';
@@ -28,12 +28,13 @@ export default function TrashPanel() {
   const [purgeRemoveReferences, setPurgeRemoveReferences] = useState(false);
   const [purgeAllOpen, setPurgeAllOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
+  const client = vault ? createVaultClient(vault) : null;
 
   const loadEntries = async () => {
     if (!vault) return;
     setLoading(true);
     try {
-      setEntries(await tauriCommands.listTrashEntries(vault.path));
+      setEntries(await createVaultClient(vault).listTrash());
     } catch (error) {
       toast.error(`Failed to load trash: ${error}`);
     } finally {
@@ -65,7 +66,7 @@ export default function TrashPanel() {
   const handleRestore = async () => {
     if (!vault || !restoreEntry) return;
     try {
-      await tauriCommands.restoreTrashedItem(vault.path, restoreEntry.id, restoreTarget.trim());
+      await createVaultClient(vault).restoreTrash(restoreEntry.id, restoreTarget.trim() || undefined);
       setRestoreEntry(null);
       setRestoreTarget('');
       await loadEntries();
@@ -79,7 +80,7 @@ export default function TrashPanel() {
   const handlePurge = async (entry: TrashEntry) => {
     if (!vault) return;
     try {
-      await tauriCommands.purgeTrashedItem(vault.path, entry.id, purgeRemoveReferences);
+      await createVaultClient(vault).purgeTrash(entry.id, purgeRemoveReferences);
       setPurgeEntry(null);
       setPurgeRemoveReferences(false);
       await loadEntries();
@@ -92,7 +93,7 @@ export default function TrashPanel() {
   const handlePurgeAll = async () => {
     if (!vault) return;
     try {
-      await tauriCommands.purgeAllTrash(vault.path);
+      await createVaultClient(vault).purgeAllTrash();
       await loadEntries();
       toast.success('Purged all trashed items');
     } catch (error) {
@@ -166,7 +167,7 @@ export default function TrashPanel() {
             variant="outline"
             size="sm"
             onClick={() => setPurgeAllOpen(true)}
-            disabled={entries.length === 0 || loading}
+            disabled={entries.length === 0 || loading || !client}
             className="h-6 px-2 text-[11px]"
           >
             <Trash size={12} className="mr-1" />

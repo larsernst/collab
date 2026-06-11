@@ -1,7 +1,8 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
 import { tauriCommands } from '../lib/tauri';
-import type { VaultMeta, NoteFile } from '../types/vault';
+import { createVaultClient, requireRuntimeCapability } from '../lib/vaultClient';
+import type { HostedVaultMeta, VaultMeta, NoteFile } from '../types/vault';
 
 interface VaultState {
   vault: VaultMeta | null;
@@ -11,6 +12,7 @@ interface VaultState {
   lastOpenedVaultPath: string | null;
   isLoading: boolean;
   openVault: (path: string) => Promise<void>;
+  openHostedVault: (vault: HostedVaultMeta) => Promise<void>;
   unlockVault: (password: string) => Promise<void>;
   refreshFileTree: () => Promise<void>;
   closeVault: () => void;
@@ -62,16 +64,20 @@ export const useVaultStore = create<VaultState>()(
       isLoading: false,
       openVault: async (path) => {
         const attemptOpenVault = async (vaultPath: string) => {
-          await tauriCommands.unwatchVault().catch(() => {});
+          const previousVault = get().vault;
+          if (previousVault) {
+            await createVaultClient(previousVault).runtime.watch?.stop().catch(() => {});
+          }
           const vault = await tauriCommands.openVault(vaultPath);
+          const client = createVaultClient(vault);
           if (vault.isEncrypted) {
             // Don't load the file tree yet — wait for the password to be entered.
             set({ vault, isVaultLocked: true, fileTree: [], isLoading: false, lastOpenedVaultPath: vaultPath });
             return;
           }
 
-          const fileTree = sortFileTreeAlphabetically(await tauriCommands.listVaultFiles(vault.path));
-          await tauriCommands.watchVault(vault.path);
+          const fileTree = sortFileTreeAlphabetically(await client.listFiles());
+          await client.runtime.watch?.start();
           set({ vault, isVaultLocked: false, fileTree, isLoading: false, lastOpenedVaultPath: vaultPath });
         };
 
@@ -93,22 +99,46 @@ export const useVaultStore = create<VaultState>()(
           throw e;
         }
       },
+      openHostedVault: async (vault) => {
+        set({ isLoading: true });
+        try {
+          const previousVault = get().vault;
+          if (previousVault) {
+            await createVaultClient(previousVault).runtime.watch?.stop().catch(() => {});
+          }
+          const fileTree = sortFileTreeAlphabetically(await createVaultClient(vault).listFiles());
+          set({
+            vault,
+            isVaultLocked: false,
+            fileTree,
+            isLoading: false,
+            // Hosted vault reopening requires a restored server session and is
+            // handled by the hosted picker rather than the local path restore.
+            lastOpenedVaultPath: null,
+          });
+        } catch (error) {
+          set({ isLoading: false });
+          throw error;
+        }
+      },
       unlockVault: async (password) => {
         const { vault } = get();
         if (!vault) return;
-        await tauriCommands.unlockVault(vault.path, password);
-        const fileTree = sortFileTreeAlphabetically(await tauriCommands.listVaultFiles(vault.path));
-        await tauriCommands.watchVault(vault.path);
+        const client = createVaultClient(vault);
+        await requireRuntimeCapability(client, 'encryption').unlock(password);
+        const fileTree = sortFileTreeAlphabetically(await client.listFiles());
+        await client.runtime.watch?.start();
         set({ isVaultLocked: false, fileTree });
       },
       refreshFileTree: async () => {
         const { vault } = get();
         if (!vault) return;
-        const fileTree = sortFileTreeAlphabetically(await tauriCommands.listVaultFiles(vault.path));
+        const fileTree = sortFileTreeAlphabetically(await createVaultClient(vault).listFiles());
         set({ fileTree });
       },
       closeVault: () => {
-        tauriCommands.unwatchVault().catch(() => {});
+        const vault = get().vault;
+        if (vault) createVaultClient(vault).runtime.watch?.stop().catch(() => {});
         set({ vault: null, isVaultLocked: false, fileTree: [] });
       },
       loadRecentVaults: async () => {

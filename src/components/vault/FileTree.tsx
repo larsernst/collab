@@ -8,7 +8,7 @@ import { useVaultStore } from '../../store/vaultStore';
 import { useEditorStore } from '../../store/editorStore';
 import { useCollabStore } from '../../store/collabStore';
 import { useUiStore } from '../../store/uiStore';
-import { tauriCommands } from '../../lib/tauri';
+import { createVaultClient } from '../../lib/vaultClient';
 import type { FileReference, NoteFile } from '../../types/vault';
 import { getCardAttachmentPaths, type KanbanBoard, type KanbanCard } from '../../types/kanban';
 import { useKanbanStore } from '../../store/kanbanStore';
@@ -70,7 +70,6 @@ export default function FileTree() {
     fileTreeCollapsedPathsByVault,
     setFileTreeCollapsedPathsForVault,
   } = useUiStore();
-  const { myUserId, myUserName } = useCollabStore();
   const [dialog, setDialog] = useState<DialogState>({ type: 'none' });
   const [deleteRemoveReferences, setDeleteRemoveReferences] = useState(false);
   const [taskAttachmentsByPath, setTaskAttachmentsByPath] = useState<Record<string, TaskAttachmentRef[]>>({});
@@ -172,7 +171,7 @@ export default function FileTree() {
     const { file } = dialog;
     setDialog({ type: 'none' });
     try {
-      await tauriCommands.deleteNote(vault.path, file.relativePath, deleteRemoveReferences);
+      await createVaultClient(vault).deletePermanently(file.relativePath, deleteRemoveReferences);
       const prefix = file.isFolder ? file.relativePath + '/' : null;
       for (const tab of useEditorStore.getState().openTabs) {
         if (
@@ -190,13 +189,7 @@ export default function FileTree() {
   const moveFileToTrash = async (file: NoteFile) => {
     if (!vault) return;
     try {
-      await tauriCommands.moveNoteToTrash(
-        vault.path,
-        file.relativePath,
-        myUserId,
-        myUserName,
-        deleteRemoveReferences,
-      );
+      await createVaultClient(vault).moveToTrash(file.relativePath, deleteRemoveReferences);
       const prefix = file.isFolder ? `${file.relativePath}/` : null;
       for (const tab of useEditorStore.getState().openTabs) {
         if (tab.relativePath === file.relativePath || (prefix && tab.relativePath.startsWith(prefix))) {
@@ -227,7 +220,7 @@ export default function FileTree() {
       setDialog({ type: 'none' });
       const relativePath = parentPath ? `${parentPath}/${name}.md` : `${name}.md`;
       try {
-        await tauriCommands.createNote(vault.path, relativePath);
+        await createVaultClient(vault).createDocument(relativePath);
         await refreshFileTree();
         openTab(relativePath, name, 'note');
         setActiveView('editor');
@@ -237,7 +230,7 @@ export default function FileTree() {
       setDialog({ type: 'none' });
       const relativePath = parentPath ? `${parentPath}/${name}` : name;
       try {
-        await tauriCommands.createFolder(vault.path, relativePath);
+        await createVaultClient(vault).createFolder(relativePath);
         await refreshFileTree();
       } catch (e) { toast.error('Failed to create folder: ' + e); }
     }
@@ -257,11 +250,12 @@ export default function FileTree() {
     parts[parts.length - 1] = nextSegment;
     const newPath = parts.join('/');
     try {
-      const preview = await tauriCommands.previewRenameMove(vault.path, file.relativePath, newPath);
+      const client = createVaultClient(vault);
+      const preview = await client.previewRenameMove(file.relativePath, newPath);
       setPreviewState({
         preview,
         apply: async () => {
-          await tauriCommands.renameNote(vault.path, file.relativePath, newPath);
+          await client.renameMove(file.relativePath, newPath);
           renameTab(file.relativePath, newPath, nextSegment.replace(/\.[^.]+$/, ''));
           await refreshFileTree();
         },
@@ -286,9 +280,10 @@ export default function FileTree() {
     if (fromPath === toFolderPath) return;
 
     try {
-      const preview = await tauriCommands.previewRenameMove(vault.path, fromPath, newPath);
+      const client = createVaultClient(vault);
+      const preview = await client.previewRenameMove(fromPath, newPath);
       const applyMove = async () => {
-        await tauriCommands.renameNote(vault.path, fromPath, newPath);
+        await client.renameMove(fromPath, newPath);
         renameTab(fromPath, newPath, fileName.replace(/\.[^.]+$/, ''));
         await refreshFileTree();
       };
@@ -324,7 +319,7 @@ export default function FileTree() {
     void Promise.all(
       kanbanFiles.map(async (file) => {
         try {
-          const { content } = await tauriCommands.readNote(vault.path, file.relativePath);
+          const { content } = await createVaultClient(vault).readDocument(file.relativePath);
           const board = JSON.parse(content) as KanbanBoard;
           return board.columns.reduce<Array<{ path: string; ref: TaskAttachmentRef }>>((items, column) => {
             column.cards.forEach((card) => {
@@ -383,7 +378,7 @@ export default function FileTree() {
     let cancelled = false;
     setSelectedReferencesLoading(true);
     setSelectedReferencesError(null);
-    void tauriCommands.listFileReferences(vault.path, selectedRelativePath)
+    void createVaultClient(vault).listReferences(selectedRelativePath)
       .then((references) => {
         if (cancelled) return;
         setSelectedReferences(references);

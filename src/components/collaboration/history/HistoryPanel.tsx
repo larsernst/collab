@@ -2,7 +2,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { Clock3, Eye, RotateCcw } from 'lucide-react';
 
 import { Button } from '@/components/ui/button';
-import { tauriCommands } from '@/lib/tauri';
+import { createVaultClient } from '@/lib/vaultClient';
 import { useCollabStore } from '@/store/collabStore';
 import { useEditorStore } from '@/store/editorStore';
 import { useVaultStore } from '@/store/vaultStore';
@@ -26,7 +26,7 @@ export function HistoryPanel() {
     if (!vault?.path || !activeTabPath || !supportsHistory) return;
     setLoading(true);
     try {
-      const list = await tauriCommands.listSnapshots(vault.path, activeTabPath);
+      const list = await createVaultClient(vault).listSnapshots(activeTabPath);
       setSnapshots(list);
     } catch {
       setSnapshots([]);
@@ -43,7 +43,7 @@ export function HistoryPanel() {
     if (!vault?.path || !activeTabPath) return;
     setRestoringId(snapshot.id);
     try {
-      await tauriCommands.restoreSnapshot(vault.path, activeTabPath, snapshot.id, myUserId, myUserName);
+      await createVaultClient(vault).restoreSnapshot(activeTabPath, snapshot.id, myUserId, myUserName);
       setForceReloadPath(activeTabPath);
       await load();
     } finally {

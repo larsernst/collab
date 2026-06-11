@@ -10,6 +10,7 @@ import { cn } from '../../lib/utils';
 import { useVaultStore } from '../../store/vaultStore';
 import { useUiStore } from '../../store/uiStore';
 import { tauriCommands } from '../../lib/tauri';
+import { createVaultClient, hasRuntimeCapability, requireRuntimeCapability } from '../../lib/vaultClient';
 import { vaultKind, type VaultKind, type VaultMeta } from '../../types/vault';
 import { toast } from 'sonner';
 
@@ -99,7 +100,7 @@ interface VaultRowProps {
   isCurrent: boolean;
   onOpen: () => void;
   onRemove: () => void;
-  onExport: () => void;
+  onExport?: () => void;
   onRenameComplete: (newName: string) => void;
 }
 
@@ -187,13 +188,15 @@ function VaultRow({ meta, isCurrent, onOpen, onRemove, onExport, onRenameComplet
         >
           <Pencil size={12} />
         </button>
-        <button
-          onClick={onExport}
-          title="Export as ZIP"
-          className="w-6 h-6 flex items-center justify-center rounded text-muted-foreground hover:text-foreground hover:bg-accent/60 transition-colors app-motion-fast"
-        >
-          <Download size={12} />
-        </button>
+        {onExport && (
+          <button
+            onClick={onExport}
+            title="Export as ZIP"
+            className="w-6 h-6 flex items-center justify-center rounded text-muted-foreground hover:text-foreground hover:bg-accent/60 transition-colors app-motion-fast"
+          >
+            <Download size={12} />
+          </button>
+        )}
         <button
           onClick={onRemove}
           title="Remove from list"
@@ -249,9 +252,10 @@ function VaultsTab({
 
   const handleExport = async (meta: VaultMeta) => {
     try {
+      const exporter = requireRuntimeCapability(createVaultClient(meta), 'archiveExport');
       const dest = await tauriCommands.showSaveDialog(`${meta.name}.zip`);
       if (!dest) return;
-      await tauriCommands.exportVault(meta.path, dest);
+      await exporter.exportTo(dest);
       toast.success(`Exported "${meta.name}" to ${dest}`);
     } catch (e) {
       toast.error('Export failed: ' + e);
@@ -304,17 +308,20 @@ function VaultsTab({
             </div>
           )}
           <div className="flex flex-col gap-2">
-            {vaults.map((meta) => (
-              <VaultRow
-                key={meta.path}
-                meta={meta}
-                isCurrent={vault?.path === meta.path}
-                onOpen={() => handleOpen(meta.path)}
-                onRemove={() => onRequestRemove(meta)}
-                onExport={() => handleExport(meta)}
-                onRenameComplete={(newName) => handleRename(meta, newName)}
-              />
-            ))}
+            {vaults.map((meta) => {
+              const client = createVaultClient(meta);
+              return (
+                <VaultRow
+                  key={meta.path}
+                  meta={meta}
+                  isCurrent={vault?.path === meta.path}
+                  onOpen={() => handleOpen(meta.path)}
+                  onRemove={() => onRequestRemove(meta)}
+                  onExport={hasRuntimeCapability(client, 'archiveExport') ? () => handleExport(meta) : undefined}
+                  onRenameComplete={(newName) => handleRename(meta, newName)}
+                />
+              );
+            })}
           </div>
         </div>
       </div>
@@ -401,7 +408,7 @@ function EncryptionTab() {
     if (newPw.length < 8) return toast.error('Password must be at least 8 characters');
     setEnableBusy(true);
     try {
-      await tauriCommands.enableVaultEncryption(vault.path, newPw);
+      await requireRuntimeCapability(createVaultClient(vault), 'encryption').enable(newPw);
       // Update in-memory vault meta so the UI reflects the change
       useVaultStore.setState((s) => ({
         vault: s.vault ? { ...s.vault, isEncrypted: true } : s.vault,
@@ -423,7 +430,7 @@ function EncryptionTab() {
     if (changePw.length < 8) return toast.error('New password must be at least 8 characters');
     setChangeBusy(true);
     try {
-      await tauriCommands.changeVaultPassword(vault.path, oldPw, changePw);
+      await requireRuntimeCapability(createVaultClient(vault), 'encryption').changePassword(oldPw, changePw);
       setOldPw(''); setChangePw(''); setChangeConfirm('');
       toast.success('Password changed');
     } catch (e) {
@@ -438,7 +445,7 @@ function EncryptionTab() {
     if (!disablePw) return toast.error('Enter the current password to confirm');
     setDisableBusy(true);
     try {
-      await tauriCommands.disableVaultEncryption(vault.path, disablePw);
+      await requireRuntimeCapability(createVaultClient(vault), 'encryption').disable(disablePw);
       useVaultStore.setState((s) => ({
         vault: s.vault ? { ...s.vault, isEncrypted: false } : s.vault,
       }));

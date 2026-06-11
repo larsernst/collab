@@ -4,7 +4,7 @@ import { Input } from '../ui/input';
 import { useVaultStore } from '../../store/vaultStore';
 import { useEditorStore } from '../../store/editorStore';
 import { useUiStore } from '../../store/uiStore';
-import { tauriCommands } from '../../lib/tauri';
+import { createVaultClient } from '../../lib/vaultClient';
 import type { SearchResult } from '../../types/note';
 import { cn } from '../../lib/utils';
 
@@ -22,7 +22,7 @@ export default function SearchPanel() {
     }
     const t = setTimeout(async () => {
       try {
-        const r = await tauriCommands.searchNotes(vault.path, query);
+        const r = await createVaultClient(vault).search(query);
         setResults(r);
       } catch {}
     }, 300);

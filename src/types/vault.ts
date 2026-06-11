@@ -23,6 +23,34 @@ export interface HostedVaultMeta extends VaultMetaBase {
   role: MemberRole;
 }
 
+export interface HostedVaultSummary {
+  id: string;
+  name: string;
+  ownerUserId: string;
+  ownerDisplayName: string;
+  role: MemberRole;
+  status: 'active' | 'archived' | 'pending_delete';
+  manifestSequence: number;
+  members: number;
+  storageBytes: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export function hostedVaultMeta(serverUrl: string, vault: HostedVaultSummary): HostedVaultMeta {
+  return {
+    kind: 'hosted',
+    id: vault.id,
+    hostedVaultId: vault.id,
+    serverUrl,
+    name: vault.name,
+    path: `hosted://${vault.id}`,
+    lastOpened: Date.parse(vault.updatedAt) || Date.now(),
+    isEncrypted: false,
+    role: vault.role,
+  };
+}
+
 export type VaultMeta = LocalVaultMeta | HostedVaultMeta;
 
 export function vaultKind(vault: VaultMeta): VaultKind {
