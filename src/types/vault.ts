@@ -138,6 +138,31 @@ export interface VaultMember {
   role: MemberRole;
 }
 
+/** Server-authoritative membership record for a hosted vault. */
+export interface HostedVaultMember {
+  userId: string;
+  username: string;
+  displayName: string;
+  role: MemberRole;
+  owner: boolean;
+  createdAt: string;
+}
+
+/** Searchable user-directory entry used when adding hosted vault members. */
+export interface UserDirectoryEntry {
+  userId: string;
+  username: string;
+  displayName: string;
+}
+
+/** Digest-verified payload produced by the native client for a hosted asset upload. */
+export interface HostedUploadPayload {
+  name: string;
+  mediaType: string;
+  contentBase64: string;
+  expectedHash: string;
+}
+
 export interface VaultConfig {
   id: string;
   name: string;

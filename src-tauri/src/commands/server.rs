@@ -182,6 +182,28 @@ pub async fn hosted_vault_asset_data_url(
     ))
 }
 
+/// Read-only authenticated user directory used when adding hosted vault members.
+/// This is the one non-`/vaults` route the native client may reach; the bearer
+/// token stays in Rust and only the resolved directory entries reach the webview.
+#[tauri::command]
+pub async fn hosted_user_directory(
+    state: State<'_, AppState>,
+    server_url: String,
+    query: String,
+) -> Result<Value, String> {
+    let session = state
+        .server_session
+        .read()
+        .clone()
+        .ok_or_else(|| "Connect to the Collab server before browsing users.".to_string())?;
+    require_connected_server(&session, &server_url)?;
+    let request = server_client(session.allow_invalid_certificates)?
+        .get(format!("{}/api/v1/users/directory", session.server_url))
+        .query(&[("q", query.as_str())])
+        .bearer_auth(&session.access_token);
+    decode_hosted_json_response(request.send().await.map_err(server_request_error)?).await
+}
+
 fn validate_server_url(value: &str) -> Result<String, String> {
     let mut url = Url::parse(value.trim()).map_err(|_| "Enter a valid server URL.".to_string())?;
     if url.username() != ""

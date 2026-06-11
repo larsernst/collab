@@ -24,6 +24,7 @@ use collab_protocol::{
     HostedVaultAdminDetail, HostedVaultImportResult, HostedVaultManifest, HostedVaultMember,
     HostedVaultRole, HostedVaultStatus, HostedVaultStorage, HostedVaultSummary, Invitation,
     NativeSession, OperationalWarning, ServerUser, ServerUserRole, StorageSummary,
+    UserDirectoryEntry,
 };
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -374,6 +375,49 @@ pub async fn me(
 ) -> Result<Json<DataResponse<ServerUser>>, ApiFailure> {
     let authenticated = require_user(&state, &headers, &request_id).await?;
     Ok(Json(DataResponse::new(authenticated.user)))
+}
+
+/// Read-only user directory available to any authenticated user. Vault admins use
+/// it to resolve a person to a user account when managing hosted-vault membership;
+/// it never exposes credentials, status, or roles. Fits the single-trusted-org model.
+pub async fn user_directory(
+    State(state): State<AppState>,
+    Extension(request_id): Extension<String>,
+    headers: HeaderMap,
+    Query(query): Query<VaultSearchQuery>,
+) -> Result<Json<DataResponse<Vec<UserDirectoryEntry>>>, ApiFailure> {
+    require_authenticated_user(&state, &headers, &request_id).await?;
+    let needle = query.q.trim();
+    if needle.chars().count() > 200 {
+        return Err(ApiFailure::validation(
+            "Directory queries must be at most 200 characters.",
+            request_id,
+        ));
+    }
+    let rows = sqlx::query(
+        r#"
+        SELECT id, username, display_name
+        FROM users
+        WHERE status = 'active'
+          AND ($1 = '' OR username ILIKE $2 OR display_name ILIKE $2)
+        ORDER BY display_name ASC
+        LIMIT 25
+        "#,
+    )
+    .bind(needle)
+    .bind(format!("%{needle}%"))
+    .fetch_all(&state.database)
+    .await
+    .map_err(|_| ApiFailure::server(request_id.clone()))?;
+    Ok(Json(DataResponse::new(
+        rows.iter()
+            .map(|row| UserDirectoryEntry {
+                user_id: row.get::<Uuid, _>("id").to_string(),
+                username: row.get("username"),
+                display_name: row.get("display_name"),
+            })
+            .collect(),
+    )))
 }
 
 pub async fn logout(
@@ -6170,6 +6214,27 @@ mod tests {
             .unwrap()
             .to_owned();
         assert_ne!(access, refresh_token);
+
+        // Any authenticated user can resolve the user directory (used by hosted
+        // vault admins to add members), and it matches on username/display name.
+        let directory = bearer_request(
+            &app,
+            "GET",
+            "/api/v1/users/directory?q=member",
+            json!({}),
+            &access,
+        )
+        .await;
+        assert_eq!(directory.status(), StatusCode::OK);
+        let directory_entries = json_body(directory).await;
+        let usernames: Vec<&str> = directory_entries["data"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|entry| entry["username"].as_str().unwrap())
+            .collect();
+        assert!(usernames.contains(&"member"));
+        assert!(!usernames.contains(&"invited"));
 
         let refreshed = request(
             &app,

@@ -12,6 +12,8 @@ import type {
   TrashEntry,
   PathChangePreview,
   FileReference,
+  HostedUploadPayload,
+  UserDirectoryEntry,
 } from '../types/vault';
 import type { NoteMetadata, SearchResult } from '../types/note';
 import type { PresenceEntry, ChatMessage, SnapshotMeta } from '../types/collab';
@@ -110,6 +112,8 @@ export const tauriCommands = {
   }),
   importAssetIntoVault: (vaultPath: string, sourcePath: string, targetFolder?: string) =>
     invoke<string>('import_asset_into_vault', { vaultPath, sourcePath, targetFolder: targetFolder ?? null }),
+  readFileForUpload: (sourcePath: string) =>
+    invoke<HostedUploadPayload>('read_file_for_upload', { sourcePath }),
   writeNote: (vaultPath: string, relativePath: string, content: string, expectedHash?: string, baseContent?: string) =>
     invoke<WriteResult>('write_note', {
       vaultPath,
@@ -283,6 +287,8 @@ export const tauriCommands = {
     invoke<T>('hosted_vault_request', { serverUrl, method, path, body: body ?? null }),
   hostedVaultAssetDataUrl: (serverUrl: string, vaultId: string, fileId: string) =>
     invoke<string>('hosted_vault_asset_data_url', { serverUrl, vaultId, fileId }),
+  hostedUserDirectory: (serverUrl: string, query: string) =>
+    invoke<UserDirectoryEntry[]>('hosted_user_directory', { serverUrl, query }),
 
   // Update
   checkForUpdate: () => invoke<UpdateInfo>('check_for_update'),

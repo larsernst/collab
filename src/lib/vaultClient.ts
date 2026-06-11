@@ -3,11 +3,14 @@ import type { SearchResult } from '../types/note';
 import type {
   ConflictInfo,
   FileReference,
+  HostedVaultMember,
   HostedVaultMeta,
   LocalVaultMeta,
+  MemberRole,
   NoteFile,
   PathChangePreview,
   TrashEntry,
+  UserDirectoryEntry,
   VaultMeta,
 } from '../types/vault';
 import { vaultKind } from '../types/vault';
@@ -38,11 +41,26 @@ export interface VaultEncryptionCapability {
 }
 
 export interface ExternalAssetImportCapability {
+  /** Import a desktop file (drag-drop / file dialog) and return its vault relative path. */
   import(sourcePath: string, targetFolder?: string): Promise<string>;
+  /** Import in-memory bytes from a `data:` URL (clipboard paste) and return its vault relative path. */
+  importData(dataUrl: string, suggestedName: string, targetFolder?: string): Promise<string>;
 }
 
 export interface VaultArchiveExportCapability {
   exportTo(destinationPath: string): Promise<void>;
+}
+
+/**
+ * Server-authoritative membership management for hosted vaults. Not available for
+ * local vaults, which no longer use role authorization.
+ */
+export interface VaultMembersCapability {
+  list(): Promise<HostedVaultMember[]>;
+  searchDirectory(query: string): Promise<UserDirectoryEntry[]>;
+  add(userId: string, role: MemberRole): Promise<HostedVaultMember>;
+  updateRole(userId: string, role: MemberRole): Promise<HostedVaultMember>;
+  remove(userId: string): Promise<void>;
 }
 
 export interface VaultRuntimeCapabilities {
@@ -50,6 +68,7 @@ export interface VaultRuntimeCapabilities {
   encryption?: VaultEncryptionCapability;
   externalAssetImport?: ExternalAssetImportCapability;
   archiveExport?: VaultArchiveExportCapability;
+  members?: VaultMembersCapability;
 }
 
 export interface VaultDocument {
@@ -278,9 +297,30 @@ function pathOperation(oldPath: string, newPath: string): PathChangePreview['ope
 export class HostedVaultClient implements VaultClient {
   readonly kind = 'hosted';
   readonly capabilities = HOSTED_VAULT_CAPABILITIES;
-  readonly runtime: VaultRuntimeCapabilities = {};
+  readonly runtime: VaultRuntimeCapabilities;
 
-  constructor(readonly vault: HostedVaultMeta) {}
+  constructor(readonly vault: HostedVaultMeta) {
+    this.runtime = {
+      externalAssetImport: {
+        import: (sourcePath, targetFolder) => this.uploadExternalAsset(sourcePath, targetFolder),
+        importData: (dataUrl, suggestedName, targetFolder) =>
+          this.uploadDataUrl(dataUrl, suggestedName, targetFolder),
+      },
+      members: {
+        list: () => this.request<HostedVaultMember[]>('GET', '/members'),
+        searchDirectory: (query) =>
+          tauriCommands.hostedUserDirectory(this.vault.serverUrl, query),
+        add: (userId, role) =>
+          this.request<HostedVaultMember>('POST', '/members', { userId, role }),
+        updateRole: (userId, role) =>
+          this.request<HostedVaultMember>('PATCH', `/members/${encodeURIComponent(userId)}`, {
+            role,
+          }),
+        remove: (userId) =>
+          this.request<void>('DELETE', `/members/${encodeURIComponent(userId)}`).then(() => {}),
+      },
+    };
+  }
 
   get id() {
     return this.vault.id;
@@ -605,6 +645,59 @@ export class HostedVaultClient implements VaultClient {
     if (file.kind === 'folder') throw new Error('Folders cannot be downloaded as assets.');
     return tauriCommands.hostedVaultAssetDataUrl(this.vault.serverUrl, this.vault.hostedVaultId, file.id);
   }
+
+  /**
+   * Reads a desktop file through the native client, then uploads it through the
+   * authenticated server gateway with a server-verified SHA-256 digest. Returns
+   * the relative path of the created hosted asset.
+   */
+  private async uploadExternalAsset(sourcePath: string, targetFolder = 'Pictures'): Promise<string> {
+    const payload = await tauriCommands.readFileForUpload(sourcePath);
+    return this.uploadAsset(payload.name, payload.mediaType, payload.contentBase64, payload.expectedHash, targetFolder);
+  }
+
+  private async uploadDataUrl(dataUrl: string, suggestedName: string, targetFolder = 'Pictures'): Promise<string> {
+    const match = /^data:([^;]+);base64,(.*)$/s.exec(dataUrl);
+    if (!match) throw new Error('Only base64 data URLs can be uploaded to a hosted vault.');
+    const [, mediaType, contentBase64] = match;
+    const bytes = Uint8Array.from(atob(contentBase64), (char) => char.charCodeAt(0));
+    const digest = await crypto.subtle.digest('SHA-256', bytes);
+    const expectedHash = Array.from(new Uint8Array(digest))
+      .map((byte) => byte.toString(16).padStart(2, '0'))
+      .join('');
+    return this.uploadAsset(suggestedName, mediaType, contentBase64, expectedHash, targetFolder);
+  }
+
+  private async uploadAsset(
+    name: string,
+    mediaType: string,
+    contentBase64: string,
+    expectedHash: string,
+    targetFolder: string,
+  ): Promise<string> {
+    const parentId = targetFolder ? await this.ensureFolder(targetFolder) : null;
+    const file = await this.request<HostedFileEntry>('POST', '/uploads', {
+      parentId,
+      name,
+      mediaType,
+      contentBase64,
+      expectedHash,
+    });
+    return file.relativePath;
+  }
+
+  private async ensureFolder(relativePath: string): Promise<string> {
+    const existing = (await this.manifest()).files.find(
+      (entry) => entry.relativePath === relativePath && entry.kind === 'folder' && entry.state === 'active',
+    );
+    if (existing) return existing.id;
+    await this.createFolder(relativePath);
+    const created = (await this.manifest()).files.find(
+      (entry) => entry.relativePath === relativePath && entry.kind === 'folder' && entry.state === 'active',
+    );
+    if (!created) throw new Error(`Could not create hosted folder: ${relativePath}`);
+    return created.id;
+  }
 }
 
 export class LocalVaultClient implements VaultClient {
@@ -628,6 +721,14 @@ export class LocalVaultClient implements VaultClient {
       externalAssetImport: {
         import: (sourcePath, targetFolder) =>
           tauriCommands.importAssetIntoVault(this.vault.path, sourcePath, targetFolder),
+        importData: (dataUrl, suggestedName, targetFolder = 'Pictures') =>
+          tauriCommands.saveGeneratedImage(
+            this.vault.path,
+            `${targetFolder}/${suggestedName}`,
+            dataUrl,
+            false,
+            suggestedName,
+          ),
       },
       archiveExport: {
         exportTo: (destinationPath) => tauriCommands.exportVault(this.vault.path, destinationPath),

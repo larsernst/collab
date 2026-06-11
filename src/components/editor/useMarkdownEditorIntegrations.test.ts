@@ -112,7 +112,7 @@ describe('useMarkdownEditorIntegrations helpers', () => {
   it('imports dropped images into the editor and focuses it', async () => {
     const dispatch = vi.fn();
     const focus = vi.fn();
-    const importAssetIntoVault = vi.fn(async (_vaultPath: string, sourcePath: string) => `Pictures/${sourcePath.split('/').pop()}`);
+    const importAsset = vi.fn(async (sourcePath: string) => `Pictures/${sourcePath.split('/').pop()}`);
     const view = {
       dispatch,
       focus,
@@ -122,14 +122,14 @@ describe('useMarkdownEditorIntegrations helpers', () => {
       sourcePaths: ['/tmp/example.png', '/tmp/not-image.txt'],
       dropPos: 5,
       view,
-      vaultPath: '/vault',
+      importAsset,
       isImageLikePath: (path) => path.endsWith('.png'),
       buildImageMarkdown: (relativePath) => `![](${relativePath})`,
-      importAssetIntoVault,
     });
 
     expect(success).toBe(true);
-    expect(importAssetIntoVault).toHaveBeenCalledTimes(1);
+    expect(importAsset).toHaveBeenCalledTimes(1);
+    expect(importAsset).toHaveBeenCalledWith('/tmp/example.png', 'Pictures');
     expect(dispatch).toHaveBeenCalledWith({
       changes: { from: 5, to: 5, insert: '![](Pictures/example.png)' },
       selection: { anchor: 30 },
@@ -181,7 +181,7 @@ describe('useMarkdownEditorIntegrations helpers', () => {
   it('imports clipboard images into the editor and inserts markdown links', async () => {
     const dispatch = vi.fn();
     const focus = vi.fn();
-    const saveGeneratedImage = vi
+    const importData = vi
       .fn()
       .mockResolvedValueOnce('Pictures/clipboard-image.png')
       .mockResolvedValueOnce('Pictures/clipboard-image-2.webp');
@@ -206,28 +206,23 @@ describe('useMarkdownEditorIntegrations helpers', () => {
       ],
       insertPos: 12,
       view,
-      vaultPath: '/vault',
+      importData,
       currentDocumentRelativePath: 'Notes/a.md',
       buildImageMarkdown: (relativePath, currentDocumentRelativePath) => `![${currentDocumentRelativePath}](${relativePath})`,
-      saveGeneratedImage,
     });
 
     expect(success).toBe(true);
-    expect(saveGeneratedImage).toHaveBeenNthCalledWith(
+    expect(importData).toHaveBeenNthCalledWith(
       1,
-      '/vault',
-      'Pictures/clipboard-image.png',
       'data:image/png;base64,abc123',
-      false,
       'clipboard-image.png',
+      'Pictures',
     );
-    expect(saveGeneratedImage).toHaveBeenNthCalledWith(
+    expect(importData).toHaveBeenNthCalledWith(
       2,
-      '/vault',
-      'Pictures/clipboard-image-2.webp',
       'data:image/webp;base64,def456',
-      false,
       'clipboard-image-2.webp',
+      'Pictures',
     );
     expect(dispatch).toHaveBeenCalledWith({
       changes: {

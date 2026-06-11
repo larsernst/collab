@@ -64,6 +64,7 @@ pub fn build_router(state: AppState) -> Router {
         .route("/api/v1/auth/logout", post(api::logout))
         .route("/api/v1/users/me", get(api::me))
         .route("/api/v1/users/me/password", post(api::change_password))
+        .route("/api/v1/users/directory", get(api::user_directory))
         .route(
             "/api/v1/vaults",
             get(api::list_vaults).post(api::create_vault),

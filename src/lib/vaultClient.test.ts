@@ -34,8 +34,11 @@ vi.mock('./tauri', () => ({
     deleteSnapshot: vi.fn(),
     clearSnapshotHistory: vi.fn(),
     readNoteAssetDataUrl: vi.fn(),
+    readFileForUpload: vi.fn(),
+    saveGeneratedImage: vi.fn(),
     hostedVaultRequest: vi.fn(),
     hostedVaultAssetDataUrl: vi.fn(),
+    hostedUserDirectory: vi.fn(),
     watchVault: vi.fn(),
     unwatchVault: vi.fn(),
     unlockVault: vi.fn(),
@@ -216,7 +219,10 @@ describe('HostedVaultClient', () => {
     const client = new HostedVaultClient(hostedVault);
 
     expect(client.capabilities).toEqual(HOSTED_VAULT_CAPABILITIES);
-    expect(client.runtime).toEqual({});
+    expect(client.runtime).toEqual({
+      externalAssetImport: expect.any(Object),
+      members: expect.any(Object),
+    });
     await expect(client.listFiles()).resolves.toEqual([
       expect.objectContaining({
         relativePath: 'Notes',
@@ -502,6 +508,97 @@ describe('HostedVaultClient', () => {
       'https://collab.example.test',
       'GET',
       '/api/v1/vaults/hosted-vault/files/file-1/references',
+      undefined,
+    );
+  });
+
+  it('uploads an external desktop asset into an existing hosted folder with a verified digest', async () => {
+    const pictures = { ...rootFolder, id: 'folder-pics', name: 'Pictures', relativePath: 'Pictures' };
+    vi.mocked(tauriCommands.readFileForUpload).mockResolvedValue({
+      name: 'diagram.png',
+      mediaType: 'image/png',
+      contentBase64: 'aW1n',
+      expectedHash: 'abc123',
+    });
+    vi.mocked(tauriCommands.hostedVaultRequest).mockReset();
+    vi.mocked(tauriCommands.hostedVaultRequest)
+      .mockResolvedValueOnce({ ...mockHostedManifest(), files: [rootFolder, pictures, hostedDocument] })
+      .mockResolvedValueOnce({ ...hostedDocument, name: 'diagram.png', relativePath: 'Pictures/diagram.png' });
+    const client = new HostedVaultClient(hostedVault);
+
+    await expect(
+      client.runtime.externalAssetImport!.import('/tmp/diagram.png'),
+    ).resolves.toBe('Pictures/diagram.png');
+    expect(tauriCommands.readFileForUpload).toHaveBeenCalledWith('/tmp/diagram.png');
+    expect(tauriCommands.hostedVaultRequest).toHaveBeenLastCalledWith(
+      'https://collab.example.test',
+      'POST',
+      '/api/v1/vaults/hosted-vault/uploads',
+      {
+        parentId: 'folder-pics',
+        name: 'diagram.png',
+        mediaType: 'image/png',
+        contentBase64: 'aW1n',
+        expectedHash: 'abc123',
+      },
+    );
+  });
+
+  it('manages hosted members and resolves the user directory off the vault gateway', async () => {
+    const member = {
+      userId: 'user-9',
+      username: 'alice',
+      displayName: 'Alice',
+      role: 'editor' as const,
+      owner: false,
+      createdAt: '2026-06-11T08:00:00Z',
+    };
+    vi.mocked(tauriCommands.hostedVaultRequest).mockReset();
+    vi.mocked(tauriCommands.hostedVaultRequest)
+      .mockResolvedValueOnce([member])
+      .mockResolvedValueOnce(member)
+      .mockResolvedValueOnce({ ...member, role: 'admin' })
+      .mockResolvedValueOnce(null);
+    vi.mocked(tauriCommands.hostedUserDirectory).mockResolvedValue([
+      { userId: 'user-9', username: 'alice', displayName: 'Alice' },
+    ]);
+    const members = new HostedVaultClient(hostedVault).runtime.members!;
+
+    await expect(members.list()).resolves.toEqual([member]);
+    await expect(members.searchDirectory('al')).resolves.toEqual([
+      { userId: 'user-9', username: 'alice', displayName: 'Alice' },
+    ]);
+    await members.add('user-9', 'editor');
+    await members.updateRole('user-9', 'admin');
+    await members.remove('user-9');
+
+    expect(tauriCommands.hostedUserDirectory).toHaveBeenCalledWith('https://collab.example.test', 'al');
+    expect(tauriCommands.hostedVaultRequest).toHaveBeenNthCalledWith(
+      1,
+      'https://collab.example.test',
+      'GET',
+      '/api/v1/vaults/hosted-vault/members',
+      undefined,
+    );
+    expect(tauriCommands.hostedVaultRequest).toHaveBeenNthCalledWith(
+      2,
+      'https://collab.example.test',
+      'POST',
+      '/api/v1/vaults/hosted-vault/members',
+      { userId: 'user-9', role: 'editor' },
+    );
+    expect(tauriCommands.hostedVaultRequest).toHaveBeenNthCalledWith(
+      3,
+      'https://collab.example.test',
+      'PATCH',
+      '/api/v1/vaults/hosted-vault/members/user-9',
+      { role: 'admin' },
+    );
+    expect(tauriCommands.hostedVaultRequest).toHaveBeenNthCalledWith(
+      4,
+      'https://collab.example.test',
+      'DELETE',
+      '/api/v1/vaults/hosted-vault/members/user-9',
       undefined,
     );
   });

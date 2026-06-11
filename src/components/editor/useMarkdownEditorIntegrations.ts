@@ -4,7 +4,7 @@ import { getCurrentWebview } from '@tauri-apps/api/webview';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { toast } from 'sonner';
 
-import { tauriCommands } from '../../lib/tauri';
+import { createVaultClient } from '../../lib/vaultClient';
 import {
   getVaultDocumentView,
   resolveVaultRelativeLinkTarget,
@@ -24,10 +24,9 @@ type ImportDroppedImagesArgs = {
   sourcePaths: string[];
   dropPos: number;
   view: EditorView;
-  vaultPath: string | null;
+  importAsset: ((sourcePath: string, targetFolder?: string) => Promise<string>) | null;
   isImageLikePath: (path: string) => boolean;
   buildImageMarkdown: (relativePath: string) => string;
-  importAssetIntoVault?: typeof tauriCommands.importAssetIntoVault;
   onError?: (message: string) => void;
 };
 
@@ -248,13 +247,12 @@ export async function importDroppedImagesIntoEditor({
   sourcePaths,
   dropPos,
   view,
-  vaultPath,
+  importAsset,
   isImageLikePath,
   buildImageMarkdown,
-  importAssetIntoVault = tauriCommands.importAssetIntoVault,
   onError = (message) => toast.error(message),
 }: ImportDroppedImagesArgs) {
-  if (!vaultPath) return false;
+  if (!importAsset) return false;
 
   const imagePaths = sourcePaths.filter(isImageLikePath);
   if (imagePaths.length === 0) return false;
@@ -262,7 +260,7 @@ export async function importDroppedImagesIntoEditor({
   try {
     const insertedPaths: string[] = [];
     for (const sourcePath of imagePaths) {
-      const imported = await importAssetIntoVault(vaultPath, sourcePath, 'Pictures');
+      const imported = await importAsset(sourcePath, 'Pictures');
       insertedPaths.push(imported);
     }
 
@@ -283,10 +281,9 @@ type ImportClipboardImagesArgs = {
   clipboardImages: ClipboardImageSource[];
   insertPos: number;
   view: EditorView;
-  vaultPath: string | null;
+  importData: ((dataUrl: string, suggestedName: string, targetFolder?: string) => Promise<string>) | null;
   currentDocumentRelativePath: string;
   buildImageMarkdown: (relativePath: string, currentDocumentRelativePath: string) => string;
-  saveGeneratedImage?: typeof tauriCommands.saveGeneratedImage;
   onError?: (message: string) => void;
 };
 
@@ -294,13 +291,12 @@ export async function importClipboardImagesIntoEditor({
   clipboardImages,
   insertPos,
   view,
-  vaultPath,
+  importData,
   currentDocumentRelativePath,
   buildImageMarkdown,
-  saveGeneratedImage = tauriCommands.saveGeneratedImage,
   onError = (message) => toast.error(message),
 }: ImportClipboardImagesArgs) {
-  if (!vaultPath || clipboardImages.length === 0) return false;
+  if (!importData || clipboardImages.length === 0) return false;
 
   try {
     const insertedPaths: string[] = [];
@@ -308,13 +304,7 @@ export async function importClipboardImagesIntoEditor({
       const dataUrl = image.kind === 'dataUrl'
         ? image.dataUrl
         : await blobToDataUrl(image.blob);
-      const imported = await saveGeneratedImage(
-        vaultPath,
-        `Pictures/${image.suggestedFileName}`,
-        dataUrl,
-        false,
-        image.suggestedFileName,
-      );
+      const imported = await importData(dataUrl, image.suggestedFileName, 'Pictures');
       insertedPaths.push(imported);
     }
 
@@ -442,13 +432,17 @@ export function useMarkdownEditorIntegrations({
     let unlistenWebviewDragDrop: (() => void) | null = null;
     let unlistenWindowDragDrop: (() => void) | null = null;
 
+    const resolveAssetImport = () => {
+      const vault = useVaultStore.getState().vault;
+      return vault ? createVaultClient(vault).runtime.externalAssetImport ?? null : null;
+    };
+
     const importDroppedImages = (sourcePaths: string[], dropPos: number) => {
-      const vaultPath = useVaultStore.getState().vault?.path ?? null;
       void importDroppedImagesIntoEditor({
         sourcePaths,
         dropPos,
         view,
-        vaultPath,
+        importAsset: resolveAssetImport()?.import ?? null,
         isImageLikePath,
         buildImageMarkdown,
       });
@@ -514,12 +508,11 @@ export function useMarkdownEditorIntegrations({
       const directImages = getClipboardEventImageSources(event.clipboardData);
       if (directImages.length > 0) {
         event.preventDefault();
-        const vaultPath = useVaultStore.getState().vault?.path ?? null;
         void importClipboardImagesIntoEditor({
           clipboardImages: directImages,
           insertPos,
           view,
-          vaultPath,
+          importData: resolveAssetImport()?.importData ?? null,
           currentDocumentRelativePath,
           buildImageMarkdown,
         });
@@ -529,12 +522,11 @@ export function useMarkdownEditorIntegrations({
       const htmlImages = getClipboardHtmlImageSources(event.clipboardData?.getData('text/html') ?? '');
       if (htmlImages.length > 0) {
         event.preventDefault();
-        const vaultPath = useVaultStore.getState().vault?.path ?? null;
         void importClipboardImagesIntoEditor({
           clipboardImages: htmlImages,
           insertPos,
           view,
-          vaultPath,
+          importData: resolveAssetImport()?.importData ?? null,
           currentDocumentRelativePath,
           buildImageMarkdown,
         });
@@ -545,7 +537,6 @@ export function useMarkdownEditorIntegrations({
       if (clipboardText) return;
 
       event.preventDefault();
-      const vaultPath = useVaultStore.getState().vault?.path ?? null;
       void (async () => {
         const navigatorClipboardImages = await getNavigatorClipboardImageSources();
         if (navigatorClipboardImages.length > 0) {
@@ -553,7 +544,7 @@ export function useMarkdownEditorIntegrations({
             clipboardImages: navigatorClipboardImages,
             insertPos,
             view,
-            vaultPath,
+            importData: resolveAssetImport()?.importData ?? null,
             currentDocumentRelativePath,
             buildImageMarkdown,
           });

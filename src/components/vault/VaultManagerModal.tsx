@@ -11,6 +11,7 @@ import { useVaultStore } from '../../store/vaultStore';
 import { useUiStore } from '../../store/uiStore';
 import { tauriCommands } from '../../lib/tauri';
 import { createVaultClient, hasRuntimeCapability, requireRuntimeCapability } from '../../lib/vaultClient';
+import { HostedMembersPanel } from './HostedMembersPanel';
 import { vaultKind, type VaultKind, type VaultMeta } from '../../types/vault';
 import { toast } from 'sonner';
 
@@ -332,20 +333,7 @@ function VaultsTab({
 // ─── Hosted Permissions Tab ───────────────────────────────────────────────────
 
 function HostedPermissionsTab() {
-  return (
-    <div className="flex h-full max-w-[34rem] flex-col items-center justify-center gap-3 text-center">
-      <div className="flex size-10 items-center justify-center rounded-lg border border-primary/25 bg-primary/10">
-        <ShieldCheck size={18} className="text-primary" />
-      </div>
-      <div>
-        <h3 className="text-sm font-medium text-foreground">Server-managed permissions</h3>
-        <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
-          Hosted vault members and roles are authoritative on the connected server.
-          Member controls will appear here when the hosted vault client is connected.
-        </p>
-      </div>
-    </div>
-  );
+  return <HostedMembersPanel />;
 }
 
 // ─── Main Modal ───────────────────────────────────────────────────────────────

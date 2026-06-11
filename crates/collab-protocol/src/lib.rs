@@ -249,6 +249,16 @@ pub struct HostedVaultMember {
     pub created_at: String,
 }
 
+/// Read-only directory entry exposed to any authenticated user so vault admins
+/// can resolve a person to a user account when managing hosted-vault membership.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct UserDirectoryEntry {
+    pub user_id: String,
+    pub username: String,
+    pub display_name: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct HostedVaultActivityEvent {

@@ -120,6 +120,7 @@ pub fn run() {
             commands::files::write_cached_document_preview_data_url,
             commands::files::save_generated_image,
             commands::files::import_asset_into_vault,
+            commands::files::read_file_for_upload,
             commands::files::write_note,
             commands::files::create_note,
             commands::files::delete_note,
@@ -141,6 +142,7 @@ pub fn run() {
             commands::server::server_connection_status,
             commands::server::hosted_vault_request,
             commands::server::hosted_vault_asset_data_url,
+            commands::server::hosted_user_directory,
             // templates
             commands::templates::list_kanban_templates,
             commands::templates::save_kanban_template,

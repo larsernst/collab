@@ -16,7 +16,7 @@ This document is the source of truth for implementation progress. Update task ch
 | 1. Server foundation and Compose | Complete | 100% |
 | 2. Authentication and administration | Complete | 100% |
 | 3. Hosted vault storage and permissions | Complete | 100% |
-| 4. Native hosted-vault client | In progress | 40% |
+| 4. Native hosted-vault client | In progress | 60% |
 | 5. Live collaboration | Not started | 0% |
 | 6. Full offline synchronization | Not started | 0% |
 | 7. Production hardening | Not started | 0% |
@@ -243,8 +243,8 @@ surface before hosted vault mutations are exposed.
 - [x] Add runtime capability interfaces for native-only operations.
 - [x] Add server connection, login, logout, and hosted-vault picker UI.
 - [x] Refactor vault, file, search, history, templates, previews, and collaboration consumers to use the selected client.
-- [ ] Add hosted asset upload/download flows.
-- [ ] Add hosted-vault member-management UI.
+- [x] Add hosted asset upload/download flows.
+- [x] Add hosted-vault member-management UI.
 - [ ] Add online connection and error states.
 - [ ] Remove hosted-mode reliance on client-generated or client-reported user IDs.
 - [ ] Preserve all local-vault features and storage formats.
@@ -423,3 +423,4 @@ Add one entry whenever a meaningful server milestone lands.
 | 2026-06-11 | Phase 4 private-server TLS support | Kept native TLS verification enabled by default, added an explicit per-session opt-in for private/self-signed certificates across login, reconnect, hosted API, asset download, and logout requests, and replaced the generic connection failure with actionable TLS/network diagnostics | Native server-command tests, settings interaction coverage, frontend suite, TypeScript, and Rust workspace verification | Continue migrating document sessions and remaining hosted-vault consumers |
 | 2026-06-11 | Phase 4 document-session client migration | Added `createSnapshot` to the `VaultClient` contract (local writes caller content; hosted labels the current immutable revision from the session identity) and migrated the note, Kanban, and canvas document editor sessions to load, write, snapshot, and auto-rename through the selected client; native-only filesystem-watch reload is now gated behind the `filesystemWatch` capability and note editors fall back to app-scoped snippets for hosted vaults | Full frontend suite (641 tests), local/hosted `createSnapshot` contract coverage, updated note/Kanban/canvas session tests, and TypeScript check | Migrate templates, previews, and remaining collaboration consumers (image/PDF media views stay coarse-presence only) |
 | 2026-06-11 | Phase 4 consumer refactor complete | Finished the consumer refactor: promoted asset reads to a universal `VaultClient.readAssetDataUrl` (replacing the unused hosted-only `authenticatedAssets` runtime capability), routed every preview/media asset read (markdown/live-preview images, file-tree and PDF-link hover previews, canvas previews, PDF/image viewers), text reads/writes (tag patching, conflict resolution, kanban template-from-board, note print export, PDF quote-to-note/canvas), and command-bar document creation through the selected client, and consolidated all snapshot operations onto the client by removing the now-dead snapshot methods from the collab transport | Full frontend suite (642 tests), rewritten `pdfPreview` local-cache/hosted-render coverage, updated `vaultClient`/`CollabProvider` tests, TypeScript check, and a repo-wide sweep confirming no non-adapter consumer still calls document/asset IPC directly | Add hosted asset upload/download flows and hosted member-management UI |
+| 2026-06-11 | Phase 4 hosted asset upload + member management | Added hosted asset upload: a native `readFileForUpload` command (digest-verified base64 payload), an `externalAssetImport` runtime capability for hosted vaults (file drag-drop and clipboard data-URL paste, with auto-`Pictures` folder creation and server-verified SHA-256), and refactored the editor drop/paste integration to drive both local and hosted through the capability (download already existed via `readAssetDataUrl`). Added hosted member management: a read-only authenticated `/api/v1/users/directory` server endpoint + dedicated `hostedUserDirectory` native command (keeping the generic vault gateway strict), a hosted-only `members` runtime capability (list/searchDirectory/add/updateRole/remove), and a searchable `HostedMembersPanel` in the Vault Manager permissions tab with owner protection and admin-gated controls | Full frontend suite (648 tests) incl. new `HostedMembersPanel` and `vaultClient` upload/member coverage, updated editor-integration tests, TypeScript check, `cargo check --workspace`, `cargo check --tests -p collab-server`, and the directory assertion added to the live-PG admin lifecycle test | Add online connection/error states, remove hosted reliance on client-reported user IDs, and add adapter contract tests |

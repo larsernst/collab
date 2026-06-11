@@ -2,7 +2,7 @@ use crate::crypto;
 use crate::models::note::{ConflictInfo, NoteContent, NoteFile, WriteResult};
 use crate::state::AppState;
 use base64::Engine as _;
-use collab_core::{normalize_relative_path as normalize_core_relative_path, sha256_text};
+use collab_core::{normalize_relative_path as normalize_core_relative_path, sha256_bytes, sha256_text};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -1694,6 +1694,47 @@ pub fn import_asset_into_vault(
         .replace('\\', "/");
 
     Ok(relative)
+}
+
+/// Digest-verified upload payload for a desktop file destined for a hosted vault.
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct HostedUploadPayload {
+    pub name: String,
+    pub media_type: String,
+    pub content_base64: String,
+    pub expected_hash: String,
+}
+
+/// Reads an external desktop file into a base64 + SHA-256 payload that the hosted
+/// vault client uploads through the authenticated server gateway. The source is an
+/// arbitrary filesystem path (a dragged/imported asset), never vault content, so
+/// no vault encryption key is involved.
+#[tauri::command]
+pub fn read_file_for_upload(source_path: String) -> Result<HostedUploadPayload, String> {
+    let source = Path::new(&source_path);
+    if !source.is_file() {
+        return Err(format!(
+            "Source asset does not exist or is not a file: {}",
+            source_path
+        ));
+    }
+    let name = source
+        .file_name()
+        .and_then(|n| n.to_str())
+        .map(sanitize_file_name)
+        .filter(|name| !name.is_empty())
+        .unwrap_or_else(|| "asset".into());
+    let bytes = std::fs::read(source).map_err(|e| e.to_string())?;
+    let expected_hash = sha256_bytes(&bytes);
+    let media_type = guess_mime_type(&name).to_string();
+    let content_base64 = base64::engine::general_purpose::STANDARD.encode(&bytes);
+    Ok(HostedUploadPayload {
+        name,
+        media_type,
+        content_base64,
+        expected_hash,
+    })
 }
 
 #[cfg(test)]
