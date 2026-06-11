@@ -172,9 +172,7 @@ pub fn run() {
             commands::collab::clear_presence,
             // collab — vault config
             commands::collab::get_vault_config,
-            commands::collab::update_vault_config,
             commands::collab::register_known_user,
-            commands::collab::claim_vault_ownership,
             // collab — chat
             commands::collab::send_chat_message,
             commands::collab::read_chat_messages,
@@ -185,10 +183,6 @@ pub fn run() {
             commands::collab::delete_snapshot,
             commands::collab::clear_snapshot_history,
             commands::collab::restore_snapshot,
-            // collab — permissions
-            commands::collab::invite_member,
-            commands::collab::update_member_role,
-            commands::collab::remove_member,
             // ui
             commands::ui::set_ui_zoom,
             commands::ui::is_appimage,

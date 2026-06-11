@@ -9,6 +9,7 @@ import { useUiStore } from '../../store/uiStore';
 import { tauriCommands } from '../../lib/tauri';
 import { FileSystemTransport, type CollabTransport } from '../../lib/collabTransport';
 import type { ChatMessage } from '../../types/collab';
+import { vaultKind } from '../../types/vault';
 
 const CollabContext = createContext<CollabTransport | null>(null);
 
@@ -25,7 +26,6 @@ export function CollabProvider({ children }: { children: ReactNode }) {
     myUserName,
     myUserColor,
     setPeers,
-    setMyRole,
     setChatMessages,
     appendChatMessage,
     chatTypingUntil,
@@ -45,8 +45,10 @@ export function CollabProvider({ children }: { children: ReactNode }) {
 
   const transportRef = useRef<FileSystemTransport | null>(null);
   useEffect(() => {
-    transportRef.current = vault ? new FileSystemTransport(vault.path) : null;
-  }, [vault?.path]);
+    transportRef.current = vault && vaultKind(vault) === 'local'
+      ? new FileSystemTransport(vault.path)
+      : null;
+  }, [vault]);
 
   const broadcastPresence = async (activeFile: string | null) => {
     if (!vault || !transportRef.current) return;
@@ -73,33 +75,11 @@ export function CollabProvider({ children }: { children: ReactNode }) {
     } catch {}
   };
 
-  const resolveRoleFromConfig = (config: { owner?: string; members?: Array<{ userId: string; role: string }> }) => {
-    if (config.owner === myUserId) {
-      setMyRole('admin');
-    } else {
-      const member = config.members?.find((m) => m.userId === myUserId);
-      setMyRole(member ? (member.role as import('../../types/vault').MemberRole) : null);
-    }
-  };
-
-  // Register self in known_users, claim ownership for legacy vaults, resolve own role
+  // Local identity metadata remains useful for presence, chat, and history labels.
   useEffect(() => {
-    if (!vault) return;
-    (async () => {
-      try {
-        // Use the safe, non-privileged register command — cannot touch owner/members
-        const config = await tauriCommands.registerKnownUser(vault.path, myUserId, myUserName, myUserColor);
-        // If vault has no owner (legacy vault or freshly opened folder), claim it
-        if (!config.owner) {
-          const claimed = await tauriCommands.claimVaultOwnership(vault.path, myUserId, myUserName)
-            .catch(() => config); // if concurrent claim lost, just use existing config
-          resolveRoleFromConfig(claimed);
-        } else {
-          resolveRoleFromConfig(config);
-        }
-      } catch {}
-    })();
-  }, [vault?.path]);
+    if (!vault || vaultKind(vault) !== 'local') return;
+    tauriCommands.registerKnownUser(vault.path, myUserId, myUserName, myUserColor).catch(() => {});
+  }, [vault, myUserId, myUserName, myUserColor]);
 
   // Broadcast presence when active tab changes
   useEffect(() => {
@@ -170,21 +150,11 @@ export function CollabProvider({ children }: { children: ReactNode }) {
       unsubChatMessage = u;
     });
 
-    // Re-evaluate own role whenever vault.json changes (permission updates, ownership claims)
-    const unsubConfig = transportRef.current.onConfigChanged(async () => {
-      try {
-        if (!transportRef.current) return;
-        const config = await transportRef.current.readVaultConfig();
-        resolveRoleFromConfig(config);
-      } catch {}
-    });
-
     return () => {
       clearInterval(interval);
       unsubPresence();
       unsubChat();
       unsubChatMessage?.();
-      unsubConfig();
     };
   }, [vault?.path, myUserId]);
 

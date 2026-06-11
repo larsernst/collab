@@ -29,7 +29,6 @@ vi.mock('../../lib/tauri', () => ({
   getAppVersion: vi.fn(async () => '1.2.3'),
   tauriCommands: {
     registerKnownUser: vi.fn(async () => ({ id: 'config-1', name: 'Vault', knownUsers: [], owner: 'user-1', members: [] })),
-    claimVaultOwnership: vi.fn(async () => ({ id: 'config-1', name: 'Vault', knownUsers: [], owner: 'user-1', members: [] })),
   },
 }));
 
@@ -62,6 +61,7 @@ vi.mock('sonner', () => ({
 }));
 
 import { CollabProvider } from './CollabProvider';
+import { tauriCommands } from '../../lib/tauri';
 
 describe('CollabProvider presence lifecycle', () => {
   beforeEach(() => {
@@ -103,7 +103,6 @@ describe('CollabProvider presence lifecycle', () => {
       myUserId: 'user-1',
       myUserName: 'Test User',
       myUserColor: '#22c55e',
-      myRole: null,
       peers: [],
       conflicts: [],
       chatMessages: [],
@@ -139,5 +138,49 @@ describe('CollabProvider presence lifecycle', () => {
       expect(transportMocks.clearPresence).toHaveBeenCalledTimes(1);
       expect(transportMocks.clearPresence).toHaveBeenCalledWith('user-1');
     });
+  });
+
+  it('registers local identity without claiming local ownership', async () => {
+    render(
+      <CollabProvider>
+        <div>child</div>
+      </CollabProvider>,
+    );
+
+    await waitFor(() => {
+      expect(tauriCommands.registerKnownUser).toHaveBeenCalledWith(
+        '/vault',
+        'user-1',
+        'Test User',
+        '#22c55e',
+      );
+    });
+    expect(transportMocks.onConfigChanged).not.toHaveBeenCalled();
+  });
+
+  it('does not start the local collaboration transport for a hosted vault', async () => {
+    useVaultStore.setState({
+      vault: {
+        kind: 'hosted',
+        id: 'hosted-vault-1',
+        hostedVaultId: 'hosted-vault-1',
+        serverUrl: 'https://collab.example.test',
+        role: 'editor',
+        path: 'hosted://hosted-vault-1',
+        name: 'Hosted Vault',
+        isEncrypted: false,
+        lastOpened: Date.now(),
+      },
+    });
+
+    render(
+      <CollabProvider>
+        <div>child</div>
+      </CollabProvider>,
+    );
+
+    await Promise.resolve();
+    expect(tauriCommands.registerKnownUser).not.toHaveBeenCalled();
+    expect(transportMocks.broadcastPresence).not.toHaveBeenCalled();
   });
 });

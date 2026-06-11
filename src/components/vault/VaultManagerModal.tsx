@@ -1,26 +1,16 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import {
   Vault, FolderOpen, Plus, Download, Upload, Trash2, Pencil,
-  Check, X, ChevronRight, Clock, ShieldCheck, Lock, LockOpen, Eye, EyeOff,
-  Crown, Shield, UserPlus,
+  Check, ChevronRight, Clock, ShieldCheck, Lock, LockOpen, Eye, EyeOff,
 } from 'lucide-react';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from '../ui/dialog';
 import { Button } from '../ui/button';
 import { Input } from '../ui/input';
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from '../ui/select';
 import { cn } from '../../lib/utils';
 import { useVaultStore } from '../../store/vaultStore';
 import { useUiStore } from '../../store/uiStore';
-import { useCollabStore } from '../../store/collabStore';
 import { tauriCommands } from '../../lib/tauri';
-import { createCollabTransport } from '../../lib/collabTransport';
-import type { VaultMeta, VaultConfig, MemberRole } from '../../types/vault';
+import { vaultKind, type VaultKind, type VaultMeta } from '../../types/vault';
 import { toast } from 'sonner';
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -36,12 +26,6 @@ function formatDate(ms: number): string {
   if (diff < 7 * 86_400_000) return `${Math.floor(diff / 86_400_000)}d ago`;
   return d.toLocaleDateString();
 }
-
-const ROLE_LABELS: Record<MemberRole, string> = {
-  viewer: 'Viewer',
-  editor: 'Editor',
-  admin: 'Admin',
-};
 
 // ─── Create Vault Form ────────────────────────────────────────────────────────
 
@@ -338,231 +322,21 @@ function VaultsTab({
   );
 }
 
-// ─── Permissions Tab ──────────────────────────────────────────────────────────
+// ─── Hosted Permissions Tab ───────────────────────────────────────────────────
 
-const ROLE_ICONS: Record<MemberRole, React.ReactNode> = {
-  viewer: <Eye size={11} />,
-  editor: <Shield size={11} />,
-  admin:  <Crown size={11} />,
-};
-
-function PermissionsTab() {
-  const { vault, recentVaults } = useVaultStore();
-  const { myUserId } = useCollabStore();
-  const [selectedPath, setSelectedPath] = useState<string>(vault?.path ?? '');
-  const [config, setConfig] = useState<VaultConfig | null>(null);
-  const [loading, setLoading] = useState(false);
-  const [busy, setBusy] = useState<string | null>(null); // userId currently being updated
-  const transport = useMemo(
-    () => (selectedPath ? createCollabTransport(selectedPath) : null),
-    [selectedPath],
-  );
-
-  const selectedPathRef = useRef(selectedPath);
-  useEffect(() => { selectedPathRef.current = selectedPath; }, [selectedPath]);
-
-  const loadConfig = async (path: string) => {
-    if (!path) return;
-    setLoading(true);
-    try {
-      const pathTransport = createCollabTransport(path);
-      setConfig(await pathTransport.readVaultConfig());
-    }
-    catch { setConfig(null); }
-    finally { setLoading(false); }
-  };
-
-  useEffect(() => { loadConfig(selectedPath); }, [selectedPath]);
-
-  // Stay in sync with real-time permission changes from other windows
-  useEffect(() => {
-    if (!transport) return;
-    const unsub = transport.onConfigChanged(() => {
-      void transport.readVaultConfig().then(setConfig).catch(() => {});
-    });
-    return () => { unsub(); };
-  }, [transport]);
-
-  const isOwner = config?.owner === myUserId;
-  const isAdmin = isOwner || (config?.members?.some((m) => m.userId === myUserId && m.role === 'admin') ?? false);
-
-  const getMember = (userId: string) => config?.members?.find((m) => m.userId === userId);
-
-  const handleSetRole = async (userId: string, role: MemberRole) => {
-    if (!selectedPath) return;
-    setBusy(userId);
-    try {
-      const existing = getMember(userId);
-      const updated = existing
-        ? await tauriCommands.updateMemberRole(selectedPath, myUserId, userId, role)
-        : await tauriCommands.inviteMember(selectedPath, myUserId, userId, role);
-      setConfig(updated);
-    } catch (e) {
-      toast.error(String(e));
-    } finally {
-      setBusy(null);
-    }
-  };
-
-  const handleRemove = async (userId: string) => {
-    if (!selectedPath) return;
-    setBusy(userId);
-    try {
-      setConfig(await tauriCommands.removeMember(selectedPath, myUserId, userId));
-    } catch (e) {
-      toast.error(String(e));
-    } finally {
-      setBusy(null);
-    }
-  };
-
-  const knownUsers = config?.knownUsers ?? [];
-  const availableRoles: MemberRole[] = isOwner ? ['viewer', 'editor', 'admin'] : ['viewer', 'editor'];
-
+function HostedPermissionsTab() {
   return (
-    <div className="flex flex-col gap-4 h-full">
-      {/* Vault selector */}
-      <div className="shrink-0">
-        <label className="text-[11px] font-semibold text-muted-foreground uppercase tracking-widest mb-1.5 block">
-          Vault
-        </label>
-        <Select value={selectedPath} onValueChange={setSelectedPath}>
-          <SelectTrigger className="w-full h-8 bg-background/60">
-            <SelectValue placeholder="Select vault" />
-          </SelectTrigger>
-          <SelectContent>
-            {recentVaults.map((v) => (
-              <SelectItem key={v.path} value={v.path}>{v.name}</SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
+    <div className="flex h-full max-w-[34rem] flex-col items-center justify-center gap-3 text-center">
+      <div className="flex size-10 items-center justify-center rounded-lg border border-primary/25 bg-primary/10">
+        <ShieldCheck size={18} className="text-primary" />
       </div>
-
-      {loading && (
-        <div className="flex-1 flex items-center justify-center text-muted-foreground text-sm">Loading…</div>
-      )}
-
-      {!loading && config && (
-        <div className="flex-1 overflow-y-auto min-h-0 space-y-4 pr-1">
-          {/* Access level notice for non-admins */}
-          {!isAdmin && (
-            <div className="flex items-center gap-2 px-3 py-2.5 rounded-lg bg-muted/40 border border-border/40 text-xs text-muted-foreground">
-              <Shield size={13} className="shrink-0" />
-              You have read-only access to this vault's member list. Only admins can change roles.
-            </div>
-          )}
-
-          {/* User list */}
-          <div className="space-y-1">
-            {knownUsers.length === 0 ? (
-              <p className="text-sm text-muted-foreground py-4 text-center">
-                No collaborators have accessed this vault yet.
-              </p>
-            ) : (
-              knownUsers.map((u) => {
-                const member = getMember(u.userId);
-                const isThisOwner = config.owner === u.userId;
-                const isSelf = u.userId === myUserId;
-                const isBusy = busy === u.userId;
-                const currentRole = member?.role ?? null;
-
-                return (
-                  <div key={u.userId} className="flex items-center gap-2.5 px-3 py-2 rounded-lg hover:bg-muted/30">
-                    {/* Avatar */}
-                    <div
-                      className="w-7 h-7 rounded-full flex-shrink-0 flex items-center justify-center text-xs font-semibold text-white"
-                      style={{ backgroundColor: u.userColor }}
-                    >
-                      {u.userName.slice(0, 1).toUpperCase()}
-                    </div>
-
-                    {/* Name */}
-                    <div className="flex-1 min-w-0">
-                      <div className="flex items-center gap-1.5">
-                        <span className="text-sm font-medium truncate">{u.userName}</span>
-                        {isSelf && <span className="text-[10px] text-muted-foreground">(you)</span>}
-                        {isThisOwner && <Crown size={11} className="text-amber-400 shrink-0" />}
-                      </div>
-                      <p className="text-[10px] text-muted-foreground font-mono truncate">{u.userId.slice(0, 8)}…</p>
-                    </div>
-
-                    {/* Controls */}
-                    {isThisOwner ? (
-                      <span className="text-[10px] px-2 py-0.5 rounded-full bg-amber-500/15 text-amber-400 font-medium">
-                        Owner
-                      </span>
-                    ) : isAdmin ? (
-                      <div className="flex items-center gap-1.5">
-                        <Select
-                          value={currentRole ?? 'none'}
-                          onValueChange={(value) => {
-                            if (value === 'none') return;
-                            handleSetRole(u.userId, value as MemberRole);
-                          }}
-                          disabled={isBusy || isSelf}
-                        >
-                          <SelectTrigger
-                            size="sm"
-                            className="min-w-28 border-border/40 bg-background/60 text-xs hover:border-border/70"
-                          >
-                            <SelectValue />
-                          </SelectTrigger>
-                          <SelectContent position="popper" align="end">
-                            {currentRole === null && <SelectItem value="none">No access</SelectItem>}
-                            {availableRoles.map((r) => (
-                              <SelectItem key={r} value={r}>{ROLE_LABELS[r]}</SelectItem>
-                            ))}
-                          </SelectContent>
-                        </Select>
-                        {currentRole !== null && !isSelf && (
-                          <Button
-                            onClick={() => handleRemove(u.userId)}
-                            disabled={isBusy}
-                            variant="ghost"
-                            size="icon"
-                            className="size-6 text-muted-foreground hover:text-destructive hover:bg-destructive/10"
-                            title="Remove access"
-                          >
-                            {isBusy ? <span className="w-3 h-3 border border-current border-t-transparent rounded-full animate-spin" /> : <X size={11} />}
-                          </Button>
-                        )}
-                        {currentRole === null && !isSelf && (
-                          <Button
-                            onClick={() => handleSetRole(u.userId, 'editor')}
-                            disabled={isBusy}
-                            variant="outline"
-                            size="sm"
-                            className="h-6 gap-1 px-2 text-[10px] text-primary border-primary/30 hover:bg-primary/10"
-                          >
-                            <UserPlus size={10} /> Add
-                          </Button>
-                        )}
-                      </div>
-                    ) : (
-                      /* Read-only role badge for non-admins */
-                      currentRole ? (
-                        <span className="flex items-center gap-1 text-[10px] px-2 py-0.5 rounded-full border border-border/50 text-muted-foreground">
-                          {ROLE_ICONS[currentRole]}
-                          {ROLE_LABELS[currentRole]}
-                        </span>
-                      ) : (
-                        <span className="text-[10px] text-muted-foreground">No access</span>
-                      )
-                    )}
-                  </div>
-                );
-              })
-            )}
-          </div>
-
-          {/* Role legend */}
-          <div className="p-3 rounded-lg bg-muted/30 border border-border/40 text-[12px] text-muted-foreground space-y-1">
-            <p><span className="font-medium text-foreground">Viewer</span> — read-only access</p>
-            <p><span className="font-medium text-foreground">Editor</span> — can create, edit, and delete notes</p>
-            <p><span className="font-medium text-foreground">Admin</span> — full access + manage member roles</p>
-          </div>
-        </div>
-      )}
+      <div>
+        <h3 className="text-sm font-medium text-foreground">Server-managed permissions</h3>
+        <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
+          Hosted vault members and roles are authoritative on the connected server.
+          Member controls will appear here when the hosted vault client is connected.
+        </p>
+      </div>
     </div>
   );
 }
@@ -777,17 +551,29 @@ function EncryptionTab() {
 
 type Tab = 'vaults' | 'permissions' | 'encryption';
 
-const TABS: { id: Tab; label: string; icon: React.ReactNode }[] = [
-  { id: 'vaults',      label: 'Vaults',      icon: <Vault size={14} /> },
-  { id: 'permissions', label: 'Permissions',  icon: <ShieldCheck size={14} /> },
-  { id: 'encryption',  label: 'Encryption',   icon: <Lock size={14} /> },
-];
+const ALL_TABS: Record<Tab, { id: Tab; label: string; icon: React.ReactNode }> = {
+  vaults: { id: 'vaults', label: 'Vaults', icon: <Vault size={14} /> },
+  permissions: { id: 'permissions', label: 'Permissions', icon: <ShieldCheck size={14} /> },
+  encryption: { id: 'encryption', label: 'Encryption', icon: <Lock size={14} /> },
+};
+
+export function vaultManagerTabIds(kind: VaultKind): Tab[] {
+  return kind === 'hosted'
+    ? ['vaults', 'permissions']
+    : ['vaults', 'encryption'];
+}
 
 export default function VaultManagerModal() {
   const { isVaultManagerOpen, closeVaultManager } = useUiStore();
   const { vault, closeVault, removeRecentVault } = useVaultStore();
   const [tab, setTab] = useState<Tab>('vaults');
   const [removeTarget, setRemoveTarget] = useState<VaultMeta | null>(null);
+  const kind = vault ? vaultKind(vault) : 'local';
+  const tabs = vaultManagerTabIds(kind).map((id) => ALL_TABS[id]);
+
+  useEffect(() => {
+    if (!vaultManagerTabIds(kind).includes(tab)) setTab('vaults');
+  }, [kind, tab]);
 
   const confirmRemoveVault = async () => {
     if (!removeTarget) return;
@@ -841,7 +627,7 @@ export default function VaultManagerModal() {
         <div className="flex h-[520px]">
           {/* Tab sidebar */}
           <nav className="w-44 shrink-0 border-r border-border/40 p-2 flex flex-col gap-0.5">
-            {TABS.map(({ id, label, icon }) => (
+            {tabs.map(({ id, label, icon }) => (
               <button
                 key={id}
                 onClick={() => setTab(id)}
@@ -861,7 +647,7 @@ export default function VaultManagerModal() {
           {/* Tab content */}
           <div className="flex-1 min-w-0 overflow-y-auto p-5 flex flex-col">
             {tab === 'vaults' && <VaultsTab onClose={closeVaultManager} onRequestRemove={setRemoveTarget} />}
-            {tab === 'permissions' && <PermissionsTab />}
+            {tab === 'permissions' && <HostedPermissionsTab />}
             {tab === 'encryption' && <EncryptionTab />}
           </div>
         </div>

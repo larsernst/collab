@@ -2,7 +2,7 @@ use crate::crypto;
 use crate::models::collab::{ChatMessage, SnapshotMeta};
 use crate::models::note::WriteResult;
 use crate::models::presence::PresenceEntry;
-use crate::models::vault::{KnownUser, MemberRole, VaultConfig, VaultMember};
+use crate::models::vault::{KnownUser, VaultConfig};
 use crate::state::AppState;
 use collab_core::sha256_text;
 use std::path::Path;
@@ -148,30 +148,8 @@ pub fn get_vault_config(vault_path: String) -> Result<VaultConfig, String> {
     serde_json::from_str(&data).map_err(|e| e.to_string())
 }
 
-/// Update vault-level settings (name, etc.) — admin only.
-/// The `owner` field is always preserved from the existing config.
-#[tauri::command]
-pub fn update_vault_config(
-    vault_path: String,
-    requesting_user_id: String,
-    config: VaultConfig,
-    app: AppHandle,
-) -> Result<(), String> {
-    let existing = get_vault_config(vault_path.clone())?;
-    require_admin(&existing, &requesting_user_id)?;
-
-    // Preserve owner and members — use dedicated commands to change those
-    let protected = VaultConfig {
-        owner: existing.owner,
-        members: existing.members,
-        known_users: config.known_users,
-        ..config
-    };
-    write_config_atomic(&vault_path, &protected, &app)
-}
-
-/// Register the current user in known_users — no admin required.
-/// Only updates the `known_users` list; cannot touch `owner` or `members`.
+/// Register the current user in known_users for local presence and attribution.
+/// Legacy owner/member fields remain untouched but are not used for authorization.
 #[tauri::command]
 pub fn register_known_user(
     vault_path: String,
@@ -191,32 +169,6 @@ pub fn register_known_user(
     } else {
         config.known_users.push(KnownUser { user_id, user_name, user_color, last_seen: now });
     }
-
-    write_config_atomic(&vault_path, &config, &app)?;
-    Ok(config)
-}
-
-/// Claim ownership of a vault that has no owner set yet — no admin required.
-/// Fails if an owner is already set. This is the migration path for legacy vaults.
-#[tauri::command]
-pub fn claim_vault_ownership(
-    vault_path: String,
-    user_id: String,
-    user_name: String,
-    app: AppHandle,
-) -> Result<VaultConfig, String> {
-    let mut config = get_vault_config(vault_path.clone())?;
-
-    if config.owner.is_some() {
-        return Err("Vault already has an owner".to_string());
-    }
-
-    // Set owner
-    config.owner = Some(user_id.clone());
-
-    // Upsert as Admin member (avoid duplicate)
-    config.members.retain(|m| m.user_id != user_id);
-    config.members.push(VaultMember { user_id, user_name, role: MemberRole::Admin });
 
     write_config_atomic(&vault_path, &config, &app)?;
     Ok(config)
@@ -450,106 +402,6 @@ pub fn restore_snapshot(
     std::fs::rename(&tmp, &full_path).map_err(|e| e.to_string())?;
 
     Ok(WriteResult { hash: compute_hash(&snapshot_content), merged_content: None, conflict: None })
-}
-
-// ── Permissions ───────────────────────────────────────────────────────────────
-
-fn require_admin(config: &VaultConfig, requesting_user_id: &str) -> Result<(), String> {
-    if config.owner.as_deref() == Some(requesting_user_id) {
-        return Ok(());
-    }
-    let is_admin = config
-        .members
-        .iter()
-        .any(|m| m.user_id == requesting_user_id && m.role == MemberRole::Admin);
-    if is_admin {
-        Ok(())
-    } else {
-        Err("Permission denied: only vault admins can manage members".to_string())
-    }
-}
-
-#[tauri::command]
-pub fn invite_member(
-    vault_path: String,
-    requesting_user_id: String,
-    user_id: String,
-    role: MemberRole,
-    app: AppHandle,
-) -> Result<VaultConfig, String> {
-    let mut config = get_vault_config(vault_path.clone())?;
-    require_admin(&config, &requesting_user_id)?;
-
-    // Only the vault owner can grant admin role
-    if role == MemberRole::Admin && config.owner.as_deref() != Some(&requesting_user_id) {
-        return Err("Permission denied: only the vault owner can grant admin role".to_string());
-    }
-
-    let user_name = config
-        .known_users
-        .iter()
-        .find(|u| u.user_id == user_id)
-        .map(|u| u.user_name.clone())
-        .ok_or_else(|| {
-            "User not found in vault history. They must open this vault at least once first."
-                .to_string()
-        })?;
-
-    config.members.retain(|m| m.user_id != user_id);
-    config.members.push(VaultMember { user_id, user_name, role });
-
-    write_config_atomic(&vault_path, &config, &app)?;
-    Ok(config)
-}
-
-#[tauri::command]
-pub fn update_member_role(
-    vault_path: String,
-    requesting_user_id: String,
-    user_id: String,
-    role: MemberRole,
-    app: AppHandle,
-) -> Result<VaultConfig, String> {
-    let mut config = get_vault_config(vault_path.clone())?;
-    require_admin(&config, &requesting_user_id)?;
-
-    // Only the vault owner can grant admin role
-    if role == MemberRole::Admin && config.owner.as_deref() != Some(&requesting_user_id) {
-        return Err("Permission denied: only the vault owner can grant admin role".to_string());
-    }
-
-    // Cannot demote or change the owner's own role
-    if config.owner.as_deref() == Some(&user_id) {
-        return Err("Cannot change the vault owner's role".to_string());
-    }
-
-    match config.members.iter_mut().find(|m| m.user_id == user_id) {
-        Some(m) => m.role = role,
-        None => return Err("Member not found".to_string()),
-    }
-
-    write_config_atomic(&vault_path, &config, &app)?;
-    Ok(config)
-}
-
-#[tauri::command]
-pub fn remove_member(
-    vault_path: String,
-    requesting_user_id: String,
-    user_id: String,
-    app: AppHandle,
-) -> Result<VaultConfig, String> {
-    let mut config = get_vault_config(vault_path.clone())?;
-    require_admin(&config, &requesting_user_id)?;
-
-    // Cannot remove the owner
-    if config.owner.as_deref() == Some(&user_id) {
-        return Err("Cannot remove the vault owner".to_string());
-    }
-
-    config.members.retain(|m| m.user_id != user_id);
-    write_config_atomic(&vault_path, &config, &app)?;
-    Ok(config)
 }
 
 #[cfg(test)]

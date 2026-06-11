@@ -9,7 +9,6 @@ import type {
   NoteContent,
   WriteResult,
   VaultConfig,
-  MemberRole,
   TrashEntry,
   PathChangePreview,
   FileReference,
@@ -292,12 +291,8 @@ export const tauriCommands = {
 
   // Collab — vault config
   getVaultConfig: (vaultPath: string) => invoke<VaultConfig>('get_vault_config', { vaultPath }),
-  updateVaultConfig: (vaultPath: string, requestingUserId: string, config: VaultConfig) =>
-    invoke<void>('update_vault_config', { vaultPath, requestingUserId, config }),
   registerKnownUser: (vaultPath: string, userId: string, userName: string, userColor: string) =>
     invoke<VaultConfig>('register_known_user', { vaultPath, userId, userName, userColor }),
-  claimVaultOwnership: (vaultPath: string, userId: string, userName: string) =>
-    invoke<VaultConfig>('claim_vault_ownership', { vaultPath, userId, userName }),
 
   // Collab — chat
   sendChatMessage: (vaultPath: string, message: ChatMessage) =>
@@ -330,11 +325,4 @@ export const tauriCommands = {
     restoringUserName: string,
   ) => invoke<WriteResult>('restore_snapshot', { vaultPath, relativePath, snapshotId, restoringUserId, restoringUserName }),
 
-  // Collab — permissions
-  inviteMember: (vaultPath: string, requestingUserId: string, userId: string, role: MemberRole) =>
-    invoke<VaultConfig>('invite_member', { vaultPath, requestingUserId, userId, role }),
-  updateMemberRole: (vaultPath: string, requestingUserId: string, userId: string, role: MemberRole) =>
-    invoke<VaultConfig>('update_member_role', { vaultPath, requestingUserId, userId, role }),
-  removeMember: (vaultPath: string, requestingUserId: string, userId: string) =>
-    invoke<VaultConfig>('remove_member', { vaultPath, requestingUserId, userId }),
 };

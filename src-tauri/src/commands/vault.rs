@@ -1,4 +1,4 @@
-use crate::models::vault::{KnownUser, MemberRole, VaultConfig, VaultMember, VaultMeta};
+use crate::models::vault::{KnownUser, VaultConfig, VaultMeta};
 use crate::state::AppState;
 use std::io::Write as IoWrite;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -155,11 +155,15 @@ fn ensure_open_vault_meta_with_recents(
     };
 
     let meta = VaultMeta {
+        kind: Default::default(),
         id: config.id,
         name: config.name,
         path: canonical_str,
         last_opened: now_ms(),
         is_encrypted: config.is_encrypted,
+        server_url: None,
+        hosted_vault_id: None,
+        role: None,
     };
 
     upsert_recent_at_path(recents_path, &meta)?;
@@ -178,32 +182,23 @@ fn build_created_vault_config(
     owner_user_name: Option<String>,
     owner_user_color: Option<String>,
 ) -> VaultConfig {
-    let (known_users, members) = if let Some(ref uid) = owner_user_id {
+    let known_users = if let Some(ref uid) = owner_user_id {
         let uname = owner_user_name.clone().unwrap_or_else(|| uid.clone());
         let ucolor = owner_user_color.clone().unwrap_or_else(|| "#8b5cf6".to_string());
-        (
-            vec![KnownUser {
-                user_id: uid.clone(),
-                user_name: uname.clone(),
-                user_color: ucolor,
-                last_seen: now_ms(),
-            }],
-            vec![VaultMember {
-                user_id: uid.clone(),
-                user_name: uname,
-                role: MemberRole::Admin,
-            }],
-        )
+        vec![KnownUser {
+            user_id: uid.clone(),
+            user_name: uname,
+            user_color: ucolor,
+            last_seen: now_ms(),
+        }]
     } else {
-        (vec![], vec![])
+        vec![]
     };
 
     VaultConfig {
         id: id.to_string(),
         name: name.to_string(),
         known_users,
-        owner: owner_user_id,
-        members,
         ..Default::default()
     }
 }
@@ -234,11 +229,15 @@ fn create_vault_on_disk_with_recents(
     std::fs::create_dir_all(collab_dir(&canonical_str).join("presence")).map_err(|e| e.to_string())?;
 
     let meta = VaultMeta {
+        kind: Default::default(),
         id,
         name: name.to_string(),
         path: canonical_str,
         last_opened: now_ms(),
         is_encrypted: false,
+        server_url: None,
+        hosted_vault_id: None,
+        role: None,
     };
 
     upsert_recent_at_path(recents_path, &meta)?;
@@ -469,11 +468,15 @@ mod tests {
 
     fn sample_meta(path: String, index: u64) -> VaultMeta {
         VaultMeta {
+            kind: Default::default(),
             id: format!("vault-{index}"),
             name: format!("Vault {index}"),
             path,
             last_opened: index,
             is_encrypted: false,
+            server_url: None,
+            hosted_vault_id: None,
+            role: None,
         }
     }
 
@@ -583,7 +586,7 @@ mod tests {
     }
 
     #[test]
-    fn build_created_vault_config_bootstraps_owner_membership() {
+    fn build_created_vault_config_registers_identity_without_local_permissions() {
         let config = build_created_vault_config(
             "vault-1",
             "Project",
@@ -594,9 +597,8 @@ mod tests {
 
         assert_eq!(config.id, "vault-1");
         assert_eq!(config.name, "Project");
-        assert_eq!(config.owner.as_deref(), Some("owner-1"));
-        assert_eq!(config.members.len(), 1);
-        assert_eq!(config.members[0].role, MemberRole::Admin);
+        assert_eq!(config.owner, None);
+        assert!(config.members.is_empty());
         assert_eq!(config.known_users.len(), 1);
         assert_eq!(config.known_users[0].user_color, "#123456");
     }
@@ -619,7 +621,8 @@ mod tests {
         let recents = read_recents_from_path(&recents_path).expect("recents should read");
 
         assert_eq!(config.name, "Project Vault");
-        assert_eq!(config.owner.as_deref(), Some("owner-1"));
+        assert_eq!(config.owner, None);
+        assert!(config.members.is_empty());
         assert!(std::path::Path::new(&meta.path).join(".collab/presence").is_dir());
         assert_eq!(recents.first().map(|recent| recent.path.as_str()), Some(meta.path.as_str()));
     }

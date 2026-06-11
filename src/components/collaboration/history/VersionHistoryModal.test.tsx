@@ -58,7 +58,6 @@ describe('VersionHistoryModal', () => {
       myUserId: 'user-1',
       myUserName: 'Test User',
       myUserColor: '#22c55e',
-      myRole: null,
       peers: [],
       conflicts: [],
       chatMessages: [],

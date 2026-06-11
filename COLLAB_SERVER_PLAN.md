@@ -16,7 +16,7 @@ This document is the source of truth for implementation progress. Update task ch
 | 1. Server foundation and Compose | Complete | 100% |
 | 2. Authentication and administration | Complete | 100% |
 | 3. Hosted vault storage and permissions | Complete | 100% |
-| 4. Native hosted-vault client | Not started | 0% |
+| 4. Native hosted-vault client | In progress | 14% |
 | 5. Live collaboration | Not started | 0% |
 | 6. Full offline synchronization | Not started | 0% |
 | 7. Production hardening | Not started | 0% |
@@ -231,9 +231,14 @@ surface before hosted vault mutations are exposed.
 
 ### Tasks
 
-- [ ] Add `local` and `hosted` vault kinds to shared vault metadata.
-- [ ] Define a shared `VaultClient` interface for frontend vault operations.
-- [ ] Implement `LocalVaultClient` over existing typed Tauri commands.
+- [x] Add `local` and `hosted` vault kinds to shared vault metadata.
+- [x] Define a shared `VaultClient` interface for frontend vault operations.
+- [x] Implement `LocalVaultClient` over existing typed Tauri commands.
+- [x] Retire the proof-of-concept local permission system:
+  - Local vault operations do not use owner/admin/editor/viewer authorization.
+  - Existing local membership metadata remains readable for compatibility but is ignored for authorization.
+  - Permission and member-management settings are hidden for local vaults.
+  - Local collaboration identity metadata remains available for presence, chat authorship, and activity labels.
 - [ ] Implement online-only `HostedVaultClient` over HTTP and authenticated asset URLs.
 - [ ] Add runtime capability interfaces for native-only operations.
 - [ ] Add server connection, login, logout, and hosted-vault picker UI.
@@ -408,3 +413,6 @@ Add one entry whenever a meaningful server milestone lands.
 | 2026-06-10 | Phase 3 deployment and admin UX follow-up | Published the Compose gateway on a configurable host interface, redirected the main port root to `/admin/`, and added vault storage accounting plus ZIP import/export controls to the administration vault detail view | Admin web tests/build, root redirect server test, Compose configuration, and Compose smoke verification | Begin Phase 4 native hosted-vault client |
 | 2026-06-10 | Phase 3 import body-limit fix | Derived the Axum JSON request-body limit from configured upload/import limits plus base64/envelope overhead so valid ZIP imports and asset uploads above the framework's 2 MiB default no longer fail as gateway broken pipes; separated defaults into 256 MiB per-file, 512 MiB compressed-import, and 2 GiB expanded-import limits | Server regression coverage above the old default limit plus Compose gateway verification | Begin Phase 4 native hosted-vault client |
 | 2026-06-10 | Phase 3 server-admin hierarchy and file browser | Elevated active server administrators above vault owner/admin roles through implicit content access without membership or ownership, added restore-as-new-revision, and expanded the admin vault view with file metadata, downloads, moves, history, and revision restore | Live PostgreSQL operator-access coverage, admin web interaction tests/build, Rust workspace checks, and Compose smoke verification | Begin Phase 4 native hosted-vault client |
+| 2026-06-11 | Phase 4 client boundary | Added backward-compatible local/hosted vault metadata across TypeScript and Tauri IPC, defined a capability-aware `VaultClient` contract with opaque document versions, and implemented the tested `LocalVaultClient` adapter over existing typed Tauri commands | Full frontend suite (617 tests), TypeScript check, Tauri metadata compatibility test, Rust workspace checks | Implement the online-only `HostedVaultClient` and native hosted-vault listing/opening flow |
+| 2026-06-11 | Phase 4 permission-model planning | Added an early Phase 4 task to retire local role authorization while preserving identity metadata, and reserved permission/member-management UI for server-authoritative hosted vaults | Reviewed local filesystem trust limits and the hosted permission boundary | Remove local permission enforcement before connecting hosted member management |
+| 2026-06-11 | Phase 4 local permission retirement | Removed local ownership claiming, member-role commands, and local role state; new local vaults retain identity metadata without creating owner/admin records; Vault Manager now shows permissions only for hosted vaults and local encryption only for local vaults | Focused frontend permission-boundary and identity registration tests, Rust vault creation tests, TypeScript and workspace checks | Implement the online-only `HostedVaultClient` and native hosted-vault listing/opening flow |

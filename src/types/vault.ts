@@ -1,9 +1,32 @@
-export interface VaultMeta {
+export type VaultKind = 'local' | 'hosted';
+
+interface VaultMetaBase {
   id: string;
   name: string;
   path: string;
   lastOpened: number;
   isEncrypted: boolean;
+}
+
+export interface LocalVaultMeta extends VaultMetaBase {
+  /**
+   * Optional while older persisted recent-vault entries are migrated.
+   * Missing kinds are always treated as local.
+   */
+  kind?: 'local';
+}
+
+export interface HostedVaultMeta extends VaultMetaBase {
+  kind: 'hosted';
+  serverUrl: string;
+  hostedVaultId: string;
+  role: MemberRole;
+}
+
+export type VaultMeta = LocalVaultMeta | HostedVaultMeta;
+
+export function vaultKind(vault: VaultMeta): VaultKind {
+  return vault.kind ?? 'local';
 }
 
 export interface NoteFile {
@@ -91,7 +114,9 @@ export interface VaultConfig {
   id: string;
   name: string;
   knownUsers: KnownUser[];
+  /** Legacy local-vault metadata. Readable for compatibility, never authoritative. */
   owner?: string;
+  /** Legacy local-vault metadata. Readable for compatibility, never authoritative. */
   members?: VaultMember[];
   isEncrypted?: boolean;
 }
