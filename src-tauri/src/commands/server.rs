@@ -204,6 +204,42 @@ pub async fn hosted_user_directory(
     decode_hosted_json_response(request.send().await.map_err(server_request_error)?).await
 }
 
+/// Download an admin-only hosted-vault ZIP export and write it to a local path.
+/// The bearer token stays in Rust; only the success/failure result reaches the
+/// webview. Server authorization (vault admin) is enforced server-side.
+#[tauri::command]
+pub async fn hosted_vault_export_zip(
+    state: State<'_, AppState>,
+    server_url: String,
+    vault_id: String,
+    destination_path: String,
+) -> Result<(), String> {
+    validate_identifier(&vault_id)?;
+    let session = state.server_session.read().clone().ok_or_else(|| {
+        "Connect to the Collab server before exporting hosted vaults.".to_string()
+    })?;
+    require_connected_server(&session, &server_url)?;
+    let response = server_client(session.allow_invalid_certificates)?
+        .get(format!(
+            "{}/api/v1/vaults/{vault_id}/export",
+            session.server_url,
+        ))
+        .bearer_auth(&session.access_token)
+        .send()
+        .await
+        .map_err(server_request_error)?;
+    if !response.status().is_success() {
+        return Err(decode_hosted_error(response).await);
+    }
+    let bytes = response
+        .bytes()
+        .await
+        .map_err(|_| "The server returned an invalid export response.".to_string())?;
+    std::fs::write(&destination_path, &bytes)
+        .map_err(|_| "Could not write the exported vault archive to disk.".to_string())?;
+    Ok(())
+}
+
 fn validate_server_url(value: &str) -> Result<String, String> {
     let mut url = Url::parse(value.trim()).map_err(|_| "Enter a valid server URL.".to_string())?;
     if url.username() != ""

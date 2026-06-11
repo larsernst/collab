@@ -2,6 +2,11 @@ import { create } from 'zustand';
 import { tauriCommands, type ServerConnectionStatus } from '../lib/tauri';
 import type { HostedVaultSummary } from '../types/vault';
 
+const SERVER_URL_KEY = 'collab-hosted-server-url';
+const ALLOW_INVALID_CERTIFICATES_KEY = 'collab-hosted-allow-invalid-certificates';
+
+export type RestoreSessionResult = 'connected' | 'failed' | 'skipped';
+
 const DISCONNECTED: ServerConnectionStatus = {
   connected: false,
   serverUrl: null,
@@ -31,10 +36,12 @@ interface ServerState {
   isLoading: boolean;
   error: string | null;
   refresh: () => Promise<void>;
+  restoreSession: () => Promise<RestoreSessionResult>;
   connect: (serverUrl: string, username: string, password: string, allowInvalidCertificates?: boolean) => Promise<void>;
   reconnect: (serverUrl: string, allowInvalidCertificates?: boolean) => Promise<void>;
   disconnect: () => Promise<void>;
   loadHostedVaults: () => Promise<void>;
+  createHostedVault: (name: string) => Promise<HostedVaultSummary>;
 }
 
 export const useServerStore = create<ServerState>()((set, get) => ({
@@ -50,6 +57,28 @@ export const useServerStore = create<ServerState>()((set, get) => ({
       if (status.connected) await get().loadHostedVaults();
     } catch (error) {
       set({ status: DISCONNECTED, hostedVaults: [], isLoading: false, error: String(error) });
+    }
+  },
+  restoreSession: async () => {
+    const serverUrl = localStorage.getItem(SERVER_URL_KEY);
+    if (!serverUrl) return 'skipped';
+    const allowInvalidCertificates = localStorage.getItem(ALLOW_INVALID_CERTIFICATES_KEY) === 'true';
+    // A still-live in-memory session (e.g. after a soft reload) needs no refresh.
+    try {
+      const status = await tauriCommands.serverConnectionStatus();
+      if (status.connected) {
+        set({ status });
+        await get().loadHostedVaults();
+        return 'connected';
+      }
+    } catch {
+      // Fall through to a refresh-token reconnect.
+    }
+    try {
+      await get().reconnect(serverUrl, allowInvalidCertificates);
+      return 'connected';
+    } catch {
+      return 'failed';
     }
   },
   connect: async (serverUrl, username, password, allowInvalidCertificates = false) => {
@@ -96,5 +125,20 @@ export const useServerStore = create<ServerState>()((set, get) => ({
       set({ hostedVaults: [], isLoading: false, error: String(error) });
       throw error;
     }
+  },
+  createHostedVault: async (name) => {
+    const status = get().status;
+    if (!status?.connected || !status.serverUrl) {
+      throw new Error('Connect to a Collab server before creating a hosted vault.');
+    }
+    const created = await tauriCommands.hostedVaultRequest<HostedVaultSummary>(
+      status.serverUrl,
+      'POST',
+      '/api/v1/vaults',
+      { name },
+    );
+    // The creator becomes the vault admin/owner; refresh so it appears in the inventory.
+    await get().loadHostedVaults();
+    return created;
   },
 }));

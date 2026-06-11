@@ -4,6 +4,7 @@ import { useCollabStore } from '../../../store/collabStore';
 import { useVaultStore } from '../../../store/vaultStore';
 import { useUiStore } from '../../../store/uiStore';
 import { tauriCommands } from '../../../lib/tauri';
+import { createVaultClient } from '../../../lib/vaultClient';
 import type { ChatMessage } from '../../../types/collab';
 import { Button } from '../../ui/button';
 import { Textarea } from '../../ui/textarea';
@@ -83,6 +84,9 @@ export function ChatPanel() {
     appendChatMessage,
     setChatTypingUntil,
   } = useCollabStore();
+  // Chat is filesystem-backed under .collab/chat/; hosted vaults have no chat
+  // transport yet, so the panel is shown as unavailable rather than failing sends.
+  const supportsChat = vault ? createVaultClient(vault).capabilities.nativeFilesystem : false;
   const [text, setText] = useState('');
   const [sending, setSending] = useState(false);
   const [typingNow, setTypingNow] = useState(() => Date.now());
@@ -124,7 +128,7 @@ export function ChatPanel() {
 
   const send = useCallback(async () => {
     const content = text.trim();
-    if (!content || !vault || sending) return;
+    if (!content || !vault || sending || !supportsChat) return;
     setText('');
     publishTypingState('', true);
     setSending(true);
@@ -146,7 +150,7 @@ export function ChatPanel() {
     } finally {
       setSending(false);
     }
-  }, [text, vault, myUserId, myUserName, myUserColor, sending]);
+  }, [text, vault, myUserId, myUserName, myUserColor, sending, supportsChat]);
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === 'Enter' && !e.shiftKey) {
@@ -154,6 +158,15 @@ export function ChatPanel() {
       send();
     }
   };
+
+  if (vault && !supportsChat) {
+    return (
+      <div className="flex h-full flex-col items-center justify-center gap-2 px-6 text-center">
+        <p className="text-sm text-muted-foreground">Chat isn't available for hosted vaults yet.</p>
+        <p className="text-xs text-muted-foreground/70">Real-time hosted collaboration, including chat, is coming in a future update.</p>
+      </div>
+    );
+  }
 
   return (
     <div className="flex flex-col h-full">

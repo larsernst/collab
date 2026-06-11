@@ -110,6 +110,14 @@ fn scope_note_snippets_dir(vault_path: Option<&str>, scope: &NoteSnippetScope) -
     Ok(dir)
 }
 
+fn note_snippet_scopes(include_vault_scope: bool) -> Vec<NoteSnippetScope> {
+    if include_vault_scope {
+        vec![NoteSnippetScope::Vault, NoteSnippetScope::App]
+    } else {
+        vec![NoteSnippetScope::App]
+    }
+}
+
 fn normalize_board(board: &Value) -> Result<String, String> {
     serde_json::to_string(board).map_err(|e| e.to_string())
 }
@@ -602,7 +610,8 @@ pub fn list_kanban_templates(
     for source in [TemplateSource::Vault, TemplateSource::App] {
         let dir = match scope_templates_dir(vault_path.as_deref(), &source) {
             Ok(dir) => dir,
-            Err(err) if source == TemplateSource::Vault && vault_path.is_none() => return Err(err),
+            // A missing vault path means an app-only listing (e.g. hosted vaults):
+            // skip the vault scope rather than failing the whole request.
             Err(_) => continue,
         };
 
@@ -792,7 +801,8 @@ pub fn list_kanban_filter_presets(
     for source in [TemplateSource::Vault, TemplateSource::App] {
         let dir = match scope_kanban_preset_dir(vault_path.as_deref(), &source, "filters") {
             Ok(dir) => dir,
-            Err(err) if source == TemplateSource::Vault && vault_path.is_none() => return Err(err),
+            // A missing vault path means an app-only listing (e.g. hosted vaults):
+            // skip the vault scope rather than failing the whole request.
             Err(_) => continue,
         };
         if !dir.exists() {
@@ -871,7 +881,8 @@ pub fn list_kanban_automation_presets(
     for source in [TemplateSource::Vault, TemplateSource::App] {
         let dir = match scope_kanban_preset_dir(vault_path.as_deref(), &source, "automations") {
             Ok(dir) => dir,
-            Err(err) if source == TemplateSource::Vault && vault_path.is_none() => return Err(err),
+            // A missing vault path means an app-only listing (e.g. hosted vaults):
+            // skip the vault scope rather than failing the whole request.
             Err(_) => continue,
         };
         if !dir.exists() {
@@ -947,12 +958,8 @@ pub fn list_note_snippets(
 ) -> Result<Vec<NoteSnippet>, String> {
     let mut out = Vec::new();
 
-    for scope in [NoteSnippetScope::Vault, NoteSnippetScope::App] {
-        let dir = match scope_note_snippets_dir(vault_path.as_deref(), &scope) {
-            Ok(dir) => dir,
-            Err(err) if scope == NoteSnippetScope::Vault && vault_path.is_none() => return Err(err),
-            Err(_) => continue,
-        };
+    for scope in note_snippet_scopes(vault_path.is_some()) {
+        let dir = scope_note_snippets_dir(vault_path.as_deref(), &scope)?;
         if !dir.exists() {
             continue;
         }
@@ -1016,9 +1023,10 @@ pub fn delete_note_snippet(
 mod tests {
     use super::{
         board_hash, built_in_templates, generate_note_snippet_id, normalize_relative_path,
-        parse_template_file, scope_kanban_preset_dir, snippet_file_name, template_file_name,
+        note_snippet_scopes, parse_template_file, scope_kanban_preset_dir, snippet_file_name,
+        template_file_name,
     };
-    use crate::models::template::TemplateSource;
+    use crate::models::template::{NoteSnippetScope, TemplateSource};
     use crate::test_support::TempVault;
     use serde_json::json;
     use std::path::PathBuf;
@@ -1142,6 +1150,15 @@ mod tests {
     fn generated_note_snippet_ids_are_prefixed() {
         let id = generate_note_snippet_id("Meeting Notes");
         assert!(id.starts_with("snippet-"));
+    }
+
+    #[test]
+    fn hosted_note_snippet_listing_uses_app_scope_only() {
+        assert_eq!(note_snippet_scopes(false), vec![NoteSnippetScope::App]);
+        assert_eq!(
+            note_snippet_scopes(true),
+            vec![NoteSnippetScope::Vault, NoteSnippetScope::App]
+        );
     }
 
     #[test]

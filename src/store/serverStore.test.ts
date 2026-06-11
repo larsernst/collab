@@ -64,6 +64,71 @@ describe('serverStore', () => {
     expect(useServerStore.getState().status?.connected).toBe(false);
     expect(useServerStore.getState().hostedVaults).toEqual([]);
   });
+
+  it('creates a hosted vault and refreshes the inventory', async () => {
+    useServerStore.setState({ status: connected, hostedVaults: [] });
+    vi.mocked(tauriCommands.hostedVaultRequest)
+      .mockResolvedValueOnce(hostedVault) // POST /api/v1/vaults
+      .mockResolvedValueOnce([hostedVault]); // GET reload
+
+    const created = await useServerStore.getState().createHostedVault('New Vault');
+
+    expect(created).toEqual(hostedVault);
+    expect(tauriCommands.hostedVaultRequest).toHaveBeenCalledWith(
+      'https://collab.example.test',
+      'POST',
+      '/api/v1/vaults',
+      { name: 'New Vault' },
+    );
+    expect(useServerStore.getState().hostedVaults).toEqual([hostedVault]);
+  });
+
+  it('refuses to create a hosted vault when disconnected', async () => {
+    useServerStore.setState({ status: null });
+    await expect(useServerStore.getState().createHostedVault('X')).rejects.toThrow(/Connect to a Collab server/);
+  });
+});
+
+describe('serverStore.restoreSession', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    localStorage.clear();
+    useServerStore.setState({ status: null, hostedVaults: [], isLoading: false, error: null });
+  });
+
+  it('skips when no server URL has been saved', async () => {
+    expect(await useServerStore.getState().restoreSession()).toBe('skipped');
+    expect(tauriCommands.reconnectServer).not.toHaveBeenCalled();
+  });
+
+  it('reuses a live in-memory session without reconnecting', async () => {
+    localStorage.setItem('collab-hosted-server-url', 'https://collab.example.test');
+    vi.mocked(tauriCommands.serverConnectionStatus).mockResolvedValue(connected);
+    vi.mocked(tauriCommands.hostedVaultRequest).mockResolvedValue([hostedVault]);
+
+    expect(await useServerStore.getState().restoreSession()).toBe('connected');
+    expect(tauriCommands.reconnectServer).not.toHaveBeenCalled();
+    expect(useServerStore.getState().hostedVaults).toEqual([hostedVault]);
+  });
+
+  it('reconnects from the saved refresh token when no live session exists', async () => {
+    localStorage.setItem('collab-hosted-server-url', 'https://collab.example.test');
+    localStorage.setItem('collab-hosted-allow-invalid-certificates', 'true');
+    vi.mocked(tauriCommands.serverConnectionStatus).mockResolvedValue({ ...connected, connected: false });
+    vi.mocked(tauriCommands.reconnectServer).mockResolvedValue(connected);
+    vi.mocked(tauriCommands.hostedVaultRequest).mockResolvedValue([hostedVault]);
+
+    expect(await useServerStore.getState().restoreSession()).toBe('connected');
+    expect(tauriCommands.reconnectServer).toHaveBeenCalledWith('https://collab.example.test', true);
+  });
+
+  it('reports failure when the refresh-token reconnect fails', async () => {
+    localStorage.setItem('collab-hosted-server-url', 'https://collab.example.test');
+    vi.mocked(tauriCommands.serverConnectionStatus).mockResolvedValue({ ...connected, connected: false });
+    vi.mocked(tauriCommands.reconnectServer).mockRejectedValue(new Error('expired'));
+
+    expect(await useServerStore.getState().restoreSession()).toBe('failed');
+  });
 });
 
 describe('isServerSessionExpired', () => {

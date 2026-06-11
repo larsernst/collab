@@ -1,7 +1,8 @@
-import { useEffect } from 'react';
-import { FolderOpen, Plus, Clock, ArrowRight, Server, RefreshCw, Settings } from 'lucide-react';
+import { useEffect, useState } from 'react';
+import { FolderOpen, Plus, Clock, ArrowRight, Server, RefreshCw, Settings, Check } from 'lucide-react';
 import { AppLogo } from '../ui/AppLogo';
 import { Button } from '../ui/button';
+import { Input } from '../ui/input';
 import { Separator } from '../ui/separator';
 import { useVaultStore } from '../../store/vaultStore';
 import { useServerStore } from '../../store/serverStore';
@@ -12,8 +13,11 @@ import { toast } from 'sonner';
 
 export default function VaultPicker() {
   const { openVault, openHostedVault, loadRecentVaults, recentVaults, isLoading } = useVaultStore();
-  const { status, hostedVaults, isLoading: isServerLoading, error, refresh, loadHostedVaults } = useServerStore();
+  const { status, hostedVaults, isLoading: isServerLoading, error, refresh, loadHostedVaults, createHostedVault } = useServerStore();
   const { openSettings } = useUiStore();
+  const [creatingHosted, setCreatingHosted] = useState(false);
+  const [hostedName, setHostedName] = useState('');
+  const [hostedBusy, setHostedBusy] = useState(false);
   const activeHostedVaults = hostedVaults.filter((vault) => vault.status === 'active');
   const localRecentVaults = recentVaults.filter((vault) => vaultKind(vault) === 'local').slice(0, 5);
 
@@ -30,6 +34,22 @@ export default function VaultPicker() {
       await openHostedVault(hostedVaultMeta(status.serverUrl, hosted));
     } catch (reason) {
       toast.error(`Failed to open hosted vault: ${reason}`);
+    }
+  };
+
+  const handleCreateHosted = async () => {
+    const name = hostedName.trim();
+    if (!name || !status?.serverUrl) return;
+    setHostedBusy(true);
+    try {
+      const created = await createHostedVault(name);
+      setHostedName('');
+      setCreatingHosted(false);
+      await openHostedVault(hostedVaultMeta(status.serverUrl, created));
+    } catch (reason) {
+      toast.error(`Failed to create hosted vault: ${reason}`);
+    } finally {
+      setHostedBusy(false);
     }
   };
 
@@ -121,17 +141,47 @@ export default function VaultPicker() {
                   <p className="truncate text-xs font-medium">{status.user?.displayName}</p>
                   <p className="truncate text-[10px] text-muted-foreground">{status.serverUrl}</p>
                 </div>
-                <Button
-                  size="icon"
-                  variant="ghost"
-                  className="size-7"
-                  disabled={isServerLoading}
-                  onClick={() => loadHostedVaults().catch((reason) => toast.error(String(reason)))}
-                  title="Refresh hosted vaults"
-                >
-                  <RefreshCw size={12} className={isServerLoading ? 'animate-spin' : undefined} />
-                </Button>
+                <div className="flex items-center gap-1">
+                  <Button
+                    size="icon"
+                    variant="ghost"
+                    className="size-7"
+                    onClick={() => setCreatingHosted((value) => !value)}
+                    title="New hosted vault"
+                  >
+                    <Plus size={13} />
+                  </Button>
+                  <Button
+                    size="icon"
+                    variant="ghost"
+                    className="size-7"
+                    disabled={isServerLoading}
+                    onClick={() => loadHostedVaults().catch((reason) => toast.error(String(reason)))}
+                    title="Refresh hosted vaults"
+                  >
+                    <RefreshCw size={12} className={isServerLoading ? 'animate-spin' : undefined} />
+                  </Button>
+                </div>
               </div>
+              {creatingHosted && (
+                <div className="flex items-center gap-2 rounded-lg border border-border/40 bg-card/30 px-2 py-2">
+                  <Input
+                    autoFocus
+                    value={hostedName}
+                    onChange={(e) => setHostedName(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') handleCreateHosted();
+                      if (e.key === 'Escape') { setCreatingHosted(false); setHostedName(''); }
+                    }}
+                    placeholder="New hosted vault name"
+                    className="h-7 text-sm"
+                  />
+                  <Button size="sm" className="h-7 gap-1 text-xs" disabled={hostedBusy || !hostedName.trim()} onClick={handleCreateHosted}>
+                    <Check size={12} />
+                    {hostedBusy ? 'Creating…' : 'Create'}
+                  </Button>
+                </div>
+              )}
               {activeHostedVaults.map((vault) => (
                 <button
                   key={vault.id}

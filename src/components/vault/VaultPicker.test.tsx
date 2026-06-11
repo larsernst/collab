@@ -29,6 +29,7 @@ const hostedVault = {
 
 describe('VaultPicker hosted vaults', () => {
   const openHostedVault = vi.fn(async () => {});
+  const createHostedVault = vi.fn(async () => hostedVault);
   const openSettings = vi.fn();
 
   beforeEach(() => {
@@ -54,6 +55,7 @@ describe('VaultPicker hosted vaults', () => {
       error: null,
       refresh: vi.fn(async () => {}),
       loadHostedVaults: vi.fn(async () => {}),
+      createHostedVault,
     });
     useUiStore.setState({ openSettings });
   });
@@ -68,6 +70,19 @@ describe('VaultPicker hosted vaults', () => {
       serverUrl: 'https://collab.example.test',
       role: 'editor',
       path: 'hosted://vault-1',
+    })));
+  });
+
+  it('creates a hosted vault and opens it', async () => {
+    render(<VaultPicker />);
+    fireEvent.click(screen.getByTitle('New hosted vault'));
+    fireEvent.change(screen.getByPlaceholderText('New hosted vault name'), { target: { value: 'Fresh Vault' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Create' }));
+
+    await waitFor(() => expect(createHostedVault).toHaveBeenCalledWith('Fresh Vault'));
+    await waitFor(() => expect(openHostedVault).toHaveBeenCalledWith(expect.objectContaining({
+      kind: 'hosted',
+      hostedVaultId: 'vault-1',
     })));
   });
 

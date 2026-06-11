@@ -123,6 +123,13 @@ export function useImageDocumentSession({
   setSaveIntent,
   setSaving,
 }: UseImageDocumentSessionOptions) {
+  // Additive overlays and edited-image saves are stored on the local filesystem
+  // (sidecars / overwritten files). Hosted vaults have no such endpoint, so image
+  // editing persistence is disabled for them; the image still opens read-only.
+  const supportsImageEditing = useMemo(
+    () => (vault ? createVaultClient(vault).capabilities.nativeFilesystem : false),
+    [vault],
+  );
   const overlaySignature = useMemo(() => getOverlaySignature(overlayDoc), [overlayDoc]);
   const overlayDirty = overlayLoaded && overlaySignature !== persistedOverlaySignature;
   const permanentDirty = useMemo(() => isPermanentDirty(permanentEdits), [permanentEdits]);
@@ -166,6 +173,13 @@ export function useImageDocumentSession({
       })
       .then(async (loaded) => {
         if (!vault || !relativePath || cancelled) return;
+        // Hosted vaults cannot persist overlay sidecars; start from an empty overlay.
+        if (!supportsImageEditing) {
+          setOverlayDoc(createEmptyOverlayDocument(loaded?.decodedDimensions ?? EMPTY_SIZE));
+          setPersistedOverlaySignature('');
+          setOverlayLoaded(true);
+          return;
+        }
         try {
           const overlayContent = await tauriCommands.readImageOverlay(vault.path, relativePath);
           if (cancelled) return;
@@ -231,6 +245,7 @@ export function useImageDocumentSession({
     setSrc,
     setTextInteraction,
     setZoomPercent,
+    supportsImageEditing,
     vault,
   ]);
 
@@ -261,6 +276,8 @@ export function useImageDocumentSession({
 
   useEffect(() => {
     if (!vault || !relativePath || !overlayLoaded || !overlayDoc) return;
+    // Hosted vaults cannot persist overlay sidecars; keep edits in-memory only.
+    if (!supportsImageEditing) return;
 
     const timeout = window.setTimeout(async () => {
       try {
@@ -278,7 +295,7 @@ export function useImageDocumentSession({
     }, 450);
 
     return () => window.clearTimeout(timeout);
-  }, [overlayDoc, overlayLoaded, relativePath, setPersistedOverlaySignature, vault]);
+  }, [overlayDoc, overlayLoaded, relativePath, setPersistedOverlaySignature, supportsImageEditing, vault]);
 
   useEffect(() => {
     if (mode !== 'permanent' || !image || !previewCanvasRef.current) return;
@@ -301,6 +318,10 @@ export function useImageDocumentSession({
 
   const saveImageOutput = useCallback(async (overwrite: boolean) => {
     if (!vault || !relativePath || !image || !saveIntent) return;
+    if (!supportsImageEditing) {
+      toast.error('Saving edited images is not yet supported for hosted vaults.');
+      return;
+    }
 
     const renderCanvas = saveIntent === 'flatten'
       ? (() => {
@@ -396,6 +417,7 @@ export function useImageDocumentSession({
     setSaving,
     setSelectedItemId,
     setSrc,
+    supportsImageEditing,
     vault,
   ]);
 

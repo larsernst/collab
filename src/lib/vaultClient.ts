@@ -1,5 +1,5 @@
 import type { SnapshotMeta } from '../types/collab';
-import type { SearchResult } from '../types/note';
+import type { NoteMetadata, SearchResult } from '../types/note';
 import type {
   ConflictInfo,
   FileReference,
@@ -95,6 +95,13 @@ export interface VaultClient {
   readonly runtime: VaultRuntimeCapabilities;
 
   listFiles(): Promise<NoteFile[]>;
+  /**
+   * Note metadata index used for wikilinks, backlinks, graph, and search.
+   * Local vaults build a full content-derived index on disk; hosted vaults
+   * derive a lightweight path/title index from the manifest (content-derived
+   * fields such as wikilinks/tags/wordCount are not populated for hosted).
+   */
+  buildNoteIndex(): Promise<NoteMetadata[]>;
   readDocument(relativePath: string): Promise<VaultDocument>;
   writeDocument(
     relativePath: string,
@@ -320,6 +327,15 @@ export class HostedVaultClient implements VaultClient {
           this.request<void>('DELETE', `/members/${encodeURIComponent(userId)}`).then(() => {}),
       },
     };
+    // Hosted ZIP export is server-authorized as a vault-admin operation; only
+    // expose the capability to admins so non-admins never see an export action
+    // that the server would reject.
+    if (this.vault.role === 'admin') {
+      this.runtime.archiveExport = {
+        exportTo: (destinationPath) =>
+          tauriCommands.hostedVaultExportZip(this.vault.serverUrl, this.vault.hostedVaultId, destinationPath),
+      };
+    }
   }
 
   get id() {
@@ -353,6 +369,29 @@ export class HostedVaultClient implements VaultClient {
 
   listFiles() {
     return this.request<HostedFileEntry[]>('GET', '/files').then(buildFileTree);
+  }
+
+  async buildNoteIndex(): Promise<NoteMetadata[]> {
+    // Hosted vaults derive a lightweight index from the manifest. Content-derived
+    // fields (wikilinks, tags, word count) are not populated here; hosted full-text
+    // search is served separately by the server search endpoint.
+    const entries = await this.request<HostedFileEntry[]>('GET', '/files');
+    return entries
+      .filter(
+        (entry) =>
+          entry.state === 'active' &&
+          entry.kind === 'document' &&
+          extension(entry.name) === 'md',
+      )
+      .map((entry) => ({
+        relativePath: entry.relativePath,
+        title: entry.name.replace(/\.md$/i, ''),
+        tags: [],
+        wikilinksOut: [],
+        modifiedAt: timestamp(entry.updatedAt),
+        wordCount: 0,
+        hash: entry.currentRevision?.contentHash ?? '',
+      }));
   }
 
   async readDocument(relativePath: string): Promise<VaultDocument> {
@@ -742,6 +781,10 @@ export class LocalVaultClient implements VaultClient {
 
   listFiles() {
     return tauriCommands.listVaultFiles(this.vault.path);
+  }
+
+  buildNoteIndex() {
+    return tauriCommands.buildNoteIndex(this.vault.path);
   }
 
   async readDocument(relativePath: string): Promise<VaultDocument> {

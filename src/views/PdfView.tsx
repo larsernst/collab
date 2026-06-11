@@ -613,6 +613,12 @@ interface Props {
 
 export default function PdfView({ relativePath }: Props) {
   const { vault, fileTree } = useVaultStore();
+  // PDF workspace sidecars live on the local filesystem under .collab/pdf/; hosted
+  // vaults have no sidecar endpoint, so viewer state is in-memory only there.
+  const supportsSidecars = useMemo(
+    () => (vault ? createVaultClient(vault).capabilities.nativeFilesystem : false),
+    [vault],
+  );
   const {
     openTabs,
     activeTabPath,
@@ -709,7 +715,9 @@ export default function PdfView({ relativePath }: Props) {
 
     void Promise.all([
       createVaultClient(vault).readAssetDataUrl(relativePath),
-      tauriCommands.readPdfSidecarState(vault.path, relativePath).catch(() => EMPTY_PDF_STATE),
+      supportsSidecars
+        ? tauriCommands.readPdfSidecarState(vault.path, relativePath).catch(() => EMPTY_PDF_STATE)
+        : Promise.resolve(EMPTY_PDF_STATE),
     ])
       .then(async ([dataUrl, sidecar]) => {
         const data = dataUrlToUint8Array(dataUrl);
@@ -763,10 +771,10 @@ export default function PdfView({ relativePath }: Props) {
     return () => {
       cancelled = true;
     };
-  }, [relativePath, vault]);
+  }, [relativePath, supportsSidecars, vault]);
 
   useEffect(() => {
-    if (!vault || !relativePath || !sidecarLoaded) return;
+    if (!vault || !relativePath || !sidecarLoaded || !supportsSidecars) return;
     latestViewerStateRef.current = buildPdfViewerState({
       pageNumber,
       zoomMode,
@@ -788,7 +796,7 @@ export default function PdfView({ relativePath }: Props) {
         viewerState: latestViewerStateRef.current,
       }).catch(() => {});
     };
-  }, [bookmarksOpen, layoutMode, pageNumber, pdfState, relativePath, rotation, sidecarLoaded, vault, zoom, zoomMode]);
+  }, [bookmarksOpen, layoutMode, pageNumber, pdfState, relativePath, rotation, sidecarLoaded, supportsSidecars, vault, zoom, zoomMode]);
 
   const activePageSize = pageSizes[pageNumber] ?? pageSizes[1] ?? null;
   const rotatedPageSize = useMemo(

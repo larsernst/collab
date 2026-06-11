@@ -107,6 +107,12 @@ export default function BoardsPanel({ kind }: Props) {
   const [templateBoard, setTemplateBoard] = useState<NoteFile | null>(null);
 
   const boards = collectByExtension(fileTree, kind);
+  // Kanban templates are stored/materialized through local-filesystem commands;
+  // gate the whole templates feature for hosted vaults, which have no endpoint.
+  const supportsLocalTemplates = useMemo(
+    () => (vault ? createVaultClient(vault).capabilities.nativeFilesystem : false),
+    [vault],
+  );
 
   const Icon = kind === 'canvas' ? Layout : LayoutDashboard;
   const label = kind === 'canvas' ? 'Canvas' : 'Kanban';
@@ -256,7 +262,7 @@ export default function BoardsPanel({ kind }: Props) {
 
   return (
     <div className="flex flex-col h-full overflow-hidden">
-      {vault && kind === 'kanban' && (
+      {vault && kind === 'kanban' && supportsLocalTemplates && (
         <KanbanTemplatesModal
           open={templatesOpen}
           vaultPath={vault.path}
@@ -405,7 +411,7 @@ export default function BoardsPanel({ kind }: Props) {
           {label} Boards
         </span>
         <div className="flex items-center gap-1">
-          {kind === 'kanban' && (
+          {kind === 'kanban' && supportsLocalTemplates && (
             <Tooltip>
               <TooltipTrigger asChild>
                 <Button

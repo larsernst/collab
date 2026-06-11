@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import './App.css';
 import { TooltipProvider } from './components/ui/tooltip';
 import { useVaultStore } from './store/vaultStore';
+import { useServerStore } from './store/serverStore';
 import { useEditorStore } from './store/editorStore';
 import { useUiStore, ACCENT_COLORS, INTERFACE_FONTS } from './store/uiStore';
 import VaultPicker from './components/vault/VaultPicker';
@@ -271,6 +272,19 @@ export default function App() {
     if (sessionVaultPath && sessionVaultPath !== lastOpenedVaultPath) return;
     openVault(lastOpenedVaultPath).catch(() => {});
   }, [restorePreviousSession, vault, isVaultLocked, lastOpenedVaultPath, sessionVaultPath, openVault]);
+
+  // Automatically restore a previously connected hosted-server session at startup
+  // using the OS-stored refresh token. If it cannot be restored, prompt the user
+  // to reconnect manually rather than silently failing.
+  useEffect(() => {
+    useServerStore.getState().restoreSession().then((result) => {
+      if (result === 'failed') {
+        toast.error('Could not restore your hosted server session. Reconnect from Settings → Hosted server.', {
+          duration: 6000,
+        });
+      }
+    });
+  }, []);
 
   useEffect(() => {
     const handleExportRequest = (event: Event) => {

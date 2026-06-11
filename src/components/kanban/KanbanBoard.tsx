@@ -43,6 +43,7 @@ import { useCollabStore } from '../../store/collabStore';
 import { useKanbanStore } from '../../store/kanbanStore';
 import { formatDate, useUiStore } from '../../store/uiStore';
 import { useVaultStore } from '../../store/vaultStore';
+import { createVaultClient } from '../../lib/vaultClient';
 import { tauriCommands } from '../../lib/tauri';
 import KanbanColumnView from './KanbanColumn';
 import KanbanCardView from './KanbanCard';
@@ -536,6 +537,14 @@ function ArchiveView({ onOpenCard }: { onOpenCard: (card: KanbanCard, columnId: 
 export default function KanbanBoardView() {
   const { board, updateBoard, relativePath, knownUsers } = useKanbanContext();
   const { vault } = useVaultStore();
+  // Vault-scoped filter/automation presets live on the local filesystem under
+  // .collab/templates/. Hosted vaults have no such endpoint, so only app-scoped
+  // presets are available there (a null vault path targets app scope, like snippets).
+  const supportsLocalTemplates = useMemo(
+    () => (vault ? createVaultClient(vault).capabilities.nativeFilesystem : false),
+    [vault],
+  );
+  const templateVaultPath = supportsLocalTemplates && vault ? vault.path : null;
   const { peers } = useCollabStore();
   const { boardPath, cardId: editingCardId, columnId: editingColumnId, clearEditing, setEditing } = useKanbanStore();
   const boardViewportRef = useRef<HTMLDivElement | null>(null);
@@ -990,17 +999,21 @@ export default function KanbanBoardView() {
     }
 
     if (!vault) return;
-    tauriCommands.saveKanbanFilterPreset(vault.path, saveFilterSource, name, workingFilter)
+    if (saveFilterSource === 'vault' && !supportsLocalTemplates) {
+      toast.error('Vault-scoped presets are not available for hosted vaults. Use an app preset instead.');
+      return;
+    }
+    tauriCommands.saveKanbanFilterPreset(templateVaultPath, saveFilterSource, name, workingFilter)
       .then(async () => {
         setSaveFilterName('');
-        const next = await tauriCommands.listKanbanFilterPresets(vault.path);
+        const next = await tauriCommands.listKanbanFilterPresets(templateVaultPath);
         setFilterPresets(next);
         toast.success(`Saved ${saveFilterSource} filter preset "${name}"`);
       })
       .catch((error) => {
         toast.error(`Failed to save filter preset: ${error}`);
       });
-  }, [saveFilterName, saveFilterSource, updateBoard, vault, workingFilter]);
+  }, [saveFilterName, saveFilterSource, supportsLocalTemplates, templateVaultPath, updateBoard, vault, workingFilter]);
 
   const runAutomationsNow = useCallback(() => {
     updateBoard((prev) => runKanbanAutomations(prev, 'manual'));
@@ -1050,10 +1063,14 @@ export default function KanbanBoardView() {
 
   const saveAutomationPreset = useCallback((rule: KanbanAutomationRule, source: Extract<TemplateSource, 'vault' | 'app'>) => {
     if (!vault) return;
+    if (source === 'vault' && !supportsLocalTemplates) {
+      toast.error('Vault-scoped presets are not available for hosted vaults. Use an app preset instead.');
+      return;
+    }
     const presetName = automationPresetName.trim() || rule.name;
-    tauriCommands.saveKanbanAutomationPreset(vault.path, source, presetName, rule)
+    tauriCommands.saveKanbanAutomationPreset(templateVaultPath, source, presetName, rule)
       .then(async () => {
-        const next = await tauriCommands.listKanbanAutomationPresets(vault.path);
+        const next = await tauriCommands.listKanbanAutomationPresets(templateVaultPath);
         setAutomationPresets(next);
         setAutomationPresetName('');
         toast.success(`Saved ${source} automation preset "${presetName}"`);
@@ -1061,21 +1078,21 @@ export default function KanbanBoardView() {
       .catch((error) => {
         toast.error(`Failed to save automation preset: ${error}`);
       });
-  }, [automationPresetName, vault]);
+  }, [automationPresetName, supportsLocalTemplates, templateVaultPath, vault]);
 
   useEffect(() => {
     if (!filterDialogOpen || !vault) return;
-    tauriCommands.listKanbanFilterPresets(vault.path)
+    tauriCommands.listKanbanFilterPresets(templateVaultPath)
       .then(setFilterPresets)
       .catch(() => {});
-  }, [filterDialogOpen, vault]);
+  }, [filterDialogOpen, templateVaultPath, vault]);
 
   useEffect(() => {
     if (!automationDialogOpen || !vault) return;
-    tauriCommands.listKanbanAutomationPresets(vault.path)
+    tauriCommands.listKanbanAutomationPresets(templateVaultPath)
       .then(setAutomationPresets)
       .catch(() => {});
-  }, [automationDialogOpen, vault]);
+  }, [automationDialogOpen, templateVaultPath, vault]);
 
   return (
     <div className="flex flex-col h-full overflow-hidden">
@@ -1519,7 +1536,7 @@ export default function KanbanBoardView() {
                   </SelectTrigger>
                   <SelectContent>
                     <SelectItem value="board" className="text-xs">Board</SelectItem>
-                    <SelectItem value="vault" className="text-xs">Vault</SelectItem>
+                    {supportsLocalTemplates && <SelectItem value="vault" className="text-xs">Vault</SelectItem>}
                     <SelectItem value="app" className="text-xs">App</SelectItem>
                   </SelectContent>
                 </Select>
@@ -1790,9 +1807,11 @@ export default function KanbanBoardView() {
                           placeholder="Preset name"
                           className="h-8 max-w-[180px] text-xs"
                         />
-                        <Button type="button" variant="outline" size="sm" onClick={() => saveAutomationPreset(rule, 'vault')}>
-                          Save to vault
-                        </Button>
+                        {supportsLocalTemplates && (
+                          <Button type="button" variant="outline" size="sm" onClick={() => saveAutomationPreset(rule, 'vault')}>
+                            Save to vault
+                          </Button>
+                        )}
                         <Button type="button" variant="outline" size="sm" onClick={() => saveAutomationPreset(rule, 'app')}>
                           Save to app
                         </Button>

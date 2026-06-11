@@ -5,7 +5,7 @@ import Sidebar from './Sidebar';
 import TabBar from './TabBar';
 import StatusBar from './StatusBar';
 import { useVaultStore, useEditorStore, useNoteIndexStore, useUiStore } from '../../store';
-import { tauriCommands } from '../../lib/tauri';
+import { createVaultClient } from '../../lib/vaultClient';
 import NoteView from '../../views/NoteView';
 import ImageView from '../../views/ImageView';
 import PdfView from '../../views/PdfView';
@@ -78,8 +78,9 @@ export default function AppShell() {
   useEffect(() => {
     if (!vault) return;
     setIndexing(true);
-    tauriCommands.buildNoteIndex(vault.path)
+    createVaultClient(vault).buildNoteIndex()
       .then(setNotes)
+      .catch(() => {})
       .finally(() => setIndexing(false));
   }, [vault?.path]);
 
@@ -96,7 +97,7 @@ export default function AppShell() {
           // Refresh tree so new/deleted files from other clients appear immediately.
           // Also rebuild the index for wikilink/search updates.
           await refreshFileTree();
-          setNotes(await tauriCommands.buildNoteIndex(vault.path));
+          setNotes(await createVaultClient(vault).buildNoteIndex());
         } catch {}
       });
       unsubs.push(u1, u2, u3, u4);

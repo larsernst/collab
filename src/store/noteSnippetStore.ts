@@ -19,6 +19,15 @@ export const useNoteSnippetStore = create<NoteSnippetState>((set) => ({
     try {
       const snippets = await tauriCommands.listNoteSnippets(vaultPath ?? null);
       set({ snippets });
+    } catch (error) {
+      // Hosted vaults intentionally request app-scoped snippets without a
+      // filesystem path. Older native backends rejected that app-only listing
+      // while trying to resolve the unavailable vault scope.
+      if (vaultPath == null && String(error).includes('Vault path is required for vault note snippets')) {
+        set({ snippets: [] });
+        return;
+      }
+      throw error;
     } finally {
       set({ isLoading: false });
     }

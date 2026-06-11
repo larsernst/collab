@@ -232,6 +232,23 @@ describe('HostedVaultClient', () => {
     ]);
   });
 
+  it('derives a lightweight note index from the manifest documents', async () => {
+    vi.mocked(tauriCommands.hostedVaultRequest).mockResolvedValue([rootFolder, hostedDocument]);
+    const client = new HostedVaultClient(hostedVault);
+
+    await expect(client.buildNoteIndex()).resolves.toEqual([
+      {
+        relativePath: 'Notes/Test.md',
+        title: 'Test',
+        tags: [],
+        wikilinksOut: [],
+        modifiedAt: expect.any(Number),
+        wordCount: 0,
+        hash: 'hash-3',
+      },
+    ]);
+  });
+
   it('maps hosted revision sequences to opaque document versions', async () => {
     vi.mocked(tauriCommands.hostedVaultRequest)
       .mockResolvedValueOnce(mockHostedManifest())
@@ -693,12 +710,18 @@ describe('VaultClient adapter contract parity', () => {
 
     expect(hosted.runtime.watch).toBeUndefined();
     expect(hosted.runtime.encryption).toBeUndefined();
-    expect(hosted.runtime.archiveExport).toBeUndefined();
     expect(hosted.runtime.members).toBeDefined();
 
     // External asset import is available in both modes.
     expect(local.runtime.externalAssetImport).toBeDefined();
     expect(hosted.runtime.externalAssetImport).toBeDefined();
+  });
+
+  it('exposes hosted ZIP export only to vault admins', () => {
+    // The editor fixture is not an admin, so server-authorized export is hidden.
+    expect(hosted.runtime.archiveExport).toBeUndefined();
+    const adminHosted = new HostedVaultClient({ ...hostedVault, role: 'admin' });
+    expect(adminHosted.runtime.archiveExport).toBeDefined();
   });
 
   it('keeps the published capability constants aligned with adapter instances', () => {

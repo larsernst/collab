@@ -3,6 +3,7 @@ import { Plus, Save, Trash2 } from 'lucide-react';
 import { toast } from 'sonner';
 
 import { useVaultStore } from '../../store/vaultStore';
+import { createVaultClient } from '../../lib/vaultClient';
 import { useNoteSnippetStore } from '../../store/noteSnippetStore';
 import type { NoteSnippetDraft, NoteSnippetScope } from '../../types/noteSnippet';
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '../ui/dialog';
@@ -29,14 +30,19 @@ function createEmptyDraft(scope: NoteSnippetScope): NoteSnippetDraft {
 
 export function NoteSnippetsDialog({ open, onOpenChange, onInsert }: Props) {
   const { vault } = useVaultStore();
+  // Vault-scoped snippets live on the local filesystem; hosted vaults only have
+  // app-scoped snippets (a null vault path targets app scope).
+  const supportsLocalSnippets = vault ? createVaultClient(vault).capabilities.nativeFilesystem : false;
+  const snippetVaultPath = supportsLocalSnippets && vault ? vault.path : null;
   const { snippets, loadSnippets, saveSnippet, deleteSnippet, isLoading } = useNoteSnippetStore();
   const [selectedId, setSelectedId] = useState<string | null>(null);
-  const [draft, setDraft] = useState<NoteSnippetDraft>(createEmptyDraft('vault'));
+  const [draft, setDraft] = useState<NoteSnippetDraft>(createEmptyDraft(supportsLocalSnippets ? 'vault' : 'app'));
+  const scopeOptions: NoteSnippetScope[] = supportsLocalSnippets ? ['vault', 'app'] : ['app'];
 
   useEffect(() => {
     if (!open || !vault) return;
-    void loadSnippets(vault.path);
-  }, [loadSnippets, open, vault?.path]);
+    void loadSnippets(snippetVaultPath);
+  }, [loadSnippets, open, snippetVaultPath, vault]);
 
   const selectedSnippet = useMemo(
     () => snippets.find((entry) => entry.id === selectedId) ?? null,
@@ -62,8 +68,9 @@ export function NoteSnippetsDialog({ open, onOpenChange, onInsert }: Props) {
 
   const handleSave = async () => {
     if (!vault || !draft.name.trim() || !draft.body.trim()) return;
+    const effectiveDraft = supportsLocalSnippets ? draft : { ...draft, scope: 'app' as const };
     try {
-      const saved = await saveSnippet(vault.path, draft);
+      const saved = await saveSnippet(snippetVaultPath, effectiveDraft);
       setSelectedId(saved.id);
       setDraft({
         id: saved.id,
@@ -82,7 +89,7 @@ export function NoteSnippetsDialog({ open, onOpenChange, onInsert }: Props) {
   const handleDelete = async () => {
     if (!vault || !selectedSnippet) return;
     try {
-      await deleteSnippet(vault.path, selectedSnippet);
+      await deleteSnippet(snippetVaultPath, selectedSnippet);
       resetDraft(selectedSnippet.scope);
       toast.success(`Deleted snippet "${selectedSnippet.name}"`);
     } catch (error) {
@@ -201,7 +208,7 @@ export function NoteSnippetsDialog({ open, onOpenChange, onInsert }: Props) {
               <div className="space-y-1.5">
                 <span className="text-xs font-medium text-muted-foreground">Scope</span>
                 <div className="flex gap-2">
-                  {(['vault', 'app'] as const).map((scope) => (
+                  {scopeOptions.map((scope) => (
                     <button
                       key={scope}
                       type="button"

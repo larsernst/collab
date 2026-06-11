@@ -16,6 +16,7 @@ const tauriMocks = vi.hoisted(() => ({
   createSnapshot: vi.fn(),
   renameNote: vi.fn(),
   listNoteSnippets: vi.fn(async () => []),
+  hostedVaultRequest: vi.fn(),
 }));
 
 vi.mock('@tauri-apps/api/event', () => ({
@@ -38,6 +39,7 @@ vi.mock('../lib/tauri', () => ({
     createSnapshot: tauriMocks.createSnapshot,
     renameNote: tauriMocks.renameNote,
     listNoteSnippets: tauriMocks.listNoteSnippets,
+    hostedVaultRequest: tauriMocks.hostedVaultRequest,
   },
 }));
 
@@ -163,5 +165,51 @@ describe('NoteView external reload behavior', () => {
 
     expect(tauriMocks.readNote).toHaveBeenCalledTimes(1);
     expect(useEditorStore.getState().openTabs[0]?.isDirty).toBe(true);
+  });
+
+  it('opens hosted markdown notes when app-only snippet loading hits the legacy vault-path error', async () => {
+    const hostedFile = {
+      id: 'file-1',
+      parentId: null,
+      name: 'a.md',
+      relativePath: 'Notes/a.md',
+      kind: 'document',
+      documentType: 'note',
+      state: 'active',
+      currentRevision: {
+        id: 'revision-1',
+        sequence: 1,
+        contentHash: 'hash-1',
+        sizeBytes: 11,
+        createdByDisplayName: 'Test User',
+        createdAt: '2026-06-11T08:00:00Z',
+      },
+      createdAt: '2026-06-11T08:00:00Z',
+      updatedAt: '2026-06-11T08:00:00Z',
+    };
+    useVaultStore.setState({
+      vault: {
+        kind: 'hosted',
+        id: 'hosted-vault',
+        hostedVaultId: 'hosted-vault',
+        serverUrl: 'https://collab.example.test',
+        role: 'editor',
+        name: 'Hosted Vault',
+        path: 'hosted://hosted-vault',
+        lastOpened: Date.now(),
+        isEncrypted: false,
+      },
+    });
+    tauriMocks.hostedVaultRequest
+      .mockResolvedValueOnce({ vaultId: 'hosted-vault', sequence: 1, files: [hostedFile] })
+      .mockResolvedValueOnce({ file: hostedFile, content: 'hosted note' });
+    tauriMocks.listNoteSnippets.mockRejectedValueOnce(
+      new Error('Vault path is required for vault note snippets'),
+    );
+
+    render(<NoteView relativePath="Notes/a.md" />);
+
+    expect((await screen.findByTestId('editor-content')).textContent).toBe('hosted note');
+    expect(tauriMocks.listNoteSnippets).toHaveBeenCalledWith(null);
   });
 });

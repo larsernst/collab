@@ -90,7 +90,11 @@ export default function NoteView({ relativePath }: { relativePath: string }) {
     if (!client) return;
     // Vault-scoped snippets are a native-filesystem concept; hosted vaults fall
     // back to app-scoped snippets only.
-    void loadSnippets(client.capabilities.nativeFilesystem ? vault?.path : null);
+    void loadSnippets(client.capabilities.nativeFilesystem ? vault?.path : null)
+      .catch(() => {
+        // Snippets are an optional authoring aid and must never prevent a note
+        // from opening when their backing store is unavailable.
+      });
   }, [client, loadSnippets, vault?.path]);
 
   useEffect(() => {

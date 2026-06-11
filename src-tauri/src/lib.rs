@@ -143,6 +143,7 @@ pub fn run() {
             commands::server::hosted_vault_request,
             commands::server::hosted_vault_asset_data_url,
             commands::server::hosted_user_directory,
+            commands::server::hosted_vault_export_zip,
             // templates
             commands::templates::list_kanban_templates,
             commands::templates::save_kanban_template,

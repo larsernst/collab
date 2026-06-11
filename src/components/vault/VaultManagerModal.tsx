@@ -2,17 +2,19 @@ import { useEffect, useRef, useState } from 'react';
 import {
   Vault, FolderOpen, Plus, Download, Upload, Trash2, Pencil,
   Check, ChevronRight, Clock, ShieldCheck, Lock, LockOpen, Eye, EyeOff,
+  Server, RefreshCw,
 } from 'lucide-react';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from '../ui/dialog';
 import { Button } from '../ui/button';
 import { Input } from '../ui/input';
 import { cn } from '../../lib/utils';
 import { useVaultStore } from '../../store/vaultStore';
+import { useServerStore } from '../../store/serverStore';
 import { useUiStore } from '../../store/uiStore';
 import { tauriCommands } from '../../lib/tauri';
 import { createVaultClient, hasRuntimeCapability, requireRuntimeCapability } from '../../lib/vaultClient';
 import { HostedMembersPanel } from './HostedMembersPanel';
-import { vaultKind, type VaultKind, type VaultMeta } from '../../types/vault';
+import { hostedVaultMeta, vaultKind, type HostedVaultSummary, type VaultKind, type VaultMeta } from '../../types/vault';
 import { toast } from 'sonner';
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -210,6 +212,79 @@ function VaultRow({ meta, isCurrent, onOpen, onRemove, onExport, onRenameComplet
   );
 }
 
+// ─── Hosted Vault Row ───────────────────────────────────────────────────────
+
+function HostedVaultRow({
+  summary,
+  isCurrent,
+  onOpen,
+  onExport,
+}: {
+  summary: HostedVaultSummary;
+  isCurrent: boolean;
+  onOpen: () => void;
+  onExport?: () => void;
+}) {
+  return (
+    <div
+      className={cn(
+        'group flex w-full items-start gap-3 rounded-lg border px-3 py-3 transition-all app-motion-base',
+        isCurrent
+          ? 'border-primary/30 bg-primary/6'
+          : 'border-transparent hover:border-border/50 hover:bg-accent/30',
+      )}
+    >
+      <div className={cn(
+        'w-8 h-8 rounded-md flex items-center justify-center shrink-0 border',
+        isCurrent ? 'bg-primary/15 border-primary/25' : 'bg-primary/10 border-primary/20',
+      )}>
+        <Server size={14} className="text-primary" />
+      </div>
+
+      <div className="min-w-0 flex-1">
+        <div className="flex items-center gap-1.5">
+          <span className="text-sm font-medium text-foreground truncate">{summary.name}</span>
+          {isCurrent && (
+            <span className="text-[10px] font-medium px-1.5 py-0.5 rounded-full bg-primary/15 text-primary shrink-0">
+              current
+            </span>
+          )}
+        </div>
+        <div className="mt-0.5 flex min-w-0 items-center gap-1.5 text-[11px] text-muted-foreground">
+          <span className="shrink-0 capitalize">{summary.role}</span>
+          <span className="shrink-0 opacity-50">·</span>
+          <span className="shrink-0">{summary.members} {summary.members === 1 ? 'member' : 'members'}</span>
+          <span className="shrink-0 opacity-50">·</span>
+          <span className="min-w-0 truncate opacity-70">{summary.ownerDisplayName}</span>
+        </div>
+      </div>
+
+      {(!isCurrent || onExport) && (
+        <div className="ml-2 flex shrink-0 items-center gap-0.5 self-center border-l border-border/35 pl-3 opacity-0 transition-opacity app-motion-fast group-hover:opacity-100">
+          {!isCurrent && (
+            <button
+              onClick={onOpen}
+              title="Open hosted vault"
+              className="h-6 px-2 rounded text-[11px] font-medium text-primary hover:bg-primary/10 transition-colors app-motion-fast flex items-center gap-1"
+            >
+              Open <ChevronRight size={10} />
+            </button>
+          )}
+          {onExport && (
+            <button
+              onClick={onExport}
+              title="Export as ZIP"
+              className="w-6 h-6 flex items-center justify-center rounded text-muted-foreground hover:text-foreground hover:bg-accent/60 transition-colors app-motion-fast"
+            >
+              <Download size={12} />
+            </button>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ─── Vaults Tab ───────────────────────────────────────────────────────────────
 
 function VaultsTab({
@@ -219,16 +294,26 @@ function VaultsTab({
   onClose: () => void;
   onRequestRemove: (meta: VaultMeta) => void;
 }) {
-  const { vault, recentVaults, openVault, loadRecentVaults } = useVaultStore();
+  const { vault, recentVaults, openVault, openHostedVault, loadRecentVaults } = useVaultStore();
+  const { status, hostedVaults, isLoading: serverLoading, refresh, loadHostedVaults, createHostedVault } = useServerStore();
   const [creating, setCreating] = useState(false);
+  const [creatingHosted, setCreatingHosted] = useState(false);
+  const [hostedName, setHostedName] = useState('');
+  const [hostedBusy, setHostedBusy] = useState(false);
   const [vaults, setVaults] = useState<VaultMeta[]>(recentVaults);
 
   useEffect(() => {
     loadRecentVaults().then(() => setVaults(useVaultStore.getState().recentVaults));
+    // Pull the latest hosted inventory so connected users can open server vaults here too.
+    refresh().catch(() => {});
   }, []);
 
   // Keep local list in sync with store
   useEffect(() => { setVaults(recentVaults); }, [recentVaults]);
+
+  const localVaults = vaults.filter((meta) => vaultKind(meta) === 'local');
+  const activeHostedVaults = hostedVaults.filter((hosted) => hosted.status === 'active');
+  const isConnected = status?.connected === true && !!status.serverUrl;
 
   const handleOpen = async (path: string) => {
     try {
@@ -236,6 +321,34 @@ function VaultsTab({
       onClose();
     } catch (e) {
       toast.error('Failed to open vault: ' + e);
+    }
+  };
+
+  const handleOpenHosted = async (summary: HostedVaultSummary) => {
+    if (!status?.serverUrl) return;
+    try {
+      await openHostedVault(hostedVaultMeta(status.serverUrl, summary));
+      onClose();
+    } catch (e) {
+      toast.error('Failed to open hosted vault: ' + e);
+    }
+  };
+
+  const handleCreateHosted = async () => {
+    const name = hostedName.trim();
+    if (!name || !status?.serverUrl) return;
+    setHostedBusy(true);
+    try {
+      const created = await createHostedVault(name);
+      setHostedName('');
+      setCreatingHosted(false);
+      await openHostedVault(hostedVaultMeta(status.serverUrl, created));
+      onClose();
+      toast.success(`Created hosted vault "${created.name}"`);
+    } catch (e) {
+      toast.error('Failed to create hosted vault: ' + e);
+    } finally {
+      setHostedBusy(false);
     }
   };
 
@@ -302,14 +415,87 @@ function VaultsTab({
 
         {/* Vault list */}
         <div className="flex-1 overflow-y-auto min-h-0">
-          {vaults.length === 0 && !creating && (
+          {localVaults.length === 0 && activeHostedVaults.length === 0 && !creating && (
             <div className="flex flex-col items-center justify-center py-12 gap-2 text-muted-foreground">
               <Vault size={32} className="opacity-20" />
               <p className="text-sm">No vaults yet. Create or import one.</p>
             </div>
           )}
+
+          {/* Hosted vaults from the connected server */}
+          {isConnected && (
+            <div className="mb-4">
+              <div className="mb-2 flex items-center justify-between">
+                <span className="flex items-center gap-1.5 text-[11px] font-medium uppercase tracking-widest text-muted-foreground">
+                  <Server size={11} />
+                  Hosted · {status?.serverUrl}
+                </span>
+                <div className="flex items-center gap-0.5">
+                  <button
+                    onClick={() => setCreatingHosted((value) => !value)}
+                    title="New hosted vault"
+                    className="w-6 h-6 flex items-center justify-center rounded text-muted-foreground hover:text-foreground hover:bg-accent/60 transition-colors app-motion-fast"
+                  >
+                    <Plus size={13} />
+                  </button>
+                  <button
+                    onClick={() => loadHostedVaults().catch((reason) => toast.error(String(reason)))}
+                    title="Refresh hosted vaults"
+                    className="w-6 h-6 flex items-center justify-center rounded text-muted-foreground hover:text-foreground hover:bg-accent/60 transition-colors app-motion-fast"
+                  >
+                    <RefreshCw size={12} className={serverLoading ? 'animate-spin' : undefined} />
+                  </button>
+                </div>
+              </div>
+              {creatingHosted && (
+                <div className="mb-2 flex items-center gap-2 rounded-lg border border-border/50 bg-card/30 p-2">
+                  <Input
+                    autoFocus
+                    value={hostedName}
+                    onChange={(e) => setHostedName(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') handleCreateHosted();
+                      if (e.key === 'Escape') { setCreatingHosted(false); setHostedName(''); }
+                    }}
+                    placeholder="New hosted vault name"
+                    className="h-7 text-sm"
+                  />
+                  <Button size="sm" className="h-7 gap-1 text-xs" disabled={hostedBusy || !hostedName.trim()} onClick={handleCreateHosted}>
+                    <Check size={12} />
+                    {hostedBusy ? 'Creating…' : 'Create'}
+                  </Button>
+                </div>
+              )}
+              <div className="flex flex-col gap-2">
+                {activeHostedVaults.map((summary) => (
+                  <HostedVaultRow
+                    key={summary.id}
+                    summary={summary}
+                    isCurrent={vault?.kind === 'hosted' && vault.hostedVaultId === summary.id}
+                    onOpen={() => handleOpenHosted(summary)}
+                    onExport={
+                      summary.role === 'admin' && status?.serverUrl
+                        ? () => handleExport(hostedVaultMeta(status.serverUrl!, summary))
+                        : undefined
+                    }
+                  />
+                ))}
+                {!serverLoading && activeHostedVaults.length === 0 && (
+                  <p className="py-2 text-center text-xs text-muted-foreground">No hosted vaults available on this server.</p>
+                )}
+              </div>
+            </div>
+          )}
+
+          {/* Local vaults */}
+          {(localVaults.length > 0 || isConnected) && (
+            <div className="mb-2 flex items-center gap-1.5 text-[11px] font-medium uppercase tracking-widest text-muted-foreground">
+              <Clock size={11} />
+              Local
+            </div>
+          )}
           <div className="flex flex-col gap-2">
-            {vaults.map((meta) => {
+            {localVaults.map((meta) => {
               const client = createVaultClient(meta);
               return (
                 <VaultRow

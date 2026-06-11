@@ -289,6 +289,8 @@ export const tauriCommands = {
     invoke<string>('hosted_vault_asset_data_url', { serverUrl, vaultId, fileId }),
   hostedUserDirectory: (serverUrl: string, query: string) =>
     invoke<UserDirectoryEntry[]>('hosted_user_directory', { serverUrl, query }),
+  hostedVaultExportZip: (serverUrl: string, vaultId: string, destinationPath: string) =>
+    invoke<void>('hosted_vault_export_zip', { serverUrl, vaultId, destinationPath }),
 
   // Update
   checkForUpdate: () => invoke<UpdateInfo>('check_for_update'),
