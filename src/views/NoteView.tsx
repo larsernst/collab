@@ -4,6 +4,7 @@ import { useVaultStore } from '../store/vaultStore';
 import { useEditorStore } from '../store/editorStore';
 import type { NoteEditorViewState } from '../store/editorStore';
 import { useCollabStore } from '../store/collabStore';
+import { useCollabIdentity } from '../lib/collabIdentity';
 import { MarkdownEditor, type MarkdownEditorHandle } from '../components/editor/MarkdownEditor';
 import { EditorToolbar } from '../components/editor/EditorToolbar';
 import { toast } from 'sonner';
@@ -50,7 +51,10 @@ export default function NoteView({ relativePath }: { relativePath: string }) {
   const pendingSearchJump = useEditorStore((state) => state.pendingSearchJump);
   const setPendingSearchJump = useEditorStore((state) => state.setPendingSearchJump);
   const setNoteViewState = useEditorStore((state) => state.setNoteViewState);
-  const { addConflict, myUserId, myUserName } = useCollabStore();
+  const { addConflict } = useCollabStore();
+  // Snapshot authorship follows the effective identity: server-authoritative for
+  // hosted vaults, local client identity otherwise.
+  const { userId: myUserId, userName: myUserName } = useCollabIdentity();
   const [content, setContent] = useState<string | null>(null);
   const {
     webPreviewsEnabled,

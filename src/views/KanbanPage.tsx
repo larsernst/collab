@@ -4,6 +4,7 @@ import { LayoutDashboard } from 'lucide-react';
 import { createVaultClient } from '../lib/vaultClient';
 import { useVaultStore } from '../store/vaultStore';
 import { useCollabStore } from '../store/collabStore';
+import { useCollabIdentity } from '../lib/collabIdentity';
 import { normalizeKanbanBoard, runKanbanAutomations, type KanbanBoard } from '../types/kanban';
 import type { KnownUser } from '../types/vault';
 import KanbanBoardView from '../components/kanban/KanbanBoard';
@@ -46,7 +47,9 @@ export default function KanbanPage({ relativePath }: { relativePath: string | nu
   const { vault } = useVaultStore();
   const client = useMemo(() => (vault ? createVaultClient(vault) : null), [vault]);
   const { markDirty, markSaved, setSavedHash } = useEditorStore();
-  const { peers, addConflict, myUserId, myUserName } = useCollabStore();
+  const { peers, addConflict } = useCollabStore();
+  // Snapshot authorship follows the effective identity (server-authoritative for hosted).
+  const { userId: myUserId, userName: myUserName } = useCollabIdentity();
   const collabTransport = useCollabContext();
   const [board, setBoard]           = useState<KanbanBoard>({ columns: [] });
   const [knownUsers, setKnownUsers] = useState<KnownUser[]>([]);

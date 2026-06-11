@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { tauriCommands } from '../lib/tauri';
-import { useServerStore } from './serverStore';
+import { useServerStore, isServerSessionExpired } from './serverStore';
 
 vi.mock('../lib/tauri', () => ({
   tauriCommands: {
@@ -63,5 +63,27 @@ describe('serverStore', () => {
 
     expect(useServerStore.getState().status?.connected).toBe(false);
     expect(useServerStore.getState().hostedVaults).toEqual([]);
+  });
+});
+
+describe('isServerSessionExpired', () => {
+  const now = Date.parse('2026-06-11T10:00:00Z');
+
+  it('returns false when disconnected', () => {
+    expect(isServerSessionExpired(null, now)).toBe(false);
+    expect(isServerSessionExpired({ ...connected, connected: false }, now)).toBe(false);
+  });
+
+  it('returns false when the token is still valid', () => {
+    expect(isServerSessionExpired({ ...connected, accessExpiresAt: '2026-06-11T12:00:00Z' }, now)).toBe(false);
+  });
+
+  it('returns true when the token has expired', () => {
+    expect(isServerSessionExpired({ ...connected, accessExpiresAt: '2026-06-11T09:00:00Z' }, now)).toBe(true);
+  });
+
+  it('returns false when the expiry timestamp is absent or unparseable', () => {
+    expect(isServerSessionExpired({ ...connected, accessExpiresAt: null }, now)).toBe(false);
+    expect(isServerSessionExpired({ ...connected, accessExpiresAt: 'not-a-date' }, now)).toBe(false);
   });
 });

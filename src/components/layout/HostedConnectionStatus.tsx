@@ -1,0 +1,82 @@
+import { useEffect, useState } from 'react';
+import { toast } from 'sonner';
+import { Cloud, CloudOff, RefreshCw } from 'lucide-react';
+import { useVaultStore } from '../../store/vaultStore';
+import { useServerStore, isServerSessionExpired } from '../../store/serverStore';
+import { vaultKind } from '../../types/vault';
+import { cn } from '../../lib/utils';
+
+const ALLOW_INVALID_CERTIFICATES_KEY = 'collab-hosted-allow-invalid-certificates';
+
+type ConnectionState = 'online' | 'expired' | 'offline';
+
+/**
+ * Live connection-health indicator for the open hosted vault. Hidden for local
+ * vaults. Surfaces token expiry and lost server sessions and offers an inline
+ * reconnect that restores the session from the OS-stored refresh token.
+ */
+export default function HostedConnectionStatus() {
+  const vault = useVaultStore((state) => state.vault);
+  const status = useServerStore((state) => state.status);
+  const reconnect = useServerStore((state) => state.reconnect);
+  const [busy, setBusy] = useState(false);
+  // Re-evaluate time-based expiry periodically since it does not emit a store change.
+  const [, setTick] = useState(0);
+
+  const isHosted = vault != null && vaultKind(vault) === 'hosted';
+  useEffect(() => {
+    if (!isHosted) return;
+    const interval = setInterval(() => setTick((value) => value + 1), 15000);
+    return () => clearInterval(interval);
+  }, [isHosted]);
+
+  if (!vault || vault.kind !== 'hosted') return null;
+
+  const onExpectedServer = status?.connected === true && status.serverUrl === vault.serverUrl;
+  let state: ConnectionState = 'offline';
+  if (onExpectedServer) {
+    state = isServerSessionExpired(status) ? 'expired' : 'online';
+  }
+
+  const handleReconnect = async () => {
+    setBusy(true);
+    try {
+      const allowInvalidCertificates =
+        status?.allowInvalidCertificates ??
+        localStorage.getItem(ALLOW_INVALID_CERTIFICATES_KEY) === 'true';
+      await reconnect(vault.serverUrl, allowInvalidCertificates);
+      toast.success('Server session restored');
+    } catch (reason) {
+      toast.error(`Reconnect failed: ${reason}`);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  if (state === 'online') {
+    return (
+      <span className="flex items-center gap-1 text-emerald-500/80" title={`Connected to ${vault.serverUrl}`}>
+        <Cloud size={11} />
+        <span className="text-[10px]">Online</span>
+      </span>
+    );
+  }
+
+  const label = state === 'expired' ? 'Session expired' : 'Offline';
+  return (
+    <button
+      onClick={handleReconnect}
+      disabled={busy}
+      title={`${label} — reconnect to ${vault.serverUrl}`}
+      className="flex items-center gap-1 text-amber-500/90 hover:text-amber-400 transition-colors app-motion-fast disabled:opacity-60"
+    >
+      {busy ? (
+        <RefreshCw size={11} className="app-spin-soft" />
+      ) : (
+        <CloudOff size={11} />
+      )}
+      <span className="text-[10px]">{busy ? 'Reconnecting…' : label}</span>
+      {!busy && <RefreshCw size={9} className={cn('opacity-70')} />}
+    </button>
+  );
+}

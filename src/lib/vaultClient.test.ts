@@ -621,3 +621,88 @@ describe('vault client runtime boundary', () => {
     );
   });
 });
+
+// The shared VaultClient surface every consumer relies on. Both adapters must
+// implement it identically so callers can switch between local and hosted
+// vaults without per-method branching.
+const VAULT_CLIENT_METHODS = [
+  'listFiles',
+  'readDocument',
+  'writeDocument',
+  'createDocument',
+  'createFolder',
+  'previewRenameMove',
+  'renameMove',
+  'moveToTrash',
+  'deletePermanently',
+  'listReferences',
+  'listTrash',
+  'restoreTrash',
+  'purgeTrash',
+  'purgeAllTrash',
+  'search',
+  'createSnapshot',
+  'listSnapshots',
+  'readSnapshot',
+  'restoreSnapshot',
+  'deleteSnapshot',
+  'clearSnapshotHistory',
+  'readAssetDataUrl',
+] as const;
+
+const CAPABILITY_KEYS = [
+  'nativeFilesystem',
+  'filesystemWatch',
+  'offlineAccess',
+  'encryption',
+  'hostedMemberships',
+  'authenticatedAssets',
+  'destructiveSnapshotHistory',
+] as const;
+
+describe('VaultClient adapter contract parity', () => {
+  const local = new LocalVaultClient(vault);
+  const hosted = new HostedVaultClient(hostedVault);
+
+  it.each([
+    ['local', local],
+    ['hosted', hosted],
+  ])('%s adapter implements every VaultClient method', (_label, client) => {
+    for (const method of VAULT_CLIENT_METHODS) {
+      expect(typeof (client as unknown as Record<string, unknown>)[method]).toBe('function');
+    }
+  });
+
+  it.each([
+    ['local', local],
+    ['hosted', hosted],
+  ])('%s adapter reports a stable kind, id, and full capability matrix', (label, client) => {
+    expect(client.kind).toBe(label === 'local' ? 'local' : 'hosted');
+    expect(client.id).toBe(label === 'local' ? vault.id : hostedVault.id);
+    for (const key of CAPABILITY_KEYS) {
+      expect(typeof client.capabilities[key]).toBe('boolean');
+    }
+  });
+
+  it('exposes mutually exclusive native vs hosted runtime capabilities', () => {
+    // Native-only operations belong to local vaults; hosted membership belongs to hosted vaults.
+    expect(local.runtime.watch).toBeDefined();
+    expect(local.runtime.encryption).toBeDefined();
+    expect(local.runtime.archiveExport).toBeDefined();
+    expect(local.runtime.members).toBeUndefined();
+
+    expect(hosted.runtime.watch).toBeUndefined();
+    expect(hosted.runtime.encryption).toBeUndefined();
+    expect(hosted.runtime.archiveExport).toBeUndefined();
+    expect(hosted.runtime.members).toBeDefined();
+
+    // External asset import is available in both modes.
+    expect(local.runtime.externalAssetImport).toBeDefined();
+    expect(hosted.runtime.externalAssetImport).toBeDefined();
+  });
+
+  it('keeps the published capability constants aligned with adapter instances', () => {
+    expect(local.capabilities).toEqual(LOCAL_VAULT_CAPABILITIES);
+    expect(hosted.capabilities).toEqual(HOSTED_VAULT_CAPABILITIES);
+  });
+});

@@ -10,6 +10,21 @@ const DISCONNECTED: ServerConnectionStatus = {
   accessExpiresAt: null,
 };
 
+/**
+ * Whether a connected session's access token has already expired. A connected
+ * session with an unparseable or absent expiry is treated as not-expired so a
+ * malformed timestamp never blocks a working session; reconnect remains
+ * available manually.
+ */
+export function isServerSessionExpired(
+  status: ServerConnectionStatus | null,
+  now: number = Date.now(),
+): boolean {
+  if (!status?.connected || !status.accessExpiresAt) return false;
+  const expiry = Date.parse(status.accessExpiresAt);
+  return Number.isFinite(expiry) && expiry <= now;
+}
+
 interface ServerState {
   status: ServerConnectionStatus | null;
   hostedVaults: HostedVaultSummary[];

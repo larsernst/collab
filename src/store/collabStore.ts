@@ -1,6 +1,7 @@
 import { create } from 'zustand';
 import type { ChatMessage, PresenceEntry } from '../types/collab';
 import type { ConflictInfo } from '../types/vault';
+import { userColorForId } from '../lib/userColor';
 
 interface CollabState {
   myUserId: string;
@@ -27,20 +28,13 @@ function mergeMessages(existing: ChatMessage[], incoming: ChatMessage[]): ChatMe
   return Array.from(byId.values()).sort((a, b) => a.timestamp - b.timestamp);
 }
 
-function generateColor(userId: string): string {
-  const colors = ['#ef4444', '#f97316', '#eab308', '#22c55e', '#14b8a6', '#3b82f6', '#8b5cf6', '#ec4899'];
-  let hash = 0;
-  for (let i = 0; i < userId.length; i++) hash = userId.charCodeAt(i) + ((hash << 5) - hash);
-  return colors[Math.abs(hash) % colors.length];
-}
-
 export const useCollabStore = create<CollabState>()((set) => {
   const storedId = localStorage.getItem('collab-user-id');
   const userId = storedId ?? crypto.randomUUID();
   if (!storedId) localStorage.setItem('collab-user-id', userId);
   const storedName = localStorage.getItem('collab-user-name');
   const userName = storedName ?? `User ${userId.slice(0, 4)}`;
-  const userColor = generateColor(userId);
+  const userColor = userColorForId(userId);
 
   return {
     myUserId: userId,

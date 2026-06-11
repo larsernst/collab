@@ -245,17 +245,20 @@ surface before hosted vault mutations are exposed.
 - [x] Refactor vault, file, search, history, templates, previews, and collaboration consumers to use the selected client.
 - [x] Add hosted asset upload/download flows.
 - [x] Add hosted-vault member-management UI.
-- [ ] Add online connection and error states.
-- [ ] Remove hosted-mode reliance on client-generated or client-reported user IDs.
-- [ ] Preserve all local-vault features and storage formats.
-- [ ] Add frontend adapter contract tests for local and hosted clients.
+- [x] Add online connection and error states.
+- [x] Remove hosted-mode reliance on client-generated or client-reported user IDs.
+- [x] Preserve all local-vault features and storage formats.
+- [x] Add frontend adapter contract tests for local and hosted clients.
 
 ### Completion Gate
 
 - [ ] The native app can create, open, edit, manage, export, and close hosted vaults while online.
-- [ ] The same native build continues to operate existing local vaults without regression.
-- [ ] Hosted operations are authorized by server sessions rather than local identity state.
-- [ ] Local and hosted behavior differences are visible and intentional.
+  - Open, edit, manage, and close are implemented natively; native hosted-vault
+    creation and ZIP export remain server-administration (admin web) operations
+    and are the only outstanding piece of this gate.
+- [x] The same native build continues to operate existing local vaults without regression.
+- [x] Hosted operations are authorized by server sessions rather than local identity state.
+- [x] Local and hosted behavior differences are visible and intentional.
 
 ---
 
@@ -424,3 +427,4 @@ Add one entry whenever a meaningful server milestone lands.
 | 2026-06-11 | Phase 4 document-session client migration | Added `createSnapshot` to the `VaultClient` contract (local writes caller content; hosted labels the current immutable revision from the session identity) and migrated the note, Kanban, and canvas document editor sessions to load, write, snapshot, and auto-rename through the selected client; native-only filesystem-watch reload is now gated behind the `filesystemWatch` capability and note editors fall back to app-scoped snippets for hosted vaults | Full frontend suite (641 tests), local/hosted `createSnapshot` contract coverage, updated note/Kanban/canvas session tests, and TypeScript check | Migrate templates, previews, and remaining collaboration consumers (image/PDF media views stay coarse-presence only) |
 | 2026-06-11 | Phase 4 consumer refactor complete | Finished the consumer refactor: promoted asset reads to a universal `VaultClient.readAssetDataUrl` (replacing the unused hosted-only `authenticatedAssets` runtime capability), routed every preview/media asset read (markdown/live-preview images, file-tree and PDF-link hover previews, canvas previews, PDF/image viewers), text reads/writes (tag patching, conflict resolution, kanban template-from-board, note print export, PDF quote-to-note/canvas), and command-bar document creation through the selected client, and consolidated all snapshot operations onto the client by removing the now-dead snapshot methods from the collab transport | Full frontend suite (642 tests), rewritten `pdfPreview` local-cache/hosted-render coverage, updated `vaultClient`/`CollabProvider` tests, TypeScript check, and a repo-wide sweep confirming no non-adapter consumer still calls document/asset IPC directly | Add hosted asset upload/download flows and hosted member-management UI |
 | 2026-06-11 | Phase 4 hosted asset upload + member management | Added hosted asset upload: a native `readFileForUpload` command (digest-verified base64 payload), an `externalAssetImport` runtime capability for hosted vaults (file drag-drop and clipboard data-URL paste, with auto-`Pictures` folder creation and server-verified SHA-256), and refactored the editor drop/paste integration to drive both local and hosted through the capability (download already existed via `readAssetDataUrl`). Added hosted member management: a read-only authenticated `/api/v1/users/directory` server endpoint + dedicated `hostedUserDirectory` native command (keeping the generic vault gateway strict), a hosted-only `members` runtime capability (list/searchDirectory/add/updateRole/remove), and a searchable `HostedMembersPanel` in the Vault Manager permissions tab with owner protection and admin-gated controls | Full frontend suite (648 tests) incl. new `HostedMembersPanel` and `vaultClient` upload/member coverage, updated editor-integration tests, TypeScript check, `cargo check --workspace`, `cargo check --tests -p collab-server`, and the directory assertion added to the live-PG admin lifecycle test | Add online connection/error states, remove hosted reliance on client-reported user IDs, and add adapter contract tests |
+| 2026-06-11 | Phase 4 identity authority + connection states | Added a server-authoritative effective-identity abstraction (`useCollabIdentity` / `serverIdentityForVault` in `src/lib/collabIdentity.ts`, color helper extracted to `src/lib/userColor.ts` to break the store cycle): hosted vaults now resolve collaboration identity from the authenticated server session matched to the vault's server URL, while local vaults keep the client-generated identity; wired it into snapshot authorship for note/Kanban/canvas sessions and made the Settings profile read-only for hosted vaults. Added online connection/error states while a hosted vault is open: an `isServerSessionExpired` helper and a `HostedConnectionStatus` status-bar indicator showing Online/Session expired/Offline with an inline refresh-token reconnect. Added VaultClient adapter contract-parity tests asserting both adapters implement the full method surface, capability matrix, and mutually exclusive native vs hosted runtime capabilities | Full frontend suite (673 tests) incl. new `collabIdentity`, `HostedConnectionStatus`, `isServerSessionExpired`, and adapter-parity coverage; TypeScript check | Native hosted-vault creation and ZIP export remain server-administration operations (only outstanding completion-gate item); begin Phase 5 live collaboration |

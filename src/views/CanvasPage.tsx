@@ -68,6 +68,7 @@ import { useEditorStore } from '../store/editorStore';
 import { useUiStore } from '../store/uiStore';
 import { useVaultStore } from '../store/vaultStore';
 import { useCollabStore } from '../store/collabStore';
+import { useCollabIdentity } from '../lib/collabIdentity';
 import type {
   CanvasData,
   CanvasEdge,
@@ -498,8 +499,8 @@ function CanvasBoard({ relativePath }: { relativePath: string | null }) {
   const markSaved = useEditorStore((state) => state.markSaved);
   const setSavedHash = useEditorStore((state) => state.setSavedHash);
   const addConflict = useCollabStore((state) => state.addConflict);
-  const myUserId = useCollabStore((state) => state.myUserId);
-  const myUserName = useCollabStore((state) => state.myUserName);
+  // Snapshot authorship follows the effective identity (server-authoritative for hosted).
+  const { userId: myUserId, userName: myUserName } = useCollabIdentity();
   const setActiveView = useUiStore((state) => state.setActiveView);
   const canvasWebCardDefaultMode = useUiStore((state) => state.canvasWebCardDefaultMode);
   const canvasWebCardAutoLoad = useUiStore((state) => state.canvasWebCardAutoLoad);

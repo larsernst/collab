@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { useCollabStore } from '../store/collabStore';
+import { useCollabIdentity } from '../lib/collabIdentity';
 import { ANIMATION_SPEED_OPTIONS, useUiStore, type AnimationSpeed } from '../store/uiStore';
 import { Input } from '../components/ui/input';
 import { Button } from '../components/ui/button';
@@ -21,6 +22,8 @@ export default function SettingsPage() {
     canvasWebCardAutoLoad,
     setCanvasWebCardAutoLoad,
   } = useUiStore();
+  const identity = useCollabIdentity();
+  const serverManaged = identity.source === 'server';
   const [name, setName] = useState(myUserName);
 
   const handleSave = () => {
@@ -35,27 +38,38 @@ export default function SettingsPage() {
 
         <section className="mb-8">
           <h2 className="text-lg font-semibold mb-4">Profile</h2>
+          {serverManaged && (
+            <p className="text-sm text-muted-foreground mb-4">
+              In this hosted vault your identity is managed by the server and cannot be edited here.
+            </p>
+          )}
           <div className="space-y-4">
             <div>
               <label className="text-sm font-medium mb-1 block">Display Name</label>
-              <Input
-                value={name}
-                onChange={(e) => setName(e.target.value)}
-                className="max-w-xs"
-              />
+              {serverManaged ? (
+                <p className="text-sm">{identity.userName}</p>
+              ) : (
+                <Input
+                  value={name}
+                  onChange={(e) => setName(e.target.value)}
+                  className="max-w-xs"
+                />
+              )}
             </div>
             <div>
               <label className="text-sm font-medium mb-1 block">User ID</label>
-              <p className="text-sm text-muted-foreground font-mono">{myUserId}</p>
+              <p className="text-sm text-muted-foreground font-mono">
+                {serverManaged ? identity.userId : myUserId}
+              </p>
             </div>
             <div>
               <label className="text-sm font-medium mb-1 block">Presence Color</label>
               <div
                 className="w-8 h-8 rounded-full border border-border"
-                style={{ backgroundColor: myUserColor }}
+                style={{ backgroundColor: serverManaged ? identity.userColor : myUserColor }}
               />
             </div>
-            <Button onClick={handleSave}>Save Profile</Button>
+            {!serverManaged && <Button onClick={handleSave}>Save Profile</Button>}
           </div>
         </section>
 
