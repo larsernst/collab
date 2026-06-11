@@ -64,7 +64,9 @@ jobs:
       - name: Cache Rust build artifacts
         uses: Swatinem/rust-cache@v2
         with:
-          workspaces: src-tauri
+          # The repo root is now a Cargo workspace; Cargo.lock and the shared
+          # target/ directory live here, not under src-tauri.
+          workspaces: .
 
       # ── Linux system dependencies ─────────────────────────────────────────
       # Required by WebKitGTK / Tauri on Linux (same packages for x86 and arm)
@@ -98,7 +100,7 @@ jobs:
         if: contains(matrix.platform, 'ubuntu')
         run: |
           mkdir -p dist-portable
-          cp src-tauri/target/${{ matrix.rust-target }}/release/collab dist-portable/collab
+          cp target/${{ matrix.rust-target }}/release/collab dist-portable/collab
           cat > dist-portable/README.txt <<'EOF'
           collab portable Linux build
           
@@ -133,19 +135,19 @@ jobs:
 
             Linux install guide: https://github.com/${{ github.repository }}/blob/${{ github.ref_name }}/docs/linux-install.md
           files: |
-            src-tauri/target/${{ matrix.rust-target }}/release/bundle/**/*.deb
-            src-tauri/target/${{ matrix.rust-target }}/release/bundle/**/*.deb.sig
-            src-tauri/target/${{ matrix.rust-target }}/release/bundle/**/*.rpm
-            src-tauri/target/${{ matrix.rust-target }}/release/bundle/**/*.rpm.sig
-            src-tauri/target/${{ matrix.rust-target }}/release/bundle/**/*.AppImage
-            src-tauri/target/${{ matrix.rust-target }}/release/bundle/**/*.AppImage.sig
-            src-tauri/target/${{ matrix.rust-target }}/release/bundle/**/*.msi
-            src-tauri/target/${{ matrix.rust-target }}/release/bundle/**/*.msi.sig
-            src-tauri/target/${{ matrix.rust-target }}/release/bundle/**/*.exe
-            src-tauri/target/${{ matrix.rust-target }}/release/bundle/**/*.exe.sig
-            src-tauri/target/${{ matrix.rust-target }}/release/bundle/**/*.dmg
-            src-tauri/target/${{ matrix.rust-target }}/release/bundle/**/*.app.tar.gz
-            src-tauri/target/${{ matrix.rust-target }}/release/bundle/**/*.app.tar.gz.sig
+            target/${{ matrix.rust-target }}/release/bundle/**/*.deb
+            target/${{ matrix.rust-target }}/release/bundle/**/*.deb.sig
+            target/${{ matrix.rust-target }}/release/bundle/**/*.rpm
+            target/${{ matrix.rust-target }}/release/bundle/**/*.rpm.sig
+            target/${{ matrix.rust-target }}/release/bundle/**/*.AppImage
+            target/${{ matrix.rust-target }}/release/bundle/**/*.AppImage.sig
+            target/${{ matrix.rust-target }}/release/bundle/**/*.msi
+            target/${{ matrix.rust-target }}/release/bundle/**/*.msi.sig
+            target/${{ matrix.rust-target }}/release/bundle/**/*.exe
+            target/${{ matrix.rust-target }}/release/bundle/**/*.exe.sig
+            target/${{ matrix.rust-target }}/release/bundle/**/*.dmg
+            target/${{ matrix.rust-target }}/release/bundle/**/*.app.tar.gz
+            target/${{ matrix.rust-target }}/release/bundle/**/*.app.tar.gz.sig
             collab-${{ matrix.artifact-label }}-portable.tar.gz
 
       # ── Collect artifacts (all runs) ───────────────────────────────────────
@@ -155,19 +157,19 @@ jobs:
           name: ${{ matrix.artifact-label }}
           if-no-files-found: warn
           path: |
-            src-tauri/target/${{ matrix.rust-target }}/release/bundle/**/*.deb
-            src-tauri/target/${{ matrix.rust-target }}/release/bundle/**/*.deb.sig
-            src-tauri/target/${{ matrix.rust-target }}/release/bundle/**/*.rpm
-            src-tauri/target/${{ matrix.rust-target }}/release/bundle/**/*.rpm.sig
-            src-tauri/target/${{ matrix.rust-target }}/release/bundle/**/*.AppImage
-            src-tauri/target/${{ matrix.rust-target }}/release/bundle/**/*.AppImage.sig
-            src-tauri/target/${{ matrix.rust-target }}/release/bundle/**/*.msi
-            src-tauri/target/${{ matrix.rust-target }}/release/bundle/**/*.msi.sig
-            src-tauri/target/${{ matrix.rust-target }}/release/bundle/**/*.exe
-            src-tauri/target/${{ matrix.rust-target }}/release/bundle/**/*.exe.sig
-            src-tauri/target/${{ matrix.rust-target }}/release/bundle/**/*.dmg
-            src-tauri/target/${{ matrix.rust-target }}/release/bundle/**/*.app.tar.gz
-            src-tauri/target/${{ matrix.rust-target }}/release/bundle/**/*.app.tar.gz.sig
+            target/${{ matrix.rust-target }}/release/bundle/**/*.deb
+            target/${{ matrix.rust-target }}/release/bundle/**/*.deb.sig
+            target/${{ matrix.rust-target }}/release/bundle/**/*.rpm
+            target/${{ matrix.rust-target }}/release/bundle/**/*.rpm.sig
+            target/${{ matrix.rust-target }}/release/bundle/**/*.AppImage
+            target/${{ matrix.rust-target }}/release/bundle/**/*.AppImage.sig
+            target/${{ matrix.rust-target }}/release/bundle/**/*.msi
+            target/${{ matrix.rust-target }}/release/bundle/**/*.msi.sig
+            target/${{ matrix.rust-target }}/release/bundle/**/*.exe
+            target/${{ matrix.rust-target }}/release/bundle/**/*.exe.sig
+            target/${{ matrix.rust-target }}/release/bundle/**/*.dmg
+            target/${{ matrix.rust-target }}/release/bundle/**/*.app.tar.gz
+            target/${{ matrix.rust-target }}/release/bundle/**/*.app.tar.gz.sig
             collab-${{ matrix.artifact-label }}-portable.tar.gz
 
   flatpak:
