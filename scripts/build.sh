@@ -48,7 +48,7 @@ check_deps() {
 
 package_linux_portable() {
   local triple="$1" label="$2"
-  local release_dir="src-tauri/target/${triple}/release"
+  local release_dir="target/${triple}/release"
   local binary="$release_dir/collab"
   local staging="$OUT_DIR/.portable-${label}"
   local archive="$OUT_DIR/$label/collab-${label}-portable.tar.gz"
@@ -93,7 +93,7 @@ ensure_target() {
 # ── Copy build artifacts into dist-builds/<label>/ ────────────────────────────
 collect() {
   local triple="$1" label="$2"
-  local bundle_dir="src-tauri/target/${triple}/release/bundle"
+  local bundle_dir="target/${triple}/release/bundle"
   local dest="$OUT_DIR/$label"
 
   if [ ! -d "$bundle_dir" ]; then

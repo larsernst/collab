@@ -22,7 +22,7 @@ rsync -a --delete \
   --exclude 'dist-builds' \
   --exclude 'flatpak-build' \
   --exclude 'flatpak-repo' \
-  --exclude 'src-tauri/target' \
+  --exclude 'target' \
   --exclude '*.flatpak' \
   --exclude '.codex' \
   --exclude '.claude' \
