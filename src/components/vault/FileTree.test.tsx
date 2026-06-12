@@ -106,6 +106,7 @@ describe('FileTree folder collapse state', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     localStorage.clear();
+    vi.mocked(tauriCommands.listFileReferences).mockResolvedValue([]);
 
     useVaultStore.setState({
       vault: { id: 'vault-1', path: '/vault', name: 'Vault', isEncrypted: false, lastOpened: Date.now() },
@@ -357,6 +358,50 @@ describe('FileTree folder collapse state', () => {
       expect(tauriCommands.previewRenameMove).toHaveBeenCalled();
     });
     expect(tauriCommands.renameNote).not.toHaveBeenCalled();
+  });
+
+  it('trashes the hovered file when Delete is pressed', async () => {
+    useUiStore.setState({ ...useUiStore.getState(), confirmDelete: false });
+    vi.mocked(tauriCommands.moveNoteToTrash).mockResolvedValue(undefined as never);
+    useVaultStore.setState({
+      ...useVaultStore.getState(),
+      fileTree: [
+        { relativePath: 'a.md', name: 'a.md', extension: 'md', modifiedAt: 1, size: 1, isFolder: false },
+        { relativePath: 'b.md', name: 'b.md', extension: 'md', modifiedAt: 1, size: 1, isFolder: false },
+      ],
+    });
+
+    render(<FileTree />);
+    fireEvent.mouseEnter(screen.getByText('a.md'));
+    fireEvent.keyDown(window, { key: 'Delete' });
+
+    await waitFor(() =>
+      expect(tauriCommands.moveNoteToTrash).toHaveBeenCalledWith('/vault', 'a.md', undefined, undefined, false),
+    );
+    expect(tauriCommands.moveNoteToTrash).toHaveBeenCalledTimes(1);
+  });
+
+  it('multi-selects files with ctrl-click and trashes all of them on Delete', async () => {
+    useUiStore.setState({ ...useUiStore.getState(), confirmDelete: false });
+    vi.mocked(tauriCommands.moveNoteToTrash).mockResolvedValue(undefined as never);
+    useVaultStore.setState({
+      ...useVaultStore.getState(),
+      fileTree: [
+        { relativePath: 'a.md', name: 'a.md', extension: 'md', modifiedAt: 1, size: 1, isFolder: false },
+        { relativePath: 'b.md', name: 'b.md', extension: 'md', modifiedAt: 1, size: 1, isFolder: false },
+        { relativePath: 'c.md', name: 'c.md', extension: 'md', modifiedAt: 1, size: 1, isFolder: false },
+      ],
+    });
+
+    render(<FileTree />);
+    fireEvent.click(screen.getByText('a.md'));
+    fireEvent.click(screen.getByText('b.md'), { ctrlKey: true });
+    fireEvent.keyDown(window, { key: 'Delete' });
+
+    await waitFor(() => expect(tauriCommands.moveNoteToTrash).toHaveBeenCalledTimes(2));
+    expect(tauriCommands.moveNoteToTrash).toHaveBeenCalledWith('/vault', 'a.md', undefined, undefined, false);
+    expect(tauriCommands.moveNoteToTrash).toHaveBeenCalledWith('/vault', 'b.md', undefined, undefined, false);
+    expect(tauriCommands.moveNoteToTrash).not.toHaveBeenCalledWith('/vault', 'c.md', undefined, undefined, false);
   });
 
   it('imports files chosen from the add-files dialog', async () => {

@@ -33,7 +33,7 @@ import { supportsVersionHistoryRelativePath } from '../collaboration/history/his
 
 type DialogState =
   | { type: 'none' }
-  | { type: 'delete'; file: NoteFile }
+  | { type: 'delete'; files: NoteFile[] }
   | { type: 'rename'; file: NoteFile }
   | { type: 'create-note'; parentPath?: string }
   | { type: 'create-folder'; parentPath?: string };
@@ -78,6 +78,8 @@ export default function FileTree() {
   const [taskAttachmentsByPath, setTaskAttachmentsByPath] = useState<Record<string, TaskAttachmentRef[]>>({});
   const [mode, setMode] = useState<'files' | 'trash'>('files');
   const [selectedRelativePath, setSelectedRelativePath] = useState<string | null>(null);
+  const [selectedPaths, setSelectedPaths] = useState<Set<string>>(new Set());
+  const [hoveredPath, setHoveredPath] = useState<string | null>(null);
   const [selectedReferences, setSelectedReferences] = useState<FileReference[]>([]);
   const [selectedReferencesLoading, setSelectedReferencesLoading] = useState(false);
   const [selectedReferencesError, setSelectedReferencesError] = useState<string | null>(null);
@@ -110,6 +112,31 @@ export default function FileTree() {
   const selectedNode = selectedRelativePath
     ? flatten(fileTree).find((entry) => entry.relativePath === selectedRelativePath) ?? null
     : null;
+
+  // Flattened list of nodes currently visible in the tree (respecting collapsed
+  // folders), in display order — used for shift-range multi-selection.
+  const visibleNodes = useMemo(() => {
+    const out: NoteFile[] = [];
+    const walk = (nodes: NoteFile[]) => {
+      for (const node of nodes) {
+        out.push(node);
+        if (node.isFolder && !collapsed.has(node.relativePath) && node.children?.length) {
+          walk(node.children);
+        }
+      }
+    };
+    walk(fileTree);
+    return out;
+  }, [fileTree, collapsed]);
+
+  const toggleCollapsePath = useCallback((path: string) => {
+    setCollapsed((prev) => {
+      const next = new Set(prev);
+      if (next.has(path)) next.delete(path);
+      else next.add(path);
+      return next;
+    });
+  }, [setCollapsed]);
 
   const getAffectedOpenTabs = useCallback((oldRelativePath: string) => (
     useEditorStore.getState().openTabs
@@ -187,6 +214,35 @@ export default function FileTree() {
     else setActiveView('editor');
   }, [openTab, setActiveView]);
 
+  const handleNodeClick = useCallback((node: NoteFile, event: { shiftKey: boolean; metaKey: boolean; ctrlKey: boolean }) => {
+    // Shift-click: select the contiguous range between the anchor and this node.
+    if (event.shiftKey && selectedRelativePath) {
+      const anchorIndex = visibleNodes.findIndex((entry) => entry.relativePath === selectedRelativePath);
+      const targetIndex = visibleNodes.findIndex((entry) => entry.relativePath === node.relativePath);
+      if (anchorIndex !== -1 && targetIndex !== -1) {
+        const [low, high] = anchorIndex <= targetIndex ? [anchorIndex, targetIndex] : [targetIndex, anchorIndex];
+        setSelectedPaths(new Set(visibleNodes.slice(low, high + 1).map((entry) => entry.relativePath)));
+        return;
+      }
+    }
+    // Ctrl/Cmd-click: toggle this node in the selection without opening it.
+    if (event.metaKey || event.ctrlKey) {
+      setSelectedPaths((prev) => {
+        const next = new Set(prev);
+        if (next.has(node.relativePath)) next.delete(node.relativePath);
+        else next.add(node.relativePath);
+        return next;
+      });
+      setSelectedRelativePath(node.relativePath);
+      return;
+    }
+    // Plain click: single-select and open/toggle as before.
+    setSelectedPaths(new Set([node.relativePath]));
+    setSelectedRelativePath(node.relativePath);
+    if (node.isFolder) toggleCollapsePath(node.relativePath);
+    else handleOpenFile(node);
+  }, [handleOpenFile, selectedRelativePath, toggleCollapsePath, visibleNodes]);
+
   const handleCreateNote = (parentPath?: string) => {
     setDialog({ type: 'create-note', parentPath });
   };
@@ -202,61 +258,97 @@ export default function FileTree() {
     }
     setDeleteRemoveReferences(false);
     if (!confirmDeleteEnabled) {
-      void moveFileToTrash(file);
+      void moveFilesToTrash([file]);
       return;
     }
-    setDialog({ type: 'delete', file });
+    setDialog({ type: 'delete', files: [file] });
+  };
+
+  // When several entries are selected, dropping a folder also trashes its
+  // descendants — drop any selected child whose ancestor folder is also selected
+  // so we don't try to trash an already-moved path.
+  const dedupeNested = (files: NoteFile[]): NoteFile[] => {
+    const folderPrefixes = files.filter((file) => file.isFolder).map((file) => `${file.relativePath}/`);
+    return files.filter((file) => !folderPrefixes.some((prefix) => file.relativePath.startsWith(prefix)));
+  };
+
+  const requestDeleteForPaths = (paths: string[]) => {
+    const all = flatten(fileTree);
+    const files = dedupeNested(
+      paths
+        .map((path) => all.find((entry) => entry.relativePath === path))
+        .filter((entry): entry is NoteFile => !!entry && !isManagedPicturesFolder(entry)),
+    );
+    if (files.length === 0) return;
+    setDeleteRemoveReferences(false);
+    if (!confirmDeleteEnabled) {
+      void moveFilesToTrash(files);
+      return;
+    }
+    setDialog({ type: 'delete', files });
   };
 
   const handleRename = (file: NoteFile) => {
     setDialog({ type: 'rename', file });
   };
 
-  const confirmDelete = async () => {
-    if (dialog.type !== 'delete' || !vault) return;
-    const { file } = dialog;
-    setDialog({ type: 'none' });
-    try {
-      await createVaultClient(vault).deletePermanently(file.relativePath, deleteRemoveReferences);
-      const prefix = file.isFolder ? file.relativePath + '/' : null;
-      for (const tab of useEditorStore.getState().openTabs) {
-        if (
-          tab.relativePath === file.relativePath ||
-          (prefix && tab.relativePath.startsWith(prefix))
-        ) {
-          closeTab(tab.relativePath);
-        }
+  const closeTabsForFile = (file: NoteFile) => {
+    const prefix = file.isFolder ? `${file.relativePath}/` : null;
+    for (const tab of useEditorStore.getState().openTabs) {
+      if (tab.relativePath === file.relativePath || (prefix && tab.relativePath.startsWith(prefix))) {
+        closeTab(tab.relativePath);
       }
-      await refreshFileTree();
-    } catch (e) { toast.error('Failed to delete: ' + e); }
-    finally { setDeleteRemoveReferences(false); }
+    }
   };
 
-  const moveFileToTrash = async (file: NoteFile) => {
-    if (!vault) return;
-    try {
-      await createVaultClient(vault).moveToTrash(file.relativePath, deleteRemoveReferences);
-      const prefix = file.isFolder ? `${file.relativePath}/` : null;
-      for (const tab of useEditorStore.getState().openTabs) {
-        if (tab.relativePath === file.relativePath || (prefix && tab.relativePath.startsWith(prefix))) {
-          closeTab(tab.relativePath);
-        }
-      }
-      await refreshFileTree();
-      setMode('trash');
-      toast.success(`Moved ${file.name} to trash`);
-    } catch (error) {
-      toast.error(`Failed to move to trash: ${error}`);
-    } finally {
-      setDeleteRemoveReferences(false);
+  const confirmDelete = async () => {
+    if (dialog.type !== 'delete' || !vault) return;
+    const { files } = dialog;
+    setDialog({ type: 'none' });
+    const client = createVaultClient(vault);
+    let succeeded = 0;
+    for (const file of files) {
+      try {
+        await client.deletePermanently(file.relativePath, deleteRemoveReferences);
+        closeTabsForFile(file);
+        succeeded += 1;
+      } catch (e) { toast.error(`Failed to delete ${file.name}: ${e}`); }
     }
+    await refreshFileTree();
+    setSelectedPaths(new Set());
+    if (succeeded > 0) {
+      toast.success(succeeded === 1 ? `Deleted ${files[0].name}` : `Deleted ${succeeded} items`);
+    }
+    setDeleteRemoveReferences(false);
+  };
+
+  const moveFilesToTrash = async (files: NoteFile[]) => {
+    if (!vault || files.length === 0) return;
+    const client = createVaultClient(vault);
+    let succeeded = 0;
+    for (const file of files) {
+      try {
+        await client.moveToTrash(file.relativePath, deleteRemoveReferences);
+        closeTabsForFile(file);
+        succeeded += 1;
+      } catch (error) {
+        toast.error(`Failed to move ${file.name} to trash: ${error}`);
+      }
+    }
+    await refreshFileTree();
+    setSelectedPaths(new Set());
+    if (succeeded > 0) {
+      setMode('trash');
+      toast.success(succeeded === 1 ? `Moved ${files[0].name} to trash` : `Moved ${succeeded} items to trash`);
+    }
+    setDeleteRemoveReferences(false);
   };
 
   const moveToTrash = async () => {
     if (dialog.type !== 'delete') return;
-    const { file } = dialog;
+    const { files } = dialog;
     setDialog({ type: 'none' });
-    await moveFileToTrash(file);
+    await moveFilesToTrash(files);
   };
 
   const confirmCreate = async (name: string) => {
@@ -405,13 +497,48 @@ export default function FileTree() {
     return () => { cancelled = true; };
   }, [vault?.path, fileTree]);
 
+  // Reflect the active tab as the tree selection, but only when the active tab
+  // actually changes — not when the user adjusts the selection in the tree
+  // (otherwise ctrl/shift multi-selection would be clobbered).
+  const lastSyncedActiveTab = useRef<string | null>(null);
   useEffect(() => {
-    if (mode !== 'files') return;
-    if (!activeTabPath) return;
+    if (mode !== 'files' || !activeTabPath) return;
+    if (lastSyncedActiveTab.current === activeTabPath) return;
     const existing = flatten(fileTree).find((entry) => entry.relativePath === activeTabPath);
     if (!existing) return;
-    setSelectedRelativePath((current) => (current === activeTabPath ? current : activeTabPath));
+    lastSyncedActiveTab.current = activeTabPath;
+    setSelectedRelativePath(activeTabPath);
+    setSelectedPaths(new Set([activeTabPath]));
   }, [activeTabPath, fileTree, mode]);
+
+  // Press Delete to trash the selected files, or the file under the cursor when
+  // nothing is selected. A latest-state ref keeps the global listener stable.
+  const deleteKeyActionRef = useRef<(event: KeyboardEvent) => void>(() => {});
+  deleteKeyActionRef.current = (event: KeyboardEvent) => {
+    if (mode !== 'files' || readOnly) return;
+    if (dialog.type !== 'none' || previewState) return;
+    const targets = selectedPaths.size > 0
+      ? Array.from(selectedPaths)
+      : hoveredPath
+      ? [hoveredPath]
+      : [];
+    if (targets.length === 0) return;
+    event.preventDefault();
+    requestDeleteForPaths(targets);
+  };
+
+  useEffect(() => {
+    const handler = (event: KeyboardEvent) => {
+      if (event.key !== 'Delete') return;
+      const target = event.target as HTMLElement | null;
+      if (target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable)) {
+        return;
+      }
+      deleteKeyActionRef.current(event);
+    };
+    window.addEventListener('keydown', handler);
+    return () => window.removeEventListener('keydown', handler);
+  }, []);
 
   useEffect(() => {
     if (!vault || !selectedRelativePath || mode !== 'files' || !selectedNode || selectedNode.isFolder) {
@@ -458,8 +585,9 @@ export default function FileTree() {
       {/* Dialogs */}
       <ConfirmDeleteDialog
         open={dialog.type === 'delete'}
-        name={dialog.type === 'delete' ? dialog.file.name : ''}
-        isFolder={dialog.type === 'delete' ? dialog.file.isFolder : false}
+        name={dialog.type === 'delete' ? dialog.files[0]?.name ?? '' : ''}
+        isFolder={dialog.type === 'delete' ? dialog.files[0]?.isFolder ?? false : false}
+        itemCount={dialog.type === 'delete' ? dialog.files.length : 1}
         primaryActionLabel="Delete permanently"
         showReferenceOption={dialog.type === 'delete'}
         removeReferences={deleteRemoveReferences}
@@ -616,7 +744,9 @@ export default function FileTree() {
               onDelete={handleDelete}
               onRename={handleRename}
               onViewHistory={setHistoryModalPath}
-              onSelect={setSelectedRelativePath}
+              onNodeClick={handleNodeClick}
+              selectedPaths={selectedPaths}
+              onHover={setHoveredPath}
               draggingPath={draggingPath}
               dropTargetPath={dropTargetPath}
               taskAttachmentsByPath={taskAttachmentsByPath}
@@ -629,7 +759,7 @@ export default function FileTree() {
         )}
       </div>
       )}
-      {mode === 'files' && selectedFile ? (
+      {mode === 'files' && selectedFile && selectedPaths.size <= 1 ? (
         <FileReferencesPanel
           selectedFile={selectedFile}
           references={selectedReferences}
@@ -660,7 +790,9 @@ interface FileTreeNodeProps {
   onDelete: (file: NoteFile) => void;
   onRename: (file: NoteFile) => void;
   onViewHistory: (relativePath: string) => void;
-  onSelect: (relativePath: string) => void;
+  onNodeClick: (node: NoteFile, event: { shiftKey: boolean; metaKey: boolean; ctrlKey: boolean }) => void;
+  selectedPaths: Set<string>;
+  onHover: (relativePath: string | null) => void;
   draggingPath: string | null;
   dropTargetPath: string | null | '__root__';
   taskAttachmentsByPath: Record<string, TaskAttachmentRef[]>;
@@ -673,7 +805,7 @@ interface FileTreeNodeProps {
 function FileTreeNode({
   node, depth, collapsed, setCollapsed,
   onOpenFile, onCreateNote, onCreateFolder, onDelete, onRename, onViewHistory,
-  onSelect,
+  onNodeClick, selectedPaths, onHover,
   draggingPath, dropTargetPath, taskAttachmentsByPath, setDraggingPath, setDropTargetPath, onMove,
   fileTreeHoverPreviewsEnabled,
 }: FileTreeNodeProps) {
@@ -686,6 +818,7 @@ function FileTreeNode({
 
   const isCollapsed = collapsed.has(node.relativePath);
   const isActive = activeTabPath === node.relativePath;
+  const isSelected = selectedPaths.has(node.relativePath);
   const activePeers = peers.filter((p) => p.activeFile === node.relativePath);
   const isDraggingThis = draggingPath === node.relativePath;
   const isDropTarget = node.isFolder && dropTargetPath === node.relativePath && draggingPath !== null;
@@ -695,15 +828,6 @@ function FileTreeNode({
   const isPdfAsset = isPdfFile(node);
   const isManagedFolder = isManagedPicturesFolder(node);
   const supportsVersionHistory = supportsVersionHistoryRelativePath(node.relativePath, node.isFolder);
-
-  const toggleCollapse = () => {
-    setCollapsed((prev) => {
-      const next = new Set(prev);
-      if (next.has(node.relativePath)) next.delete(node.relativePath);
-      else next.add(node.relativePath);
-      return next;
-    });
-  };
 
   const getFileIcon = () => {
     if (node.isFolder) {
@@ -732,10 +856,14 @@ function FileTreeNode({
             draggable
             data-tree-folder-path={node.isFolder ? node.relativePath : undefined}
             onMouseEnter={(event) => {
+              onHover(node.relativePath);
               if (!fileTreeHoverPreviewsEnabled || (!isPdfAsset && !isImageAsset)) return;
               setHoverPreviewAnchorRect(event.currentTarget.getBoundingClientRect());
             }}
-            onMouseLeave={() => setHoverPreviewAnchorRect(null)}
+            onMouseLeave={() => {
+              onHover(null);
+              setHoverPreviewAnchorRect(null);
+            }}
             onDragStart={(e) => {
               e.stopPropagation();
               setDraggingPath(node.relativePath);
@@ -785,10 +913,8 @@ function FileTreeNode({
               setDraggingPath(null);
               setDropTargetPath(null);
             }}
-            onClick={() => {
-              onSelect(node.relativePath);
-              if (node.isFolder) toggleCollapse();
-              else onOpenFile(node);
+            onClick={(event) => {
+              onNodeClick(node, { shiftKey: event.shiftKey, metaKey: event.metaKey, ctrlKey: event.ctrlKey });
             }}
             style={{ paddingLeft: `${depth * 14 + 6}px` }}
             className={cn(
@@ -796,7 +922,7 @@ function FileTreeNode({
               isDraggingThis && 'opacity-40',
               isDropTarget && 'bg-primary/20 ring-1 ring-primary/40 ring-inset',
               !isDraggingThis && !isDropTarget && (
-                isActive
+                isActive || isSelected
                   ? 'bg-primary/15 text-foreground'
                   : 'text-foreground/70 hover:text-foreground hover:bg-accent/50'
               )
@@ -905,7 +1031,9 @@ function FileTreeNode({
                   onDelete={onDelete}
                   onRename={onRename}
                   onViewHistory={onViewHistory}
-                  onSelect={onSelect}
+                  onNodeClick={onNodeClick}
+                  selectedPaths={selectedPaths}
+                  onHover={onHover}
                   draggingPath={draggingPath}
                   dropTargetPath={dropTargetPath}
                   taskAttachmentsByPath={taskAttachmentsByPath}

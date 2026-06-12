@@ -15,6 +15,7 @@ interface ConfirmDeleteProps {
   open: boolean;
   name: string;
   isFolder: boolean;
+  itemCount?: number;
   primaryActionLabel?: string;
   showReferenceOption?: boolean;
   removeReferences?: boolean;
@@ -29,6 +30,7 @@ export function ConfirmDeleteDialog({
   open,
   name,
   isFolder,
+  itemCount = 1,
   primaryActionLabel = 'Delete',
   showReferenceOption = false,
   removeReferences = false,
@@ -39,6 +41,7 @@ export function ConfirmDeleteDialog({
   onCancel,
 }: ConfirmDeleteProps) {
   const hasTrashFlow = !!onMoveToTrash;
+  const isMultiple = itemCount > 1;
   return (
     <Dialog open={open} onOpenChange={(o) => { if (!o) onCancel(); }}>
       <DialogContent showCloseButton={false} className="max-w-sm">
@@ -47,20 +50,22 @@ export function ConfirmDeleteDialog({
             <span className="flex items-center justify-center w-9 h-9 rounded-full bg-destructive/15 text-destructive shrink-0">
               <Trash2 size={16} />
             </span>
-            <DialogTitle>Delete {isFolder ? 'folder' : 'note'}?</DialogTitle>
+            <DialogTitle>
+              {isMultiple ? `Delete ${itemCount} items?` : `Delete ${isFolder ? 'folder' : 'note'}?`}
+            </DialogTitle>
           </div>
           <DialogDescription>
-            <span className="font-medium text-foreground">"{name}"</span>
+            <span className="font-medium text-foreground">{isMultiple ? `${itemCount} items` : `"${name}"`}</span>
             {hasTrashFlow ? (
               <>
                 {' '}will be moved to the vault trash.
-                {isFolder && ' Everything inside it will move to trash too.'}
-                {' '}You can restore it later until it is permanently purged.
+                {!isMultiple && isFolder && ' Everything inside it will move to trash too.'}
+                {' '}You can restore {isMultiple ? 'them' : 'it'} later until permanently purged.
               </>
             ) : (
               <>
                 {' '}will be permanently deleted.
-                {isFolder && ' All notes inside will also be deleted.'}
+                {!isMultiple && isFolder && ' All notes inside will also be deleted.'}
                 {' '}This cannot be undone.
               </>
             )}
