@@ -168,6 +168,36 @@ describe('NoteView external reload behavior', () => {
     expect(useEditorStore.getState().openTabs[0]?.isDirty).toBe(true);
   });
 
+  it('serializes overlapping autosaves on a slow connection (no stale-revision write)', async () => {
+    tauriMocks.readNote.mockResolvedValue({ content: 'initial', hash: 'hash-1', modifiedAt: 1 });
+    // A slow write: each call resolves only when we release it, modelling latency.
+    const deferred: Array<(value: { hash: string }) => void> = [];
+    tauriMocks.writeNote.mockImplementation(
+      () => new Promise<{ hash: string }>((resolve) => { deferred.push(resolve); }),
+    );
+
+    render(<NoteView relativePath="Notes/a.md" />);
+    await screen.findByTestId('editor-content');
+
+    // First edit → first autosave fires and the (slow) write goes in flight.
+    fireEvent.click(screen.getByRole('button', { name: 'change' }));
+    await waitFor(() => expect(tauriMocks.writeNote).toHaveBeenCalledTimes(1));
+    expect(tauriMocks.writeNote.mock.calls[0][3]).toBe('hash-1');
+
+    // A second edit lands while the first write is still in flight.
+    fireEvent.click(screen.getByRole('button', { name: 'change' }));
+    await new Promise((resolve) => setTimeout(resolve, 700));
+    // It must NOT start a second concurrent write with the same stale revision.
+    expect(tauriMocks.writeNote).toHaveBeenCalledTimes(1);
+
+    // Finishing the first write releases the coalesced trailing write, which now
+    // uses the version returned by the first one.
+    deferred[0]({ hash: 'hash-2' });
+    await waitFor(() => expect(tauriMocks.writeNote).toHaveBeenCalledTimes(2));
+    expect(tauriMocks.writeNote.mock.calls[1][3]).toBe('hash-2');
+    deferred[1]?.({ hash: 'hash-3' });
+  });
+
   it('opens hosted markdown notes when app-only snippet loading hits the legacy vault-path error', async () => {
     const hostedFile = {
       id: 'file-1',

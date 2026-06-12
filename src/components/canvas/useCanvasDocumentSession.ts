@@ -69,6 +69,7 @@ interface UseCanvasDocumentSessionOptions {
   readOnly?: boolean;
   markWriteStarted: () => void;
   shouldCreateSnapshot: (hash: string) => boolean;
+  runExclusiveSave: (save: () => Promise<void>) => Promise<void>;
 }
 
 export function useCanvasDocumentSession({
@@ -102,6 +103,7 @@ export function useCanvasDocumentSession({
   readOnly = false,
   markWriteStarted,
   shouldCreateSnapshot,
+  runExclusiveSave,
 }: UseCanvasDocumentSessionOptions) {
   const client = useMemo(() => (vault ? createVaultClient(vault) : null), [vault]);
   const saveTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
@@ -292,11 +294,13 @@ export function useCanvasDocumentSession({
     isDirtyRef.current = true;
     markDirty(relativePath);
     if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
+    // Serialize writes so a slow save never overlaps the next one with a stale
+    // revision; the trailing save coalesces to the latest canvas state.
     saveTimerRef.current = setTimeout(() => {
-      void saveCanvas();
+      void runExclusiveSave(saveCanvas);
     }, SAVE_DEBOUNCE_MS);
     return () => {
       if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
     };
-  }, [edges, isDirtyRef, markDirty, nodes, pauseAutosave, readOnly, relativePath, saveCanvas, shouldSkipAutosave, vault, viewport]);
+  }, [edges, isDirtyRef, markDirty, nodes, pauseAutosave, readOnly, relativePath, runExclusiveSave, saveCanvas, shouldSkipAutosave, vault, viewport]);
 }

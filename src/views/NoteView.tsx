@@ -68,7 +68,11 @@ export default function NoteView({ relativePath }: { relativePath: string }) {
   const savedContentRef = useRef<string | null>(null);
   const client = useMemo(() => (vault ? createVaultClient(vault) : null), [vault]);
   const readOnly = isVaultReadOnly(vault);
-  const { hashRef, markLoaded, shouldSkipAutosave, markWriteStarted, shouldCreateSnapshot } = useDocumentSessionState();
+  const { hashRef, markLoaded, shouldSkipAutosave, markWriteStarted, shouldCreateSnapshot, runExclusiveSave } = useDocumentSessionState();
+  // Mirrors the latest content so a coalesced trailing save always writes the
+  // freshest text rather than a value captured when the save was first queued.
+  const contentRef = useRef<string | null>(null);
+  contentRef.current = content;
   const initialViewState = useMemo<NoteEditorViewState | null>(
     () => useEditorStore.getState().noteViewStates[relativePath] ?? null,
     [relativePath],
@@ -215,14 +219,22 @@ export default function NoteView({ relativePath }: { relativePath: string }) {
     if (content === null) return;
     if (shouldSkipAutosave()) return;
     if (readOnly) return;
-    const t = setTimeout(() => { handleSave(content); }, 600);
+    const t = setTimeout(() => { requestSave(false); }, 600);
     return () => clearTimeout(t);
   }, [content, shouldSkipAutosave, readOnly]);
 
-  const handleSave = async (newContent: string, manual = false) => {
+  // Saves are serialized through the session so overlapping writes never race on
+  // slow connections; each run reads the latest content and optimistic version.
+  const requestSave = (manual = false): Promise<void> => {
+    if (!client || readOnly) return Promise.resolve();
+    return runExclusiveSave(() => performSave(manual));
+  };
+
+  const performSave = async (manual = false) => {
+    const newContent = contentRef.current;
     // Viewers have no write access; never attempt a save that the server would
     // reject with a "could not save" error.
-    if (!client || readOnly) return;
+    if (!client || readOnly || newContent === null) return;
     try {
       markWriteStarted();
       const result = await client.writeDocument(
@@ -294,7 +306,7 @@ export default function NoteView({ relativePath }: { relativePath: string }) {
           ref={editorRef}
           content={content}
           onChange={handleChange}
-          onSave={(c) => handleSave(c, true)}
+          onSave={() => requestSave(true)}
           readOnly={readOnly}
           relativePath={relativePath}
           initialViewState={revealEditorPath === relativePath || pendingSearchJump?.relativePath === relativePath ? null : initialViewState}

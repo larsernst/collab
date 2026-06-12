@@ -61,7 +61,9 @@ export default function KanbanPage({ relativePath }: { relativePath: string | nu
   const isDirtyRef      = useRef(false);
   const saveTimerRef    = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const savedBoardContentRef = useRef<string | null>(null);
-  const { hashRef, lastWriteRef, markLoaded, markWriteStarted, shouldCreateSnapshot } = useDocumentSessionState();
+  // Latest board pending a save, so a coalesced trailing save writes current state.
+  const latestBoardRef = useRef<KanbanBoard | null>(null);
+  const { hashRef, lastWriteRef, markLoaded, markWriteStarted, shouldCreateSnapshot, runExclusiveSave } = useDocumentSessionState();
 
   useEffect(() => {
     isMountedRef.current = true;
@@ -119,12 +121,18 @@ export default function KanbanPage({ relativePath }: { relativePath: string | nu
       const next = updater(prev);
       if (next === prev) return prev;
       isDirtyRef.current = true;
+      latestBoardRef.current = next;
       if (relativePath) markDirty(relativePath);
       if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
-      saveTimerRef.current = setTimeout(() => saveBoard(next), 600);
+      // Serialize writes so a slow save never overlaps the next one with a stale
+      // revision; the trailing save always writes the latest board.
+      saveTimerRef.current = setTimeout(
+        () => { void runExclusiveSave(() => saveBoard(latestBoardRef.current ?? next)); },
+        600,
+      );
       return next;
     });
-  }, [markDirty, readOnly, relativePath, saveBoard]);
+  }, [markDirty, readOnly, relativePath, runExclusiveSave, saveBoard]);
 
   const loadBoard = useCallback(async (isInitial = false) => {
     if (!client || !relativePath) return;

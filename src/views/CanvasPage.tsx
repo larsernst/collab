@@ -537,7 +537,7 @@ function CanvasBoard({ relativePath }: { relativePath: string | null }) {
     y: 0,
     flowPosition: { x: 0, y: 0 },
   });
-  const { hashRef, lastWriteRef, markLoaded, shouldSkipAutosave, markWriteStarted, shouldCreateSnapshot } = useDocumentSessionState();
+  const { hashRef, lastWriteRef, markLoaded, shouldSkipAutosave, markWriteStarted, shouldCreateSnapshot, runExclusiveSave } = useDocumentSessionState();
   const pendingAutoConnectRef = useRef<PendingAutoConnect | null>(null);
   const duplicateDragSessionRef = useRef<{
     nodeIds: string[];
@@ -770,6 +770,7 @@ function CanvasBoard({ relativePath }: { relativePath: string | null }) {
     readOnly,
     markWriteStarted,
     shouldCreateSnapshot,
+    runExclusiveSave,
   });
 
   useEffect(() => {

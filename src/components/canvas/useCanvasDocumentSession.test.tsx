@@ -112,6 +112,7 @@ describe('useCanvasDocumentSession', () => {
       shouldSkipAutosave: () => true,
       markWriteStarted: vi.fn(),
       shouldCreateSnapshot: () => false,
+      runExclusiveSave: (save: () => Promise<void>) => save(),
     }));
 
     await waitFor(() => {
@@ -176,6 +177,7 @@ describe('useCanvasDocumentSession', () => {
       shouldSkipAutosave: () => true,
       markWriteStarted: vi.fn(),
       shouldCreateSnapshot: () => false,
+      runExclusiveSave: (save: () => Promise<void>) => save(),
     }));
 
     await waitFor(() => {
@@ -240,6 +242,7 @@ describe('useCanvasDocumentSession', () => {
       shouldSkipAutosave: () => skipAutosave,
       markWriteStarted: vi.fn(),
       shouldCreateSnapshot: () => true,
+      runExclusiveSave: (save: () => Promise<void>) => save(),
     };
 
     const { rerender } = renderHook((props: { nodes: FlowNode<CanvasNodeData>[] }) => useCanvasDocumentSession({
