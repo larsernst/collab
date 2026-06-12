@@ -79,7 +79,6 @@ jobs:
             libappindicator3-dev \
             librsvg2-dev \
             patchelf \
-            squashfs-tools \
             xdg-utils
 
       # ── Frontend ──────────────────────────────────────────────────────────
@@ -103,11 +102,10 @@ jobs:
           cp target/${{ matrix.rust-target }}/release/collab dist-portable/collab
           cat > dist-portable/README.txt <<'EOF'
           collab portable Linux build
-          
-          This archive uses the host system WebKitGTK/GTK libraries instead of AppImage's
-          bundled runtime. Use it when the AppImage has touchpad scrolling, blur, or
-          fractional-scaling issues on your distro.
-          
+
+          This archive runs against the host system WebKitGTK/GTK libraries. Use it when
+          the .deb / .rpm packages or the Flatpak bundle are not practical on your distro.
+
           Run:
             ./collab
           
@@ -128,10 +126,9 @@ jobs:
             Linux download order:
             1. Use the `.deb` build on Debian/Ubuntu-based systems.
             2. Use the `.rpm` build on Fedora/openSUSE/RHEL-based systems.
-            3. Use `collab-linux-*-portable.tar.gz` on other desktop distros.
-            4. Use the `.AppImage` only when the above are not practical.
+            3. Use the Flatpak bundle (`collab-flatpak-x86_64.flatpak`) or `collab-linux-*-portable.tar.gz` on other desktop distros.
 
-            AppImage is still shipped and supported, but native packages and the portable tarball usually provide better touchpad scrolling, blur/compositing, and scaling behavior on Linux.
+            Native packages, the Flatpak bundle, and the portable tarball provide the best touchpad scrolling, blur/compositing, and scaling behavior on Linux.
 
             Linux install guide: https://github.com/${{ github.repository }}/blob/${{ github.ref_name }}/docs/linux-install.md
           files: |
@@ -139,8 +136,6 @@ jobs:
             target/${{ matrix.rust-target }}/release/bundle/**/*.deb.sig
             target/${{ matrix.rust-target }}/release/bundle/**/*.rpm
             target/${{ matrix.rust-target }}/release/bundle/**/*.rpm.sig
-            target/${{ matrix.rust-target }}/release/bundle/**/*.AppImage
-            target/${{ matrix.rust-target }}/release/bundle/**/*.AppImage.sig
             target/${{ matrix.rust-target }}/release/bundle/**/*.msi
             target/${{ matrix.rust-target }}/release/bundle/**/*.msi.sig
             target/${{ matrix.rust-target }}/release/bundle/**/*.exe
@@ -161,8 +156,6 @@ jobs:
             target/${{ matrix.rust-target }}/release/bundle/**/*.deb.sig
             target/${{ matrix.rust-target }}/release/bundle/**/*.rpm
             target/${{ matrix.rust-target }}/release/bundle/**/*.rpm.sig
-            target/${{ matrix.rust-target }}/release/bundle/**/*.AppImage
-            target/${{ matrix.rust-target }}/release/bundle/**/*.AppImage.sig
             target/${{ matrix.rust-target }}/release/bundle/**/*.msi
             target/${{ matrix.rust-target }}/release/bundle/**/*.msi.sig
             target/${{ matrix.rust-target }}/release/bundle/**/*.exe
@@ -270,11 +263,11 @@ jobs:
             return null;
           }
 
-          // artifact-label → Tauri platform key + file patterns
-          // Tauri 2 signs bundles directly (.AppImage.sig) — no .AppImage.tar.gz
+          // artifact-label → Tauri platform key + file patterns.
+          // Linux is intentionally omitted: the in-app updater's only Linux target
+          // was the AppImage, which is no longer built. Linux updates are handled by
+          // the system package manager (.deb/.rpm) or Flathub (Flatpak).
           const PLATFORMS = {
-            'linux-x86_64':  { artifact: 'linux-x86_64',     file: /\.AppImage$/,         sig: /\.AppImage\.sig$/ },
-            'linux-aarch64': { artifact: 'linux-aarch64',    file: /\.AppImage$/,         sig: /\.AppImage\.sig$/ },
             'windows-x86_64':{ artifact: 'windows-x86_64',   file: /-setup\.exe$|\.msi$/, sig: /-setup\.exe\.sig$|\.msi\.sig$/ },
             'darwin-aarch64':{ artifact: 'mac-apple-silicon', file: /\.app\.tar\.gz$/,     sig: /\.app\.tar\.gz\.sig$/ },
           };

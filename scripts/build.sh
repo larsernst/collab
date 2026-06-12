@@ -64,9 +64,8 @@ package_linux_portable() {
   cat > "$staging/README.txt" <<'EOF'
 collab portable Linux build
 
-This archive uses the host system WebKitGTK/GTK libraries instead of AppImage's
-bundled runtime. Use it when the AppImage has touchpad scrolling, blur, or
-fractional-scaling issues on your distro.
+This archive runs against the host system WebKitGTK/GTK libraries. Use it when
+the .deb / .rpm packages or the Flatpak bundle are not practical on your distro.
 
 Run:
   ./collab
@@ -103,7 +102,7 @@ collect() {
 
   mkdir -p "$dest"
   find "$bundle_dir" \( \
-       -name "*.deb" -o -name "*.rpm" -o -name "*.AppImage" \
+       -name "*.deb" -o -name "*.rpm" \
     -o -name "*.msi" -o -name "*.exe" \
     -o -name "*.dmg" -o -name "*.app.tar.gz" \
     \) -exec cp -v {} "$dest/" \;

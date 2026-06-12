@@ -114,6 +114,16 @@ export const tauriCommands = {
     invoke<string>('import_asset_into_vault', { vaultPath, sourcePath, targetFolder: targetFolder ?? null }),
   readFileForUpload: (sourcePath: string) =>
     invoke<HostedUploadPayload>('read_file_for_upload', { sourcePath }),
+  /** Multi-select desktop file picker filtered to the given extensions (for vault import). */
+  showOpenFilesDialog: async (extensions: string[]) => {
+    const result = await open({
+      multiple: true,
+      title: 'Add files to vault',
+      filters: [{ name: 'Supported files', extensions }],
+    });
+    if (Array.isArray(result)) return result;
+    return typeof result === 'string' ? [result] : null;
+  },
   writeNote: (vaultPath: string, relativePath: string, content: string, expectedHash?: string, baseContent?: string) =>
     invoke<WriteResult>('write_note', {
       vaultPath,

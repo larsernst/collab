@@ -1,6 +1,6 @@
 # Linux Install Guide
 
-Use the Linux package that matches your system first. This app behaves best when it runs against the host GTK/WebKitGTK stack instead of an AppImage runtime.
+Use the Linux package that matches your system first. This app behaves best when it runs against the host GTK/WebKitGTK stack.
 
 ## Recommended Download Order
 
@@ -8,7 +8,6 @@ Use the Linux package that matches your system first. This app behaves best when
 2. `.rpm` for Fedora, Nobara, openSUSE, RHEL, and similar systems
 3. `.flatpak` for a sandboxed universal Linux install
 4. `collab-linux-*-portable.tar.gz` for other desktop distros when you want host-library behavior without Flatpak
-5. `.AppImage` only if the above options are not practical
 
 ## Install By Distro Family
 
@@ -79,19 +78,6 @@ Flatpak development/build notes are in [docs/flatpak.md](/home/azazel/Code Proje
 
 ## AppImage
 
-The AppImage is still supported and still shipped. It is the easiest file to download, but it is not the best Linux experience for this app.
+AppImage builds are no longer produced. Earlier releases shipped an `.AppImage`, but it had worse touchpad scrolling, blur/compositing, and fractional-scaling behavior than the native packages, the Flatpak bundle, and the portable tarball, so it was retired in favor of those.
 
-Known tradeoffs versus native/system-library builds:
-
-- touchpad scrolling can feel worse
-- backdrop blur/compositing can fail
-- fractional scaling can be inconsistent
-
-Run it with:
-
-```bash
-chmod +x collab-<version>.AppImage
-./collab-<version>.AppImage
-```
-
-If a user reports Linux-specific rendering or input issues, the first recommendation should be: use the native package for the distro, or the portable tarball if no native package applies.
+If a user reports Linux-specific rendering or input issues, the first recommendation should be: use the native package for the distro, the Flatpak bundle, or the portable tarball if no native package applies.

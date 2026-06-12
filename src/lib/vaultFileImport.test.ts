@@ -1,0 +1,110 @@
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+
+import {
+  fileBaseName,
+  importCategoryForName,
+  isImportableFile,
+  importExternalFilesIntoVault,
+} from './vaultFileImport';
+import { tauriCommands } from './tauri';
+import type { VaultClient } from './vaultClient';
+
+vi.mock('./tauri', () => ({
+  tauriCommands: {
+    readFileForUpload: vi.fn(),
+  },
+}));
+
+function makeClient(overrides: Partial<VaultClient> & { importMock?: ReturnType<typeof vi.fn> } = {}) {
+  const importMock = overrides.importMock ?? vi.fn(async (_p: string, folder?: string) => `${folder ? folder + '/' : ''}asset.png`);
+  const client = {
+    runtime: { externalAssetImport: { import: importMock, importData: vi.fn() } },
+    createDocument: vi.fn(async () => ({ relativePath: 'x', name: 'x', extension: 'md', modifiedAt: 0, size: 0, isFolder: false })),
+    readDocument: vi.fn(async (path: string) => ({ relativePath: path, content: '', version: 'v0', modifiedAt: 0 })),
+    writeDocument: vi.fn(async () => ({ version: 'v1' })),
+    ...overrides,
+  } as unknown as VaultClient & { createDocument: ReturnType<typeof vi.fn>; readDocument: ReturnType<typeof vi.fn>; writeDocument: ReturnType<typeof vi.fn> };
+  return { client, importMock };
+}
+
+describe('vaultFileImport categorization', () => {
+  it('classifies importable extensions', () => {
+    expect(importCategoryForName('photo.PNG')).toBe('image');
+    expect(importCategoryForName('scan.pdf')).toBe('pdf');
+    expect(importCategoryForName('notes.md')).toBe('markdown');
+    expect(importCategoryForName('readme.markdown')).toBe('markdown');
+    expect(importCategoryForName('archive.zip')).toBeNull();
+    expect(importCategoryForName('noext')).toBeNull();
+  });
+
+  it('exposes isImportableFile and fileBaseName helpers', () => {
+    expect(isImportableFile('a.jpg')).toBe(true);
+    expect(isImportableFile('a.exe')).toBe(false);
+    expect(fileBaseName('/home/u/Pictures/cat.png')).toBe('cat.png');
+    expect(fileBaseName('C:\\docs\\report.pdf')).toBe('report.pdf');
+  });
+});
+
+describe('importExternalFilesIntoVault', () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it('routes images to Pictures and PDFs to the vault root by default', async () => {
+    const { client, importMock } = makeClient();
+    importMock
+      .mockResolvedValueOnce('Pictures/cat.png')
+      .mockResolvedValueOnce('report.pdf');
+
+    const result = await importExternalFilesIntoVault(client, ['/x/cat.png', '/x/report.pdf']);
+
+    expect(importMock).toHaveBeenNthCalledWith(1, '/x/cat.png', 'Pictures');
+    expect(importMock).toHaveBeenNthCalledWith(2, '/x/report.pdf', '');
+    expect(result.imported).toEqual(['Pictures/cat.png', 'report.pdf']);
+    expect(result.failed).toEqual([]);
+  });
+
+  it('honours an explicit target folder for every type', async () => {
+    const { client, importMock } = makeClient();
+    importMock.mockResolvedValueOnce('Sub/cat.png');
+
+    await importExternalFilesIntoVault(client, ['/x/cat.png'], { targetFolder: 'Sub' });
+
+    expect(importMock).toHaveBeenCalledWith('/x/cat.png', 'Sub');
+  });
+
+  it('imports markdown as a text note (read, create, write)', async () => {
+    const { client } = makeClient();
+    vi.mocked(tauriCommands.readFileForUpload).mockResolvedValue({
+      name: 'notes.md',
+      mediaType: 'text/markdown',
+      contentBase64: btoa('# Title'),
+      expectedHash: 'hash',
+    });
+
+    const result = await importExternalFilesIntoVault(client, ['/x/notes.md'], { targetFolder: 'Docs' });
+
+    expect((client as any).createDocument).toHaveBeenCalledWith('Docs/notes.md');
+    expect((client as any).writeDocument).toHaveBeenCalledWith('Docs/notes.md', '# Title', 'v0', '');
+    expect(result.imported).toEqual(['Docs/notes.md']);
+  });
+
+  it('reports unsupported files without aborting the rest', async () => {
+    const { client, importMock } = makeClient();
+    importMock.mockResolvedValueOnce('Pictures/ok.png');
+
+    const result = await importExternalFilesIntoVault(client, ['/x/bad.zip', '/x/ok.png']);
+
+    expect(result.imported).toEqual(['Pictures/ok.png']);
+    expect(result.failed).toHaveLength(1);
+    expect(result.failed[0].name).toBe('bad.zip');
+  });
+
+  it('records a per-file error when an import throws', async () => {
+    const { client, importMock } = makeClient();
+    importMock.mockRejectedValueOnce(new Error('upload failed'));
+
+    const result = await importExternalFilesIntoVault(client, ['/x/cat.png']);
+
+    expect(result.imported).toEqual([]);
+    expect(result.failed[0]).toEqual({ name: 'cat.png', error: 'Error: upload failed' });
+  });
+});

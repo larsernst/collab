@@ -1,23 +1,23 @@
 import { useEffect, useState } from 'react';
-import { FolderOpen, Plus, Clock, ArrowRight, Server, RefreshCw, Settings, Check } from 'lucide-react';
+import { FolderOpen, Plus, Clock, ArrowRight, Server, RefreshCw, Check, LogIn, LogOut, ChevronDown } from 'lucide-react';
 import { AppLogo } from '../ui/AppLogo';
 import { Button } from '../ui/button';
 import { Input } from '../ui/input';
 import { Separator } from '../ui/separator';
 import { useVaultStore } from '../../store/vaultStore';
 import { useServerStore, isEffectivelyConnected } from '../../store/serverStore';
-import { useUiStore } from '../../store/uiStore';
 import { tauriCommands } from '../../lib/tauri';
 import { hostedVaultMeta, vaultKind } from '../../types/vault';
+import { HostedLoginForm } from '../server/HostedLoginForm';
 import { toast } from 'sonner';
 
 export default function VaultPicker() {
   const { openVault, openHostedVault, loadRecentVaults, recentVaults, isLoading } = useVaultStore();
-  const { status, hostedVaults, isLoading: isServerLoading, error, refresh, loadHostedVaults, createHostedVault } = useServerStore();
-  const { openSettings } = useUiStore();
+  const { status, hostedVaults, isLoading: isServerLoading, error, refresh, loadHostedVaults, createHostedVault, disconnect } = useServerStore();
   const [creatingHosted, setCreatingHosted] = useState(false);
   const [hostedName, setHostedName] = useState('');
   const [hostedBusy, setHostedBusy] = useState(false);
+  const [showLogin, setShowLogin] = useState(false);
   const activeHostedVaults = hostedVaults.filter((vault) => vault.status === 'active');
   const localRecentVaults = recentVaults.filter((vault) => vaultKind(vault) === 'local').slice(0, 5);
   // A connected-but-expired session cannot create vaults; only offer creation when
@@ -56,11 +56,13 @@ export default function VaultPicker() {
     }
   };
 
-  const openServerSettings = () => {
-    openSettings();
-    window.setTimeout(() => {
-      window.dispatchEvent(new CustomEvent('settings:open-tab', { detail: { tab: 'server' } }));
-    });
+  const handleDisconnect = async () => {
+    try {
+      await disconnect();
+      toast.success('Disconnected from server');
+    } catch (reason) {
+      toast.error(`Failed to disconnect: ${reason}`);
+    }
   };
 
   const handleOpenDialog = async () => {
@@ -166,6 +168,15 @@ export default function VaultPicker() {
                   >
                     <RefreshCw size={12} className={isServerLoading ? 'animate-spin' : undefined} />
                   </Button>
+                  <Button
+                    size="icon"
+                    variant="ghost"
+                    className="size-7"
+                    onClick={handleDisconnect}
+                    title="Log out of server"
+                  >
+                    <LogOut size={13} />
+                  </Button>
                 </div>
               </div>
               {creatingHosted && canCreateHosted && (
@@ -211,16 +222,21 @@ export default function VaultPicker() {
               )}
               {error && <p className="text-xs text-destructive">{error}</p>}
             </div>
+          ) : showLogin ? (
+            <div className="space-y-3 rounded-lg border border-border/40 bg-card/30 p-3">
+              <HostedLoginForm onConnected={() => setShowLogin(false)} />
+            </div>
           ) : (
             <button
-              onClick={openServerSettings}
+              onClick={() => setShowLogin(true)}
               className="flex w-full items-center gap-3 rounded-lg border border-dashed border-border/60 px-3 py-3 text-left transition-colors hover:border-primary/30 hover:bg-primary/5"
             >
-              <Settings size={14} className="text-muted-foreground" />
-              <div>
+              <LogIn size={14} className="text-muted-foreground" />
+              <div className="flex-1">
                 <p className="text-sm font-medium">Connect a Collab server</p>
-                <p className="text-[11px] text-muted-foreground">Sign in from Settings to open hosted vaults.</p>
+                <p className="text-[11px] text-muted-foreground">Sign in to open hosted vaults.</p>
               </div>
+              <ChevronDown size={14} className="text-muted-foreground" />
             </button>
           )}
 

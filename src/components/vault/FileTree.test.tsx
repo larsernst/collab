@@ -17,7 +17,20 @@ vi.mock('../../lib/tauri', () => ({
     renameNote: vi.fn(),
     readNote: vi.fn(),
     listFileReferences: vi.fn(),
+    showOpenFilesDialog: vi.fn(),
   },
+}));
+
+vi.mock('./useNativeFileDrop', () => ({
+  useNativeFileDrop: () => ({ isDraggingOver: false }),
+}));
+
+const importExternalFilesIntoVault = vi.fn(
+  async (..._args: unknown[]) => ({ imported: ['Pictures/cat.png'], failed: [] as { name: string; error: string }[] }),
+);
+vi.mock('../../lib/vaultFileImport', () => ({
+  importExternalFilesIntoVault: (...args: unknown[]) => importExternalFilesIntoVault(...args),
+  IMPORTABLE_EXTENSIONS: ['png', 'pdf', 'md'],
 }));
 
 vi.mock('sonner', () => ({
@@ -344,5 +357,16 @@ describe('FileTree folder collapse state', () => {
       expect(tauriCommands.previewRenameMove).toHaveBeenCalled();
     });
     expect(tauriCommands.renameNote).not.toHaveBeenCalled();
+  });
+
+  it('imports files chosen from the add-files dialog', async () => {
+    vi.mocked(tauriCommands.showOpenFilesDialog).mockResolvedValue(['/desktop/cat.png']);
+
+    render(<FileTree />);
+    fireEvent.click(screen.getByLabelText('Add files to vault'));
+
+    await waitFor(() => expect(tauriCommands.showOpenFilesDialog).toHaveBeenCalledWith(['png', 'pdf', 'md']));
+    await waitFor(() => expect(importExternalFilesIntoVault).toHaveBeenCalled());
+    expect(importExternalFilesIntoVault.mock.calls[0][1]).toEqual(['/desktop/cat.png']);
   });
 });

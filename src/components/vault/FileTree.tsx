@@ -1,15 +1,18 @@
-import { useState, useCallback, useEffect, useMemo } from 'react';
+import { useState, useCallback, useEffect, useMemo, useRef } from 'react';
 import {
   ChevronRight, ChevronDown, FileText, Folder, FolderOpen,
-  Plus, FolderPlus, Layout, LayoutDashboard, Paperclip, Image as ImageIcon, Trash2,
+  Plus, FolderPlus, FileUp, Layout, LayoutDashboard, Paperclip, Image as ImageIcon, Trash2,
 } from 'lucide-react';
 import { cn } from '../../lib/utils';
 import { useVaultStore } from '../../store/vaultStore';
+import { tauriCommands } from '../../lib/tauri';
+import { importExternalFilesIntoVault, IMPORTABLE_EXTENSIONS } from '../../lib/vaultFileImport';
+import { useNativeFileDrop } from './useNativeFileDrop';
 import { useEditorStore } from '../../store/editorStore';
 import { useCollabStore } from '../../store/collabStore';
 import { useUiStore } from '../../store/uiStore';
 import { createVaultClient } from '../../lib/vaultClient';
-import type { FileReference, NoteFile } from '../../types/vault';
+import { isVaultReadOnly, type FileReference, type NoteFile } from '../../types/vault';
 import { getCardAttachmentPaths, type KanbanBoard, type KanbanCard } from '../../types/kanban';
 import { useKanbanStore } from '../../store/kanbanStore';
 import { getVaultDocumentTabType, getVaultDocumentTitle, getVaultDocumentView } from '../../lib/vaultLinks';
@@ -124,6 +127,49 @@ export default function FileTree() {
   const [draggingPath, setDraggingPath] = useState<string | null>(null);
   const [dropTargetPath, setDropTargetPath] = useState<string | null | '__root__'>('__root__');
   // null = no target, '__root__' = root of vault
+  const treeContainerRef = useRef<HTMLDivElement | null>(null);
+  const readOnly = isVaultReadOnly(vault);
+
+  // ── External file import (images, PDFs, markdown) ──────────────────────────
+  const importFiles = useCallback(async (sourcePaths: string[], targetFolder?: string) => {
+    if (!vault || sourcePaths.length === 0) return;
+    try {
+      const result = await importExternalFilesIntoVault(createVaultClient(vault), sourcePaths, { targetFolder });
+      await refreshFileTree();
+      if (result.imported.length > 0) {
+        toast.success(
+          result.imported.length === 1
+            ? `Added ${result.imported[0].split('/').pop()}`
+            : `Added ${result.imported.length} files`,
+        );
+      }
+      for (const failure of result.failed) {
+        toast.error(`Could not add ${failure.name}: ${failure.error}`);
+      }
+    } catch (error) {
+      toast.error(`Failed to import files: ${error}`);
+    }
+  }, [refreshFileTree, vault]);
+
+  const handleImportButton = useCallback(async () => {
+    const selected = await tauriCommands.showOpenFilesDialog(IMPORTABLE_EXTENSIONS);
+    if (selected) await importFiles(selected);
+  }, [importFiles]);
+
+  // Resolve the folder under the drop point so a file dropped onto a folder lands
+  // inside it; anywhere else imports to the vault root.
+  const handleNativeFileDrop = useCallback((paths: string[], point: { x: number; y: number }) => {
+    const element = document.elementFromPoint(point.x, point.y);
+    const folderEl = element?.closest('[data-tree-folder-path]') as HTMLElement | null;
+    const targetFolder = folderEl?.dataset.treeFolderPath || undefined;
+    void importFiles(paths, targetFolder);
+  }, [importFiles]);
+
+  const { isDraggingOver: isDraggingFiles } = useNativeFileDrop(
+    treeContainerRef,
+    handleNativeFileDrop,
+    mode === 'files' && !!vault && !readOnly,
+  );
 
   const handleOpenFile = useCallback((file: NoteFile) => {
     const type = isImageFile(file)
@@ -501,6 +547,20 @@ export default function FileTree() {
               </TooltipTrigger>
               <TooltipContent side="bottom" className="text-xs text-foreground">New folder</TooltipContent>
             </Tooltip>
+            {!readOnly && (
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <button
+                    aria-label="Add files to vault"
+                    onClick={handleImportButton}
+                    className="w-6 h-6 flex items-center justify-center rounded text-muted-foreground hover:text-foreground hover:bg-accent/60 transition-colors app-motion-fast"
+                  >
+                    <FileUp size={13} />
+                  </button>
+                </TooltipTrigger>
+                <TooltipContent side="bottom" className="text-xs text-foreground">Add files (images, PDFs, markdown)</TooltipContent>
+              </Tooltip>
+            )}
           </div>
         )}
       </div>
@@ -510,9 +570,11 @@ export default function FileTree() {
         <TrashPanel />
       ) : (
       <div
+        ref={treeContainerRef}
         className={cn(
           'flex-1 overflow-y-auto py-1 transition-colors duration-100 app-motion-fast',
-          dropTargetPath === '__root__' && draggingPath ? 'bg-primary/5' : ''
+          dropTargetPath === '__root__' && draggingPath ? 'bg-primary/5' : '',
+          isDraggingFiles ? 'ring-2 ring-inset ring-primary/40 bg-primary/5' : ''
         )}
         onDragOver={(e) => { e.preventDefault(); e.dataTransfer.dropEffect = 'move'; setDropTargetPath('__root__'); }}
         onDragLeave={(e) => {
@@ -668,6 +730,7 @@ function FileTreeNode({
         <div>
           <div
             draggable
+            data-tree-folder-path={node.isFolder ? node.relativePath : undefined}
             onMouseEnter={(event) => {
               if (!fileTreeHoverPreviewsEnabled || (!isPdfAsset && !isImageAsset)) return;
               setHoverPreviewAnchorRect(event.currentTarget.getBoundingClientRect());

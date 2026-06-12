@@ -1,7 +1,6 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { useServerStore } from '../../store/serverStore';
-import { useUiStore } from '../../store/uiStore';
 import { useVaultStore } from '../../store/vaultStore';
 import VaultPicker from './VaultPicker';
 
@@ -30,7 +29,7 @@ const hostedVault = {
 describe('VaultPicker hosted vaults', () => {
   const openHostedVault = vi.fn(async () => {});
   const createHostedVault = vi.fn(async () => hostedVault);
-  const openSettings = vi.fn();
+  const disconnect = vi.fn(async () => {});
 
   beforeEach(() => {
     vi.clearAllMocks();
@@ -56,8 +55,8 @@ describe('VaultPicker hosted vaults', () => {
       refresh: vi.fn(async () => {}),
       loadHostedVaults: vi.fn(async () => {}),
       createHostedVault,
+      disconnect,
     });
-    useUiStore.setState({ openSettings });
   });
 
   it('opens a listed hosted vault with server-backed metadata', async () => {
@@ -86,19 +85,25 @@ describe('VaultPicker hosted vaults', () => {
     })));
   });
 
-  it('routes disconnected users directly to server settings', async () => {
+  it('reveals an inline hosted login form when disconnected', async () => {
     useServerStore.setState({
       status: { connected: false, serverUrl: null, allowInvalidCertificates: false, user: null, accessExpiresAt: null },
       hostedVaults: [],
     });
-    const handler = vi.fn();
-    window.addEventListener('settings:open-tab', handler);
 
     render(<VaultPicker />);
+    // The form is collapsed behind a prompt until the user opts in.
+    expect(screen.queryByLabelText('Server URL')).toBeNull();
     fireEvent.click(screen.getByRole('button', { name: /Connect a Collab server/ }));
 
-    expect(openSettings).toHaveBeenCalled();
-    await waitFor(() => expect(handler).toHaveBeenCalled());
-    window.removeEventListener('settings:open-tab', handler);
+    await waitFor(() => expect(screen.getByLabelText('Server URL')).toBeTruthy());
+    expect(screen.getByLabelText('Username')).toBeTruthy();
+    expect(screen.getByLabelText('Password')).toBeTruthy();
+  });
+
+  it('logs out of the connected server through the disconnect control', async () => {
+    render(<VaultPicker />);
+    fireEvent.click(screen.getByTitle('Log out of server'));
+    await waitFor(() => expect(disconnect).toHaveBeenCalled());
   });
 });
