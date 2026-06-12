@@ -108,6 +108,10 @@ pub fn build_router(state: AppState) -> Router {
             get(api::download_vault_file),
         )
         .route(
+            "/api/v1/vaults/{vault_id}/files/{file_id}/archive",
+            get(api::download_vault_folder_archive),
+        )
+        .route(
             "/api/v1/vaults/{vault_id}/files/{file_id}/references",
             get(api::list_file_references),
         )

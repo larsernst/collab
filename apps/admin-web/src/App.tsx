@@ -2,6 +2,7 @@ import {
   Activity,
   Boxes,
   CircleAlert,
+  ChevronDown,
   ChevronRight,
   Database,
   Download,
@@ -9,9 +10,9 @@ import {
   Folder,
   FolderOpen,
   Gauge,
+  History,
   KeyRound,
   LogOut,
-  Move as MoveIcon,
   Plus,
   RefreshCw,
   Search,
@@ -466,10 +467,8 @@ function VaultDetailPage({ vaultId, onBack }: { vaultId: string; onBack: () => v
   const [manifestSequence, setManifestSequence] = useState(0);
   const [currentFolderId, setCurrentFolderId] = useState<string | null>(null);
   const [fileSearch, setFileSearch] = useState('');
-  const [historyFile, setHistoryFile] = useState<HostedFileEntry | null>(null);
-  const [revisions, setRevisions] = useState<HostedFileRevision[]>([]);
-  const [moveFile, setMoveFile] = useState<HostedFileEntry | null>(null);
-  const [moveParentId, setMoveParentId] = useState('');
+  const [draggingFileId, setDraggingFileId] = useState<string | null>(null);
+  const [dropTargetId, setDropTargetId] = useState<string | null | '__root__'>(null);
   const [users, setUsers] = useState<ServerUser[]>([]);
   const [newMemberId, setNewMemberId] = useState('');
   const [newMemberRole, setNewMemberRole] = useState('viewer');
@@ -561,14 +560,16 @@ function VaultDetailPage({ vaultId, onBack }: { vaultId: string; onBack: () => v
     }
   }
 
-  async function downloadFile(file: HostedFileEntry) {
+  async function downloadEntry(file: HostedFileEntry) {
     setError('');
     try {
-      const blob = await serverApi.downloadFile(vaultId, file.id);
+      const blob = file.kind === 'folder'
+        ? await serverApi.downloadFolder(vaultId, file.id)
+        : await serverApi.downloadFile(vaultId, file.id);
       const url = URL.createObjectURL(blob);
       const link = document.createElement('a');
       link.href = url;
-      link.download = file.name;
+      link.download = file.kind === 'folder' ? `${file.name}.zip` : file.name;
       link.click();
       URL.revokeObjectURL(url);
     } catch (reason) {
@@ -576,28 +577,32 @@ function VaultDetailPage({ vaultId, onBack }: { vaultId: string; onBack: () => v
     }
   }
 
-  async function showHistory(file: HostedFileEntry) {
-    setError('');
-    try {
-      setHistoryFile(file);
-      setRevisions(await serverApi.fileRevisions(vaultId, file.id));
-    } catch (reason) {
-      setError(String(reason));
+  // Move a file/folder under a new parent via drag-and-drop. Guards against
+  // no-op moves and dropping a folder into itself or one of its descendants.
+  async function performMove(fileId: string, targetParentId: string | null) {
+    const file = filesById.get(fileId);
+    if (!file || file.state !== 'active') return;
+    if ((file.parentId ?? null) === targetParentId) return;
+    if (file.kind === 'folder' && targetParentId) {
+      const target = filesById.get(targetParentId);
+      if (target && (target.id === file.id || target.relativePath === file.relativePath || target.relativePath.startsWith(`${file.relativePath}/`))) {
+        return;
+      }
     }
-  }
-
-  async function moveSelectedFile(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    if (!moveFile) return;
     await run(() => serverApi.moveFile(vaultId, {
       clientOperationId: crypto.randomUUID(),
       baseManifestSequence: manifestSequence,
       operationType: 'move',
-      targetFileId: moveFile.id,
-      parentId: moveParentId || null,
+      targetFileId: fileId,
+      parentId: targetParentId,
     }));
-    setMoveFile(null);
-    setMoveParentId('');
+  }
+
+  function handleDropOnTarget(targetParentId: string | null) {
+    const fileId = draggingFileId;
+    setDraggingFileId(null);
+    setDropTargetId(null);
+    if (fileId) void performMove(fileId, targetParentId);
   }
 
   const filesById = useMemo(() => new Map(files.map((file) => [file.id, file])), [files]);
@@ -626,7 +631,6 @@ function VaultDetailPage({ vaultId, onBack }: { vaultId: string; onBack: () => v
   function openFolder(folderId: string | null) {
     setCurrentFolderId(folderId);
     setFileSearch('');
-    setHistoryFile(null);
   }
 
   const pendingDelete = detail?.status === 'pending_delete';
@@ -704,13 +708,31 @@ function VaultDetailPage({ vaultId, onBack }: { vaultId: string; onBack: () => v
         <Panel title="Vault files" icon={<Folder size={17} />}>
           <div className="file-browser-toolbar">
             <nav className="file-breadcrumbs" aria-label="Vault file path">
-              <Button variant="ghost" size="sm" onClick={() => openFolder(null)} aria-current={currentFolderId === null ? 'page' : undefined}>
+              <Button
+                variant="ghost"
+                size="sm"
+                className={dropTargetId === '__root__' ? 'drop-target' : ''}
+                onClick={() => openFolder(null)}
+                aria-current={currentFolderId === null ? 'page' : undefined}
+                onDragOver={(event) => { if (draggingFileId) { event.preventDefault(); setDropTargetId('__root__'); } }}
+                onDragLeave={() => setDropTargetId((current) => (current === '__root__' ? null : current))}
+                onDrop={(event) => { event.preventDefault(); handleDropOnTarget(null); }}
+              >
                 <FolderOpen size={15} />Vault root
               </Button>
               {breadcrumbs.map((folder) => (
                 <span key={folder.id}>
                   <ChevronRight size={14} />
-                  <Button variant="ghost" size="sm" onClick={() => openFolder(folder.id)} aria-current={currentFolderId === folder.id ? 'page' : undefined}>{folder.name}</Button>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className={dropTargetId === folder.id ? 'drop-target' : ''}
+                    onClick={() => openFolder(folder.id)}
+                    aria-current={currentFolderId === folder.id ? 'page' : undefined}
+                    onDragOver={(event) => { if (draggingFileId && draggingFileId !== folder.id) { event.preventDefault(); setDropTargetId(folder.id); } }}
+                    onDragLeave={() => setDropTargetId((current) => (current === folder.id ? null : current))}
+                    onDrop={(event) => { event.preventDefault(); handleDropOnTarget(folder.id); }}
+                  >{folder.name}</Button>
                 </span>
               ))}
             </nav>
@@ -728,58 +750,58 @@ function VaultDetailPage({ vaultId, onBack }: { vaultId: string; onBack: () => v
           <p className="subtle file-browser-summary">
             {normalizedSearch
               ? `${visibleFiles.length} matches across the vault`
-              : `${visibleFiles.length} entries in ${currentFolder?.relativePath ?? 'Vault root'}`}
+              : `${visibleFiles.length} entries in ${currentFolder?.relativePath ?? 'Vault root'} · drag a row onto a folder to move it`}
           </p>
           <div className="file-browser">
             <div className="file-row file-header">
               <span>{normalizedSearch ? 'Path' : 'Name'}</span><span>Size</span><span>Modified</span><span>State</span><span>Actions</span>
             </div>
-            {visibleFiles.map((file) => (
-              <div className="file-row" key={file.id}>
-                <div className="file-name">
-                  {file.kind === 'folder' ? <Folder size={16} /> : <FileIcon size={16} />}
-                  <span>
-                    {file.kind === 'folder'
-                      ? <button type="button" className="file-open-button" onClick={() => openFolder(file.id)}>{normalizedSearch ? file.relativePath : file.name}</button>
-                      : <strong>{normalizedSearch ? file.relativePath : file.name}</strong>}
-                    <small>{file.kind}{file.documentType ? ` · ${file.documentType}` : ''}</small>
-                  </span>
+            {visibleFiles.map((file) => {
+              const draggable = file.state === 'active' && !normalizedSearch;
+              const isFolderDropTarget = file.kind === 'folder' && dropTargetId === file.id && draggingFileId !== null && draggingFileId !== file.id;
+              return (
+                <div
+                  className={['file-row', draggingFileId === file.id ? 'dragging' : '', isFolderDropTarget ? 'drop-target' : ''].filter(Boolean).join(' ')}
+                  key={file.id}
+                  draggable={draggable}
+                  onDragStart={draggable ? (event) => { setDraggingFileId(file.id); event.dataTransfer.effectAllowed = 'move'; } : undefined}
+                  onDragEnd={() => { setDraggingFileId(null); setDropTargetId(null); }}
+                  onDragOver={file.kind === 'folder' ? (event) => {
+                    if (draggingFileId && draggingFileId !== file.id) { event.preventDefault(); setDropTargetId(file.id); }
+                  } : undefined}
+                  onDragLeave={file.kind === 'folder' ? () => setDropTargetId((current) => (current === file.id ? null : current)) : undefined}
+                  onDrop={file.kind === 'folder' ? (event) => { event.preventDefault(); handleDropOnTarget(file.id); } : undefined}
+                >
+                  <div className="file-name">
+                    {file.kind === 'folder' ? <Folder size={16} /> : <FileIcon size={16} />}
+                    <span>
+                      {file.kind === 'folder'
+                        ? <button type="button" className="file-open-button" onClick={() => openFolder(file.id)}>{normalizedSearch ? file.relativePath : file.name}</button>
+                        : <strong>{normalizedSearch ? file.relativePath : file.name}</strong>}
+                      <small>{file.kind}{file.documentType ? ` · ${file.documentType}` : ''}</small>
+                    </span>
+                  </div>
+                  <span>{file.currentRevision ? formatBytes(file.currentRevision.sizeBytes) : '—'}</span>
+                  <span>{new Date(file.updatedAt).toLocaleString()}</span>
+                  <Badge variant={file.state === 'active' ? 'success' : 'destructive'}>{file.state}</Badge>
+                  <div className="actions">
+                    <Button aria-label={`Download ${file.relativePath}`} variant="outline" size="sm" disabled={file.state !== 'active'} onClick={() => void downloadEntry(file)}><Download size={15} />{file.kind === 'folder' ? 'Download ZIP' : 'Download'}</Button>
+                    {file.kind === 'document' && (
+                      <FileHistoryMenu
+                        vaultId={vaultId}
+                        file={file}
+                        canRestore={detail.status === 'active' && file.state === 'active'}
+                        onError={setError}
+                        onRestored={() => void load()}
+                      />
+                    )}
+                  </div>
                 </div>
-                <span>{file.currentRevision ? formatBytes(file.currentRevision.sizeBytes) : '—'}</span>
-                <span>{new Date(file.updatedAt).toLocaleString()}</span>
-                <Badge variant={file.state === 'active' ? 'success' : 'destructive'}>{file.state}</Badge>
-                <div className="actions">
-                  <Button aria-label={`Download ${file.relativePath}`} variant="outline" size="sm" disabled={file.kind === 'folder' || file.state !== 'active'} onClick={() => void downloadFile(file)}><Download size={15} />Download</Button>
-                  <Button aria-label={`Move ${file.relativePath}`} variant="outline" size="sm" disabled={file.state !== 'active'} onClick={() => { setMoveFile(file); setMoveParentId(file.parentId ?? ''); }}><MoveIcon size={15} />Move</Button>
-                  <Button aria-label={`History ${file.relativePath}`} variant="outline" size="sm" disabled={file.kind !== 'document' || file.state !== 'active'} onClick={() => void showHistory(file)}>History</Button>
-                </div>
-              </div>
-            ))}
+              );
+            })}
             {visibleFiles.length === 0 && <div className="file-browser-empty">{normalizedSearch ? 'No files match this search.' : 'This folder is empty.'}</div>}
           </div>
         </Panel>
-        {historyFile && (
-          <Panel title={`Revision history · ${historyFile.relativePath}`} icon={<Activity size={17} />}>
-            <div className="audit-list">
-              {revisions.map((revision) => (
-                <div className="audit-row" key={revision.id}>
-                  <div className="grow"><strong>Revision {revision.sequence}</strong><small>{formatBytes(revision.sizeBytes)} · {revision.createdByDisplayName ?? 'System'} · {new Date(revision.createdAt).toLocaleString()}</small></div>
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    disabled={revision.id === historyFile.currentRevision?.id || detail.status !== 'active' || historyFile.state !== 'active'}
-                    onClick={() => void run(async () => {
-                      await serverApi.restoreFileRevision(vaultId, historyFile.id, revision.id, historyFile.currentRevision?.sequence ?? 0);
-                      setHistoryFile(null);
-                    })}
-                  >
-                    Restore
-                  </Button>
-                </div>
-              ))}
-            </div>
-          </Panel>
-        )}
         <Panel title={`${members.length} members`} icon={<Users size={17} />}>
           <div className="user-list">
             {members.map((member) => (
@@ -834,19 +856,7 @@ function VaultDetailPage({ vaultId, onBack }: { vaultId: string; onBack: () => v
             </form>
           )}
         </Panel>
-        <Panel title="Vault activity" icon={<Activity size={17} />}>
-          {activity.length === 0 ? <p className="subtle">No recorded activity yet.</p> : (
-            <div className="audit-list">
-              {activity.map((event) => (
-                <div className="audit-row" key={event.id}>
-                  <span className="event-dot success" />
-                  <div className="grow"><strong>{event.eventType.replaceAll('.', ' ').replaceAll('_', ' ')}</strong><small>{event.actorDisplayName ?? 'System'} · {new Date(event.createdAt).toLocaleString()}</small></div>
-                  {event.targetType && <span className="request-chip">{event.targetType}</span>}
-                </div>
-              ))}
-            </div>
-          )}
-        </Panel>
+        <VaultActivityPanel activity={activity} />
       </>}
       {confirm && (
         <ConfirmDialog
@@ -876,31 +886,155 @@ function VaultDetailPage({ vaultId, onBack }: { vaultId: string; onBack: () => v
           }}
         />
       )}
-      {moveFile && (
-        <div className="dialog-backdrop" role="presentation">
-          <Card className="dialog" role="dialog" aria-modal="true" aria-label={`Move ${moveFile.name}`}>
-            <h2>Move {moveFile.name}</h2>
-            <p className="subtle">Choose a destination folder. References are rewritten by the hosted-vault operation.</p>
-            <form onSubmit={moveSelectedFile}>
-              <label className="field"><span>Destination</span>
-                <SelectMenu
-                  label="Destination folder"
-                  value={moveParentId}
-                  options={[
-                    { value: '', label: 'Vault root' },
-                    ...files
-                      .filter((file) => file.kind === 'folder' && file.state === 'active' && file.id !== moveFile.id && !file.relativePath.startsWith(`${moveFile.relativePath}/`))
-                      .map((file) => ({ value: file.id, label: file.relativePath })),
-                  ]}
-                  onChange={setMoveParentId}
-                />
-              </label>
-              <div className="dialog-actions"><Button type="button" variant="outline" onClick={() => setMoveFile(null)}>Cancel</Button><Button>Move</Button></div>
-            </form>
-          </Card>
+    </>
+  );
+}
+
+// Per-file revision history shown as a dropdown menu instead of a full panel.
+function FileHistoryMenu({
+  vaultId,
+  file,
+  canRestore,
+  onRestored,
+  onError,
+}: {
+  vaultId: string;
+  file: HostedFileEntry;
+  canRestore: boolean;
+  onRestored: () => void;
+  onError: (message: string) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [revisions, setRevisions] = useState<HostedFileRevision[]>([]);
+  const [loading, setLoading] = useState(false);
+  const containerRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const onPointerDown = (event: PointerEvent) => {
+      if (!containerRef.current?.contains(event.target as Node)) setOpen(false);
+    };
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setOpen(false);
+    };
+    document.addEventListener('pointerdown', onPointerDown);
+    document.addEventListener('keydown', onKeyDown);
+    return () => {
+      document.removeEventListener('pointerdown', onPointerDown);
+      document.removeEventListener('keydown', onKeyDown);
+    };
+  }, [open]);
+
+  async function toggle() {
+    if (open) {
+      setOpen(false);
+      return;
+    }
+    setOpen(true);
+    setLoading(true);
+    try {
+      setRevisions(await serverApi.fileRevisions(vaultId, file.id));
+    } catch (reason) {
+      onError(String(reason));
+      setOpen(false);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function restore(revision: HostedFileRevision) {
+    try {
+      await serverApi.restoreFileRevision(vaultId, file.id, revision.id, file.currentRevision?.sequence ?? 0);
+      setOpen(false);
+      onRestored();
+    } catch (reason) {
+      onError(String(reason));
+    }
+  }
+
+  return (
+    <div ref={containerRef} className="history-menu">
+      <Button
+        aria-label={`History ${file.relativePath}`}
+        aria-haspopup="menu"
+        aria-expanded={open}
+        variant="outline"
+        size="sm"
+        disabled={file.state !== 'active'}
+        onClick={() => void toggle()}
+      >
+        <History size={15} />History<ChevronDown size={13} />
+      </Button>
+      {open && (
+        <div className="history-menu-list" role="menu" aria-label={`Revision history for ${file.name}`}>
+          {loading && <p className="subtle history-menu-empty">Loading revisions...</p>}
+          {!loading && revisions.length === 0 && <p className="subtle history-menu-empty">No revisions recorded.</p>}
+          {!loading && revisions.map((revision) => (
+            <div className="history-menu-row" key={revision.id}>
+              <div className="grow">
+                <strong>Revision {revision.sequence}</strong>
+                <small>{formatBytes(revision.sizeBytes)} · {revision.createdByDisplayName ?? 'System'} · {new Date(revision.createdAt).toLocaleString()}</small>
+              </div>
+              <Button
+                variant="outline"
+                size="sm"
+                disabled={revision.id === file.currentRevision?.id || !canRestore}
+                onClick={() => void restore(revision)}
+              >
+                Restore
+              </Button>
+            </div>
+          ))}
         </div>
       )}
-    </>
+    </div>
+  );
+}
+
+// Vault activity condensed into a card with the three most recent events plus a
+// collapsible submenu for the full log.
+function VaultActivityPanel({ activity }: { activity: HostedVaultActivityEvent[] }) {
+  const [expanded, setExpanded] = useState(false);
+  const recent = activity.slice(0, 3);
+  const rest = activity.slice(3);
+  const renderRow = (event: HostedVaultActivityEvent) => (
+    <div className="audit-row" key={event.id}>
+      <span className="event-dot success" />
+      <div className="grow">
+        <strong>{event.eventType.replaceAll('.', ' ').replaceAll('_', ' ')}</strong>
+        <small>{event.actorDisplayName ?? 'System'} · {new Date(event.createdAt).toLocaleString()}</small>
+      </div>
+      {event.targetType && <span className="request-chip">{event.targetType}</span>}
+    </div>
+  );
+  return (
+    <Panel title="Vault activity" icon={<Activity size={17} />}>
+      {activity.length === 0 ? <p className="subtle">No recorded activity yet.</p> : (
+        <>
+          <Card className="activity-recent">
+            <div className="activity-recent-head">
+              <small>Most recent activity</small>
+            </div>
+            <div className="audit-list">{recent.map(renderRow)}</div>
+          </Card>
+          {rest.length > 0 && (
+            <>
+              <Button
+                variant="ghost"
+                size="sm"
+                className="activity-toggle"
+                aria-expanded={expanded}
+                onClick={() => setExpanded((value) => !value)}
+              >
+                <ChevronRight size={14} className={expanded ? 'rotate' : ''} />
+                {expanded ? 'Hide earlier activity' : `Show ${rest.length} earlier event${rest.length === 1 ? '' : 's'}`}
+              </Button>
+              {expanded && <div className="audit-list activity-rest">{rest.map(renderRow)}</div>}
+            </>
+          )}
+        </>
+      )}
+    </Panel>
   );
 }
 

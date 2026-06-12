@@ -128,6 +128,8 @@ export const serverApi = {
     api<HostedFileRevision[]>(`/api/v1/vaults/${vaultId}/files/${fileId}/revisions`),
   downloadFile: (vaultId: string, fileId: string) =>
     apiBlob(`/api/v1/vaults/${vaultId}/files/${fileId}/content`),
+  downloadFolder: (vaultId: string, fileId: string) =>
+    apiBlob(`/api/v1/vaults/${vaultId}/files/${fileId}/archive`),
   moveFile: (vaultId: string, payload: Record<string, unknown>) =>
     api<{ resultManifestSequence: number }>(`/api/v1/vaults/${vaultId}/operations`, {
       method: 'POST',

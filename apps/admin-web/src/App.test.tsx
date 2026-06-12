@@ -35,6 +35,7 @@ vi.mock('./api', () => ({
     vaultFiles: vi.fn(),
     fileRevisions: vi.fn(),
     downloadFile: vi.fn(),
+    downloadFolder: vi.fn(),
     moveFile: vi.fn(),
     restoreFileRevision: vi.fn(),
     importVault: vi.fn(),
@@ -338,6 +339,45 @@ describe('admin application', () => {
     expect(URL.createObjectURL).toHaveBeenCalled();
   });
 
+  it('shows the three most recent activity events with a collapsible submenu for the rest', async () => {
+    vi.mocked(serverApi.bootstrapStatus).mockResolvedValue({ required: false });
+    vi.mocked(serverApi.me).mockResolvedValue(admin);
+    vi.mocked(serverApi.users).mockResolvedValue([admin]);
+    vi.mocked(serverApi.vaults).mockResolvedValue([{
+      id: 'vault-1', name: 'Team Vault', ownerDisplayName: 'Admin User', status: 'active',
+      members: 1, storageBytes: 0, updatedAt: '2026-06-10T00:00:00Z',
+    }]);
+    vi.mocked(serverApi.vaultDetail).mockResolvedValue({
+      id: 'vault-1', name: 'Team Vault', ownerUserId: 'admin-1', ownerUsername: 'admin',
+      ownerDisplayName: 'Admin User', status: 'active', manifestSequence: 5, members: 1,
+      activeFiles: 0, trashedFiles: 0, storageBytes: 0,
+      createdAt: '2026-06-09T00:00:00Z', updatedAt: '2026-06-10T00:00:00Z',
+    });
+    vi.mocked(serverApi.vaultMembers).mockResolvedValue([]);
+    vi.mocked(serverApi.vaultActivity).mockResolvedValue([
+      { id: 'e1', actorDisplayName: 'Admin User', eventType: 'file.created', targetType: 'file', targetId: 'f1', createdAt: '2026-06-10T05:00:00Z' },
+      { id: 'e2', actorDisplayName: 'Admin User', eventType: 'file.moved', targetType: 'file', targetId: 'f2', createdAt: '2026-06-10T04:00:00Z' },
+      { id: 'e3', actorDisplayName: 'Admin User', eventType: 'member.added', targetType: 'member', targetId: 'm1', createdAt: '2026-06-10T03:00:00Z' },
+      { id: 'e4', actorDisplayName: 'Admin User', eventType: 'vault.created', targetType: 'vault', targetId: 'vault-1', createdAt: '2026-06-09T00:00:00Z' },
+    ]);
+
+    render(<App />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Vaults' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Manage Team Vault' }));
+
+    expect(await screen.findByText('Most recent activity')).toBeTruthy();
+    expect(screen.getByText('file created')).toBeTruthy();
+    // The fourth (oldest) event is hidden until the submenu is expanded.
+    expect(screen.queryByText('vault created')).toBeNull();
+
+    const toggle = screen.getByRole('button', { name: 'Show 1 earlier event' });
+    fireEvent.click(toggle);
+    expect(await screen.findByText('vault created')).toBeTruthy();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Hide earlier activity' }));
+    await waitFor(() => expect(screen.queryByText('vault created')).toBeNull());
+  });
+
   it('imports a ZIP into an empty vault directly from the file dialog selection', async () => {
     vi.mocked(serverApi.bootstrapStatus).mockResolvedValue({ required: false });
     vi.mocked(serverApi.me).mockResolvedValue(admin);
@@ -441,14 +481,28 @@ describe('admin application', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Download Notes/Test.md' }));
     await waitFor(() => expect(serverApi.downloadFile).toHaveBeenCalledWith('vault-1', 'file-1'));
 
-    fireEvent.click(screen.getByRole('button', { name: 'Move Notes/Test.md' }));
-    const moveDialog = await screen.findByRole('dialog', { name: 'Move Test.md' });
-    fireEvent.click(within(moveDialog).getByRole('button', { name: 'Move' }));
+    // Clearing the search returns to the folder browser (Vault root).
+    fireEvent.change(screen.getByLabelText('Search vault files'), { target: { value: '' } });
+
+    // Folders download as ZIP archives.
+    vi.mocked(serverApi.downloadFolder).mockResolvedValue(new Blob(['zip']));
+    fireEvent.click(await screen.findByRole('button', { name: 'Download Notes' }));
+    await waitFor(() => expect(serverApi.downloadFolder).toHaveBeenCalledWith('vault-1', 'folder-1'));
+
+    // Moving is drag-and-drop: drag the file onto the Vault root breadcrumb.
+    fireEvent.click(screen.getByRole('button', { name: 'Notes' }));
+    const testRow = (await screen.findByText('Test.md')).closest('.file-row');
+    expect(testRow).toBeTruthy();
+    fireEvent.dragStart(testRow!, { dataTransfer: { effectAllowed: 'move' } });
+    const vaultRootCrumb = screen.getByRole('button', { name: 'Vault root' });
+    fireEvent.dragOver(vaultRootCrumb);
+    fireEvent.drop(vaultRootCrumb);
     await waitFor(() => expect(serverApi.moveFile).toHaveBeenCalledWith('vault-1', expect.objectContaining({
-      operationType: 'move', targetFileId: 'file-1', parentId: 'folder-1',
+      operationType: 'move', targetFileId: 'file-1', parentId: null,
     })));
 
-    fireEvent.click(screen.getByRole('button', { name: 'History Notes/Test.md' }));
+    // History is a dropdown menu instead of a separate panel.
+    fireEvent.click(await screen.findByRole('button', { name: 'History Notes/Test.md' }));
     expect(await screen.findByText('Revision 1')).toBeTruthy();
     fireEvent.click(screen.getAllByRole('button', { name: 'Restore' })[1]);
     await waitFor(() => expect(serverApi.restoreFileRevision).toHaveBeenCalledWith('vault-1', 'file-1', 'revision-1', 2));

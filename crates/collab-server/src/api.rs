@@ -2825,6 +2825,116 @@ pub async fn export_vault_zip(
     Ok(response)
 }
 
+/// Downloads a single vault folder and all of its active descendants as a ZIP
+/// archive, with entry paths made relative to the folder's parent so the folder
+/// itself is the archive root.
+pub async fn download_vault_folder_archive(
+    State(state): State<AppState>,
+    Extension(request_id): Extension<String>,
+    headers: HeaderMap,
+    Path((vault_id, file_id)): Path<(Uuid, Uuid)>,
+) -> Result<Response, ApiFailure> {
+    let actor = require_authenticated_user(&state, &headers, &request_id).await?;
+    require_vault_access(
+        &state.database,
+        vault_id,
+        user_uuid(&actor.user),
+        HostedVaultRole::Viewer,
+        &request_id,
+    )
+    .await?;
+    let manifest = load_vault_manifest(&state.database, vault_id, &request_id).await?;
+    let file_id_string = file_id.to_string();
+    let folder = manifest
+        .files
+        .iter()
+        .find(|file| {
+            file.id == file_id_string
+                && file.kind == HostedFileKind::Folder
+                && file.state == HostedFileState::Active
+        })
+        .ok_or_else(|| ApiFailure::not_found(request_id.clone()))?;
+    let folder_path = folder.relative_path.clone();
+    let descendant_prefix = format!("{folder_path}/");
+    // Keep the folder name (but not its ancestors) as the archive root.
+    let parent_prefix = match folder_path.rfind('/') {
+        Some(index) => folder_path[..=index].to_owned(),
+        None => String::new(),
+    };
+    let mut archive = zip::ZipWriter::new(Cursor::new(Vec::new()));
+    let options = zip::write::SimpleFileOptions::default()
+        .compression_method(zip::CompressionMethod::Deflated);
+    for file in manifest
+        .files
+        .iter()
+        .filter(|file| file.state == HostedFileState::Active)
+    {
+        if file.relative_path != folder_path && !file.relative_path.starts_with(&descendant_prefix) {
+            continue;
+        }
+        let entry_path = file
+            .relative_path
+            .strip_prefix(&parent_prefix)
+            .unwrap_or(&file.relative_path);
+        if file.kind == HostedFileKind::Folder {
+            archive
+                .add_directory(format!("{entry_path}/"), options)
+                .map_err(|_| ApiFailure::server(request_id.clone()))?;
+            continue;
+        }
+        let digest = file
+            .current_revision
+            .as_ref()
+            .map(|revision| revision.content_hash.as_str())
+            .ok_or_else(|| ApiFailure::server(request_id.clone()))?;
+        let bytes = state
+            .blobs
+            .get(digest)
+            .await
+            .map_err(|_| ApiFailure::server(request_id.clone()))?
+            .ok_or_else(|| ApiFailure::server(request_id.clone()))?;
+        archive
+            .start_file(entry_path, options)
+            .map_err(|_| ApiFailure::server(request_id.clone()))?;
+        archive
+            .write_all(&bytes)
+            .map_err(|_| ApiFailure::server(request_id.clone()))?;
+    }
+    let bytes = archive
+        .finish()
+        .map_err(|_| ApiFailure::server(request_id.clone()))?
+        .into_inner();
+    let safe_name: String = folder
+        .name
+        .chars()
+        .map(|character| {
+            if matches!(character, ' ' | '-' | '_' | '.')
+                || character.is_ascii_alphanumeric()
+            {
+                character
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    let safe_name = if safe_name.trim().is_empty() {
+        "folder".to_owned()
+    } else {
+        safe_name
+    };
+    let mut response = Response::new(Body::from(bytes));
+    response.headers_mut().insert(
+        header::CONTENT_TYPE,
+        HeaderValue::from_static("application/zip"),
+    );
+    response.headers_mut().insert(
+        header::CONTENT_DISPOSITION,
+        HeaderValue::from_str(&format!("attachment; filename=\"{safe_name}.zip\""))
+            .unwrap_or_else(|_| HeaderValue::from_static("attachment; filename=\"folder.zip\"")),
+    );
+    Ok(response)
+}
+
 struct ReferenceRewrite {
     file_id: Uuid,
     relative_path: String,
@@ -7562,6 +7672,49 @@ mod tests {
         )
         .await;
         assert_eq!(denied_export.status(), StatusCode::FORBIDDEN);
+
+        // Downloading a single folder yields a ZIP rooted at that folder.
+        let manifest = request(
+            &app,
+            "GET",
+            &format!("/api/v1/vaults/{import_vault_id}/manifest"),
+            json!({}),
+            Some(&admin_cookie),
+            None,
+        )
+        .await;
+        assert_eq!(manifest.status(), StatusCode::OK);
+        let manifest_body = json_body(manifest).await;
+        let notes_folder_id = manifest_body["data"]["files"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|file| file["relativePath"] == "Notes" && file["kind"] == "folder")
+            .and_then(|file| file["id"].as_str())
+            .unwrap()
+            .to_owned();
+        let folder_archive = request(
+            &app,
+            "GET",
+            &format!("/api/v1/vaults/{import_vault_id}/files/{notes_folder_id}/archive"),
+            json!({}),
+            Some(&admin_cookie),
+            None,
+        )
+        .await;
+        assert_eq!(folder_archive.status(), StatusCode::OK);
+        assert_eq!(folder_archive.headers()[header::CONTENT_TYPE], "application/zip");
+        let folder_bytes = response_bytes(folder_archive).await;
+        let mut folder_zip = zip::ZipArchive::new(Cursor::new(folder_bytes)).unwrap();
+        let mut folder_note = String::new();
+        folder_zip
+            .by_name("Notes/Imported.md")
+            .unwrap()
+            .read_to_string(&mut folder_note)
+            .unwrap();
+        assert_eq!(folder_note, "# Imported\nsearchable archive");
+        // The unrelated Pictures asset must not leak into a Notes-only archive.
+        assert!(folder_zip.by_name("Pictures/image.bin").is_err());
 
         let archived = request(
             &app,
