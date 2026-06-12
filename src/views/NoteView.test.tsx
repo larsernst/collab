@@ -48,9 +48,10 @@ vi.mock('../components/editor/EditorToolbar', () => ({
 }));
 
 vi.mock('../components/editor/MarkdownEditor', () => ({
-  MarkdownEditor: ({ content, onChange }: { content: string; onChange: (content: string) => void }) => (
+  MarkdownEditor: ({ content, onChange, readOnly }: { content: string; onChange: (content: string) => void; readOnly?: boolean }) => (
     <div>
       <div data-testid="editor-content">{content}</div>
+      <div data-testid="editor-readonly">{String(!!readOnly)}</div>
       <button type="button" onClick={() => onChange(`${content}\nupdated`)}>
         change
       </button>
@@ -211,5 +212,57 @@ describe('NoteView external reload behavior', () => {
 
     expect((await screen.findByTestId('editor-content')).textContent).toBe('hosted note');
     expect(tauriMocks.listNoteSnippets).toHaveBeenCalledWith(null);
+  });
+
+  it('renders read-only and never writes when the hosted vault grants only viewer access', async () => {
+    const hostedFile = {
+      id: 'file-1',
+      parentId: null,
+      name: 'a.md',
+      relativePath: 'Notes/a.md',
+      kind: 'document',
+      documentType: 'note',
+      state: 'active',
+      currentRevision: {
+        id: 'revision-1',
+        sequence: 1,
+        contentHash: 'hash-1',
+        sizeBytes: 11,
+        createdByDisplayName: 'Test User',
+        createdAt: '2026-06-11T08:00:00Z',
+      },
+      createdAt: '2026-06-11T08:00:00Z',
+      updatedAt: '2026-06-11T08:00:00Z',
+    };
+    useVaultStore.setState({
+      vault: {
+        kind: 'hosted',
+        id: 'hosted-vault',
+        hostedVaultId: 'hosted-vault',
+        serverUrl: 'https://collab.example.test',
+        role: 'viewer',
+        name: 'Hosted Vault',
+        path: 'hosted://hosted-vault',
+        lastOpened: Date.now(),
+        isEncrypted: false,
+      },
+    });
+    tauriMocks.hostedVaultRequest
+      .mockResolvedValueOnce({ vaultId: 'hosted-vault', sequence: 1, files: [hostedFile] })
+      .mockResolvedValueOnce({ file: hostedFile, content: 'hosted note' });
+
+    render(<NoteView relativePath="Notes/a.md" />);
+
+    expect((await screen.findByTestId('editor-content')).textContent).toBe('hosted note');
+    // The read-only banner replaces the editing toolbar and the editor is non-editable.
+    expect(screen.queryByTestId('toolbar')).toBeNull();
+    expect(screen.getByText(/Read-only/)).toBeTruthy();
+    expect(screen.getByTestId('editor-readonly').textContent).toBe('true');
+
+    const callsAfterLoad = tauriMocks.hostedVaultRequest.mock.calls.length;
+    fireEvent.click(screen.getByRole('button', { name: 'change' }));
+    // Wait past the autosave debounce window; no write request must be issued.
+    await new Promise((resolve) => setTimeout(resolve, 800));
+    expect(tauriMocks.hostedVaultRequest.mock.calls.length).toBe(callsAfterLoad);
   });
 });

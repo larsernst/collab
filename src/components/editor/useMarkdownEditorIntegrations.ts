@@ -407,6 +407,8 @@ type UseMarkdownEditorIntegrationsArgs = {
   isImageLikePath: (path: string) => boolean;
   buildImageMarkdown: (relativePath: string) => string;
   currentDocumentRelativePath: string;
+  /** When true, drag-dropping images must not import or insert (viewer access). */
+  readOnly?: boolean;
 };
 
 export function useMarkdownEditorIntegrations({
@@ -420,6 +422,7 @@ export function useMarkdownEditorIntegrations({
   isImageLikePath,
   buildImageMarkdown,
   currentDocumentRelativePath,
+  readOnly = false,
 }: UseMarkdownEditorIntegrationsArgs) {
   const nativeDropStateRef = useRef<NativeDropState>({ lastDropKey: '', lastDropAt: 0 });
 
@@ -438,6 +441,8 @@ export function useMarkdownEditorIntegrations({
     };
 
     const importDroppedImages = (sourcePaths: string[], dropPos: number) => {
+      // A viewer cannot modify the note; dropped images must not be imported.
+      if (readOnly) return;
       void importDroppedImagesIntoEditor({
         sourcePaths,
         dropPos,
@@ -607,6 +612,7 @@ export function useMarkdownEditorIntegrations({
     getDroppedFilePaths,
     hoverWebLinkPreviewsEnabled,
     isImageLikePath,
+    readOnly,
     setHoverRect,
     setHoveredPdfRelativePath,
     setHoveredUrl,

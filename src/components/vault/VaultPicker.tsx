@@ -5,7 +5,7 @@ import { Button } from '../ui/button';
 import { Input } from '../ui/input';
 import { Separator } from '../ui/separator';
 import { useVaultStore } from '../../store/vaultStore';
-import { useServerStore } from '../../store/serverStore';
+import { useServerStore, isEffectivelyConnected } from '../../store/serverStore';
 import { useUiStore } from '../../store/uiStore';
 import { tauriCommands } from '../../lib/tauri';
 import { hostedVaultMeta, vaultKind } from '../../types/vault';
@@ -20,6 +20,9 @@ export default function VaultPicker() {
   const [hostedBusy, setHostedBusy] = useState(false);
   const activeHostedVaults = hostedVaults.filter((vault) => vault.status === 'active');
   const localRecentVaults = recentVaults.filter((vault) => vaultKind(vault) === 'local').slice(0, 5);
+  // A connected-but-expired session cannot create vaults; only offer creation when
+  // the session can actually make authenticated requests.
+  const canCreateHosted = isEffectivelyConnected(status);
 
   useEffect(() => {
     loadRecentVaults();
@@ -142,15 +145,17 @@ export default function VaultPicker() {
                   <p className="truncate text-[10px] text-muted-foreground">{status.serverUrl}</p>
                 </div>
                 <div className="flex items-center gap-1">
-                  <Button
-                    size="icon"
-                    variant="ghost"
-                    className="size-7"
-                    onClick={() => setCreatingHosted((value) => !value)}
-                    title="New hosted vault"
-                  >
-                    <Plus size={13} />
-                  </Button>
+                  {canCreateHosted && (
+                    <Button
+                      size="icon"
+                      variant="ghost"
+                      className="size-7"
+                      onClick={() => setCreatingHosted((value) => !value)}
+                      title="New hosted vault"
+                    >
+                      <Plus size={13} />
+                    </Button>
+                  )}
                   <Button
                     size="icon"
                     variant="ghost"
@@ -163,7 +168,7 @@ export default function VaultPicker() {
                   </Button>
                 </div>
               </div>
-              {creatingHosted && (
+              {creatingHosted && canCreateHosted && (
                 <div className="flex items-center gap-2 rounded-lg border border-border/40 bg-card/30 px-2 py-2">
                   <Input
                     autoFocus

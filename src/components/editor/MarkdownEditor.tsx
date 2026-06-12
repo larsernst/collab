@@ -70,6 +70,8 @@ interface MarkdownEditorProps {
   relativePath: string;
   initialViewState?: MarkdownEditorViewState | null;
   onViewStateChange?: (editorViewState: MarkdownEditorViewState) => void;
+  /** Render the note as non-editable (viewer access to a hosted vault). */
+  readOnly?: boolean;
 }
 
 type MathSolverActionState = MathSolverActionDetail;
@@ -380,7 +382,7 @@ function MathSolverActionPopover({
 // ─── Component ───────────────────────────────────────────────────────────────
 
 export const MarkdownEditor = forwardRef<MarkdownEditorHandle, MarkdownEditorProps>(
-  function MarkdownEditor({ content, onChange, onSave, relativePath, initialViewState = null, onViewStateChange }, ref) {
+  function MarkdownEditor({ content, onChange, onSave, relativePath, initialViewState = null, onViewStateChange, readOnly = false }, ref) {
     const containerRef = useRef<HTMLDivElement>(null);
     const viewRef = useRef<EditorView | null>(null);
     const [editorView, setEditorView] = useState<EditorView | null>(null);
@@ -425,6 +427,7 @@ export const MarkdownEditor = forwardRef<MarkdownEditorHandle, MarkdownEditorPro
       isImageLikePath,
       buildImageMarkdown: (nextRelativePath) => buildImageMarkdown(nextRelativePath, relativePath),
       currentDocumentRelativePath: relativePath,
+      readOnly,
     });
 
     // ─── Swap theme/font/size/highlight when settings change ──────────────
@@ -599,6 +602,7 @@ export const MarkdownEditor = forwardRef<MarkdownEditorHandle, MarkdownEditorPro
         saveKeymap,
         updateListener,
         livePreviewExtension: [createLivePreviewPlugin(relativePath), createSnippetSessionExtension()],
+        readOnly,
       });
 
       let view: EditorView;
@@ -647,7 +651,7 @@ export const MarkdownEditor = forwardRef<MarkdownEditorHandle, MarkdownEditorPro
         setEditorView(null);
       };
       // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [relativePath]);
+    }, [relativePath, readOnly]);
 
     // Sync external content changes (e.g. file reloaded from disk)
     useEffect(() => {

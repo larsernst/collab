@@ -140,6 +140,7 @@ pub fn run() {
             commands::server::reconnect_server,
             commands::server::disconnect_server,
             commands::server::server_connection_status,
+            commands::server::server_has_saved_session,
             commands::server::hosted_vault_request,
             commands::server::hosted_vault_asset_data_url,
             commands::server::hosted_user_directory,

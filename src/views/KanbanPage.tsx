@@ -6,8 +6,9 @@ import { useVaultStore } from '../store/vaultStore';
 import { useCollabStore } from '../store/collabStore';
 import { useCollabIdentity } from '../lib/collabIdentity';
 import { normalizeKanbanBoard, runKanbanAutomations, type KanbanBoard } from '../types/kanban';
-import type { KnownUser } from '../types/vault';
+import { isVaultReadOnly, type KnownUser } from '../types/vault';
 import KanbanBoardView from '../components/kanban/KanbanBoard';
+import { ReadOnlyBanner } from '../components/layout/ReadOnlyBanner';
 import { useEditorStore } from '../store/editorStore';
 import { useDocumentSessionState } from '../lib/documentSession';
 import { useCollabContext } from '../components/collaboration/CollabProvider';
@@ -19,6 +20,8 @@ interface KanbanCtx {
   updateBoard: (updater: (b: KanbanBoard) => KanbanBoard) => void;
   knownUsers: KnownUser[];
   relativePath: string;
+  /** Viewer access to a hosted vault: board mutations are disabled. */
+  readOnly: boolean;
 }
 
 const KanbanContext = createContext<KanbanCtx | null>(null);
@@ -46,6 +49,7 @@ function makeDefaultBoard(): KanbanBoard {
 export default function KanbanPage({ relativePath }: { relativePath: string | null }) {
   const { vault } = useVaultStore();
   const client = useMemo(() => (vault ? createVaultClient(vault) : null), [vault]);
+  const readOnly = isVaultReadOnly(vault);
   const { markDirty, markSaved, setSavedHash } = useEditorStore();
   const { peers, addConflict } = useCollabStore();
   // Snapshot authorship follows the effective identity (server-authoritative for hosted).
@@ -109,6 +113,8 @@ export default function KanbanPage({ relativePath }: { relativePath: string | nu
   }, [addConflict, client, markSaved, markWriteStarted, myUserId, myUserName, relativePath, shouldCreateSnapshot]);
 
   const updateBoard = useCallback((updater: (b: KanbanBoard) => KanbanBoard) => {
+    // Viewers cannot modify the board; drop every mutation so no write is attempted.
+    if (readOnly) return;
     setBoard(prev => {
       const next = updater(prev);
       if (next === prev) return prev;
@@ -118,7 +124,7 @@ export default function KanbanPage({ relativePath }: { relativePath: string | nu
       saveTimerRef.current = setTimeout(() => saveBoard(next), 600);
       return next;
     });
-  }, [markDirty, relativePath, saveBoard]);
+  }, [markDirty, readOnly, relativePath, saveBoard]);
 
   const loadBoard = useCallback(async (isInitial = false) => {
     if (!client || !relativePath) return;
@@ -132,7 +138,7 @@ export default function KanbanPage({ relativePath }: { relativePath: string | nu
         isDirtyRef.current = false;
         markLoaded(version);
         setSavedHash(relativePath, version);
-      } else if (isInitial) {
+      } else if (isInitial && !readOnly) {
         const def = makeDefaultBoard();
         setBoard(def);
         const result = await client.writeDocument(
@@ -144,7 +150,7 @@ export default function KanbanPage({ relativePath }: { relativePath: string | nu
         setSavedHash(relativePath, result.version);
       }
     } catch {}
-  }, [client, markLoaded, relativePath, setSavedHash]);
+  }, [client, markLoaded, readOnly, relativePath, setSavedHash]);
 
   useEffect(() => {
     loadBoard(true);
@@ -188,7 +194,8 @@ export default function KanbanPage({ relativePath }: { relativePath: string | nu
   if (!vault) return null;
 
   return (
-    <KanbanContext.Provider value={{ board, updateBoard, knownUsers, relativePath }}>
+    <KanbanContext.Provider value={{ board, updateBoard, knownUsers, relativePath, readOnly }}>
+      {readOnly && <ReadOnlyBanner />}
       <KanbanBoardView />
     </KanbanContext.Provider>
   );

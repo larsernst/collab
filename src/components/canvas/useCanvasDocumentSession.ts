@@ -65,6 +65,8 @@ interface UseCanvasDocumentSessionOptions {
   markLoaded: (hash?: string | null) => void;
   shouldSkipAutosave: () => boolean;
   pauseAutosave?: boolean;
+  /** Viewer access to a hosted vault: never persist or auto-create the canvas. */
+  readOnly?: boolean;
   markWriteStarted: () => void;
   shouldCreateSnapshot: (hash: string) => boolean;
 }
@@ -97,6 +99,7 @@ export function useCanvasDocumentSession({
   markLoaded,
   shouldSkipAutosave,
   pauseAutosave = false,
+  readOnly = false,
   markWriteStarted,
   shouldCreateSnapshot,
 }: UseCanvasDocumentSessionOptions) {
@@ -124,7 +127,9 @@ export function useCanvasDocumentSession({
 
         savedCanvasContentRef.current = sanitizedContent;
 
-        if (sanitized.changed) {
+        // Viewers cannot persist; skip the dangling-edge repair write and keep
+        // the sanitized canvas in memory only.
+        if (sanitized.changed && !readOnly) {
           try {
             const repairedResult = await client.writeDocument(
               relativePath,
@@ -135,7 +140,7 @@ export function useCanvasDocumentSession({
             currentHash = repairedResult.version;
           } catch {}
         }
-      } else if (isInitial) {
+      } else if (isInitial && !readOnly) {
         const blank = EMPTY_CANVAS;
         const result = await client.writeDocument(relativePath, JSON.stringify(blank, null, 2));
         currentHash = result.version;
@@ -159,6 +164,7 @@ export function useCanvasDocumentSession({
     isDirtyRef,
     isMountedRef,
     markLoaded,
+    readOnly,
     relativePath,
     resetPreviewState,
     setEdges,
@@ -201,7 +207,7 @@ export function useCanvasDocumentSession({
   }, [client, isDirtyRef, lastWriteRef, loadCanvas, relativePath]);
 
   const saveCanvas = useCallback(async () => {
-    if (!client || !relativePath) return;
+    if (!client || !relativePath || readOnly) return;
     const payload: CanvasData = {
       nodes: nodes.map(fromFlowNode),
       edges: edges.map(fromFlowEdge),
@@ -263,6 +269,7 @@ export function useCanvasDocumentSession({
     myUserId,
     myUserName,
     nodes,
+    readOnly,
     relativePath,
     resetPreviewState,
     setEdges,
@@ -275,7 +282,7 @@ export function useCanvasDocumentSession({
 
   useEffect(() => {
     if (!vault || !relativePath) return;
-    if (pauseAutosave) {
+    if (pauseAutosave || readOnly) {
       if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
       return;
     }
@@ -291,5 +298,5 @@ export function useCanvasDocumentSession({
     return () => {
       if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
     };
-  }, [edges, isDirtyRef, markDirty, nodes, pauseAutosave, relativePath, saveCanvas, shouldSkipAutosave, vault, viewport]);
+  }, [edges, isDirtyRef, markDirty, nodes, pauseAutosave, readOnly, relativePath, saveCanvas, shouldSkipAutosave, vault, viewport]);
 }

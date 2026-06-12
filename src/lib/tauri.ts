@@ -283,6 +283,7 @@ export const tauriCommands = {
     invoke<ServerConnectionStatus>('reconnect_server', { serverUrl, allowInvalidCertificates }),
   disconnectServer: () => invoke<void>('disconnect_server'),
   serverConnectionStatus: () => invoke<ServerConnectionStatus>('server_connection_status'),
+  serverHasSavedSession: (serverUrl: string) => invoke<boolean>('server_has_saved_session', { serverUrl }),
   hostedVaultRequest: <T>(serverUrl: string, method: 'GET' | 'POST' | 'PATCH' | 'DELETE', path: string, body?: unknown) =>
     invoke<T>('hosted_vault_request', { serverUrl, method, path, body: body ?? null }),
   hostedVaultAssetDataUrl: (serverUrl: string, vaultId: string, fileId: string) =>

@@ -48,5 +48,32 @@ describe('markdownEditorViewConfig', () => {
 
     expect(state.doc.toString()).toBe('# hello');
     expect(state.tabSize).toBe(4);
+    // Default editor is editable/writable.
+    expect(state.readOnly).toBe(false);
+  });
+
+  it('builds a non-editable state when readOnly is set', () => {
+    const compartments = createMarkdownEditorCompartments();
+    const state = createMarkdownEditorState({
+      content: '# hello',
+      compartments,
+      compartmentExtensions: {
+        themeExtension: [],
+        highlightExtension: [],
+        indentationExtension: indentationConfig('spaces', 2),
+        indentVisualExtension: [],
+        colorPreviewExtension: [],
+        contentAttrsExtension: [],
+      },
+      wikiAutocompleteOverride: [],
+      slashCommandOverride: () => null,
+      linkClickHandler: [],
+      saveKeymap: keymap.of([]),
+      updateListener: EditorView.updateListener.of(() => {}),
+      livePreviewExtension: [],
+      readOnly: true,
+    });
+
+    expect(state.readOnly).toBe(true);
   });
 });

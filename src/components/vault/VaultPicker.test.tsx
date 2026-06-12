@@ -48,7 +48,7 @@ describe('VaultPicker hosted vaults', () => {
         serverUrl: 'https://collab.example.test',
         allowInvalidCertificates: false,
         user: { id: 'user-1', username: 'alice', displayName: 'Alice', role: 'member', status: 'active' },
-        accessExpiresAt: '2026-06-11T12:00:00Z',
+        accessExpiresAt: '2999-01-01T00:00:00Z',
       },
       hostedVaults: [hostedVault],
       isLoading: false,

@@ -13,6 +13,7 @@ const tauriMocks = vi.hoisted(() => ({
   readNote: vi.fn(),
   writeNote: vi.fn(),
   createSnapshot: vi.fn(),
+  hostedVaultRequest: vi.fn(),
 }));
 
 vi.mock('@tauri-apps/api/event', () => ({
@@ -33,6 +34,7 @@ vi.mock('../lib/tauri', () => ({
     readNote: tauriMocks.readNote,
     writeNote: tauriMocks.writeNote,
     createSnapshot: tauriMocks.createSnapshot,
+    hostedVaultRequest: tauriMocks.hostedVaultRequest,
   },
 }));
 
@@ -242,6 +244,59 @@ describe('KanbanPage save behavior', () => {
         savedHash: 'hash-2',
       }),
     );
+  });
+
+  it('drops board mutations and never writes for a hosted viewer', async () => {
+    const hostedFile = {
+      id: 'file-1',
+      parentId: null,
+      name: 'test.kanban',
+      relativePath: 'Boards/test.kanban',
+      kind: 'document',
+      documentType: 'kanban',
+      state: 'active',
+      currentRevision: {
+        id: 'revision-1',
+        sequence: 1,
+        contentHash: 'hash-1',
+        sizeBytes: 10,
+        createdByDisplayName: 'Test User',
+        createdAt: '2026-06-11T08:00:00Z',
+      },
+      createdAt: '2026-06-11T08:00:00Z',
+      updatedAt: '2026-06-11T08:00:00Z',
+    };
+    useVaultStore.setState({
+      vault: {
+        kind: 'hosted',
+        id: 'hosted-vault',
+        hostedVaultId: 'hosted-vault',
+        serverUrl: 'https://collab.example.test',
+        role: 'viewer',
+        name: 'Hosted Vault',
+        path: 'hosted://hosted-vault',
+        lastOpened: Date.now(),
+        isEncrypted: false,
+      },
+    });
+    tauriMocks.hostedVaultRequest
+      .mockResolvedValueOnce({ vaultId: 'hosted-vault', sequence: 1, files: [hostedFile] })
+      .mockResolvedValueOnce({
+        file: hostedFile,
+        content: JSON.stringify({ columns: [{ id: 'col-1', title: 'To Do', cards: [] }] }),
+      });
+
+    render(<KanbanPage relativePath="Boards/test.kanban" />);
+
+    expect((await screen.findByTestId('card-count')).textContent).toBe('0');
+
+    const callsAfterLoad = tauriMocks.hostedVaultRequest.mock.calls.length;
+    fireEvent.click(screen.getByRole('button', { name: 'add card' }));
+    await wait(700);
+
+    // The mutation is dropped (no card added) and no write request is issued.
+    expect(screen.getByTestId('card-count').textContent).toBe('0');
+    expect(tauriMocks.hostedVaultRequest.mock.calls.length).toBe(callsAfterLoad);
   });
 
   it('does not reload when a watcher event arrives during local unsaved edits', async () => {

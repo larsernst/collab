@@ -91,7 +91,7 @@ function SwimlaneSection({
 }
 
 export default function KanbanColumnView({ column }: Props) {
-  const { updateBoard, knownUsers, board } = useKanbanContext();
+  const { updateBoard, knownUsers, board, readOnly } = useKanbanContext();
   const [editingTitle,     setEditingTitle]     = useState(false);
   const [titleDraft,       setTitleDraft]       = useState(column.title);
   const titleInputRef  = useRef<HTMLInputElement>(null);
@@ -566,6 +566,7 @@ export default function KanbanColumnView({ column }: Props) {
           </div>
 
           {/* Add card */}
+          {!readOnly && (
           <div className="p-1.5 shrink-0">
             {addingCard ? (
               <div className="flex flex-col gap-1.5">
@@ -606,6 +607,7 @@ export default function KanbanColumnView({ column }: Props) {
               </button>
             )}
           </div>
+          )}
         </div>
       </div>
 

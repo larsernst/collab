@@ -97,6 +97,16 @@ pub async fn disconnect_server(state: State<'_, AppState>) -> Result<(), String>
     Ok(())
 }
 
+/// Whether a refresh token for `server_url` exists in the OS credential store.
+/// Used to decide if an automatic startup reconnect should even be attempted, so
+/// a stale saved server URL (e.g. left over after a disconnect) does not surface
+/// a spurious "could not restore session" error when no credential exists.
+#[tauri::command]
+pub fn server_has_saved_session(server_url: String) -> Result<bool, String> {
+    let base = validate_server_url(&server_url)?;
+    Ok(keyring_entry(&base)?.get_password().is_ok())
+}
+
 #[tauri::command]
 pub fn server_connection_status(state: State<'_, AppState>) -> ServerConnectionStatus {
     match state.server_session.read().as_ref() {

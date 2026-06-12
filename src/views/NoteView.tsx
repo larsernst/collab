@@ -17,6 +17,8 @@ import { useUiStore } from '../store/uiStore';
 import { extractHttpUrls, prefetchWebPreviews } from '../lib/webPreviewCache';
 import { useDocumentSessionState } from '../lib/documentSession';
 import { createVaultClient } from '../lib/vaultClient';
+import { isVaultReadOnly } from '../types/vault';
+import { ReadOnlyBanner } from '../components/layout/ReadOnlyBanner';
 import { useNoteSnippetStore } from '../store/noteSnippetStore';
 import { findSearchJumpRange } from '../lib/searchNavigation';
 
@@ -65,6 +67,7 @@ export default function NoteView({ relativePath }: { relativePath: string }) {
   const editorRef = useRef<MarkdownEditorHandle | null>(null);
   const savedContentRef = useRef<string | null>(null);
   const client = useMemo(() => (vault ? createVaultClient(vault) : null), [vault]);
+  const readOnly = isVaultReadOnly(vault);
   const { hashRef, markLoaded, shouldSkipAutosave, markWriteStarted, shouldCreateSnapshot } = useDocumentSessionState();
   const initialViewState = useMemo<NoteEditorViewState | null>(
     () => useEditorStore.getState().noteViewStates[relativePath] ?? null,
@@ -195,6 +198,7 @@ export default function NoteView({ relativePath }: { relativePath: string }) {
   };
 
   const applyContentTransform = (transform: (value: string) => string) => {
+    if (readOnly) return;
     setContent((prev) => {
       if (prev === null) return prev;
       const next = transform(prev);
@@ -210,12 +214,15 @@ export default function NoteView({ relativePath }: { relativePath: string }) {
   useEffect(() => {
     if (content === null) return;
     if (shouldSkipAutosave()) return;
+    if (readOnly) return;
     const t = setTimeout(() => { handleSave(content); }, 600);
     return () => clearTimeout(t);
-  }, [content, shouldSkipAutosave]);
+  }, [content, shouldSkipAutosave, readOnly]);
 
   const handleSave = async (newContent: string, manual = false) => {
-    if (!client) return;
+    // Viewers have no write access; never attempt a save that the server would
+    // reject with a "could not save" error.
+    if (!client || readOnly) return;
     try {
       markWriteStarted();
       const result = await client.writeDocument(
@@ -276,7 +283,7 @@ export default function NoteView({ relativePath }: { relativePath: string }) {
 
   return (
     <div className="flex flex-col h-full overflow-hidden">
-      <EditorToolbar relativePath={relativePath} editorRef={editorRef} />
+      {readOnly ? <ReadOnlyBanner /> : <EditorToolbar relativePath={relativePath} editorRef={editorRef} />}
       {/* position:relative establishes the containing block for the absolutely-positioned
           CodeMirror container. This avoids flex % height resolution bugs in WebKitGTK
           where height:100% on a flex-1 child resolves to 0 (the flex-basis) rather than
@@ -288,6 +295,7 @@ export default function NoteView({ relativePath }: { relativePath: string }) {
           content={content}
           onChange={handleChange}
           onSave={(c) => handleSave(c, true)}
+          readOnly={readOnly}
           relativePath={relativePath}
           initialViewState={revealEditorPath === relativePath || pendingSearchJump?.relativePath === relativePath ? null : initialViewState}
           onViewStateChange={(viewState) => setNoteViewState(relativePath, viewState)}

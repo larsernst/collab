@@ -66,6 +66,8 @@ type CreateMarkdownEditorStateOptions = {
   updateListener: Extension;
   livePreviewExtension: Extension;
   slashCommandOverride: CompletionSource;
+  /** When true the document is not editable (viewer access to a hosted vault). */
+  readOnly?: boolean;
 };
 
 export function createMarkdownEditorCompartments(): MarkdownEditorCompartments {
@@ -117,13 +119,20 @@ export function createMarkdownEditorState({
   updateListener,
   livePreviewExtension,
   slashCommandOverride,
+  readOnly = false,
 }: CreateMarkdownEditorStateOptions) {
   const initialCompartmentExtensions = buildMarkdownEditorInitialExtensions(compartments, compartmentExtensions);
+  // `readOnly` blocks document transactions; `editable.of(false)` also drops the
+  // contenteditable affordance and caret so a viewer cannot type into the note.
+  const readOnlyExtension = readOnly
+    ? [EditorState.readOnly.of(true), EditorView.editable.of(false)]
+    : [];
 
   try {
     return EditorState.create({
       doc: content,
       extensions: [
+        ...readOnlyExtension,
         lineNumbers(),
         highlightActiveLineGutter(),
         highlightActiveLine(),
@@ -163,6 +172,7 @@ export function createMarkdownEditorState({
     return EditorState.create({
       doc: content,
       extensions: [
+        ...readOnlyExtension,
         lineNumbers(),
         highlightActiveLine(),
         search({ createPanel: createMarkdownSearchPanel, top: true }),

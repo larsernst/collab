@@ -9,7 +9,7 @@ import { Button } from '../ui/button';
 import { Input } from '../ui/input';
 import { cn } from '../../lib/utils';
 import { useVaultStore } from '../../store/vaultStore';
-import { useServerStore } from '../../store/serverStore';
+import { useServerStore, isEffectivelyConnected } from '../../store/serverStore';
 import { useUiStore } from '../../store/uiStore';
 import { tauriCommands } from '../../lib/tauri';
 import { createVaultClient, hasRuntimeCapability, requireRuntimeCapability } from '../../lib/vaultClient';
@@ -314,6 +314,8 @@ function VaultsTab({
   const localVaults = vaults.filter((meta) => vaultKind(meta) === 'local');
   const activeHostedVaults = hostedVaults.filter((hosted) => hosted.status === 'active');
   const isConnected = status?.connected === true && !!status.serverUrl;
+  // Vault creation needs a non-expired session that can make authenticated requests.
+  const canCreateHosted = isEffectivelyConnected(status);
 
   const handleOpen = async (path: string) => {
     try {
@@ -431,13 +433,15 @@ function VaultsTab({
                   Hosted · {status?.serverUrl}
                 </span>
                 <div className="flex items-center gap-0.5">
-                  <button
-                    onClick={() => setCreatingHosted((value) => !value)}
-                    title="New hosted vault"
-                    className="w-6 h-6 flex items-center justify-center rounded text-muted-foreground hover:text-foreground hover:bg-accent/60 transition-colors app-motion-fast"
-                  >
-                    <Plus size={13} />
-                  </button>
+                  {canCreateHosted && (
+                    <button
+                      onClick={() => setCreatingHosted((value) => !value)}
+                      title="New hosted vault"
+                      className="w-6 h-6 flex items-center justify-center rounded text-muted-foreground hover:text-foreground hover:bg-accent/60 transition-colors app-motion-fast"
+                    >
+                      <Plus size={13} />
+                    </button>
+                  )}
                   <button
                     onClick={() => loadHostedVaults().catch((reason) => toast.error(String(reason)))}
                     title="Refresh hosted vaults"
@@ -447,7 +451,7 @@ function VaultsTab({
                   </button>
                 </div>
               </div>
-              {creatingHosted && (
+              {creatingHosted && canCreateHosted && (
                 <div className="mb-2 flex items-center gap-2 rounded-lg border border-border/50 bg-card/30 p-2">
                   <Input
                     autoFocus

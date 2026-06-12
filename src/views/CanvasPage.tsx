@@ -85,7 +85,8 @@ import { useDocumentSessionState } from '../lib/documentSession';
 import type { OnConnectStartParams, FinalConnectionState } from '@xyflow/react';
 import { useNoteIndexStore } from '../store/noteIndexStore';
 import { useCollabContext } from '../components/collaboration/CollabProvider';
-import type { KnownUser } from '../types/vault';
+import { isVaultReadOnly, type KnownUser } from '../types/vault';
+import { ReadOnlyBanner } from '../components/layout/ReadOnlyBanner';
 
 const pdfWorkerUrl = new URL('pdfjs-dist/build/pdf.worker.mjs', import.meta.url).toString();
 GlobalWorkerOptions.workerSrc = pdfWorkerUrl;
@@ -493,6 +494,7 @@ async function renderPdfPreview(dataUrl: string) {
 
 function CanvasBoard({ relativePath }: { relativePath: string | null }) {
   const vault = useVaultStore((state) => state.vault);
+  const readOnly = isVaultReadOnly(vault);
   const fileTree = useVaultStore((state) => state.fileTree);
   const openTab = useEditorStore((state) => state.openTab);
   const markDirty = useEditorStore((state) => state.markDirty);
@@ -765,6 +767,7 @@ function CanvasBoard({ relativePath }: { relativePath: string | null }) {
     markLoaded,
     shouldSkipAutosave,
     pauseAutosave: isCanvasInteracting,
+    readOnly,
     markWriteStarted,
     shouldCreateSnapshot,
   });
@@ -1461,18 +1464,21 @@ function CanvasBoard({ relativePath }: { relativePath: string | null }) {
             onResetZoom={resetZoom}
             onZoomIn={() => adjustZoom(1)}
             onFitView={fitCanvasView}
+            readOnly={readOnly}
           />
         }
       />
 
+      {readOnly && <ReadOnlyBanner />}
+
       <div
         ref={viewportRef}
         className="relative min-h-0 flex-1 overflow-hidden bg-[radial-gradient(circle_at_top,oklch(0.24_0.04_230_/_0.16),transparent_45%),linear-gradient(to_bottom,transparent,transparent)]"
-        onDragOver={(event) => {
+        onDragOver={readOnly ? undefined : (event) => {
           event.preventDefault();
           event.dataTransfer.dropEffect = 'copy';
         }}
-        onDrop={handleDropOnCanvas}
+        onDrop={readOnly ? undefined : handleDropOnCanvas}
       >
       <CanvasPickerDialog
         open={pickerMode !== null}
@@ -1543,12 +1549,12 @@ function CanvasBoard({ relativePath }: { relativePath: string | null }) {
           onConnectStart={handleConnectStart}
           onConnectEnd={handleConnectEnd}
           onReconnect={handleReconnect}
-          onPaneContextMenu={(event) => {
+          onPaneContextMenu={readOnly ? undefined : (event) => {
             event.preventDefault();
             pendingAutoConnectRef.current = null;
             openInsertMenuAt(event.clientX, event.clientY, null);
           }}
-          onEdgeDoubleClick={handleEdgeDoubleClick}
+          onEdgeDoubleClick={readOnly ? undefined : handleEdgeDoubleClick}
           onMoveStart={() => setIsCanvasInteracting(true)}
           onMoveEnd={(_: MouseEvent | TouchEvent | null, nextViewport: Viewport) => {
             setIsCanvasInteracting(false);
@@ -1561,11 +1567,11 @@ function CanvasBoard({ relativePath }: { relativePath: string | null }) {
           panOnDrag={[1]}
           panOnScroll
           zoomOnScroll={false}
-          deleteKeyCode={['Backspace', 'Delete']}
-          nodesDraggable
-          elementsSelectable
-          nodesConnectable
-          edgesReconnectable
+          deleteKeyCode={readOnly ? null : ['Backspace', 'Delete']}
+          nodesDraggable={!readOnly}
+          elementsSelectable={!readOnly}
+          nodesConnectable={!readOnly}
+          edgesReconnectable={!readOnly}
           connectionLineComponent={StackedConnectionLine}
         connectionRadius={44}
         reconnectRadius={44}

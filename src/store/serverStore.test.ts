@@ -1,10 +1,11 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { tauriCommands } from '../lib/tauri';
-import { useServerStore, isServerSessionExpired } from './serverStore';
+import { useServerStore, isServerSessionExpired, isEffectivelyConnected } from './serverStore';
 
 vi.mock('../lib/tauri', () => ({
   tauriCommands: {
     serverConnectionStatus: vi.fn(),
+    serverHasSavedSession: vi.fn(),
     connectServer: vi.fn(),
     reconnectServer: vi.fn(),
     disconnectServer: vi.fn(),
@@ -17,7 +18,7 @@ const connected = {
   serverUrl: 'https://collab.example.test',
   allowInvalidCertificates: false,
   user: { id: 'user-1', username: 'alice', displayName: 'Alice', role: 'member' as const, status: 'active' as const },
-  accessExpiresAt: '2026-06-11T12:00:00Z',
+  accessExpiresAt: '2999-01-01T00:00:00Z',
 };
 
 const hostedVault = {
@@ -87,6 +88,29 @@ describe('serverStore', () => {
     useServerStore.setState({ status: null });
     await expect(useServerStore.getState().createHostedVault('X')).rejects.toThrow(/Connect to a Collab server/);
   });
+
+  it('refuses to create a hosted vault when the session has expired', async () => {
+    useServerStore.setState({ status: { ...connected, accessExpiresAt: '2000-01-01T00:00:00Z' } });
+    await expect(useServerStore.getState().createHostedVault('X')).rejects.toThrow(/Connect to a Collab server/);
+    expect(tauriCommands.hostedVaultRequest).not.toHaveBeenCalled();
+  });
+});
+
+describe('isEffectivelyConnected', () => {
+  const now = Date.parse('2026-06-11T10:00:00Z');
+
+  it('is true for a connected, unexpired session', () => {
+    expect(isEffectivelyConnected({ ...connected, accessExpiresAt: '2026-06-11T12:00:00Z' }, now)).toBe(true);
+  });
+
+  it('is false when disconnected', () => {
+    expect(isEffectivelyConnected(null, now)).toBe(false);
+    expect(isEffectivelyConnected({ ...connected, connected: false }, now)).toBe(false);
+  });
+
+  it('is false when the access token has expired', () => {
+    expect(isEffectivelyConnected({ ...connected, accessExpiresAt: '2026-06-11T09:00:00Z' }, now)).toBe(false);
+  });
 });
 
 describe('serverStore.restoreSession', () => {
@@ -115,6 +139,7 @@ describe('serverStore.restoreSession', () => {
     localStorage.setItem('collab-hosted-server-url', 'https://collab.example.test');
     localStorage.setItem('collab-hosted-allow-invalid-certificates', 'true');
     vi.mocked(tauriCommands.serverConnectionStatus).mockResolvedValue({ ...connected, connected: false });
+    vi.mocked(tauriCommands.serverHasSavedSession).mockResolvedValue(true);
     vi.mocked(tauriCommands.reconnectServer).mockResolvedValue(connected);
     vi.mocked(tauriCommands.hostedVaultRequest).mockResolvedValue([hostedVault]);
 
@@ -122,9 +147,34 @@ describe('serverStore.restoreSession', () => {
     expect(tauriCommands.reconnectServer).toHaveBeenCalledWith('https://collab.example.test', true);
   });
 
-  it('reports failure when the refresh-token reconnect fails', async () => {
+  it('skips without error when a saved URL has no stored credential', async () => {
     localStorage.setItem('collab-hosted-server-url', 'https://collab.example.test');
     vi.mocked(tauriCommands.serverConnectionStatus).mockResolvedValue({ ...connected, connected: false });
+    vi.mocked(tauriCommands.serverHasSavedSession).mockResolvedValue(false);
+
+    expect(await useServerStore.getState().restoreSession()).toBe('skipped');
+    expect(tauriCommands.reconnectServer).not.toHaveBeenCalled();
+  });
+
+  it('deduplicates concurrent restore attempts into a single reconnect', async () => {
+    localStorage.setItem('collab-hosted-server-url', 'https://collab.example.test');
+    vi.mocked(tauriCommands.serverConnectionStatus).mockResolvedValue({ ...connected, connected: false });
+    vi.mocked(tauriCommands.serverHasSavedSession).mockResolvedValue(true);
+    vi.mocked(tauriCommands.reconnectServer).mockResolvedValue(connected);
+    vi.mocked(tauriCommands.hostedVaultRequest).mockResolvedValue([hostedVault]);
+
+    const store = useServerStore.getState();
+    const [first, second] = await Promise.all([store.restoreSession(), store.restoreSession()]);
+
+    expect(first).toBe('connected');
+    expect(second).toBe('connected');
+    expect(tauriCommands.reconnectServer).toHaveBeenCalledTimes(1);
+  });
+
+  it('reports failure when a stored credential exists but the reconnect fails', async () => {
+    localStorage.setItem('collab-hosted-server-url', 'https://collab.example.test');
+    vi.mocked(tauriCommands.serverConnectionStatus).mockResolvedValue({ ...connected, connected: false });
+    vi.mocked(tauriCommands.serverHasSavedSession).mockResolvedValue(true);
     vi.mocked(tauriCommands.reconnectServer).mockRejectedValue(new Error('expired'));
 
     expect(await useServerStore.getState().restoreSession()).toBe('failed');

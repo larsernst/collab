@@ -45,6 +45,8 @@ interface CanvasToolbarProps {
   onResetZoom: () => void;
   onZoomIn: () => void;
   onFitView: () => void;
+  /** Viewer access to a hosted vault: hide all node-adding controls. */
+  readOnly?: boolean;
 }
 
 export function CanvasToolbar({
@@ -60,9 +62,11 @@ export function CanvasToolbar({
   onResetZoom,
   onZoomIn,
   onFitView,
+  readOnly = false,
 }: CanvasToolbarProps) {
   return (
     <>
+      {!readOnly && (
       <div className={documentTopBarGroupClass}>
         <DocumentTopBarButton onClick={onAddNote}>
           <Plus size={14} />
@@ -157,6 +161,7 @@ export function CanvasToolbar({
           </DropdownMenuContent>
         </DropdownMenu>
       </div>
+      )}
 
       <div className={documentTopBarGroupClass}>
         <DocumentTopBarIconButton onClick={onZoomOut} title="Zoom out">

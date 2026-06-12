@@ -57,6 +57,16 @@ export function vaultKind(vault: VaultMeta): VaultKind {
   return vault.kind ?? 'local';
 }
 
+/**
+ * Whether the open vault is read-only for the current user. Only hosted vaults
+ * have server-authoritative roles; a `viewer` cannot write, so document editors
+ * must present a read-only experience and never attempt a save (which the server
+ * would reject with a "could not save" error). Local vaults are always writable.
+ */
+export function isVaultReadOnly(vault: VaultMeta | null | undefined): boolean {
+  return !!vault && vault.kind === 'hosted' && vault.role === 'viewer';
+}
+
 export interface NoteFile {
   relativePath: string;
   name: string;
