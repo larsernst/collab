@@ -338,6 +338,45 @@ describe('admin application', () => {
     expect(URL.createObjectURL).toHaveBeenCalled();
   });
 
+  it('imports a ZIP into an empty vault directly from the file dialog selection', async () => {
+    vi.mocked(serverApi.bootstrapStatus).mockResolvedValue({ required: false });
+    vi.mocked(serverApi.me).mockResolvedValue(admin);
+    vi.mocked(serverApi.users).mockResolvedValue([admin]);
+    vi.mocked(serverApi.vaults).mockResolvedValue([{
+      id: 'vault-1', name: 'Team Vault', ownerDisplayName: 'Admin User', status: 'active',
+      members: 1, storageBytes: 0, updatedAt: '2026-06-10T00:00:00Z',
+    }]);
+    vi.mocked(serverApi.vaultDetail).mockResolvedValue({
+      id: 'vault-1', name: 'Team Vault', ownerUserId: 'admin-1', ownerUsername: 'admin',
+      ownerDisplayName: 'Admin User', status: 'active', manifestSequence: 0, members: 1,
+      activeFiles: 0, trashedFiles: 0, storageBytes: 0,
+      createdAt: '2026-06-09T00:00:00Z', updatedAt: '2026-06-10T00:00:00Z',
+    });
+    vi.mocked(serverApi.vaultMembers).mockResolvedValue([
+      { userId: 'admin-1', username: 'admin', displayName: 'Admin User', role: 'admin', owner: true, createdAt: '2026-06-09T00:00:00Z' },
+    ]);
+    vi.mocked(serverApi.vaultActivity).mockResolvedValue([]);
+    vi.mocked(serverApi.importVault).mockResolvedValue({
+      importedFiles: 1, importedFolders: 0, importedBytes: 2, resultManifestSequence: 1,
+    });
+
+    const { container } = render(<App />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Vaults' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Manage Team Vault' }));
+
+    const importButton = await screen.findByRole('button', { name: /Import ZIP into empty vault/ });
+    expect(importButton).toBeTruthy();
+
+    const archive = new window.File([new Uint8Array([80, 75])], 'vault.zip', { type: 'application/zip' });
+    Object.defineProperty(archive, 'arrayBuffer', {
+      value: () => Promise.resolve(new Uint8Array([80, 75]).buffer),
+    });
+    const fileInput = container.querySelector('input[type="file"]') as HTMLInputElement;
+    fireEvent.change(fileInput, { target: { files: [archive] } });
+
+    await waitFor(() => expect(serverApi.importVault).toHaveBeenCalledWith('vault-1', 'UEs='));
+  });
+
   it('validates and encodes selected ZIP browser files', async () => {
     const archive = new window.File([new Uint8Array([80, 75])], 'vault.zip', { type: 'application/zip' });
     Object.defineProperty(archive, 'arrayBuffer', {

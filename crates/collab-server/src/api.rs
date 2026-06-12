@@ -5167,7 +5167,11 @@ fn parse_vault_zip(
                 request_id.to_owned(),
             ));
         }
-        let raw_name = entry.name().trim_end_matches('/');
+        // Some Windows ZIP tools emit backslash path separators even though the
+        // ZIP spec mandates forward slashes; treat them as separators so vaults
+        // exported from a Windows client import cleanly.
+        let normalized_separators = entry.name().replace('\\', "/");
+        let raw_name = normalized_separators.trim_end_matches('/');
         if raw_name.is_empty() {
             continue;
         }
@@ -5903,6 +5907,21 @@ mod tests {
             .decode(zip_base64(&[("../escape.md", b"no")]))
             .unwrap();
         assert!(parse_vault_zip(&invalid, 1024, 4096, "request").is_err());
+    }
+
+    #[test]
+    fn vault_zip_parser_accepts_windows_backslash_separators() {
+        let archive = STANDARD
+            .decode(zip_base64(&[("Notes\\Sub\\Test.md", b"# Test")]))
+            .unwrap();
+        let entries = parse_vault_zip(&archive, 1024, 4096, "request").unwrap();
+        let paths = entries
+            .iter()
+            .map(|entry| entry.relative_path.as_str())
+            .collect::<Vec<_>>();
+        assert!(paths.contains(&"Notes"));
+        assert!(paths.contains(&"Notes/Sub"));
+        assert!(paths.contains(&"Notes/Sub/Test.md"));
     }
 
     #[test]

@@ -22,7 +22,7 @@ import {
   Upload,
   Users,
 } from 'lucide-react';
-import { FormEvent, useCallback, useEffect, useMemo, useState } from 'react';
+import { ChangeEvent, FormEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { serverApi } from './api';
 import { useAdminAppearance, type AdminAccent, type AdminTheme } from './theme';
 import type {
@@ -481,6 +481,7 @@ function VaultDetailPage({ vaultId, onBack }: { vaultId: string; onBack: () => v
   } | null>(null);
   const [renaming, setRenaming] = useState(false);
   const [importing, setImporting] = useState(false);
+  const importInputRef = useRef<HTMLInputElement>(null);
   const [error, setError] = useState('');
   const load = useCallback(async () => {
     setError('');
@@ -528,16 +529,15 @@ function VaultDetailPage({ vaultId, onBack }: { vaultId: string; onBack: () => v
     setNewMemberRole('viewer');
   }
 
-  async function importVault(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    const form = event.currentTarget;
-    const file = new FormData(form).get('archive');
-    if (!isSelectedFile(file)) return;
+  async function importVault(event: ChangeEvent<HTMLInputElement>) {
+    const input = event.currentTarget;
+    const file = input.files?.[0];
+    input.value = '';
+    if (!file) return;
     setImporting(true);
     setError('');
     try {
       await serverApi.importVault(vaultId, await fileToBase64(file));
-      form.reset();
       await load();
     } catch (reason) {
       setError(String(reason));
@@ -683,10 +683,20 @@ function VaultDetailPage({ vaultId, onBack }: { vaultId: string; onBack: () => v
             <p className="subtle">Detailed storage accounting requires this administrator to be a vault member.</p>
           )}
           <div className="transfer-actions">
-            <form className="inline-form" onSubmit={importVault}>
-              <Field label="Import ZIP into empty vault" name="archive" type="file" accept=".zip,application/zip" required disabled={detail.status !== 'active' || detail.activeFiles > 0 || importing} />
-              <Button size="sm" disabled={detail.status !== 'active' || detail.activeFiles > 0 || importing}><Upload size={16} />{importing ? 'Importing...' : 'Import ZIP'}</Button>
-            </form>
+            <input
+              ref={importInputRef}
+              type="file"
+              accept=".zip,application/zip"
+              hidden
+              onChange={(event) => void importVault(event)}
+            />
+            <Button
+              size="sm"
+              onClick={() => importInputRef.current?.click()}
+              disabled={detail.status !== 'active' || detail.activeFiles > 0 || importing}
+            >
+              <Upload size={16} />{importing ? 'Importing...' : 'Import ZIP into empty vault'}
+            </Button>
             <Button variant="outline" size="sm" onClick={() => void exportVault()} disabled={detail.status === 'pending_delete'}><Download size={16} />Export ZIP</Button>
           </div>
           <p className="subtle">Import requires an empty active vault. Server administrators can transfer content across every hosted vault.</p>

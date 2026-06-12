@@ -80,7 +80,7 @@ small,.subtle { color:var(--muted-foreground); }
 .logo-mark { width:44px; height:44px; display:grid; place-items:center; border-radius:12px; color:var(--primary-foreground); background:var(--primary); box-shadow:0 0 30px var(--primary-soft); }
 .logo-mark.small { width:34px; height:34px; border-radius:9px; }
 .field { display:grid; gap:6px; color:var(--foreground); font-size:12px; font-weight:600; }
-.error-banner { display:flex; gap:8px; align-items:center; padding:10px 12px; border:1px solid color-mix(in srgb,var(--destructive) 30%,transparent); color:var(--destructive); background:color-mix(in srgb,var(--destructive) 8%,transparent); border-radius:8px; font-size:12px; }
+.error-banner { display:flex; gap:8px; align-items:center; margin-bottom:14px; padding:10px 12px; border:1px solid color-mix(in srgb,var(--destructive) 30%,transparent); color:var(--destructive); background:color-mix(in srgb,var(--destructive) 8%,transparent); border-radius:8px; font-size:12px; }
 .primary-button { border:0; background:var(--primary); color:var(--primary-foreground); font-weight:700; padding:9px 12px; border-radius:8px; }
 .admin-shell { min-height:100vh; display:grid; grid-template-columns:230px 1fr; }
 .sidebar { position:sticky; top:0; height:100vh; background:color-mix(in srgb,var(--background) 92%,transparent); border-right:1px solid var(--border); padding:18px 12px; display:flex; flex-direction:column; backdrop-filter:blur(18px); }
