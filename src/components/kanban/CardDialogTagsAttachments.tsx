@@ -2,6 +2,7 @@ import { ChevronDown, ExternalLink, Paperclip, Tag, X } from 'lucide-react';
 
 import { cn } from '../../lib/utils';
 import type { KanbanCard } from '../../types/kanban';
+import { FULL_KANBAN_CAPABILITIES, type KanbanCapabilities } from '../../views/KanbanPage';
 import type { NoteFile } from '../../types/vault';
 import { Button } from '../ui/button';
 import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from '../ui/command';
@@ -25,6 +26,7 @@ type Props = {
   addAttachment: (path: string) => void;
   removeAttachment: (path: string) => void;
   openAttachment: (path: string) => void;
+  caps?: KanbanCapabilities;
 };
 
 export function CardDialogTagsAttachments({
@@ -44,6 +46,7 @@ export function CardDialogTagsAttachments({
   addAttachment,
   removeAttachment,
   openAttachment,
+  caps = FULL_KANBAN_CAPABILITIES,
 }: Props) {
   const secondaryFieldClass = 'border-border/40 bg-background/55 text-foreground placeholder:text-muted-foreground/50';
 
@@ -55,6 +58,7 @@ export function CardDialogTagsAttachments({
             {draft.tags.map((tag) => (
               <span key={tag} className="flex items-center gap-1 rounded-full border border-primary/25 bg-primary/12 px-2 py-0.5 text-xs text-primary/85">
                 {tag}
+                {caps.editContent && (
                 <button
                   onClick={() => removeTag(tag)}
                   className="ml-0.5 rounded-full text-primary/70 transition-colors hover:text-primary"
@@ -63,9 +67,11 @@ export function CardDialogTagsAttachments({
                 >
                   <X size={9} />
                 </button>
+                )}
               </span>
             ))}
         </div>
+        {caps.editContent && (
         <div className="relative flex gap-2">
           <div className="flex-1 relative">
             <Input
@@ -106,6 +112,7 @@ export function CardDialogTagsAttachments({
             Add
           </Button>
         </div>
+        )}
       </section>
 
       <section>
@@ -138,6 +145,7 @@ export function CardDialogTagsAttachments({
                 >
                   <ExternalLink size={11} />
                 </Button>
+                {caps.editContent && (
                 <Button
                   type="button"
                   variant="ghost"
@@ -148,11 +156,13 @@ export function CardDialogTagsAttachments({
                 >
                   <X size={11} />
                 </Button>
+                )}
               </div>
             ))}
           </div>
         )}
 
+        {caps.editContent && (
         <div className="flex gap-2">
           <Popover open={notePickerOpen} onOpenChange={setNotePickerOpen}>
             <PopoverTrigger asChild>
@@ -194,6 +204,7 @@ export function CardDialogTagsAttachments({
             </PopoverContent>
           </Popover>
         </div>
+        )}
       </section>
     </>
   );

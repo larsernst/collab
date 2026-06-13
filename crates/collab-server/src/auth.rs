@@ -85,7 +85,9 @@ pub async fn authenticate_session(
         r#"
         SELECT
             u.id, u.username, u.display_name, u.role::text AS role, u.status::text AS status,
-            u.created_at, u.last_login_at, u.is_primary_admin, s.id AS session_id, s.csrf_hash,
+            u.created_at, u.last_login_at, u.is_primary_admin, u.preferences,
+            (u.avatar_bytes IS NOT NULL) AS has_avatar, u.avatar_updated_at,
+            s.id AS session_id, s.csrf_hash,
             (SELECT COUNT(*) FROM sessions active
              WHERE active.user_id = u.id AND active.revoked_at IS NULL AND active.expires_at > NOW())
              AS active_sessions
@@ -121,7 +123,9 @@ pub async fn authenticate_native_access_token(
         r#"
         SELECT
             u.id, u.username, u.display_name, u.role::text AS role, u.status::text AS status,
-            u.created_at, u.last_login_at, u.is_primary_admin, s.id AS session_id, ''::text AS csrf_hash,
+            u.created_at, u.last_login_at, u.is_primary_admin, u.preferences,
+            (u.avatar_bytes IS NOT NULL) AS has_avatar, u.avatar_updated_at,
+            s.id AS session_id, ''::text AS csrf_hash,
             ((SELECT COUNT(*) FROM sessions active
               WHERE active.user_id = u.id AND active.revoked_at IS NULL AND active.expires_at > NOW())
              + (SELECT COUNT(*) FROM native_sessions active
@@ -165,6 +169,17 @@ pub fn user_from_row(row: &sqlx::postgres::PgRow) -> ServerUser {
             .map(|value| value.to_rfc3339()),
         active_sessions: row.get("active_sessions"),
         is_primary_admin: row.get("is_primary_admin"),
+        // Profile columns are only selected by handlers that need them; default
+        // gracefully when a query omits them.
+        preferences: row
+            .try_get::<serde_json::Value, _>("preferences")
+            .unwrap_or(serde_json::Value::Null),
+        has_avatar: row.try_get::<bool, _>("has_avatar").unwrap_or(false),
+        avatar_updated_at: row
+            .try_get::<Option<chrono::DateTime<chrono::Utc>>, _>("avatar_updated_at")
+            .ok()
+            .flatten()
+            .map(|value| value.to_rfc3339()),
     }
 }
 

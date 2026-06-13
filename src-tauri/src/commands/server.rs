@@ -307,6 +307,7 @@ fn hosted_request_method(value: &str) -> Result<reqwest::Method, String> {
     match value.to_ascii_uppercase().as_str() {
         "GET" => Ok(reqwest::Method::GET),
         "POST" => Ok(reqwest::Method::POST),
+        "PUT" => Ok(reqwest::Method::PUT),
         "PATCH" => Ok(reqwest::Method::PATCH),
         "DELETE" => Ok(reqwest::Method::DELETE),
         _ => Err("Unsupported hosted-vault request method.".into()),
@@ -434,7 +435,8 @@ mod tests {
             validate_hosted_vault_path("/api/v1/vaults/vault-1/search?q=hello%20world").is_ok()
         );
         assert!(hosted_request_method("GET").is_ok());
-        assert!(hosted_request_method("PUT").is_err());
+        assert!(hosted_request_method("PUT").is_ok());
+        assert!(hosted_request_method("TRACE").is_err());
         assert!(validate_identifier("019eb16e-2a85-7070-bbe7-8cf09911c2c1").is_ok());
         assert!(validate_identifier("../vault").is_err());
     }

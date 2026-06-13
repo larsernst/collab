@@ -31,6 +31,8 @@ import { Textarea } from '../components/ui/textarea';
 import { cn } from '../lib/utils';
 import { tauriCommands } from '../lib/tauri';
 import { createVaultClient } from '../lib/vaultClient';
+import type { VaultPdfAnnotations } from '../lib/vaultClient';
+import { vaultCan } from '../types/vault';
 import { useEditorStore } from '../store/editorStore';
 import { useVaultStore } from '../store/vaultStore';
 import { enqueuePdfRender } from './pdfRenderQueue';
@@ -619,6 +621,12 @@ export default function PdfView({ relativePath }: Props) {
     () => (vault ? createVaultClient(vault).capabilities.nativeFilesystem : false),
     [vault],
   );
+  // Annotation-editing permissions. Local vaults are always fully capable; hosted
+  // vaults consult the caller's effective capabilities so commenters/viewers do
+  // not attempt writes the server would reject. Page comments need `pdf.comment`;
+  // bookmarks/highlights/text annotations need `pdf.annotate`.
+  const canComment = useMemo(() => vaultCan(vault, 'pdf.comment'), [vault]);
+  const canAnnotate = useMemo(() => vaultCan(vault, 'pdf.annotate'), [vault]);
   const {
     openTabs,
     activeTabPath,
@@ -646,6 +654,12 @@ export default function PdfView({ relativePath }: Props) {
   const [pageSizes, setPageSizes] = useState<Record<number, { width: number; height: number }>>({});
   const [pdfState, setPdfState] = useState<PdfSidecarState>(EMPTY_PDF_STATE);
   const [sidecarLoaded, setSidecarLoaded] = useState(false);
+  // Hosted optimistic-lock token for the annotation document (null for local
+  // vaults, whose sidecars are not versioned).
+  const [annotationsVersion, setAnnotationsVersion] = useState<number | null>(null);
+  // Last annotation payload persisted for a hosted vault, used to skip the
+  // initial post-load save and avoid redundant writes.
+  const hostedAnnotationsRef = useRef<string | null>(null);
   const [selectionAction, setSelectionAction] = useState<SelectionActionState | null>(null);
   const [selectedHighlightId, setSelectedHighlightId] = useState<string | null>(null);
   const [selectedTextAnnotationId, setSelectedTextAnnotationId] = useState<string | null>(null);
@@ -704,6 +718,8 @@ export default function PdfView({ relativePath }: Props) {
     setPageSizes({});
     setPdfState(EMPTY_PDF_STATE);
     setSidecarLoaded(false);
+    setAnnotationsVersion(null);
+    hostedAnnotationsRef.current = null;
     setSelectionAction(null);
     setSelectedHighlightId(null);
     setSelectedTextAnnotationId(null);
@@ -713,13 +729,18 @@ export default function PdfView({ relativePath }: Props) {
     setRegionSelection(null);
     setInteractionMode('none');
 
+    const loadClient = createVaultClient(vault);
     void Promise.all([
-      createVaultClient(vault).readAssetDataUrl(relativePath),
-      supportsSidecars
-        ? tauriCommands.readPdfSidecarState(vault.path, relativePath).catch(() => EMPTY_PDF_STATE)
-        : Promise.resolve(EMPTY_PDF_STATE),
+      loadClient.readAssetDataUrl(relativePath),
+      // Annotations load through the VaultClient for both local (filesystem
+      // sidecar) and hosted (server-stored, permission-enforced) vaults.
+      loadClient
+        .readPdfAnnotations(relativePath)
+        .catch(() => ({ state: EMPTY_PDF_STATE, version: null }) as VaultPdfAnnotations),
     ])
-      .then(async ([dataUrl, sidecar]) => {
+      .then(async ([dataUrl, annotations]) => {
+        const sidecar = annotations.state;
+        setAnnotationsVersion(annotations.version);
         const data = dataUrlToUint8Array(dataUrl);
         const task = getDocument({ data });
         const pdf = await task.promise;
@@ -797,6 +818,44 @@ export default function PdfView({ relativePath }: Props) {
       }).catch(() => {});
     };
   }, [bookmarksOpen, layoutMode, pageNumber, pdfState, relativePath, rotation, sidecarLoaded, supportsSidecars, vault, zoom, zoomMode]);
+
+  // Hosted vaults persist only the shared annotation collections (not per-user
+  // viewer state) through the permission-enforced server endpoint, with
+  // optimistic concurrency on the annotation sequence.
+  useEffect(() => {
+    if (!vault || vault.kind !== 'hosted' || !sidecarLoaded) return;
+    const snapshot = JSON.stringify({
+      bookmarks: pdfState.bookmarks,
+      highlights: pdfState.highlights,
+      textAnnotations: pdfState.textAnnotations,
+      pageComments: pdfState.pageComments,
+    });
+    // The first run after a load establishes the baseline without re-saving the
+    // freshly loaded annotations.
+    if (hostedAnnotationsRef.current === null) {
+      hostedAnnotationsRef.current = snapshot;
+      return;
+    }
+    if (hostedAnnotationsRef.current === snapshot) return;
+    const timeout = window.setTimeout(() => {
+      void createVaultClient(vault)
+        .writePdfAnnotations(relativePath, pdfState, annotationsVersion)
+        .then((result) => {
+          hostedAnnotationsRef.current = JSON.stringify({
+            bookmarks: result.state.bookmarks,
+            highlights: result.state.highlights,
+            textAnnotations: result.state.textAnnotations,
+            pageComments: result.state.pageComments,
+          });
+          setAnnotationsVersion(result.version);
+        })
+        .catch((saveError) => {
+          console.error(saveError);
+          toast.error('Could not save PDF annotations.');
+        });
+    }, 400);
+    return () => window.clearTimeout(timeout);
+  }, [annotationsVersion, pdfState, relativePath, sidecarLoaded, vault]);
 
   const activePageSize = pageSizes[pageNumber] ?? pageSizes[1] ?? null;
   const rotatedPageSize = useMemo(
@@ -924,6 +983,7 @@ export default function PdfView({ relativePath }: Props) {
   }, []);
 
   const addBookmarkForCurrentPage = useCallback(() => {
+    if (!canAnnotate) return;
     const timestamp = getTimestamp();
     const bookmark: PdfBookmark = {
       id: crypto.randomUUID(),
@@ -937,9 +997,10 @@ export default function PdfView({ relativePath }: Props) {
       bookmarks: [...current.bookmarks, bookmark].sort((left, right) => left.page - right.page),
     }));
     setBookmarksOpen(true);
-  }, [pageNumber, updatePdfState]);
+  }, [canAnnotate, pageNumber, updatePdfState]);
 
   const updateBookmarkLabel = useCallback((bookmarkId: string, label: string) => {
+    if (!canAnnotate) return;
     updatePdfState((current) => ({
       ...current,
       bookmarks: current.bookmarks.map((bookmark) => (
@@ -948,16 +1009,18 @@ export default function PdfView({ relativePath }: Props) {
           : bookmark
       )),
     }));
-  }, [updatePdfState]);
+  }, [canAnnotate, updatePdfState]);
 
   const removeBookmark = useCallback((bookmarkId: string) => {
+    if (!canAnnotate) return;
     updatePdfState((current) => ({
       ...current,
       bookmarks: current.bookmarks.filter((bookmark) => bookmark.id !== bookmarkId),
     }));
-  }, [updatePdfState]);
+  }, [canAnnotate, updatePdfState]);
 
   const createHighlight = useCallback((withNote: boolean) => {
+    if (!canAnnotate) return;
     if (!selectionAction) return;
     const timestamp = getTimestamp();
     const highlight: PdfHighlight = {
@@ -977,9 +1040,10 @@ export default function PdfView({ relativePath }: Props) {
     setSelectedHighlightId(highlight.id);
     setSelectionAction(null);
     window.getSelection()?.removeAllRanges();
-  }, [selectionAction, updatePdfState]);
+  }, [canAnnotate, selectionAction, updatePdfState]);
 
   const updateHighlightNote = useCallback((highlightId: string, note: string) => {
+    if (!canAnnotate) return;
     updatePdfState((current) => ({
       ...current,
       highlights: current.highlights.map((highlight) => (
@@ -988,9 +1052,10 @@ export default function PdfView({ relativePath }: Props) {
           : highlight
       )),
     }));
-  }, [updatePdfState]);
+  }, [canAnnotate, updatePdfState]);
 
   const removeHighlight = useCallback((highlightId: string) => {
+    if (!canAnnotate) return;
     updatePdfState((current) => ({
       ...current,
       highlights: current.highlights.filter((highlight) => highlight.id !== highlightId),
@@ -998,9 +1063,10 @@ export default function PdfView({ relativePath }: Props) {
     if (selectedHighlightId === highlightId) {
       setSelectedHighlightId(null);
     }
-  }, [selectedHighlightId, updatePdfState]);
+  }, [canAnnotate, selectedHighlightId, updatePdfState]);
 
   const createTextAnnotation = useCallback((selection: RegionSelectionState) => {
+    if (!canAnnotate) return;
     const rect = selectionToRegionRect(selection);
     const surface = pageRefs.current[selection.page];
     if (!rect || !surface) return;
@@ -1026,9 +1092,10 @@ export default function PdfView({ relativePath }: Props) {
       textAnnotations: [...current.textAnnotations, annotation],
     }));
     setSelectedTextAnnotationId(annotation.id);
-  }, [updatePdfState]);
+  }, [canAnnotate, updatePdfState]);
 
   const updateTextAnnotation = useCallback((annotationId: string, text: string) => {
+    if (!canAnnotate) return;
     updatePdfState((current) => ({
       ...current,
       textAnnotations: current.textAnnotations.map((annotation) => (
@@ -1037,12 +1104,13 @@ export default function PdfView({ relativePath }: Props) {
           : annotation
       )),
     }));
-  }, [updatePdfState]);
+  }, [canAnnotate, updatePdfState]);
 
   const updateTextAnnotationPalette = useCallback((
     annotationId: string,
     palette: { backgroundColor: string; textColor: string; borderColor: string },
   ) => {
+    if (!canAnnotate) return;
     updatePdfState((current) => ({
       ...current,
       textAnnotations: current.textAnnotations.map((annotation) => (
@@ -1057,9 +1125,10 @@ export default function PdfView({ relativePath }: Props) {
           : annotation
       )),
     }));
-  }, [updatePdfState]);
+  }, [canAnnotate, updatePdfState]);
 
   const removeTextAnnotation = useCallback((annotationId: string) => {
+    if (!canAnnotate) return;
     updatePdfState((current) => ({
       ...current,
       textAnnotations: current.textAnnotations.filter((annotation) => annotation.id !== annotationId),
@@ -1067,12 +1136,13 @@ export default function PdfView({ relativePath }: Props) {
     if (selectedTextAnnotationId === annotationId) {
       setSelectedTextAnnotationId(null);
     }
-  }, [selectedTextAnnotationId, updatePdfState]);
+  }, [canAnnotate, selectedTextAnnotationId, updatePdfState]);
 
   const updateTextAnnotationFrame = useCallback((
     annotationId: string,
     frame: Pick<PdfTextAnnotation, 'left' | 'top' | 'width' | 'height'>,
   ) => {
+    if (!canAnnotate) return;
     updatePdfState((current) => ({
       ...current,
       textAnnotations: current.textAnnotations.map((annotation) => (
@@ -1085,13 +1155,14 @@ export default function PdfView({ relativePath }: Props) {
           : annotation
       )),
     }));
-  }, [updatePdfState]);
+  }, [canAnnotate, updatePdfState]);
 
   const handleTextAnnotationPointerDown = useCallback((
     annotation: PdfTextAnnotation,
     event: React.PointerEvent<HTMLElement>,
     mode: 'move' | 'resize',
   ) => {
+    if (!canAnnotate) return;
     if (interactionMode !== 'none') return;
     event.preventDefault();
     event.stopPropagation();
@@ -1107,9 +1178,10 @@ export default function PdfView({ relativePath }: Props) {
       originWidth: annotation.width,
       originHeight: annotation.height,
     });
-  }, [interactionMode]);
+  }, [canAnnotate, interactionMode]);
 
   const addPageCommentForCurrentPage = useCallback(() => {
+    if (!canComment) return;
     const timestamp = getTimestamp();
     const comment: PdfPageComment = {
       id: crypto.randomUUID(),
@@ -1124,9 +1196,10 @@ export default function PdfView({ relativePath }: Props) {
     }));
     setBookmarksOpen(true);
     setSelectedPageCommentId(comment.id);
-  }, [pageNumber, updatePdfState]);
+  }, [canComment, pageNumber, updatePdfState]);
 
   const updatePageComment = useCallback((commentId: string, content: string) => {
+    if (!canComment) return;
     updatePdfState((current) => ({
       ...current,
       pageComments: current.pageComments.map((comment) => (
@@ -1135,9 +1208,10 @@ export default function PdfView({ relativePath }: Props) {
           : comment
       )),
     }));
-  }, [updatePdfState]);
+  }, [canComment, updatePdfState]);
 
   const removePageComment = useCallback((commentId: string) => {
+    if (!canComment) return;
     updatePdfState((current) => ({
       ...current,
       pageComments: current.pageComments.filter((comment) => comment.id !== commentId),
@@ -1145,7 +1219,7 @@ export default function PdfView({ relativePath }: Props) {
     if (selectedPageCommentId === commentId) {
       setSelectedPageCommentId(null);
     }
-  }, [selectedPageCommentId, updatePdfState]);
+  }, [canComment, selectedPageCommentId, updatePdfState]);
 
   const appendToNote = useCallback(async (targetPath: string, block: string) => {
     if (!vault) return;

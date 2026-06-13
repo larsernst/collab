@@ -294,7 +294,7 @@ export const tauriCommands = {
   disconnectServer: () => invoke<void>('disconnect_server'),
   serverConnectionStatus: () => invoke<ServerConnectionStatus>('server_connection_status'),
   serverHasSavedSession: (serverUrl: string) => invoke<boolean>('server_has_saved_session', { serverUrl }),
-  hostedVaultRequest: <T>(serverUrl: string, method: 'GET' | 'POST' | 'PATCH' | 'DELETE', path: string, body?: unknown) =>
+  hostedVaultRequest: <T>(serverUrl: string, method: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE', path: string, body?: unknown) =>
     invoke<T>('hosted_vault_request', { serverUrl, method, path, body: body ?? null }),
   hostedVaultAssetDataUrl: (serverUrl: string, vaultId: string, fileId: string) =>
     invoke<string>('hosted_vault_asset_data_url', { serverUrl, vaultId, fileId }),

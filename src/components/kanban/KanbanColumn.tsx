@@ -91,7 +91,7 @@ function SwimlaneSection({
 }
 
 export default function KanbanColumnView({ column }: Props) {
-  const { updateBoard, knownUsers, board, readOnly } = useKanbanContext();
+  const { updateBoard, knownUsers, board, readOnly, caps } = useKanbanContext();
   const [editingTitle,     setEditingTitle]     = useState(false);
   const [titleDraft,       setTitleDraft]       = useState(column.title);
   const titleInputRef  = useRef<HTMLInputElement>(null);
@@ -129,7 +129,7 @@ export default function KanbanColumnView({ column }: Props) {
     transition,
     isDragging,
     isOver,
-  } = useSortable({ id: column.id });
+  } = useSortable({ id: column.id, disabled: !caps.columnManage });
 
   const style = {
     maxHeight: 'calc(100vh - 120px)',
@@ -401,7 +401,7 @@ export default function KanbanColumnView({ column }: Props) {
             />
           ) : (
             <button
-              onDoubleClick={() => { setEditingTitle(true); setTitleDraft(column.title); }}
+              onDoubleClick={() => { if (caps.columnManage) { setEditingTitle(true); setTitleDraft(column.title); } }}
               className="flex-1 text-left text-sm font-semibold text-foreground truncate"
             >
               {column.title}
@@ -441,7 +441,8 @@ export default function KanbanColumnView({ column }: Props) {
             {column.cards.length}
           </span>
 
-          {/* Column menu */}
+          {/* Column menu — column management capability only */}
+          {caps.columnManage && (
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
               <button className="w-6 h-6 flex items-center justify-center rounded text-muted-foreground/50 hover:text-foreground hover:bg-accent/50 transition-colors shrink-0">
@@ -533,6 +534,7 @@ export default function KanbanColumnView({ column }: Props) {
               </DropdownMenuItem>
             </DropdownMenuContent>
           </DropdownMenu>
+          )}
         </div>
 
         {/* Cards area */}
@@ -566,7 +568,7 @@ export default function KanbanColumnView({ column }: Props) {
           </div>
 
           {/* Add card */}
-          {!readOnly && (
+          {!readOnly && caps.addCard && (
           <div className="p-1.5 shrink-0">
             {addingCard ? (
               <div className="flex flex-col gap-1.5">

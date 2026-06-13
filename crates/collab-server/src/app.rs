@@ -4,7 +4,7 @@ use axum::{
     http::{HeaderName, HeaderValue, StatusCode},
     middleware::{self, Next},
     response::{IntoResponse, Redirect, Response},
-    routing::{get, patch, post},
+    routing::{get, patch, post, put},
     Json, Router,
 };
 use collab_protocol::{DataResponse, HealthState, HealthStatus, PROTOCOL_VERSION};
@@ -62,8 +62,13 @@ pub fn build_router(state: AppState) -> Router {
         .route("/api/v1/auth/native/logout", post(api::native_logout))
         .route("/api/v1/auth/invitations/{token}/accept", post(api::accept_invitation))
         .route("/api/v1/auth/logout", post(api::logout))
-        .route("/api/v1/users/me", get(api::me))
+        .route("/api/v1/users/me", get(api::me).patch(api::update_self))
         .route("/api/v1/users/me/password", post(api::change_password))
+        .route(
+            "/api/v1/users/me/avatar",
+            put(api::upload_self_avatar).delete(api::delete_self_avatar),
+        )
+        .route("/api/v1/users/{user_id}/avatar", get(api::get_user_avatar))
         .route("/api/v1/users/directory", get(api::user_directory))
         .route(
             "/api/v1/vaults",
@@ -114,6 +119,10 @@ pub fn build_router(state: AppState) -> Router {
         .route(
             "/api/v1/vaults/{vault_id}/files/{file_id}/references",
             get(api::list_file_references),
+        )
+        .route(
+            "/api/v1/vaults/{vault_id}/files/{file_id}/pdf-annotations",
+            get(api::get_pdf_annotations).put(api::write_pdf_annotations),
         )
         .route(
             "/api/v1/vaults/{vault_id}/files/{file_id}/revisions",
@@ -192,6 +201,38 @@ pub fn build_router(state: AppState) -> Router {
         .route(
             "/api/v1/admin/vaults/{vault_id}/activity",
             get(api::admin_vault_activity),
+        )
+        .route(
+            "/api/v1/admin/vaults/{vault_id}/grants",
+            get(api::list_vault_grants),
+        )
+        .route(
+            "/api/v1/admin/vaults/{vault_id}/grants/{subject_type}/{subject_id}",
+            put(api::put_vault_grant).delete(api::delete_vault_grant),
+        )
+        .route(
+            "/api/v1/admin/groups",
+            get(api::list_groups).post(api::create_group),
+        )
+        .route(
+            "/api/v1/admin/groups/{group_id}",
+            patch(api::update_group).delete(api::delete_group),
+        )
+        .route(
+            "/api/v1/admin/groups/{group_id}/members",
+            get(api::list_group_members),
+        )
+        .route(
+            "/api/v1/admin/groups/{group_id}/members/{user_id}",
+            post(api::add_group_member).delete(api::remove_group_member),
+        )
+        .route(
+            "/api/v1/admin/templates",
+            get(api::list_templates).post(api::create_template),
+        )
+        .route(
+            "/api/v1/admin/templates/{template_id}",
+            patch(api::update_template).delete(api::delete_template),
         )
         .route("/api/v1/admin/audit-events", get(api::audit_events))
         .nest_service("/admin", admin_assets)

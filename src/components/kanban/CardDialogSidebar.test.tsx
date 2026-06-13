@@ -113,4 +113,38 @@ describe('CardDialogSidebar', () => {
     expect(screen.getByText('By')).toBeTruthy();
     expect(screen.getByText('User One')).toBeTruthy();
   });
+
+  it('hides capability-gated controls for a move-only grant', () => {
+    render(
+      <CardDialogSidebar
+        draft={DRAFT}
+        priorities={[{ value: 'high', label: 'High', active: 'active', inactive: 'inactive' }]}
+        dateFormat="YYYY_MM_DD"
+        knownUsers={[{ userId: 'u1', userName: 'User One', userColor: '#fff' }]}
+        board={BOARD}
+        currentColumnId="todo"
+        confirmDelete={false}
+        startDateOpen={false}
+        dueDateOpen={false}
+        setStartDateOpen={vi.fn()}
+        setDueDateOpen={vi.fn()}
+        setConfirmDelete={vi.fn()}
+        togglePriority={vi.fn()}
+        patchDraft={vi.fn()}
+        toggleAssignee={vi.fn()}
+        moveToColumn={vi.fn()}
+        toggleArchive={vi.fn()}
+        deleteCard={vi.fn()}
+        caps={{ addCard: false, editContent: false, move: true, comment: false, archive: false, deleteCard: false, columnManage: false }}
+      />,
+    );
+
+    // Move is allowed: the column control stays.
+    expect(screen.getByText('Column')).toBeTruthy();
+    // editContent / archive / delete are not: those sections are gone.
+    expect(screen.queryByText('Priority')).toBeNull();
+    expect(screen.queryByText('Assignees')).toBeNull();
+    expect(screen.queryByRole('button', { name: /archive card/i })).toBeNull();
+    expect(screen.queryByRole('button', { name: /delete card/i })).toBeNull();
+  });
 });

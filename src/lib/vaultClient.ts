@@ -1,5 +1,6 @@
 import type { SnapshotMeta } from '../types/collab';
 import type { NoteMetadata, SearchResult } from '../types/note';
+import type { PdfSidecarState } from '../types/pdf';
 import type {
   ConflictInfo,
   FileReference,
@@ -88,6 +89,15 @@ export interface VaultWriteResult {
   conflict?: ConflictInfo;
 }
 
+export interface VaultPdfAnnotations {
+  state: PdfSidecarState;
+  /**
+   * Optimistic-lock token for hosted vaults (the server-side annotation
+   * sequence). `null` for local vaults, whose sidecars are not versioned.
+   */
+  version: number | null;
+}
+
 export interface VaultClient {
   readonly kind: VaultClientKind;
   readonly id: string;
@@ -139,6 +149,25 @@ export interface VaultClient {
    * so bearer tokens never reach the webview.
    */
   readAssetDataUrl(relativePath: string): Promise<string>;
+  /**
+   * Reads the shared annotation sidecar for a PDF. Local vaults read the
+   * filesystem sidecar under `.collab/pdf/`; hosted vaults read the
+   * server-stored, permission-enforced annotation document. Per-user viewer
+   * state (last page, zoom) is only round-tripped for local vaults.
+   */
+  readPdfAnnotations(relativePath: string): Promise<VaultPdfAnnotations>;
+  /**
+   * Writes the shared annotation sidecar for a PDF. `expectedVersion` is the
+   * optimistic-lock token from the last read (hosted only; pass `null` for
+   * local). Hosted writes are semantically permission-enforced: page-comment
+   * changes require `pdf.comment`, other annotation changes require
+   * `pdf.annotate`.
+   */
+  writePdfAnnotations(
+    relativePath: string,
+    state: PdfSidecarState,
+    expectedVersion: number | null,
+  ): Promise<VaultPdfAnnotations>;
 }
 
 export const LOCAL_VAULT_CAPABILITIES: VaultClientCapabilities = {
@@ -235,6 +264,25 @@ interface HostedFileReference extends FileReference {
 function timestamp(value: string): number {
   const parsed = Date.parse(value);
   return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function asArray<T>(value: unknown): T[] {
+  return Array.isArray(value) ? (value as T[]) : [];
+}
+
+/**
+ * Coerces a server-stored annotation JSON object into a `PdfSidecarState`,
+ * tolerating missing collections. Server state never carries viewer state, so it
+ * resolves to null and stays client-local.
+ */
+function normalizeAnnotationState(state: Record<string, unknown> | null | undefined): PdfSidecarState {
+  return {
+    bookmarks: asArray(state?.bookmarks),
+    highlights: asArray(state?.highlights),
+    textAnnotations: asArray(state?.textAnnotations),
+    pageComments: asArray(state?.pageComments),
+    viewerState: null,
+  };
 }
 
 function extension(path: string): string {
@@ -346,7 +394,11 @@ export class HostedVaultClient implements VaultClient {
     return `/api/v1/vaults/${this.vault.hostedVaultId}${suffix}`;
   }
 
-  private request<T>(method: 'GET' | 'POST' | 'PATCH' | 'DELETE', suffix: string, body?: unknown) {
+  private request<T>(
+    method: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE',
+    suffix: string,
+    body?: unknown,
+  ) {
     return tauriCommands.hostedVaultRequest<T>(this.vault.serverUrl, method, this.path(suffix), body);
   }
 
@@ -685,6 +737,39 @@ export class HostedVaultClient implements VaultClient {
     return tauriCommands.hostedVaultAssetDataUrl(this.vault.serverUrl, this.vault.hostedVaultId, file.id);
   }
 
+  async readPdfAnnotations(relativePath: string): Promise<VaultPdfAnnotations> {
+    const manifest = await this.manifest();
+    const file = this.findByPath(manifest, relativePath);
+    const response = await this.request<{ state: Record<string, unknown>; sequence: number }>(
+      'GET',
+      `/files/${file.id}/pdf-annotations`,
+    );
+    return { state: normalizeAnnotationState(response.state), version: response.sequence };
+  }
+
+  async writePdfAnnotations(
+    relativePath: string,
+    state: PdfSidecarState,
+    expectedVersion: number | null,
+  ): Promise<VaultPdfAnnotations> {
+    const manifest = await this.manifest();
+    const file = this.findByPath(manifest, relativePath);
+    // Only the shared annotation collections are persisted server-side; per-user
+    // viewer state stays client-local and is intentionally not sent.
+    const shared = {
+      bookmarks: state.bookmarks,
+      highlights: state.highlights,
+      textAnnotations: state.textAnnotations,
+      pageComments: state.pageComments,
+    };
+    const response = await this.request<{ state: Record<string, unknown>; sequence: number }>(
+      'PUT',
+      `/files/${file.id}/pdf-annotations`,
+      { expectedSequence: expectedVersion ?? 0, state: shared },
+    );
+    return { state: normalizeAnnotationState(response.state), version: response.sequence };
+  }
+
   /**
    * Reads a desktop file through the native client, then uploads it through the
    * authenticated server gateway with a server-verified SHA-256 digest. Returns
@@ -910,6 +995,20 @@ export class LocalVaultClient implements VaultClient {
 
   readAssetDataUrl(relativePath: string) {
     return tauriCommands.readNoteAssetDataUrl(this.vault.path, relativePath);
+  }
+
+  async readPdfAnnotations(relativePath: string): Promise<VaultPdfAnnotations> {
+    const state = await tauriCommands.readPdfSidecarState(this.vault.path, relativePath);
+    return { state, version: null };
+  }
+
+  async writePdfAnnotations(
+    relativePath: string,
+    state: PdfSidecarState,
+    _expectedVersion: number | null,
+  ): Promise<VaultPdfAnnotations> {
+    await tauriCommands.writePdfSidecarState(this.vault.path, relativePath, state);
+    return { state, version: null };
   }
 }
 

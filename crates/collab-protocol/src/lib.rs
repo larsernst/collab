@@ -103,6 +103,15 @@ pub struct ServerUser {
     pub last_login_at: Option<String>,
     pub active_sessions: i64,
     pub is_primary_admin: bool,
+    /// Per-account UI preferences (e.g. theme/accent). Opaque JSON object.
+    #[serde(default)]
+    pub preferences: serde_json::Value,
+    /// Whether the account has an avatar image (served from `/users/{id}/avatar`).
+    #[serde(default)]
+    pub has_avatar: bool,
+    /// When the avatar was last updated, used for cache-busting the avatar URL.
+    #[serde(default)]
+    pub avatar_updated_at: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -173,6 +182,9 @@ pub struct HostedVaultSummary {
     pub members: i64,
     pub storage_bytes: u64,
     pub updated_at: String,
+    /// The requesting user's effective capabilities on this vault.
+    #[serde(default)]
+    pub capabilities: Vec<String>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
@@ -181,6 +193,233 @@ pub enum HostedVaultRole {
     Viewer,
     Editor,
     Admin,
+}
+
+/// A single fine-grained permission. Tokens are stable dotted strings used in the
+/// database (`text[]`), protocol DTOs (`Vec<String>`), and capability checks.
+///
+/// Vault/file capabilities are hard-enforced at the endpoint chokepoint; kanban
+/// capabilities are semantically enforced by diffing document revisions on write.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum Capability {
+    #[serde(rename = "vault.read")]
+    VaultRead,
+    #[serde(rename = "vault.search")]
+    VaultSearch,
+    #[serde(rename = "vault.viewHistory")]
+    VaultViewHistory,
+    #[serde(rename = "vault.viewActivity")]
+    VaultViewActivity,
+    #[serde(rename = "vault.export")]
+    VaultExport,
+    #[serde(rename = "vault.import")]
+    VaultImport,
+    #[serde(rename = "vault.manageMembers")]
+    VaultManageMembers,
+    #[serde(rename = "vault.managePermissions")]
+    VaultManagePermissions,
+    #[serde(rename = "vault.manageSnapshots")]
+    VaultManageSnapshots,
+    #[serde(rename = "file.create")]
+    FileCreate,
+    #[serde(rename = "file.write")]
+    FileWrite,
+    #[serde(rename = "file.move")]
+    FileMove,
+    #[serde(rename = "file.delete")]
+    FileDelete,
+    #[serde(rename = "file.uploadAsset")]
+    FileUploadAsset,
+    #[serde(rename = "kanban.card.create")]
+    KanbanCardCreate,
+    #[serde(rename = "kanban.card.editContent")]
+    KanbanCardEditContent,
+    #[serde(rename = "kanban.card.move")]
+    KanbanCardMove,
+    #[serde(rename = "kanban.card.comment")]
+    KanbanCardComment,
+    #[serde(rename = "kanban.card.delete")]
+    KanbanCardDelete,
+    #[serde(rename = "kanban.card.archive")]
+    KanbanCardArchive,
+    #[serde(rename = "kanban.column.manage")]
+    KanbanColumnManage,
+    #[serde(rename = "pdf.comment")]
+    PdfComment,
+    #[serde(rename = "pdf.annotate")]
+    PdfAnnotate,
+    #[serde(rename = "note.edit")]
+    NoteEdit,
+    #[serde(rename = "canvas.edit")]
+    CanvasEdit,
+}
+
+impl Capability {
+    /// Every capability, in canonical order. Used to seed the admin built-in
+    /// template and to resolve tokens back to the typed enum.
+    pub const ALL: [Capability; 25] = [
+        Capability::VaultRead,
+        Capability::VaultSearch,
+        Capability::VaultViewHistory,
+        Capability::VaultViewActivity,
+        Capability::VaultExport,
+        Capability::VaultImport,
+        Capability::VaultManageMembers,
+        Capability::VaultManagePermissions,
+        Capability::VaultManageSnapshots,
+        Capability::FileCreate,
+        Capability::FileWrite,
+        Capability::FileMove,
+        Capability::FileDelete,
+        Capability::FileUploadAsset,
+        Capability::KanbanCardCreate,
+        Capability::KanbanCardEditContent,
+        Capability::KanbanCardMove,
+        Capability::KanbanCardComment,
+        Capability::KanbanCardDelete,
+        Capability::KanbanCardArchive,
+        Capability::KanbanColumnManage,
+        Capability::PdfComment,
+        Capability::PdfAnnotate,
+        Capability::NoteEdit,
+        Capability::CanvasEdit,
+    ];
+
+    pub fn as_token(self) -> &'static str {
+        match self {
+            Capability::VaultRead => "vault.read",
+            Capability::VaultSearch => "vault.search",
+            Capability::VaultViewHistory => "vault.viewHistory",
+            Capability::VaultViewActivity => "vault.viewActivity",
+            Capability::VaultExport => "vault.export",
+            Capability::VaultImport => "vault.import",
+            Capability::VaultManageMembers => "vault.manageMembers",
+            Capability::VaultManagePermissions => "vault.managePermissions",
+            Capability::VaultManageSnapshots => "vault.manageSnapshots",
+            Capability::FileCreate => "file.create",
+            Capability::FileWrite => "file.write",
+            Capability::FileMove => "file.move",
+            Capability::FileDelete => "file.delete",
+            Capability::FileUploadAsset => "file.uploadAsset",
+            Capability::KanbanCardCreate => "kanban.card.create",
+            Capability::KanbanCardEditContent => "kanban.card.editContent",
+            Capability::KanbanCardMove => "kanban.card.move",
+            Capability::KanbanCardComment => "kanban.card.comment",
+            Capability::KanbanCardDelete => "kanban.card.delete",
+            Capability::KanbanCardArchive => "kanban.card.archive",
+            Capability::KanbanColumnManage => "kanban.column.manage",
+            Capability::PdfComment => "pdf.comment",
+            Capability::PdfAnnotate => "pdf.annotate",
+            Capability::NoteEdit => "note.edit",
+            Capability::CanvasEdit => "canvas.edit",
+        }
+    }
+
+    pub fn from_token(token: &str) -> Option<Capability> {
+        Capability::ALL
+            .into_iter()
+            .find(|capability| capability.as_token() == token)
+    }
+}
+
+/// Expands a built-in role into its capability set. The three built-in templates
+/// seeded into the database mirror these sets so legacy memberships (which only
+/// carry a `role`) resolve to equivalent permissions.
+pub fn capabilities_for_role(role: HostedVaultRole) -> Vec<Capability> {
+    let viewer = [
+        Capability::VaultRead,
+        Capability::VaultSearch,
+        Capability::VaultViewHistory,
+        Capability::VaultViewActivity,
+    ];
+    let editor_extra = [
+        Capability::FileCreate,
+        Capability::FileWrite,
+        Capability::FileMove,
+        Capability::FileDelete,
+        Capability::FileUploadAsset,
+        Capability::KanbanCardCreate,
+        Capability::KanbanCardEditContent,
+        Capability::KanbanCardMove,
+        Capability::KanbanCardComment,
+        Capability::KanbanCardDelete,
+        Capability::KanbanCardArchive,
+        Capability::KanbanColumnManage,
+        Capability::PdfComment,
+        Capability::PdfAnnotate,
+        Capability::NoteEdit,
+        Capability::CanvasEdit,
+    ];
+    let admin_extra = [
+        Capability::VaultExport,
+        Capability::VaultImport,
+        Capability::VaultManageMembers,
+        Capability::VaultManagePermissions,
+        Capability::VaultManageSnapshots,
+    ];
+    match role {
+        HostedVaultRole::Viewer => viewer.to_vec(),
+        HostedVaultRole::Editor => viewer.into_iter().chain(editor_extra).collect(),
+        HostedVaultRole::Admin => viewer
+            .into_iter()
+            .chain(editor_extra)
+            .chain(admin_extra)
+            .collect(),
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum GrantSubjectType {
+    User,
+    Group,
+}
+
+/// A reusable bundle of capabilities. Built-in templates (`viewer`, `editor`,
+/// `admin`) are read-only and reproduce the legacy role ladder.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct PermissionTemplate {
+    pub id: String,
+    pub name: String,
+    pub description: Option<String>,
+    pub is_builtin: bool,
+    pub capabilities: Vec<String>,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct UserGroup {
+    pub id: String,
+    pub name: String,
+    pub description: Option<String>,
+    pub member_count: i64,
+    pub created_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct UserGroupMember {
+    pub user_id: String,
+    pub username: String,
+    pub display_name: String,
+    pub added_at: String,
+}
+
+/// A vault access grant for either a user (direct membership) or a group. The
+/// resolved `capabilities` are the effective set this grant confers.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct VaultGrant {
+    pub subject_type: GrantSubjectType,
+    pub subject_id: String,
+    pub subject_name: String,
+    pub template_id: Option<String>,
+    pub template_name: Option<String>,
+    pub capabilities: Vec<String>,
+    pub created_at: String,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -205,6 +444,9 @@ pub struct HostedVault {
     pub storage_bytes: u64,
     pub created_at: String,
     pub updated_at: String,
+    /// The requesting user's effective capabilities on this vault.
+    #[serde(default)]
+    pub capabilities: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -236,6 +478,9 @@ pub struct HostedVaultAdminDetail {
     pub storage_bytes: u64,
     pub created_at: String,
     pub updated_at: String,
+    /// The requesting user's effective capabilities on this vault.
+    #[serde(default)]
+    pub capabilities: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -333,6 +578,27 @@ pub struct HostedVaultManifest {
 pub struct HostedTextDocument {
     pub file: HostedFileEntry,
     pub content: String,
+}
+
+/// The shared annotation state for a hosted PDF (bookmarks, highlights, text
+/// annotations, and page comments), stored as opaque JSON alongside a
+/// monotonically increasing `sequence` used for optimistic concurrency. Per-user
+/// viewer state (last page, zoom) is intentionally not part of this shared model
+/// and stays client-local.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct HostedPdfAnnotations {
+    pub state: Value,
+    pub sequence: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct WritePdfAnnotationsRequest {
+    /// The sequence the client last observed; the write is rejected with a
+    /// revision conflict when it no longer matches the stored sequence.
+    pub expected_sequence: i64,
+    pub state: Value,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -459,8 +725,39 @@ pub struct AuditEvent {
 
 #[cfg(test)]
 mod tests {
-    use super::{ApiError, DataResponse, ErrorCode, ErrorResponse};
+    use super::{
+        capabilities_for_role, ApiError, Capability, DataResponse, ErrorCode, ErrorResponse,
+        HostedVaultRole,
+    };
     use serde_json::{json, Value};
+
+    #[test]
+    fn capability_tokens_roundtrip_through_serde_and_from_token() {
+        for capability in Capability::ALL {
+            let token = capability.as_token();
+            assert_eq!(serde_json::to_value(capability).unwrap(), json!(token));
+            assert_eq!(Capability::from_token(token), Some(capability));
+        }
+        assert_eq!(Capability::from_token("nope"), None);
+        assert_eq!(
+            serde_json::to_value(Capability::KanbanCardMove).unwrap(),
+            json!("kanban.card.move")
+        );
+    }
+
+    #[test]
+    fn role_capability_sets_are_nested_and_admin_is_total() {
+        let viewer = capabilities_for_role(HostedVaultRole::Viewer);
+        let editor = capabilities_for_role(HostedVaultRole::Editor);
+        let admin = capabilities_for_role(HostedVaultRole::Admin);
+        assert!(viewer.iter().all(|cap| editor.contains(cap)));
+        assert!(editor.iter().all(|cap| admin.contains(cap)));
+        assert!(viewer.contains(&Capability::VaultRead));
+        assert!(!viewer.contains(&Capability::FileWrite));
+        assert!(editor.contains(&Capability::KanbanCardComment));
+        assert!(!editor.contains(&Capability::VaultManageMembers));
+        assert_eq!(admin.len(), Capability::ALL.len());
+    }
 
     #[test]
     fn responses_use_camel_case_and_stable_snake_case_error_codes() {

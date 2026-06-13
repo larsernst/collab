@@ -15,17 +15,21 @@ use axum::{
 };
 use base64::{engine::general_purpose::STANDARD, Engine};
 use collab_protocol::{
-    AdminOverview, ApiError, AuditEvent, BootstrapStatus, BrowserSession, CreatedInvitation,
+    capabilities_for_role, AdminOverview, ApiError, AuditEvent, BootstrapStatus, BrowserSession,
+    Capability, CreatedInvitation,
     DataResponse, ErrorCode, ErrorResponse, HealthState, HostedDocumentType, HostedFileEntry,
     HostedFileKind, HostedFileReference, HostedFileRevision, HostedFileState,
-    HostedReferenceImpact, HostedRevisionContent, HostedSearchResult, HostedSnapshot,
+    HostedPdfAnnotations, HostedReferenceImpact, HostedRevisionContent, HostedSearchResult,
+    HostedSnapshot,
     HostedStructuralOperationPreview, HostedStructuralOperationResult,
     HostedStructuralOperationType, HostedTextDocument, HostedVault, HostedVaultActivityEvent,
     HostedVaultAdminDetail, HostedVaultImportResult, HostedVaultManifest, HostedVaultMember,
     HostedVaultRole, HostedVaultStatus, HostedVaultStorage, HostedVaultSummary, Invitation,
-    NativeSession, OperationalWarning, ServerUser, ServerUserRole, StorageSummary,
-    UserDirectoryEntry,
+    NativeSession, OperationalWarning, PermissionTemplate, ServerUser, ServerUserRole,
+    StorageSummary, UserDirectoryEntry, UserGroup, UserGroupMember, VaultGrant,
+    WritePdfAnnotationsRequest,
 };
+use collab_protocol::GrantSubjectType;
 use serde::Deserialize;
 use serde_json::{json, Value};
 use sqlx::{PgPool, Postgres, Row, Transaction};
@@ -56,6 +60,7 @@ pub struct LoginRequest {
 #[serde(rename_all = "camelCase")]
 pub struct UpdateUserRequest {
     pub display_name: Option<String>,
+    pub username: Option<String>,
     pub disabled: Option<bool>,
     pub password: Option<String>,
 }
@@ -109,6 +114,21 @@ pub struct ChangePasswordRequest {
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct UpdateSelfRequest {
+    pub display_name: Option<String>,
+    pub username: Option<String>,
+    pub preferences: Option<Value>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UploadAvatarRequest {
+    pub media_type: String,
+    pub content_base64: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ResetPasswordRequest {
     pub new_password: String,
 }
@@ -137,6 +157,51 @@ pub struct AddVaultMemberRequest {
 #[serde(rename_all = "camelCase")]
 pub struct UpdateVaultMemberRequest {
     pub role: HostedVaultRole,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CreateGroupRequest {
+    pub name: String,
+    #[serde(default)]
+    pub description: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateGroupRequest {
+    pub name: Option<String>,
+    pub description: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CreateTemplateRequest {
+    pub name: String,
+    #[serde(default)]
+    pub description: Option<String>,
+    pub capabilities: Vec<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateTemplateRequest {
+    pub name: Option<String>,
+    pub description: Option<String>,
+    pub capabilities: Option<Vec<String>>,
+}
+
+/// Sets a fine-grained capability override on a vault grant. A grant resolves
+/// from its explicit `capabilities` if present, else its `template_id`, else
+/// (for direct user memberships only) the membership role. Supplying neither
+/// for a group grant leaves the group with an empty capability set.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PutVaultGrantRequest {
+    #[serde(default)]
+    pub template_id: Option<Uuid>,
+    #[serde(default)]
+    pub capabilities: Option<Vec<String>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -648,16 +713,201 @@ pub async fn change_password(
     Ok(StatusCode::NO_CONTENT)
 }
 
+/// Re-reads a user's full profile (including preferences and avatar presence)
+/// for the response of a profile mutation.
+async fn fetch_user_profile(
+    pool: &PgPool,
+    user_id: Uuid,
+    request_id: &str,
+) -> Result<ServerUser, ApiFailure> {
+    let row = sqlx::query(
+        r#"
+        SELECT u.id, u.username, u.display_name, u.role::text AS role, u.status::text AS status,
+               u.created_at, u.last_login_at, u.is_primary_admin, u.preferences,
+               (u.avatar_bytes IS NOT NULL) AS has_avatar, u.avatar_updated_at,
+               0::bigint AS active_sessions
+        FROM users u WHERE u.id = $1
+        "#,
+    )
+    .bind(user_id)
+    .fetch_optional(pool)
+    .await
+    .map_err(|_| ApiFailure::server(request_id.to_owned()))?
+    .ok_or_else(|| ApiFailure::not_found(request_id.to_owned()))?;
+    Ok(crate::auth::user_from_row(&row))
+}
+
+/// Lets the signed-in user update their own display name, username, and UI
+/// preferences. Username changes are uniqueness-checked; password changes stay
+/// on the dedicated `/users/me/password` endpoint.
+pub async fn update_self(
+    State(state): State<AppState>,
+    Extension(request_id): Extension<String>,
+    headers: HeaderMap,
+    Json(payload): Json<UpdateSelfRequest>,
+) -> Result<Json<DataResponse<ServerUser>>, ApiFailure> {
+    let authenticated = require_csrf(&state, &headers, &request_id).await?;
+    let user_id = user_uuid(&authenticated.user);
+    if let Some(username) = payload.username.as_deref() {
+        let normalized = normalize_username(username)
+            .map_err(|error| ApiFailure::validation(error.to_string(), request_id.clone()))?;
+        let taken = sqlx::query_scalar::<_, bool>(
+            "SELECT EXISTS(SELECT 1 FROM users WHERE normalized_username = $1 AND id <> $2)",
+        )
+        .bind(&normalized)
+        .bind(user_id)
+        .fetch_one(&state.database)
+        .await
+        .map_err(|_| ApiFailure::server(request_id.clone()))?;
+        if taken {
+            return Err(ApiFailure::validation(
+                "That username is already in use.",
+                request_id,
+            ));
+        }
+        sqlx::query("UPDATE users SET username = $1, normalized_username = $2, updated_at = NOW() WHERE id = $3")
+            .bind(username.trim())
+            .bind(&normalized)
+            .bind(user_id)
+            .execute(&state.database)
+            .await
+            .map_err(|_| ApiFailure::server(request_id.clone()))?;
+    }
+    if let Some(display_name) = payload.display_name.as_deref() {
+        let trimmed = display_name.trim();
+        if trimmed.is_empty() {
+            return Err(ApiFailure::validation(
+                "A display name is required.",
+                request_id,
+            ));
+        }
+        sqlx::query("UPDATE users SET display_name = $1, updated_at = NOW() WHERE id = $2")
+            .bind(trimmed)
+            .bind(user_id)
+            .execute(&state.database)
+            .await
+            .map_err(|_| ApiFailure::server(request_id.clone()))?;
+    }
+    if let Some(preferences) = payload.preferences {
+        if !preferences.is_object() {
+            return Err(ApiFailure::validation(
+                "Preferences must be a JSON object.",
+                request_id,
+            ));
+        }
+        sqlx::query("UPDATE users SET preferences = $1, updated_at = NOW() WHERE id = $2")
+            .bind(preferences)
+            .bind(user_id)
+            .execute(&state.database)
+            .await
+            .map_err(|_| ApiFailure::server(request_id.clone()))?;
+    }
+    let user = fetch_user_profile(&state.database, user_id, &request_id).await?;
+    Ok(Json(DataResponse::new(user)))
+}
+
+const MAX_AVATAR_BYTES: usize = 1024 * 1024;
+
+/// Stores a small avatar image inline on the user row. Bounded in size and
+/// restricted to common web image types; never enters the vault blob store.
+pub async fn upload_self_avatar(
+    State(state): State<AppState>,
+    Extension(request_id): Extension<String>,
+    headers: HeaderMap,
+    Json(payload): Json<UploadAvatarRequest>,
+) -> Result<Json<DataResponse<ServerUser>>, ApiFailure> {
+    let authenticated = require_csrf(&state, &headers, &request_id).await?;
+    let user_id = user_uuid(&authenticated.user);
+    if !matches!(
+        payload.media_type.as_str(),
+        "image/png" | "image/jpeg" | "image/webp" | "image/gif"
+    ) {
+        return Err(ApiFailure::validation(
+            "Avatars must be a PNG, JPEG, WebP, or GIF image.",
+            request_id,
+        ));
+    }
+    let bytes = STANDARD
+        .decode(payload.content_base64.trim())
+        .map_err(|_| ApiFailure::validation("The avatar image could not be decoded.", request_id.clone()))?;
+    if bytes.is_empty() || bytes.len() > MAX_AVATAR_BYTES {
+        return Err(ApiFailure::validation(
+            "Avatars must be between 1 byte and 1 MB.",
+            request_id,
+        ));
+    }
+    sqlx::query(
+        "UPDATE users SET avatar_bytes = $1, avatar_media_type = $2, avatar_updated_at = NOW(), updated_at = NOW() WHERE id = $3",
+    )
+    .bind(&bytes)
+    .bind(&payload.media_type)
+    .bind(user_id)
+    .execute(&state.database)
+    .await
+    .map_err(|_| ApiFailure::server(request_id.clone()))?;
+    let user = fetch_user_profile(&state.database, user_id, &request_id).await?;
+    Ok(Json(DataResponse::new(user)))
+}
+
+pub async fn delete_self_avatar(
+    State(state): State<AppState>,
+    Extension(request_id): Extension<String>,
+    headers: HeaderMap,
+) -> Result<Json<DataResponse<ServerUser>>, ApiFailure> {
+    let authenticated = require_csrf(&state, &headers, &request_id).await?;
+    let user_id = user_uuid(&authenticated.user);
+    sqlx::query(
+        "UPDATE users SET avatar_bytes = NULL, avatar_media_type = NULL, avatar_updated_at = NULL, updated_at = NOW() WHERE id = $1",
+    )
+    .bind(user_id)
+    .execute(&state.database)
+    .await
+    .map_err(|_| ApiFailure::server(request_id.clone()))?;
+    let user = fetch_user_profile(&state.database, user_id, &request_id).await?;
+    Ok(Json(DataResponse::new(user)))
+}
+
+/// Serves a user's avatar image. Available to any authenticated user so avatars
+/// can be shown across the admin interface.
+pub async fn get_user_avatar(
+    State(state): State<AppState>,
+    Extension(request_id): Extension<String>,
+    headers: HeaderMap,
+    Path(user_id): Path<Uuid>,
+) -> Result<Response, ApiFailure> {
+    require_authenticated_user(&state, &headers, &request_id).await?;
+    let row = sqlx::query("SELECT avatar_bytes, avatar_media_type FROM users WHERE id = $1")
+        .bind(user_id)
+        .fetch_optional(&state.database)
+        .await
+        .map_err(|_| ApiFailure::server(request_id.clone()))?
+        .ok_or_else(|| ApiFailure::not_found(request_id.clone()))?;
+    let bytes: Option<Vec<u8>> = row.get("avatar_bytes");
+    let media_type: Option<String> = row.get("avatar_media_type");
+    let bytes = bytes.ok_or_else(|| ApiFailure::not_found(request_id.clone()))?;
+    let mut response = Response::new(Body::from(bytes));
+    response.headers_mut().insert(
+        header::CONTENT_TYPE,
+        HeaderValue::from_str(media_type.as_deref().unwrap_or("image/png"))
+            .unwrap_or_else(|_| HeaderValue::from_static("image/png")),
+    );
+    response
+        .headers_mut()
+        .insert(header::CACHE_CONTROL, HeaderValue::from_static("private, max-age=300"));
+    Ok(response)
+}
+
 pub async fn list_vaults(
     State(state): State<AppState>,
     Extension(request_id): Extension<String>,
     headers: HeaderMap,
 ) -> Result<Json<DataResponse<Vec<HostedVault>>>, ApiFailure> {
     let actor = require_authenticated_user(&state, &headers, &request_id).await?;
+    let actor_id = user_uuid(&actor.user);
     let rows = sqlx::query(
         r#"
         SELECT v.id, v.name, v.owner_user_id, owner.display_name AS owner_display_name,
-               COALESCE(m.role::text, 'admin') AS role, v.status::text AS status, v.manifest_sequence,
+               v.status::text AS status, v.manifest_sequence,
                v.created_at, v.updated_at,
                (SELECT COUNT(*) FROM hosted_vault_memberships members WHERE members.vault_id = v.id) AS members,
                COALESCE((SELECT SUM(r.size_bytes) FROM hosted_file_revisions r WHERE r.vault_id = v.id), 0)::bigint AS storage_bytes
@@ -665,17 +915,31 @@ pub async fn list_vaults(
         JOIN users actor ON actor.id = $1
         LEFT JOIN hosted_vault_memberships m ON m.vault_id = v.id AND m.user_id = actor.id
         JOIN users owner ON owner.id = v.owner_user_id
-        WHERE m.user_id IS NOT NULL OR actor.role = 'admin'
+        WHERE m.user_id IS NOT NULL
+           OR actor.role = 'admin'
+           OR EXISTS (
+                SELECT 1 FROM hosted_vault_group_grants g
+                JOIN user_group_memberships ugm ON ugm.group_id = g.group_id
+                WHERE g.vault_id = v.id AND ugm.user_id = actor.id
+           )
         ORDER BY v.updated_at DESC
         "#,
     )
-    .bind(user_uuid(&actor.user))
+    .bind(actor_id)
     .fetch_all(&state.database)
     .await
     .map_err(|_| ApiFailure::server(request_id.clone()))?;
-    Ok(Json(DataResponse::new(
-        rows.iter().map(vault_from_row).collect(),
-    )))
+    let mut vaults = Vec::with_capacity(rows.len());
+    for row in &rows {
+        let mut vault = vault_from_row_without_role(row);
+        let vault_uuid: Uuid = row.get("id");
+        let access =
+            resolve_vault_capabilities(&state.database, vault_uuid, actor_id, &request_id).await?;
+        vault.role = access.derived_role();
+        vault.capabilities = access.capability_tokens();
+        vaults.push(vault);
+    }
+    Ok(Json(DataResponse::new(vaults)))
 }
 
 pub async fn create_vault(
@@ -907,11 +1171,11 @@ pub async fn list_vault_members(
     Path(vault_id): Path<Uuid>,
 ) -> Result<Json<DataResponse<Vec<HostedVaultMember>>>, ApiFailure> {
     let actor = require_authenticated_user(&state, &headers, &request_id).await?;
-    require_vault_access(
+    require_capability(
         &state.database,
         vault_id,
         user_uuid(&actor.user),
-        HostedVaultRole::Viewer,
+        Capability::VaultRead,
         &request_id,
     )
     .await?;
@@ -1065,11 +1329,11 @@ pub async fn vault_activity(
     Path(vault_id): Path<Uuid>,
 ) -> Result<Json<DataResponse<Vec<HostedVaultActivityEvent>>>, ApiFailure> {
     let actor = require_authenticated_user(&state, &headers, &request_id).await?;
-    require_vault_access(
+    require_capability(
         &state.database,
         vault_id,
         user_uuid(&actor.user),
-        HostedVaultRole::Viewer,
+        Capability::VaultViewActivity,
         &request_id,
     )
     .await?;
@@ -1088,11 +1352,11 @@ pub async fn vault_manifest(
     Path(vault_id): Path<Uuid>,
 ) -> Result<Json<DataResponse<HostedVaultManifest>>, ApiFailure> {
     let actor = require_authenticated_user(&state, &headers, &request_id).await?;
-    require_vault_access(
+    require_capability(
         &state.database,
         vault_id,
         user_uuid(&actor.user),
-        HostedVaultRole::Viewer,
+        Capability::VaultRead,
         &request_id,
     )
     .await?;
@@ -1108,11 +1372,11 @@ pub async fn vault_storage(
     Path(vault_id): Path<Uuid>,
 ) -> Result<Json<DataResponse<HostedVaultStorage>>, ApiFailure> {
     let actor = require_authenticated_user(&state, &headers, &request_id).await?;
-    require_vault_access(
+    require_capability(
         &state.database,
         vault_id,
         user_uuid(&actor.user),
-        HostedVaultRole::Viewer,
+        Capability::VaultRead,
         &request_id,
     )
     .await?;
@@ -1172,11 +1436,11 @@ pub async fn list_vault_files(
     Path(vault_id): Path<Uuid>,
 ) -> Result<Json<DataResponse<Vec<HostedFileEntry>>>, ApiFailure> {
     let actor = require_authenticated_user(&state, &headers, &request_id).await?;
-    require_vault_access(
+    require_capability(
         &state.database,
         vault_id,
         user_uuid(&actor.user),
-        HostedVaultRole::Viewer,
+        Capability::VaultRead,
         &request_id,
     )
     .await?;
@@ -1195,11 +1459,11 @@ pub async fn create_vault_file(
     Json(payload): Json<CreateVaultFileRequest>,
 ) -> Result<(StatusCode, Json<DataResponse<HostedFileEntry>>), ApiFailure> {
     let actor = require_any_user(&state, &headers, &request_id).await?;
-    require_active_vault_role(
+    require_active_capability(
         &state.database,
         vault_id,
         &actor.user,
-        HostedVaultRole::Editor,
+        Capability::FileCreate,
         &request_id,
     )
     .await?;
@@ -1323,11 +1587,11 @@ pub async fn get_vault_file(
     Path((vault_id, file_id)): Path<(Uuid, Uuid)>,
 ) -> Result<Json<DataResponse<HostedTextDocument>>, ApiFailure> {
     let actor = require_authenticated_user(&state, &headers, &request_id).await?;
-    require_vault_access(
+    require_capability(
         &state.database,
         vault_id,
         user_uuid(&actor.user),
-        HostedVaultRole::Viewer,
+        Capability::VaultRead,
         &request_id,
     )
     .await?;
@@ -1363,11 +1627,11 @@ pub async fn list_file_revisions(
     Path((vault_id, file_id)): Path<(Uuid, Uuid)>,
 ) -> Result<Json<DataResponse<Vec<HostedFileRevision>>>, ApiFailure> {
     let actor = require_authenticated_user(&state, &headers, &request_id).await?;
-    require_vault_access(
+    require_capability(
         &state.database,
         vault_id,
         user_uuid(&actor.user),
-        HostedVaultRole::Viewer,
+        Capability::VaultViewHistory,
         &request_id,
     )
     .await?;
@@ -1383,11 +1647,11 @@ pub async fn get_text_revision(
     Path((vault_id, file_id, revision_id)): Path<(Uuid, Uuid, Uuid)>,
 ) -> Result<Json<DataResponse<HostedRevisionContent>>, ApiFailure> {
     let actor = require_authenticated_user(&state, &headers, &request_id).await?;
-    require_vault_access(
+    require_capability(
         &state.database,
         vault_id,
         user_uuid(&actor.user),
-        HostedVaultRole::Viewer,
+        Capability::VaultViewHistory,
         &request_id,
     )
     .await?;
@@ -1404,11 +1668,11 @@ pub async fn restore_file_revision(
     Json(payload): Json<RestoreSnapshotRequest>,
 ) -> Result<(StatusCode, Json<DataResponse<HostedTextDocument>>), ApiFailure> {
     let actor = require_any_user(&state, &headers, &request_id).await?;
-    require_active_vault_role(
+    require_active_capability(
         &state.database,
         vault_id,
         &actor.user,
-        HostedVaultRole::Editor,
+        Capability::FileWrite,
         &request_id,
     )
     .await?;
@@ -1513,11 +1777,11 @@ pub async fn list_file_snapshots(
     Path((vault_id, file_id)): Path<(Uuid, Uuid)>,
 ) -> Result<Json<DataResponse<Vec<HostedSnapshot>>>, ApiFailure> {
     let actor = require_authenticated_user(&state, &headers, &request_id).await?;
-    require_vault_access(
+    require_capability(
         &state.database,
         vault_id,
         user_uuid(&actor.user),
-        HostedVaultRole::Viewer,
+        Capability::VaultViewHistory,
         &request_id,
     )
     .await?;
@@ -1534,11 +1798,11 @@ pub async fn create_file_snapshot(
     Json(payload): Json<CreateSnapshotRequest>,
 ) -> Result<(StatusCode, Json<DataResponse<HostedSnapshot>>), ApiFailure> {
     let actor = require_any_user(&state, &headers, &request_id).await?;
-    require_active_vault_role(
+    require_active_capability(
         &state.database,
         vault_id,
         &actor.user,
-        HostedVaultRole::Editor,
+        Capability::FileWrite,
         &request_id,
     )
     .await?;
@@ -1622,11 +1886,11 @@ pub async fn restore_file_snapshot(
     Json(payload): Json<RestoreSnapshotRequest>,
 ) -> Result<(StatusCode, Json<DataResponse<HostedTextDocument>>), ApiFailure> {
     let actor = require_any_user(&state, &headers, &request_id).await?;
-    require_active_vault_role(
+    require_active_capability(
         &state.database,
         vault_id,
         &actor.user,
-        HostedVaultRole::Editor,
+        Capability::FileWrite,
         &request_id,
     )
     .await?;
@@ -1733,11 +1997,11 @@ pub async fn write_text_revision(
     Json(payload): Json<WriteTextRevisionRequest>,
 ) -> Result<(StatusCode, Json<DataResponse<HostedTextDocument>>), ApiFailure> {
     let actor = require_any_user(&state, &headers, &request_id).await?;
-    require_active_vault_role(
+    let access = require_active_capability(
         &state.database,
         vault_id,
         &actor.user,
-        HostedVaultRole::Editor,
+        Capability::FileWrite,
         &request_id,
     )
     .await?;
@@ -1757,7 +2021,8 @@ pub async fn write_text_revision(
     lock_active_vault(&mut transaction, vault_id, &request_id).await?;
     let current = sqlx::query(
         r#"
-        SELECT f.kind::text AS kind, f.state::text AS state, r.sequence
+        SELECT f.kind::text AS kind, f.state::text AS state, f.name, r.sequence,
+               r.blob_digest
         FROM hosted_file_entries f
         LEFT JOIN hosted_file_revisions r ON r.id = f.current_revision_id
         WHERE f.vault_id = $1 AND f.id = $2
@@ -1781,6 +2046,24 @@ pub async fn write_text_revision(
     let current_sequence = current.get::<Option<i64>, _>("sequence").unwrap_or(0);
     if current_sequence != payload.expected_revision_sequence {
         return Err(ApiFailure::revision_conflict(request_id));
+    }
+    // Kanban boards are semantically enforced: a `.kanban` write must hold the
+    // specific kanban capabilities for the changes it makes (move, comment,
+    // edit content, etc.), not just the baseline `file.write`.
+    if current
+        .get::<String, _>("name")
+        .to_lowercase()
+        .ends_with(".kanban")
+    {
+        let prior_content = match current.get::<Option<String>, _>("blob_digest") {
+            Some(prior_digest) => state
+                .blobs
+                .get(&prior_digest)
+                .await
+                .map_err(|_| ApiFailure::server(request_id.clone()))?,
+            None => None,
+        };
+        enforce_kanban_write(&access, prior_content.as_deref(), &content, &request_id)?;
     }
     let next_sequence = current_sequence + 1;
     insert_blob_record(
@@ -1838,6 +2121,158 @@ pub async fn write_text_revision(
     ))
 }
 
+/// Returns the shared annotation state for a hosted PDF. Readable by anyone who
+/// can read the vault; a PDF with no annotations yet resolves to an empty state
+/// at sequence 0.
+pub async fn get_pdf_annotations(
+    State(state): State<AppState>,
+    Extension(request_id): Extension<String>,
+    headers: HeaderMap,
+    Path((vault_id, file_id)): Path<(Uuid, Uuid)>,
+) -> Result<Json<DataResponse<HostedPdfAnnotations>>, ApiFailure> {
+    let actor = require_authenticated_user(&state, &headers, &request_id).await?;
+    require_capability(
+        &state.database,
+        vault_id,
+        user_uuid(&actor.user),
+        Capability::VaultRead,
+        &request_id,
+    )
+    .await?;
+    let row = sqlx::query(
+        "SELECT state, sequence FROM hosted_pdf_annotations WHERE vault_id = $1 AND file_id = $2",
+    )
+    .bind(vault_id)
+    .bind(file_id)
+    .fetch_optional(&state.database)
+    .await
+    .map_err(|_| ApiFailure::server(request_id.clone()))?;
+    let annotations = match row {
+        Some(row) => HostedPdfAnnotations {
+            state: row.get::<Value, _>("state"),
+            sequence: row.get::<i64, _>("sequence"),
+        },
+        None => HostedPdfAnnotations {
+            state: json!({}),
+            sequence: 0,
+        },
+    };
+    Ok(Json(DataResponse::new(annotations)))
+}
+
+/// Replaces the shared annotation state for a hosted PDF. Annotations are
+/// sidecar metadata, so this intentionally does not create a file revision or
+/// advance the vault manifest; it uses its own per-file `sequence` for
+/// optimistic concurrency. Enforcement is semantic: page-comment changes require
+/// `pdf.comment`, and bookmark/highlight/text-annotation changes require
+/// `pdf.annotate`. Owners and server admins hold every capability and bypass the
+/// per-field check.
+pub async fn write_pdf_annotations(
+    State(state): State<AppState>,
+    Extension(request_id): Extension<String>,
+    headers: HeaderMap,
+    Path((vault_id, file_id)): Path<(Uuid, Uuid)>,
+    Json(payload): Json<WritePdfAnnotationsRequest>,
+) -> Result<(StatusCode, Json<DataResponse<HostedPdfAnnotations>>), ApiFailure> {
+    let actor = require_any_user(&state, &headers, &request_id).await?;
+    let actor_id = user_uuid(&actor.user);
+    let access =
+        resolve_vault_capabilities(&state.database, vault_id, actor_id, &request_id).await?;
+    if access.status != HostedVaultStatus::Active {
+        return Err(ApiFailure::vault_archived(request_id));
+    }
+    // A caller with no PDF write capability at all (e.g. a pure viewer) cannot
+    // use this endpoint regardless of the specific change.
+    if !access.has(Capability::PdfComment) && !access.has(Capability::PdfAnnotate) {
+        return Err(ApiFailure::vault_permission_denied(request_id));
+    }
+    let mut transaction = state
+        .database
+        .begin()
+        .await
+        .map_err(|_| ApiFailure::server(request_id.clone()))?;
+    lock_active_vault(&mut transaction, vault_id, &request_id).await?;
+    let file = sqlx::query(
+        "SELECT name, state::text AS state FROM hosted_file_entries WHERE vault_id = $1 AND id = $2 FOR UPDATE",
+    )
+    .bind(vault_id)
+    .bind(file_id)
+    .fetch_optional(&mut *transaction)
+    .await
+    .map_err(|_| ApiFailure::server(request_id.clone()))?
+    .ok_or_else(|| ApiFailure::not_found(request_id.clone()))?;
+    if file.get::<String, _>("state") != "active"
+        || !file.get::<String, _>("name").to_lowercase().ends_with(".pdf")
+    {
+        return Err(ApiFailure::validation(
+            "Only active PDF files can carry annotations.",
+            request_id,
+        ));
+    }
+    let existing = sqlx::query(
+        "SELECT state, sequence FROM hosted_pdf_annotations WHERE vault_id = $1 AND file_id = $2 FOR UPDATE",
+    )
+    .bind(vault_id)
+    .bind(file_id)
+    .fetch_optional(&mut *transaction)
+    .await
+    .map_err(|_| ApiFailure::server(request_id.clone()))?;
+    let (old_state, current_sequence) = match &existing {
+        Some(row) => (row.get::<Value, _>("state"), row.get::<i64, _>("sequence")),
+        None => (json!({}), 0),
+    };
+    if current_sequence != payload.expected_sequence {
+        return Err(ApiFailure::revision_conflict(request_id));
+    }
+    for required in collab_core::pdf::classify_changes(&old_state, &payload.state) {
+        let capability = Capability::from_token(required.as_token())
+            .expect("pdf capability tokens map to a Capability");
+        if !access.has(capability) {
+            return Err(ApiFailure::vault_permission_denied(request_id));
+        }
+    }
+    let next_sequence = current_sequence + 1;
+    sqlx::query(
+        r#"
+        INSERT INTO hosted_pdf_annotations (vault_id, file_id, state, sequence, updated_by, updated_at)
+        VALUES ($1, $2, $3, $4, $5, NOW())
+        ON CONFLICT (vault_id, file_id)
+        DO UPDATE SET state = EXCLUDED.state, sequence = EXCLUDED.sequence,
+                      updated_by = EXCLUDED.updated_by, updated_at = NOW()
+        "#,
+    )
+    .bind(vault_id)
+    .bind(file_id)
+    .bind(&payload.state)
+    .bind(next_sequence)
+    .bind(actor_id)
+    .execute(&mut *transaction)
+    .await
+    .map_err(|_| ApiFailure::server(request_id.clone()))?;
+    vault_activity_event(
+        &mut transaction,
+        vault_id,
+        Some(actor_id),
+        "pdf.annotations_updated",
+        Some("file"),
+        Some(&file_id.to_string()),
+        json!({"sequence": next_sequence}),
+        &request_id,
+    )
+    .await?;
+    transaction
+        .commit()
+        .await
+        .map_err(|_| ApiFailure::server(request_id.clone()))?;
+    Ok((
+        StatusCode::OK,
+        Json(DataResponse::new(HostedPdfAnnotations {
+            state: payload.state,
+            sequence: next_sequence,
+        })),
+    ))
+}
+
 pub async fn upload_binary_asset(
     State(state): State<AppState>,
     Extension(request_id): Extension<String>,
@@ -1846,11 +2281,11 @@ pub async fn upload_binary_asset(
     Json(payload): Json<UploadBinaryAssetRequest>,
 ) -> Result<(StatusCode, Json<DataResponse<HostedFileEntry>>), ApiFailure> {
     let actor = require_any_user(&state, &headers, &request_id).await?;
-    require_active_vault_role(
+    require_active_capability(
         &state.database,
         vault_id,
         &actor.user,
-        HostedVaultRole::Editor,
+        Capability::FileUploadAsset,
         &request_id,
     )
     .await?;
@@ -1970,11 +2405,11 @@ pub async fn download_vault_file(
     Path((vault_id, file_id)): Path<(Uuid, Uuid)>,
 ) -> Result<Response, ApiFailure> {
     let actor = require_authenticated_user(&state, &headers, &request_id).await?;
-    require_vault_access(
+    require_capability(
         &state.database,
         vault_id,
         user_uuid(&actor.user),
-        HostedVaultRole::Viewer,
+        Capability::VaultRead,
         &request_id,
     )
     .await?;
@@ -2031,19 +2466,23 @@ pub async fn apply_structural_operation(
     Json(payload): Json<StructuralOperationRequest>,
 ) -> Result<Json<DataResponse<HostedStructuralOperationResult>>, ApiFailure> {
     let actor = require_any_user(&state, &headers, &request_id).await?;
-    let minimum_role = if payload.operation_type == HostedStructuralOperationType::Purge {
-        HostedVaultRole::Admin
-    } else {
-        HostedVaultRole::Editor
-    };
-    require_active_vault_role(
-        &state.database,
-        vault_id,
-        &actor.user,
-        minimum_role,
-        &request_id,
-    )
-    .await?;
+    // Each structural operation maps to a specific capability; purge stays
+    // admin-only to preserve the existing destructive-operation boundary.
+    match payload.operation_type {
+        HostedStructuralOperationType::Purge => {
+            require_active_vault_admin(&state.database, vault_id, &actor.user, &request_id).await?;
+        }
+        operation_type => {
+            require_active_capability(
+                &state.database,
+                vault_id,
+                &actor.user,
+                structural_operation_capability(operation_type),
+                &request_id,
+            )
+            .await?;
+        }
+    }
     if let Some(existing) = load_structural_operation(
         &state.database,
         vault_id,
@@ -2325,19 +2764,22 @@ pub async fn preview_structural_operation(
     Json(payload): Json<StructuralOperationPreviewRequest>,
 ) -> Result<Json<DataResponse<HostedStructuralOperationPreview>>, ApiFailure> {
     let actor = require_any_user(&state, &headers, &request_id).await?;
-    let minimum_role = if payload.operation_type == HostedStructuralOperationType::Purge {
-        HostedVaultRole::Admin
-    } else {
-        HostedVaultRole::Editor
-    };
-    require_active_vault_role(
-        &state.database,
-        vault_id,
-        &actor.user,
-        minimum_role,
-        &request_id,
-    )
-    .await?;
+    // The preview requires the same capability as the operation it describes.
+    match payload.operation_type {
+        HostedStructuralOperationType::Purge => {
+            require_active_vault_admin(&state.database, vault_id, &actor.user, &request_id).await?;
+        }
+        operation_type => {
+            require_active_capability(
+                &state.database,
+                vault_id,
+                &actor.user,
+                structural_operation_capability(operation_type),
+                &request_id,
+            )
+            .await?;
+        }
+    }
     let manifest = load_vault_manifest(&state.database, vault_id, &request_id).await?;
     let target = manifest
         .files
@@ -2430,11 +2872,11 @@ pub async fn list_file_references(
     Path((vault_id, file_id)): Path<(Uuid, Uuid)>,
 ) -> Result<Json<DataResponse<Vec<HostedFileReference>>>, ApiFailure> {
     let actor = require_authenticated_user(&state, &headers, &request_id).await?;
-    require_vault_access(
+    require_capability(
         &state.database,
         vault_id,
         user_uuid(&actor.user),
-        HostedVaultRole::Viewer,
+        Capability::VaultRead,
         &request_id,
     )
     .await?;
@@ -2532,11 +2974,11 @@ pub async fn search_vault(
     Query(query): Query<VaultSearchQuery>,
 ) -> Result<Json<DataResponse<Vec<HostedSearchResult>>>, ApiFailure> {
     let actor = require_authenticated_user(&state, &headers, &request_id).await?;
-    require_vault_access(
+    require_capability(
         &state.database,
         vault_id,
         user_uuid(&actor.user),
-        HostedVaultRole::Viewer,
+        Capability::VaultSearch,
         &request_id,
     )
     .await?;
@@ -2617,11 +3059,11 @@ pub async fn import_vault_zip(
     Json(payload): Json<ImportVaultZipRequest>,
 ) -> Result<(StatusCode, Json<DataResponse<HostedVaultImportResult>>), ApiFailure> {
     let actor = require_any_user(&state, &headers, &request_id).await?;
-    require_active_vault_role(
+    require_active_capability(
         &state.database,
         vault_id,
         &actor.user,
-        HostedVaultRole::Admin,
+        Capability::VaultImport,
         &request_id,
     )
     .await?;
@@ -2768,11 +3210,11 @@ pub async fn export_vault_zip(
     Path(vault_id): Path<Uuid>,
 ) -> Result<Response, ApiFailure> {
     let actor = require_authenticated_user(&state, &headers, &request_id).await?;
-    require_vault_access(
+    require_capability(
         &state.database,
         vault_id,
         user_uuid(&actor.user),
-        HostedVaultRole::Admin,
+        Capability::VaultExport,
         &request_id,
     )
     .await?;
@@ -2835,11 +3277,11 @@ pub async fn download_vault_folder_archive(
     Path((vault_id, file_id)): Path<(Uuid, Uuid)>,
 ) -> Result<Response, ApiFailure> {
     let actor = require_authenticated_user(&state, &headers, &request_id).await?;
-    require_vault_access(
+    require_capability(
         &state.database,
         vault_id,
         user_uuid(&actor.user),
-        HostedVaultRole::Viewer,
+        Capability::VaultRead,
         &request_id,
     )
     .await?;
@@ -3077,7 +3519,8 @@ pub async fn list_users(
     let rows = sqlx::query(
         r#"
         SELECT u.id, u.username, u.display_name, u.role::text AS role, u.status::text AS status,
-               u.created_at, u.last_login_at, u.is_primary_admin,
+               u.created_at, u.last_login_at, u.is_primary_admin, u.preferences,
+               (u.avatar_bytes IS NOT NULL) AS has_avatar, u.avatar_updated_at,
                ((SELECT COUNT(*) FROM sessions active
                  WHERE active.user_id = u.id AND active.revoked_at IS NULL AND active.expires_at > NOW())
                 + (SELECT COUNT(*) FROM native_sessions active
@@ -3171,6 +3614,31 @@ pub async fn update_user(
             .await
             .map_err(|_| ApiFailure::server(request_id.clone()))?;
     }
+    if let Some(username) = payload.username.as_deref() {
+        let normalized = normalize_username(username)
+            .map_err(|error| ApiFailure::validation(error.to_string(), request_id.clone()))?;
+        let taken = sqlx::query_scalar::<_, bool>(
+            "SELECT EXISTS(SELECT 1 FROM users WHERE normalized_username = $1 AND id <> $2)",
+        )
+        .bind(&normalized)
+        .bind(user_id)
+        .fetch_one(&state.database)
+        .await
+        .map_err(|_| ApiFailure::server(request_id.clone()))?;
+        if taken {
+            return Err(ApiFailure::validation(
+                "That username is already in use.",
+                request_id,
+            ));
+        }
+        sqlx::query("UPDATE users SET username = $1, normalized_username = $2, updated_at = NOW() WHERE id = $3")
+            .bind(username.trim())
+            .bind(&normalized)
+            .bind(user_id)
+            .execute(&state.database)
+            .await
+            .map_err(|_| ApiFailure::server(request_id.clone()))?;
+    }
     let disabled = payload.disabled;
     let row = sqlx::query(
         r#"
@@ -3184,7 +3652,9 @@ pub async fn update_user(
           updated_at = NOW()
         WHERE id = $3
         RETURNING id, username, display_name, role::text AS role, status::text AS status,
-                  created_at, last_login_at, is_primary_admin, 0::bigint AS active_sessions
+                  created_at, last_login_at, is_primary_admin, preferences,
+                  (avatar_bytes IS NOT NULL) AS has_avatar, avatar_updated_at,
+                  0::bigint AS active_sessions
         "#,
     )
     .bind(payload.display_name)
@@ -3538,6 +4008,621 @@ pub async fn audit_events(
     Ok(Json(DataResponse::new(
         list_audit_events(&state.database, 100, &request_id).await?,
     )))
+}
+
+// ---------------------------------------------------------------------------
+// Fine-grained permissions: user groups, permission templates, vault grants.
+// All endpoints are server-admin only and record audit events; grant mutations
+// additionally record `byServerAdmin` vault activity for the affected vault.
+// ---------------------------------------------------------------------------
+
+pub async fn list_groups(
+    State(state): State<AppState>,
+    Extension(request_id): Extension<String>,
+    headers: HeaderMap,
+) -> Result<Json<DataResponse<Vec<UserGroup>>>, ApiFailure> {
+    require_admin(&state, &headers, &request_id).await?;
+    Ok(Json(DataResponse::new(
+        load_groups(&state.database, &request_id).await?,
+    )))
+}
+
+pub async fn create_group(
+    State(state): State<AppState>,
+    Extension(request_id): Extension<String>,
+    headers: HeaderMap,
+    Json(payload): Json<CreateGroupRequest>,
+) -> Result<(StatusCode, Json<DataResponse<UserGroup>>), ApiFailure> {
+    let actor = require_admin_csrf(&state, &headers, &request_id).await?;
+    let name = validate_entity_name(&payload.name, "Group name", &request_id)?;
+    let description = normalize_optional_text(payload.description);
+    let id = Uuid::now_v7();
+    let mut transaction = state
+        .database
+        .begin()
+        .await
+        .map_err(|_| ApiFailure::server(request_id.clone()))?;
+    sqlx::query(
+        "INSERT INTO user_groups (id, name, description, created_by) VALUES ($1, $2, $3, $4)",
+    )
+    .bind(id)
+    .bind(&name)
+    .bind(description.as_deref())
+    .bind(user_uuid(&actor.user))
+    .execute(&mut *transaction)
+    .await
+    .map_err(|error| unique_violation_or_server(error, "A group with that name already exists.", &request_id))?;
+    audit(
+        &mut transaction,
+        Some(&actor.user.id),
+        "admin.group.create",
+        Some("group"),
+        Some(&id.to_string()),
+        "success",
+        &request_id,
+        json!({"name": name}),
+    )
+    .await?;
+    transaction
+        .commit()
+        .await
+        .map_err(|_| ApiFailure::server(request_id.clone()))?;
+    Ok((
+        StatusCode::CREATED,
+        Json(DataResponse::new(
+            load_group(&state.database, id, &request_id).await?,
+        )),
+    ))
+}
+
+pub async fn update_group(
+    State(state): State<AppState>,
+    Extension(request_id): Extension<String>,
+    headers: HeaderMap,
+    Path(group_id): Path<Uuid>,
+    Json(payload): Json<UpdateGroupRequest>,
+) -> Result<Json<DataResponse<UserGroup>>, ApiFailure> {
+    let actor = require_admin_csrf(&state, &headers, &request_id).await?;
+    let name = payload
+        .name
+        .as_deref()
+        .map(|value| validate_entity_name(value, "Group name", &request_id))
+        .transpose()?;
+    let description = payload.description.map(|value| normalize_optional_text(Some(value)));
+    let mut transaction = state
+        .database
+        .begin()
+        .await
+        .map_err(|_| ApiFailure::server(request_id.clone()))?;
+    let updated = sqlx::query(
+        r#"
+        UPDATE user_groups SET
+          name = COALESCE($1, name),
+          description = CASE WHEN $2 THEN $3 ELSE description END
+        WHERE id = $4
+        "#,
+    )
+    .bind(name.as_deref())
+    .bind(description.is_some())
+    .bind(description.flatten().as_deref())
+    .bind(group_id)
+    .execute(&mut *transaction)
+    .await
+    .map_err(|error| unique_violation_or_server(error, "A group with that name already exists.", &request_id))?;
+    if updated.rows_affected() == 0 {
+        return Err(ApiFailure::not_found(request_id));
+    }
+    audit(
+        &mut transaction,
+        Some(&actor.user.id),
+        "admin.group.update",
+        Some("group"),
+        Some(&group_id.to_string()),
+        "success",
+        &request_id,
+        json!({}),
+    )
+    .await?;
+    transaction
+        .commit()
+        .await
+        .map_err(|_| ApiFailure::server(request_id.clone()))?;
+    Ok(Json(DataResponse::new(
+        load_group(&state.database, group_id, &request_id).await?,
+    )))
+}
+
+pub async fn delete_group(
+    State(state): State<AppState>,
+    Extension(request_id): Extension<String>,
+    headers: HeaderMap,
+    Path(group_id): Path<Uuid>,
+) -> Result<StatusCode, ApiFailure> {
+    let actor = require_admin_csrf(&state, &headers, &request_id).await?;
+    let mut transaction = state
+        .database
+        .begin()
+        .await
+        .map_err(|_| ApiFailure::server(request_id.clone()))?;
+    // Group memberships and vault grants cascade via foreign keys.
+    let deleted = sqlx::query("DELETE FROM user_groups WHERE id = $1")
+        .bind(group_id)
+        .execute(&mut *transaction)
+        .await
+        .map_err(|_| ApiFailure::server(request_id.clone()))?;
+    if deleted.rows_affected() == 0 {
+        return Err(ApiFailure::not_found(request_id));
+    }
+    audit(
+        &mut transaction,
+        Some(&actor.user.id),
+        "admin.group.delete",
+        Some("group"),
+        Some(&group_id.to_string()),
+        "success",
+        &request_id,
+        json!({}),
+    )
+    .await?;
+    transaction
+        .commit()
+        .await
+        .map_err(|_| ApiFailure::server(request_id.clone()))?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+pub async fn list_group_members(
+    State(state): State<AppState>,
+    Extension(request_id): Extension<String>,
+    headers: HeaderMap,
+    Path(group_id): Path<Uuid>,
+) -> Result<Json<DataResponse<Vec<UserGroupMember>>>, ApiFailure> {
+    require_admin(&state, &headers, &request_id).await?;
+    require_group_exists(&state.database, group_id, &request_id).await?;
+    Ok(Json(DataResponse::new(
+        load_group_members(&state.database, group_id, &request_id).await?,
+    )))
+}
+
+pub async fn add_group_member(
+    State(state): State<AppState>,
+    Extension(request_id): Extension<String>,
+    headers: HeaderMap,
+    Path((group_id, user_id)): Path<(Uuid, Uuid)>,
+) -> Result<StatusCode, ApiFailure> {
+    let actor = require_admin_csrf(&state, &headers, &request_id).await?;
+    require_group_exists(&state.database, group_id, &request_id).await?;
+    let mut transaction = state
+        .database
+        .begin()
+        .await
+        .map_err(|_| ApiFailure::server(request_id.clone()))?;
+    let inserted = sqlx::query(
+        "INSERT INTO user_group_memberships (group_id, user_id) SELECT $1, id FROM users WHERE id = $2 AND status = 'active' ON CONFLICT DO NOTHING",
+    )
+    .bind(group_id)
+    .bind(user_id)
+    .execute(&mut *transaction)
+    .await
+    .map_err(|_| ApiFailure::server(request_id.clone()))?;
+    if inserted.rows_affected() == 0 {
+        return Err(ApiFailure::validation(
+            "The user does not exist, is disabled, or is already a member of the group.",
+            request_id,
+        ));
+    }
+    audit(
+        &mut transaction,
+        Some(&actor.user.id),
+        "admin.group.member.add",
+        Some("group"),
+        Some(&group_id.to_string()),
+        "success",
+        &request_id,
+        json!({"userId": user_id}),
+    )
+    .await?;
+    transaction
+        .commit()
+        .await
+        .map_err(|_| ApiFailure::server(request_id.clone()))?;
+    Ok(StatusCode::CREATED)
+}
+
+pub async fn remove_group_member(
+    State(state): State<AppState>,
+    Extension(request_id): Extension<String>,
+    headers: HeaderMap,
+    Path((group_id, user_id)): Path<(Uuid, Uuid)>,
+) -> Result<StatusCode, ApiFailure> {
+    let actor = require_admin_csrf(&state, &headers, &request_id).await?;
+    let mut transaction = state
+        .database
+        .begin()
+        .await
+        .map_err(|_| ApiFailure::server(request_id.clone()))?;
+    let deleted =
+        sqlx::query("DELETE FROM user_group_memberships WHERE group_id = $1 AND user_id = $2")
+            .bind(group_id)
+            .bind(user_id)
+            .execute(&mut *transaction)
+            .await
+            .map_err(|_| ApiFailure::server(request_id.clone()))?;
+    if deleted.rows_affected() == 0 {
+        return Err(ApiFailure::not_found(request_id));
+    }
+    audit(
+        &mut transaction,
+        Some(&actor.user.id),
+        "admin.group.member.remove",
+        Some("group"),
+        Some(&group_id.to_string()),
+        "success",
+        &request_id,
+        json!({"userId": user_id}),
+    )
+    .await?;
+    transaction
+        .commit()
+        .await
+        .map_err(|_| ApiFailure::server(request_id.clone()))?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+pub async fn list_templates(
+    State(state): State<AppState>,
+    Extension(request_id): Extension<String>,
+    headers: HeaderMap,
+) -> Result<Json<DataResponse<Vec<PermissionTemplate>>>, ApiFailure> {
+    require_admin(&state, &headers, &request_id).await?;
+    Ok(Json(DataResponse::new(
+        load_templates(&state.database, &request_id).await?,
+    )))
+}
+
+pub async fn create_template(
+    State(state): State<AppState>,
+    Extension(request_id): Extension<String>,
+    headers: HeaderMap,
+    Json(payload): Json<CreateTemplateRequest>,
+) -> Result<(StatusCode, Json<DataResponse<PermissionTemplate>>), ApiFailure> {
+    let actor = require_admin_csrf(&state, &headers, &request_id).await?;
+    let name = validate_entity_name(&payload.name, "Template name", &request_id)?;
+    let description = normalize_optional_text(payload.description);
+    let capabilities = validate_capability_tokens(&payload.capabilities, &request_id)?;
+    let id = Uuid::now_v7();
+    let mut transaction = state
+        .database
+        .begin()
+        .await
+        .map_err(|_| ApiFailure::server(request_id.clone()))?;
+    sqlx::query(
+        "INSERT INTO permission_templates (id, name, description, is_builtin, capabilities, created_by) VALUES ($1, $2, $3, FALSE, $4, $5)",
+    )
+    .bind(id)
+    .bind(&name)
+    .bind(description.as_deref())
+    .bind(&capabilities)
+    .bind(user_uuid(&actor.user))
+    .execute(&mut *transaction)
+    .await
+    .map_err(|error| unique_violation_or_server(error, "A template with that name already exists.", &request_id))?;
+    audit(
+        &mut transaction,
+        Some(&actor.user.id),
+        "admin.template.create",
+        Some("template"),
+        Some(&id.to_string()),
+        "success",
+        &request_id,
+        json!({"name": name, "capabilities": capabilities}),
+    )
+    .await?;
+    transaction
+        .commit()
+        .await
+        .map_err(|_| ApiFailure::server(request_id.clone()))?;
+    Ok((
+        StatusCode::CREATED,
+        Json(DataResponse::new(
+            load_template(&state.database, id, &request_id).await?,
+        )),
+    ))
+}
+
+pub async fn update_template(
+    State(state): State<AppState>,
+    Extension(request_id): Extension<String>,
+    headers: HeaderMap,
+    Path(template_id): Path<Uuid>,
+    Json(payload): Json<UpdateTemplateRequest>,
+) -> Result<Json<DataResponse<PermissionTemplate>>, ApiFailure> {
+    let actor = require_admin_csrf(&state, &headers, &request_id).await?;
+    require_template_editable(&state.database, template_id, &request_id).await?;
+    let name = payload
+        .name
+        .as_deref()
+        .map(|value| validate_entity_name(value, "Template name", &request_id))
+        .transpose()?;
+    let description = payload.description.map(|value| normalize_optional_text(Some(value)));
+    let capabilities = payload
+        .capabilities
+        .as_deref()
+        .map(|tokens| validate_capability_tokens(tokens, &request_id))
+        .transpose()?;
+    let mut transaction = state
+        .database
+        .begin()
+        .await
+        .map_err(|_| ApiFailure::server(request_id.clone()))?;
+    sqlx::query(
+        r#"
+        UPDATE permission_templates SET
+          name = COALESCE($1, name),
+          description = CASE WHEN $2 THEN $3 ELSE description END,
+          capabilities = COALESCE($4, capabilities),
+          updated_at = NOW()
+        WHERE id = $5
+        "#,
+    )
+    .bind(name.as_deref())
+    .bind(description.is_some())
+    .bind(description.flatten().as_deref())
+    .bind(capabilities.as_deref())
+    .bind(template_id)
+    .execute(&mut *transaction)
+    .await
+    .map_err(|error| unique_violation_or_server(error, "A template with that name already exists.", &request_id))?;
+    audit(
+        &mut transaction,
+        Some(&actor.user.id),
+        "admin.template.update",
+        Some("template"),
+        Some(&template_id.to_string()),
+        "success",
+        &request_id,
+        json!({}),
+    )
+    .await?;
+    transaction
+        .commit()
+        .await
+        .map_err(|_| ApiFailure::server(request_id.clone()))?;
+    Ok(Json(DataResponse::new(
+        load_template(&state.database, template_id, &request_id).await?,
+    )))
+}
+
+pub async fn delete_template(
+    State(state): State<AppState>,
+    Extension(request_id): Extension<String>,
+    headers: HeaderMap,
+    Path(template_id): Path<Uuid>,
+) -> Result<StatusCode, ApiFailure> {
+    let actor = require_admin_csrf(&state, &headers, &request_id).await?;
+    require_template_editable(&state.database, template_id, &request_id).await?;
+    let mut transaction = state
+        .database
+        .begin()
+        .await
+        .map_err(|_| ApiFailure::server(request_id.clone()))?;
+    // Grants referencing this template have template_id set to NULL (ON DELETE
+    // SET NULL); such grants then resolve from their explicit capabilities, if any.
+    sqlx::query("DELETE FROM permission_templates WHERE id = $1")
+        .bind(template_id)
+        .execute(&mut *transaction)
+        .await
+        .map_err(|_| ApiFailure::server(request_id.clone()))?;
+    audit(
+        &mut transaction,
+        Some(&actor.user.id),
+        "admin.template.delete",
+        Some("template"),
+        Some(&template_id.to_string()),
+        "success",
+        &request_id,
+        json!({}),
+    )
+    .await?;
+    transaction
+        .commit()
+        .await
+        .map_err(|_| ApiFailure::server(request_id.clone()))?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+pub async fn list_vault_grants(
+    State(state): State<AppState>,
+    Extension(request_id): Extension<String>,
+    headers: HeaderMap,
+    Path(vault_id): Path<Uuid>,
+) -> Result<Json<DataResponse<Vec<VaultGrant>>>, ApiFailure> {
+    require_admin(&state, &headers, &request_id).await?;
+    require_vault_exists(&state.database, vault_id, &request_id).await?;
+    Ok(Json(DataResponse::new(
+        load_vault_grants(&state.database, vault_id, &request_id).await?,
+    )))
+}
+
+pub async fn put_vault_grant(
+    State(state): State<AppState>,
+    Extension(request_id): Extension<String>,
+    headers: HeaderMap,
+    Path((vault_id, subject_type, subject_id)): Path<(Uuid, String, Uuid)>,
+    Json(payload): Json<PutVaultGrantRequest>,
+) -> Result<Json<DataResponse<VaultGrant>>, ApiFailure> {
+    let actor = require_admin_csrf(&state, &headers, &request_id).await?;
+    let subject = parse_grant_subject_type(&subject_type, &request_id)?;
+    require_vault_not_pending_delete(&state.database, vault_id, &request_id).await?;
+    let capabilities = payload
+        .capabilities
+        .as_deref()
+        .map(|tokens| validate_capability_tokens(tokens, &request_id))
+        .transpose()?;
+    if let Some(template_id) = payload.template_id {
+        require_template_exists(&state.database, template_id, &request_id).await?;
+    }
+    let mut transaction = state
+        .database
+        .begin()
+        .await
+        .map_err(|_| ApiFailure::server(request_id.clone()))?;
+    match subject {
+        GrantSubjectType::Group => {
+            // The group must exist; the grant row is upserted.
+            let upserted = sqlx::query(
+                r#"
+                INSERT INTO hosted_vault_group_grants (vault_id, group_id, template_id, capabilities)
+                SELECT $1, id, $3, $4 FROM user_groups WHERE id = $2
+                ON CONFLICT (vault_id, group_id)
+                DO UPDATE SET template_id = EXCLUDED.template_id, capabilities = EXCLUDED.capabilities
+                "#,
+            )
+            .bind(vault_id)
+            .bind(subject_id)
+            .bind(payload.template_id)
+            .bind(capabilities.as_deref())
+            .execute(&mut *transaction)
+            .await
+            .map_err(|_| ApiFailure::server(request_id.clone()))?;
+            if upserted.rows_affected() == 0 {
+                return Err(ApiFailure::validation(
+                    "The group does not exist.",
+                    request_id,
+                ));
+            }
+        }
+        GrantSubjectType::User => {
+            // User grants set the capability override on an existing membership;
+            // membership lifecycle stays in the vault member endpoints, and the
+            // owner membership is never altered.
+            let target =
+                load_vault_member(&state.database, vault_id, subject_id, &request_id).await?;
+            if target.owner {
+                return Err(ApiFailure::validation(
+                    "The owner already holds every capability and cannot be granted a template.",
+                    request_id,
+                ));
+            }
+            sqlx::query(
+                "UPDATE hosted_vault_memberships SET template_id = $1, capabilities = $2, updated_at = NOW() WHERE vault_id = $3 AND user_id = $4",
+            )
+            .bind(payload.template_id)
+            .bind(capabilities.as_deref())
+            .bind(vault_id)
+            .bind(subject_id)
+            .execute(&mut *transaction)
+            .await
+            .map_err(|_| ApiFailure::server(request_id.clone()))?;
+        }
+    }
+    vault_activity_event(
+        &mut transaction,
+        vault_id,
+        Some(user_uuid(&actor.user)),
+        "grant.set",
+        Some(grant_subject_target_type(subject)),
+        Some(&subject_id.to_string()),
+        json!({
+            "subjectType": subject_type,
+            "templateId": payload.template_id,
+            "capabilities": capabilities,
+            "byServerAdmin": true
+        }),
+        &request_id,
+    )
+    .await?;
+    audit(
+        &mut transaction,
+        Some(&actor.user.id),
+        "admin.vault.grant.set",
+        Some("vault"),
+        Some(&vault_id.to_string()),
+        "success",
+        &request_id,
+        json!({"subjectType": subject_type, "subjectId": subject_id, "templateId": payload.template_id}),
+    )
+    .await?;
+    transaction
+        .commit()
+        .await
+        .map_err(|_| ApiFailure::server(request_id.clone()))?;
+    Ok(Json(DataResponse::new(
+        load_vault_grant(&state.database, vault_id, subject, subject_id, &request_id).await?,
+    )))
+}
+
+pub async fn delete_vault_grant(
+    State(state): State<AppState>,
+    Extension(request_id): Extension<String>,
+    headers: HeaderMap,
+    Path((vault_id, subject_type, subject_id)): Path<(Uuid, String, Uuid)>,
+) -> Result<StatusCode, ApiFailure> {
+    let actor = require_admin_csrf(&state, &headers, &request_id).await?;
+    let subject = parse_grant_subject_type(&subject_type, &request_id)?;
+    require_vault_not_pending_delete(&state.database, vault_id, &request_id).await?;
+    let mut transaction = state
+        .database
+        .begin()
+        .await
+        .map_err(|_| ApiFailure::server(request_id.clone()))?;
+    match subject {
+        GrantSubjectType::Group => {
+            let deleted = sqlx::query(
+                "DELETE FROM hosted_vault_group_grants WHERE vault_id = $1 AND group_id = $2",
+            )
+            .bind(vault_id)
+            .bind(subject_id)
+            .execute(&mut *transaction)
+            .await
+            .map_err(|_| ApiFailure::server(request_id.clone()))?;
+            if deleted.rows_affected() == 0 {
+                return Err(ApiFailure::not_found(request_id));
+            }
+        }
+        GrantSubjectType::User => {
+            // Clearing a user grant reverts the membership to its role default
+            // rather than removing the membership.
+            let cleared = sqlx::query(
+                "UPDATE hosted_vault_memberships SET template_id = NULL, capabilities = NULL, updated_at = NOW() WHERE vault_id = $1 AND user_id = $2",
+            )
+            .bind(vault_id)
+            .bind(subject_id)
+            .execute(&mut *transaction)
+            .await
+            .map_err(|_| ApiFailure::server(request_id.clone()))?;
+            if cleared.rows_affected() == 0 {
+                return Err(ApiFailure::not_found(request_id));
+            }
+        }
+    }
+    vault_activity_event(
+        &mut transaction,
+        vault_id,
+        Some(user_uuid(&actor.user)),
+        "grant.removed",
+        Some(grant_subject_target_type(subject)),
+        Some(&subject_id.to_string()),
+        json!({"subjectType": subject_type, "byServerAdmin": true}),
+        &request_id,
+    )
+    .await?;
+    audit(
+        &mut transaction,
+        Some(&actor.user.id),
+        "admin.vault.grant.remove",
+        Some("vault"),
+        Some(&vault_id.to_string()),
+        "success",
+        &request_id,
+        json!({"subjectType": subject_type, "subjectId": subject_id}),
+    )
+    .await?;
+    transaction
+        .commit()
+        .await
+        .map_err(|_| ApiFailure::server(request_id.clone()))?;
+    Ok(StatusCode::NO_CONTENT)
 }
 
 pub async fn admin_vault_detail(
@@ -3965,6 +5050,8 @@ async fn load_admin_vault_detail(
         updated_at: row
             .get::<chrono::DateTime<chrono::Utc>, _>("updated_at")
             .to_rfc3339(),
+        // Populated by the caller from the capability resolver.
+        capabilities: Vec::new(),
     })
 }
 
@@ -4121,7 +5208,6 @@ async fn is_primary_admin(
 
 #[derive(Debug)]
 struct VaultAccess {
-    role: HostedVaultRole,
     owner: bool,
     status: HostedVaultStatus,
 }
@@ -4173,21 +5259,76 @@ fn parse_vault_status(status: &str) -> HostedVaultStatus {
     }
 }
 
-async fn require_vault_access(
+/// The fully resolved capability set for a (user, vault) pair, plus the
+/// owner/server-admin flags and vault status that several handlers branch on.
+struct EffectiveAccess {
+    owner: bool,
+    server_admin: bool,
+    status: HostedVaultStatus,
+    capabilities: HashSet<Capability>,
+}
+
+impl EffectiveAccess {
+    /// Whether the user effectively holds a capability. Owners and active server
+    /// administrators implicitly hold every capability.
+    fn has(&self, capability: Capability) -> bool {
+        self.owner || self.server_admin || self.capabilities.contains(&capability)
+    }
+
+    /// A coarse role derived from the effective capabilities, used to keep the
+    /// legacy `VaultAccess { role }` contract working for unmigrated call sites.
+    fn derived_role(&self) -> HostedVaultRole {
+        if self.owner || self.server_admin || self.has(Capability::VaultManageMembers) {
+            HostedVaultRole::Admin
+        } else if self.has(Capability::FileWrite) {
+            HostedVaultRole::Editor
+        } else {
+            HostedVaultRole::Viewer
+        }
+    }
+
+    fn capability_tokens(&self) -> Vec<String> {
+        // Emit in canonical order for stable client behavior.
+        Capability::ALL
+            .into_iter()
+            .filter(|capability| self.has(*capability))
+            .map(|capability| capability.as_token().to_owned())
+            .collect()
+    }
+}
+
+fn tokens_to_capabilities(tokens: &[String]) -> HashSet<Capability> {
+    tokens
+        .iter()
+        .filter_map(|token| Capability::from_token(token))
+        .collect()
+}
+
+/// Resolves the effective capabilities a user has on a vault by intersecting
+/// every applicable grant source (the user's direct membership and each group
+/// they belong to that has a grant on the vault). Owners and active server
+/// administrators bypass resolution with the full capability set. Returns
+/// `not_found` when the vault does not exist or the user has no grant source —
+/// matching the pre-existing membership-or-admin visibility rule.
+async fn resolve_vault_capabilities(
     pool: &PgPool,
     vault_id: Uuid,
     user_id: Uuid,
-    minimum_role: HostedVaultRole,
     request_id: &str,
-) -> Result<VaultAccess, ApiFailure> {
-    let row = sqlx::query(
+) -> Result<EffectiveAccess, ApiFailure> {
+    let meta = sqlx::query(
         r#"
-        SELECT COALESCE(m.role::text, 'admin') AS role,
-               v.owner_user_id = $2 AS owner, v.status::text AS status
+        SELECT v.status::text AS status,
+               (v.owner_user_id = $2) AS owner,
+               (u.role = 'admin') AS server_admin,
+               (m.user_id IS NOT NULL) AS has_membership,
+               m.role::text AS member_role,
+               COALESCE(m.capabilities, mt.capabilities) AS member_caps
         FROM hosted_vaults v
         JOIN users u ON u.id = $2
         LEFT JOIN hosted_vault_memberships m ON m.vault_id = v.id AND m.user_id = u.id
-        WHERE v.id = $1 AND (m.user_id IS NOT NULL OR u.role = 'admin')
+        LEFT JOIN permission_templates mt ON mt.id = m.template_id
+        WHERE v.id = $1
         "#,
     )
     .bind(vault_id)
@@ -4196,13 +5337,192 @@ async fn require_vault_access(
     .await
     .map_err(|_| ApiFailure::server(request_id.to_owned()))?
     .ok_or_else(|| ApiFailure::not_found(request_id.to_owned()))?;
-    let access = VaultAccess {
-        role: parse_vault_role(row.get::<String, _>("role").as_str()),
-        owner: row.get("owner"),
-        status: parse_vault_status(row.get::<String, _>("status").as_str()),
-    };
-    if access.role < minimum_role {
+
+    let status = parse_vault_status(meta.get::<String, _>("status").as_str());
+    let owner: bool = meta.get("owner");
+    let server_admin: bool = meta.get("server_admin");
+
+    if owner || server_admin {
+        return Ok(EffectiveAccess {
+            owner,
+            server_admin,
+            status,
+            capabilities: Capability::ALL.into_iter().collect(),
+        });
+    }
+
+    // Gather one capability set per applicable grant source.
+    let mut sources: Vec<HashSet<Capability>> = Vec::new();
+    if meta.get::<bool, _>("has_membership") {
+        let explicit: Option<Vec<String>> = meta.get("member_caps");
+        sources.push(match explicit {
+            Some(tokens) => tokens_to_capabilities(&tokens),
+            None => capabilities_for_role(parse_vault_role(
+                meta.get::<String, _>("member_role").as_str(),
+            ))
+            .into_iter()
+            .collect(),
+        });
+    }
+
+    let group_rows = sqlx::query(
+        r#"
+        SELECT COALESCE(g.capabilities, gt.capabilities) AS caps
+        FROM hosted_vault_group_grants g
+        JOIN user_group_memberships ugm
+            ON ugm.group_id = g.group_id AND ugm.user_id = $2
+        LEFT JOIN permission_templates gt ON gt.id = g.template_id
+        WHERE g.vault_id = $1
+        "#,
+    )
+    .bind(vault_id)
+    .bind(user_id)
+    .fetch_all(pool)
+    .await
+    .map_err(|_| ApiFailure::server(request_id.to_owned()))?;
+    for row in &group_rows {
+        let tokens: Option<Vec<String>> = row.get("caps");
+        sources.push(tokens_to_capabilities(&tokens.unwrap_or_default()));
+    }
+
+    if sources.is_empty() {
+        // No membership and no group grant: the vault is not visible to this user.
+        return Err(ApiFailure::not_found(request_id.to_owned()));
+    }
+
+    // Most-restrictive composition: intersect every applicable source.
+    let mut capabilities = sources[0].clone();
+    for source in &sources[1..] {
+        capabilities.retain(|capability| source.contains(capability));
+    }
+
+    Ok(EffectiveAccess {
+        owner,
+        server_admin,
+        status,
+        capabilities,
+    })
+}
+
+/// The full set of kanban capabilities. An actor holding all of them edits
+/// kanban boards with no semantic restriction (equivalent to the legacy editor
+/// role), so the semantic diff can be skipped entirely for them.
+const KANBAN_CAPABILITIES: [Capability; 7] = [
+    Capability::KanbanCardCreate,
+    Capability::KanbanCardEditContent,
+    Capability::KanbanCardMove,
+    Capability::KanbanCardComment,
+    Capability::KanbanCardDelete,
+    Capability::KanbanCardArchive,
+    Capability::KanbanColumnManage,
+];
+
+/// Semantically enforces fine-grained kanban capabilities for a `.kanban`
+/// durable write. The caller has already passed the baseline `file.write`
+/// check; this narrows that to the specific kanban actions the diff between the
+/// prior and new board content requires.
+///
+/// Actors holding every kanban capability (including owners and server admins,
+/// who hold all capabilities) bypass diffing. For partially-capable actors, the
+/// prior and new content are classified through `collab_core::kanban`; if any
+/// required capability is absent the write is rejected. An unparseable new board
+/// is rejected for partially-capable actors so malformed JSON cannot smuggle
+/// changes past the classifier.
+fn enforce_kanban_write(
+    access: &EffectiveAccess,
+    old_content: Option<&[u8]>,
+    new_content: &[u8],
+    request_id: &str,
+) -> Result<(), ApiFailure> {
+    if KANBAN_CAPABILITIES
+        .iter()
+        .all(|capability| access.has(*capability))
+    {
+        return Ok(());
+    }
+
+    let new_board = collab_core::kanban::Board::parse(new_content)
+        .map_err(|_| ApiFailure::vault_permission_denied(request_id.to_owned()))?;
+    let old_board = old_content
+        .and_then(|bytes| collab_core::kanban::Board::parse(bytes).ok())
+        .unwrap_or_else(collab_core::kanban::Board::empty);
+
+    for required in collab_core::kanban::classify_changes(&old_board, &new_board) {
+        let capability = Capability::from_token(required.as_token())
+            .expect("kanban capability tokens map to a Capability");
+        if !access.has(capability) {
+            return Err(ApiFailure::vault_permission_denied(request_id.to_owned()));
+        }
+    }
+
+    Ok(())
+}
+
+/// The capability required to apply (or preview) a non-purge structural
+/// operation. Purge is handled separately as an admin-only action.
+fn structural_operation_capability(
+    operation_type: HostedStructuralOperationType,
+) -> Capability {
+    match operation_type {
+        HostedStructuralOperationType::Rename | HostedStructuralOperationType::Move => {
+            Capability::FileMove
+        }
+        HostedStructuralOperationType::Trash | HostedStructuralOperationType::Restore => {
+            Capability::FileDelete
+        }
+        // Purge authorizes as admin and never reaches this mapping.
+        HostedStructuralOperationType::Purge => Capability::FileDelete,
+    }
+}
+
+/// Resolves access and enforces that the user holds a specific capability.
+async fn require_capability(
+    pool: &PgPool,
+    vault_id: Uuid,
+    user_id: Uuid,
+    capability: Capability,
+    request_id: &str,
+) -> Result<EffectiveAccess, ApiFailure> {
+    let access = resolve_vault_capabilities(pool, vault_id, user_id, request_id).await?;
+    if !access.has(capability) {
         return Err(ApiFailure::vault_permission_denied(request_id.to_owned()));
+    }
+    Ok(access)
+}
+
+async fn require_vault_access(
+    pool: &PgPool,
+    vault_id: Uuid,
+    user_id: Uuid,
+    minimum_role: HostedVaultRole,
+    request_id: &str,
+) -> Result<VaultAccess, ApiFailure> {
+    // Map the legacy minimum role onto a representative capability so existing
+    // call sites authorize through the same resolver as fine-grained checks.
+    let required = match minimum_role {
+        HostedVaultRole::Viewer => Capability::VaultRead,
+        HostedVaultRole::Editor => Capability::FileWrite,
+        HostedVaultRole::Admin => Capability::VaultManageMembers,
+    };
+    let access = require_capability(pool, vault_id, user_id, required, request_id).await?;
+    Ok(VaultAccess {
+        owner: access.owner,
+        status: access.status,
+    })
+}
+
+/// Like `require_capability` but also rejects archived/pending-delete vaults,
+/// for mutating endpoints. Mirrors `require_active_vault_role`.
+async fn require_active_capability(
+    pool: &PgPool,
+    vault_id: Uuid,
+    user: &ServerUser,
+    capability: Capability,
+    request_id: &str,
+) -> Result<EffectiveAccess, ApiFailure> {
+    let access = require_capability(pool, vault_id, user_uuid(user), capability, request_id).await?;
+    if access.status != HostedVaultStatus::Active {
+        return Err(ApiFailure::vault_archived(request_id.to_owned()));
     }
     Ok(access)
 }
@@ -4227,57 +5547,47 @@ async fn require_active_vault_admin(
     Ok(access)
 }
 
-async fn require_active_vault_role(
-    pool: &PgPool,
-    vault_id: Uuid,
-    user: &ServerUser,
-    minimum_role: HostedVaultRole,
-    request_id: &str,
-) -> Result<VaultAccess, ApiFailure> {
-    let access =
-        require_vault_access(pool, vault_id, user_uuid(user), minimum_role, request_id).await?;
-    if access.status != HostedVaultStatus::Active {
-        return Err(ApiFailure::vault_archived(request_id.to_owned()));
-    }
-    Ok(access)
-}
-
 async fn load_vault(
     pool: &PgPool,
     vault_id: Uuid,
     user_id: Uuid,
     request_id: &str,
 ) -> Result<HostedVault, ApiFailure> {
+    // Resolve effective access first (handles owner, server admin, direct
+    // membership, and group grants, and returns not_found when none apply).
+    let access = resolve_vault_capabilities(pool, vault_id, user_id, request_id).await?;
     let row = sqlx::query(
         r#"
         SELECT v.id, v.name, v.owner_user_id, owner.display_name AS owner_display_name,
-               COALESCE(m.role::text, 'admin') AS role, v.status::text AS status, v.manifest_sequence,
+               v.status::text AS status, v.manifest_sequence,
                v.created_at, v.updated_at,
                (SELECT COUNT(*) FROM hosted_vault_memberships members WHERE members.vault_id = v.id) AS members,
                COALESCE((SELECT SUM(r.size_bytes) FROM hosted_file_revisions r WHERE r.vault_id = v.id), 0)::bigint AS storage_bytes
         FROM hosted_vaults v
-        JOIN users actor ON actor.id = $2
-        LEFT JOIN hosted_vault_memberships m ON m.vault_id = v.id AND m.user_id = actor.id
         JOIN users owner ON owner.id = v.owner_user_id
-        WHERE v.id = $1 AND (m.user_id IS NOT NULL OR actor.role = 'admin')
+        WHERE v.id = $1
         "#,
     )
     .bind(vault_id)
-    .bind(user_id)
     .fetch_optional(pool)
     .await
     .map_err(|_| ApiFailure::server(request_id.to_owned()))?
     .ok_or_else(|| ApiFailure::not_found(request_id.to_owned()))?;
-    Ok(vault_from_row(&row))
+    let mut vault = vault_from_row_without_role(&row);
+    vault.role = access.derived_role();
+    vault.capabilities = access.capability_tokens();
+    Ok(vault)
 }
 
-fn vault_from_row(row: &sqlx::postgres::PgRow) -> HostedVault {
+/// Builds a vault DTO from a row that does not select a membership `role`; the
+/// caller is expected to overwrite `role` and `capabilities` from the resolver.
+fn vault_from_row_without_role(row: &sqlx::postgres::PgRow) -> HostedVault {
     HostedVault {
         id: row.get::<Uuid, _>("id").to_string(),
         name: row.get("name"),
         owner_user_id: row.get::<Uuid, _>("owner_user_id").to_string(),
         owner_display_name: row.get("owner_display_name"),
-        role: parse_vault_role(row.get::<String, _>("role").as_str()),
+        role: HostedVaultRole::Viewer,
         status: parse_vault_status(row.get::<String, _>("status").as_str()),
         manifest_sequence: row.get("manifest_sequence"),
         members: row.get("members"),
@@ -4288,6 +5598,7 @@ fn vault_from_row(row: &sqlx::postgres::PgRow) -> HostedVault {
         updated_at: row
             .get::<chrono::DateTime<chrono::Utc>, _>("updated_at")
             .to_rfc3339(),
+        capabilities: Vec::new(),
     }
 }
 
@@ -4302,6 +5613,8 @@ fn vault_summary_from_row(row: &sqlx::postgres::PgRow) -> HostedVaultSummary {
         updated_at: row
             .get::<chrono::DateTime<chrono::Utc>, _>("updated_at")
             .to_rfc3339(),
+        // Populated by the caller from the capability resolver.
+        capabilities: Vec::new(),
     }
 }
 
@@ -4364,6 +5677,411 @@ fn vault_member_from_row(row: &sqlx::postgres::PgRow) -> HostedVaultMember {
             .get::<chrono::DateTime<chrono::Utc>, _>("created_at")
             .to_rfc3339(),
     }
+}
+
+/// Validates and trims a group/template display name (1–128 characters).
+fn validate_entity_name(value: &str, label: &str, request_id: &str) -> Result<String, ApiFailure> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() || trimmed.chars().count() > 128 {
+        return Err(ApiFailure::validation(
+            format!("{label} must be between 1 and 128 characters."),
+            request_id.to_owned(),
+        ));
+    }
+    Ok(trimmed.to_owned())
+}
+
+/// Trims an optional free-text field, collapsing empty/whitespace-only input to
+/// `None` so a cleared description stores SQL NULL.
+fn normalize_optional_text(value: Option<String>) -> Option<String> {
+    value
+        .map(|text| text.trim().to_owned())
+        .filter(|text| !text.is_empty())
+}
+
+/// Maps a unique-constraint violation to a friendly validation error and any
+/// other database failure to a generic server error.
+fn unique_violation_or_server(error: sqlx::Error, message: &str, request_id: &str) -> ApiFailure {
+    if error.as_database_error().and_then(|value| value.code()).as_deref() == Some("23505") {
+        ApiFailure::validation(message.to_owned(), request_id.to_owned())
+    } else {
+        ApiFailure::server(request_id.to_owned())
+    }
+}
+
+/// Validates that every token is a known capability and returns the canonical,
+/// de-duplicated token list in canonical order.
+fn validate_capability_tokens(
+    tokens: &[String],
+    request_id: &str,
+) -> Result<Vec<String>, ApiFailure> {
+    let mut set: HashSet<Capability> = HashSet::new();
+    for token in tokens {
+        let capability = Capability::from_token(token).ok_or_else(|| {
+            ApiFailure::validation(
+                format!("Unknown capability token: {token}"),
+                request_id.to_owned(),
+            )
+        })?;
+        set.insert(capability);
+    }
+    Ok(Capability::ALL
+        .into_iter()
+        .filter(|capability| set.contains(capability))
+        .map(|capability| capability.as_token().to_owned())
+        .collect())
+}
+
+fn parse_grant_subject_type(
+    value: &str,
+    request_id: &str,
+) -> Result<GrantSubjectType, ApiFailure> {
+    match value {
+        "user" => Ok(GrantSubjectType::User),
+        "group" => Ok(GrantSubjectType::Group),
+        _ => Err(ApiFailure::validation(
+            "Grant subject must be 'user' or 'group'.",
+            request_id.to_owned(),
+        )),
+    }
+}
+
+fn grant_subject_target_type(subject: GrantSubjectType) -> &'static str {
+    match subject {
+        GrantSubjectType::User => "user",
+        GrantSubjectType::Group => "group",
+    }
+}
+
+/// Resolves a grant's effective capability tokens: explicit override wins, else
+/// the template's capabilities, else (direct user memberships only) the role
+/// default; group grants with neither resolve to an empty set.
+fn resolve_grant_tokens(
+    explicit: Option<Vec<String>>,
+    template_caps: Option<Vec<String>>,
+    role_fallback: Option<HostedVaultRole>,
+) -> Vec<String> {
+    let tokens = if let Some(tokens) = explicit {
+        tokens
+    } else if let Some(tokens) = template_caps {
+        tokens
+    } else if let Some(role) = role_fallback {
+        return capabilities_for_role(role)
+            .into_iter()
+            .map(|capability| capability.as_token().to_owned())
+            .collect();
+    } else {
+        Vec::new()
+    };
+    // Normalize to canonical order, dropping any unknown tokens defensively.
+    let set = tokens_to_capabilities(&tokens);
+    Capability::ALL
+        .into_iter()
+        .filter(|capability| set.contains(capability))
+        .map(|capability| capability.as_token().to_owned())
+        .collect()
+}
+
+async fn require_group_exists(
+    pool: &PgPool,
+    group_id: Uuid,
+    request_id: &str,
+) -> Result<(), ApiFailure> {
+    let exists = sqlx::query_scalar::<_, bool>("SELECT EXISTS(SELECT 1 FROM user_groups WHERE id = $1)")
+        .bind(group_id)
+        .fetch_one(pool)
+        .await
+        .map_err(|_| ApiFailure::server(request_id.to_owned()))?;
+    if !exists {
+        return Err(ApiFailure::not_found(request_id.to_owned()));
+    }
+    Ok(())
+}
+
+async fn require_template_exists(
+    pool: &PgPool,
+    template_id: Uuid,
+    request_id: &str,
+) -> Result<(), ApiFailure> {
+    let exists =
+        sqlx::query_scalar::<_, bool>("SELECT EXISTS(SELECT 1 FROM permission_templates WHERE id = $1)")
+            .bind(template_id)
+            .fetch_one(pool)
+            .await
+            .map_err(|_| ApiFailure::server(request_id.to_owned()))?;
+    if !exists {
+        return Err(ApiFailure::validation(
+            "The referenced template does not exist.",
+            request_id.to_owned(),
+        ));
+    }
+    Ok(())
+}
+
+/// Ensures a template exists and is not a read-only built-in before mutation.
+async fn require_template_editable(
+    pool: &PgPool,
+    template_id: Uuid,
+    request_id: &str,
+) -> Result<(), ApiFailure> {
+    let is_builtin =
+        sqlx::query_scalar::<_, bool>("SELECT is_builtin FROM permission_templates WHERE id = $1")
+            .bind(template_id)
+            .fetch_optional(pool)
+            .await
+            .map_err(|_| ApiFailure::server(request_id.to_owned()))?
+            .ok_or_else(|| ApiFailure::not_found(request_id.to_owned()))?;
+    if is_builtin {
+        return Err(ApiFailure::validation(
+            "Built-in templates cannot be modified or deleted.",
+            request_id.to_owned(),
+        ));
+    }
+    Ok(())
+}
+
+fn group_from_row(row: &sqlx::postgres::PgRow) -> UserGroup {
+    UserGroup {
+        id: row.get::<Uuid, _>("id").to_string(),
+        name: row.get("name"),
+        description: row.get("description"),
+        member_count: row.get("member_count"),
+        created_at: row
+            .get::<chrono::DateTime<chrono::Utc>, _>("created_at")
+            .to_rfc3339(),
+    }
+}
+
+async fn load_groups(pool: &PgPool, request_id: &str) -> Result<Vec<UserGroup>, ApiFailure> {
+    let rows = sqlx::query(
+        r#"
+        SELECT g.id, g.name, g.description, g.created_at,
+               (SELECT COUNT(*) FROM user_group_memberships m WHERE m.group_id = g.id) AS member_count
+        FROM user_groups g
+        ORDER BY g.name ASC
+        "#,
+    )
+    .fetch_all(pool)
+    .await
+    .map_err(|_| ApiFailure::server(request_id.to_owned()))?;
+    Ok(rows.iter().map(group_from_row).collect())
+}
+
+async fn load_group(
+    pool: &PgPool,
+    group_id: Uuid,
+    request_id: &str,
+) -> Result<UserGroup, ApiFailure> {
+    let row = sqlx::query(
+        r#"
+        SELECT g.id, g.name, g.description, g.created_at,
+               (SELECT COUNT(*) FROM user_group_memberships m WHERE m.group_id = g.id) AS member_count
+        FROM user_groups g
+        WHERE g.id = $1
+        "#,
+    )
+    .bind(group_id)
+    .fetch_optional(pool)
+    .await
+    .map_err(|_| ApiFailure::server(request_id.to_owned()))?
+    .ok_or_else(|| ApiFailure::not_found(request_id.to_owned()))?;
+    Ok(group_from_row(&row))
+}
+
+async fn load_group_members(
+    pool: &PgPool,
+    group_id: Uuid,
+    request_id: &str,
+) -> Result<Vec<UserGroupMember>, ApiFailure> {
+    let rows = sqlx::query(
+        r#"
+        SELECT u.id AS user_id, u.username, u.display_name, m.added_at
+        FROM user_group_memberships m
+        JOIN users u ON u.id = m.user_id
+        WHERE m.group_id = $1
+        ORDER BY u.display_name ASC
+        "#,
+    )
+    .bind(group_id)
+    .fetch_all(pool)
+    .await
+    .map_err(|_| ApiFailure::server(request_id.to_owned()))?;
+    Ok(rows
+        .iter()
+        .map(|row| UserGroupMember {
+            user_id: row.get::<Uuid, _>("user_id").to_string(),
+            username: row.get("username"),
+            display_name: row.get("display_name"),
+            added_at: row
+                .get::<chrono::DateTime<chrono::Utc>, _>("added_at")
+                .to_rfc3339(),
+        })
+        .collect())
+}
+
+fn template_from_row(row: &sqlx::postgres::PgRow) -> PermissionTemplate {
+    PermissionTemplate {
+        id: row.get::<Uuid, _>("id").to_string(),
+        name: row.get("name"),
+        description: row.get("description"),
+        is_builtin: row.get("is_builtin"),
+        capabilities: row.get("capabilities"),
+        created_at: row
+            .get::<chrono::DateTime<chrono::Utc>, _>("created_at")
+            .to_rfc3339(),
+        updated_at: row
+            .get::<chrono::DateTime<chrono::Utc>, _>("updated_at")
+            .to_rfc3339(),
+    }
+}
+
+async fn load_templates(
+    pool: &PgPool,
+    request_id: &str,
+) -> Result<Vec<PermissionTemplate>, ApiFailure> {
+    let rows = sqlx::query(
+        r#"
+        SELECT id, name, description, is_builtin, capabilities, created_at, updated_at
+        FROM permission_templates
+        ORDER BY is_builtin DESC, name ASC
+        "#,
+    )
+    .fetch_all(pool)
+    .await
+    .map_err(|_| ApiFailure::server(request_id.to_owned()))?;
+    Ok(rows.iter().map(template_from_row).collect())
+}
+
+async fn load_template(
+    pool: &PgPool,
+    template_id: Uuid,
+    request_id: &str,
+) -> Result<PermissionTemplate, ApiFailure> {
+    let row = sqlx::query(
+        r#"
+        SELECT id, name, description, is_builtin, capabilities, created_at, updated_at
+        FROM permission_templates
+        WHERE id = $1
+        "#,
+    )
+    .bind(template_id)
+    .fetch_optional(pool)
+    .await
+    .map_err(|_| ApiFailure::server(request_id.to_owned()))?
+    .ok_or_else(|| ApiFailure::not_found(request_id.to_owned()))?;
+    Ok(template_from_row(&row))
+}
+
+async fn load_vault_grants(
+    pool: &PgPool,
+    vault_id: Uuid,
+    request_id: &str,
+) -> Result<Vec<VaultGrant>, ApiFailure> {
+    let member_rows = sqlx::query(
+        r#"
+        SELECT u.id AS subject_id, u.display_name AS subject_name, m.role::text AS role,
+               m.template_id, t.name AS template_name,
+               m.capabilities AS explicit_caps, t.capabilities AS template_caps,
+               v.owner_user_id = u.id AS owner, m.created_at
+        FROM hosted_vault_memberships m
+        JOIN users u ON u.id = m.user_id
+        JOIN hosted_vaults v ON v.id = m.vault_id
+        LEFT JOIN permission_templates t ON t.id = m.template_id
+        WHERE m.vault_id = $1
+        ORDER BY owner DESC, u.display_name ASC
+        "#,
+    )
+    .bind(vault_id)
+    .fetch_all(pool)
+    .await
+    .map_err(|_| ApiFailure::server(request_id.to_owned()))?;
+    let group_rows = sqlx::query(
+        r#"
+        SELECT gr.id AS subject_id, gr.name AS subject_name,
+               g.template_id, t.name AS template_name,
+               g.capabilities AS explicit_caps, t.capabilities AS template_caps,
+               g.created_at
+        FROM hosted_vault_group_grants g
+        JOIN user_groups gr ON gr.id = g.group_id
+        LEFT JOIN permission_templates t ON t.id = g.template_id
+        WHERE g.vault_id = $1
+        ORDER BY gr.name ASC
+        "#,
+    )
+    .bind(vault_id)
+    .fetch_all(pool)
+    .await
+    .map_err(|_| ApiFailure::server(request_id.to_owned()))?;
+
+    let mut grants = Vec::with_capacity(member_rows.len() + group_rows.len());
+    for row in &member_rows {
+        let owner: bool = row.get("owner");
+        // Owners implicitly hold every capability regardless of their stored row.
+        let role_fallback = if owner {
+            Some(HostedVaultRole::Admin)
+        } else {
+            Some(parse_vault_role(row.get::<String, _>("role").as_str()))
+        };
+        let capabilities = if owner {
+            Capability::ALL
+                .into_iter()
+                .map(|capability| capability.as_token().to_owned())
+                .collect()
+        } else {
+            resolve_grant_tokens(
+                row.get("explicit_caps"),
+                row.get("template_caps"),
+                role_fallback,
+            )
+        };
+        grants.push(VaultGrant {
+            subject_type: GrantSubjectType::User,
+            subject_id: row.get::<Uuid, _>("subject_id").to_string(),
+            subject_name: row.get("subject_name"),
+            template_id: row
+                .get::<Option<Uuid>, _>("template_id")
+                .map(|id| id.to_string()),
+            template_name: row.get("template_name"),
+            capabilities,
+            created_at: row
+                .get::<chrono::DateTime<chrono::Utc>, _>("created_at")
+                .to_rfc3339(),
+        });
+    }
+    for row in &group_rows {
+        grants.push(VaultGrant {
+            subject_type: GrantSubjectType::Group,
+            subject_id: row.get::<Uuid, _>("subject_id").to_string(),
+            subject_name: row.get("subject_name"),
+            template_id: row
+                .get::<Option<Uuid>, _>("template_id")
+                .map(|id| id.to_string()),
+            template_name: row.get("template_name"),
+            capabilities: resolve_grant_tokens(
+                row.get("explicit_caps"),
+                row.get("template_caps"),
+                None,
+            ),
+            created_at: row
+                .get::<chrono::DateTime<chrono::Utc>, _>("created_at")
+                .to_rfc3339(),
+        });
+    }
+    Ok(grants)
+}
+
+async fn load_vault_grant(
+    pool: &PgPool,
+    vault_id: Uuid,
+    subject: GrantSubjectType,
+    subject_id: Uuid,
+    request_id: &str,
+) -> Result<VaultGrant, ApiFailure> {
+    load_vault_grants(pool, vault_id, request_id)
+        .await?
+        .into_iter()
+        .find(|grant| grant.subject_type == subject && grant.subject_id == subject_id.to_string())
+        .ok_or_else(|| ApiFailure::not_found(request_id.to_owned()))
 }
 
 async fn vault_activity_event(
@@ -5959,7 +7677,8 @@ impl IntoResponse for ApiFailure {
 #[cfg(test)]
 mod tests {
     use super::{
-        cookie, indexed_note_tags, indexed_note_title, parse_vault_zip, search_excerpt, STANDARD,
+        cookie, indexed_note_tags, indexed_note_title, parse_vault_zip, search_excerpt,
+        Capability, STANDARD,
     };
     use crate::auth::hash_secret;
     use crate::{
@@ -6092,6 +7811,52 @@ mod tests {
             .unwrap()
     }
 
+    /// Re-inserts the three built-in permission templates that migration 0008
+    /// seeds, after a CASCADE truncate removes them. Capability sets mirror the
+    /// migration and `collab_protocol::capabilities_for_role`.
+    async fn reseed_builtin_templates(pool: &sqlx::PgPool) {
+        for role in [
+            super::HostedVaultRole::Viewer,
+            super::HostedVaultRole::Editor,
+            super::HostedVaultRole::Admin,
+        ] {
+            let (id, name) = match role {
+                super::HostedVaultRole::Viewer => {
+                    ("a0000000-0000-4000-8000-000000000001", "viewer")
+                }
+                super::HostedVaultRole::Editor => {
+                    ("a0000000-0000-4000-8000-000000000002", "editor")
+                }
+                super::HostedVaultRole::Admin => {
+                    ("a0000000-0000-4000-8000-000000000003", "admin")
+                }
+            };
+            let capabilities: Vec<String> = super::capabilities_for_role(role)
+                .into_iter()
+                .map(|capability| capability.as_token().to_owned())
+                .collect();
+            sqlx::query(
+                "INSERT INTO permission_templates (id, name, is_builtin, capabilities) VALUES ($1::uuid, $2, TRUE, $3) ON CONFLICT (id) DO NOTHING",
+            )
+            .bind(id)
+            .bind(name)
+            .bind(&capabilities)
+            .execute(pool)
+            .await
+            .unwrap();
+        }
+    }
+
+    /// Extracts the `capabilities` token array from a vault DTO JSON value.
+    fn capability_tokens(vault: &Value) -> Vec<String> {
+        vault["capabilities"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|token| token.as_str().unwrap().to_owned())
+            .collect()
+    }
+
     async fn json_body(response: axum::response::Response) -> Value {
         let bytes = response.into_body().collect().await.unwrap().to_bytes();
         serde_json::from_slice(&bytes).unwrap()
@@ -6151,6 +7916,10 @@ mod tests {
         .execute(&pool)
         .await
         .unwrap();
+        // The TRUNCATE above cascades through the `created_by` FK and wipes the
+        // built-in permission templates seeded by migration 0008. Re-seed them so
+        // the test environment matches production, where they always exist.
+        reseed_builtin_templates(&pool).await;
         let blobs = Arc::new(
             FileSystemBlobStorage::new(tempfile::tempdir().unwrap().keep())
                 .await
@@ -6613,6 +8382,12 @@ mod tests {
         let vault_id = vault_body["data"]["id"].as_str().unwrap();
         assert_eq!(vault_body["data"]["role"], "admin");
         assert_eq!(vault_body["data"]["status"], "active");
+        // The owner resolves to the full capability set, matching the legacy
+        // implicit-admin behavior now expressed as fine-grained capabilities.
+        let owner_caps = capability_tokens(&vault_body["data"]);
+        assert_eq!(owner_caps.len(), Capability::ALL.len());
+        assert!(owner_caps.contains(&"file.write".to_owned()));
+        assert!(owner_caps.contains(&"vault.managePermissions".to_owned()));
 
         let member_vaults_before = request(
             &app,
@@ -6646,7 +8421,20 @@ mod tests {
             None,
         )
         .await;
-        assert_eq!(json_body(member_vaults).await["data"][0]["id"], vault_id);
+        let member_vaults_body = json_body(member_vaults).await;
+        assert_eq!(member_vaults_body["data"][0]["id"], vault_id);
+        // A direct viewer membership with no template/capability override resolves
+        // from its legacy role to the built-in viewer capability set.
+        let viewer_caps = capability_tokens(&member_vaults_body["data"][0]);
+        assert_eq!(
+            viewer_caps,
+            vec![
+                "vault.read".to_owned(),
+                "vault.search".to_owned(),
+                "vault.viewHistory".to_owned(),
+                "vault.viewActivity".to_owned(),
+            ]
+        );
 
         let viewer_rename = request(
             &app,
@@ -6700,6 +8488,294 @@ mod tests {
         .await;
         assert_eq!(promoted_member.status(), StatusCode::OK);
         assert_eq!(json_body(promoted_member).await["data"]["role"], "editor");
+
+        // After promotion the resolver reflects the editor capability set: full
+        // file/content editing, but no vault-management capabilities.
+        let editor_vaults = request(
+            &app,
+            "GET",
+            "/api/v1/vaults",
+            json!({}),
+            Some(&member_cookie),
+            None,
+        )
+        .await;
+        let editor_vaults_body = json_body(editor_vaults).await;
+        let editor_caps = capability_tokens(&editor_vaults_body["data"][0]);
+        assert!(editor_caps.contains(&"file.write".to_owned()));
+        assert!(editor_caps.contains(&"kanban.card.move".to_owned()));
+        assert!(!editor_caps.contains(&"vault.managePermissions".to_owned()));
+        assert!(!editor_caps.contains(&"vault.manageMembers".to_owned()));
+
+        // --- Phase 3: permission templates, user groups, and vault grants ---
+
+        // Create a custom template granting only read + one kanban capability.
+        let template = request(
+            &app,
+            "POST",
+            "/api/v1/admin/templates",
+            json!({
+                "name": "reviewer",
+                "description": "Read and move only",
+                "capabilities": ["vault.read", "kanban.card.move"]
+            }),
+            Some(&admin_cookie),
+            Some(&admin_csrf),
+        )
+        .await;
+        assert_eq!(template.status(), StatusCode::CREATED);
+        let template_body = json_body(template).await;
+        let reviewer_template_id = template_body["data"]["id"].as_str().unwrap().to_owned();
+        assert_eq!(template_body["data"]["isBuiltin"], false);
+        assert_eq!(
+            capability_tokens(&template_body["data"]),
+            vec!["vault.read".to_owned(), "kanban.card.move".to_owned()]
+        );
+
+        // Unknown capability tokens are rejected.
+        let bad_template = request(
+            &app,
+            "POST",
+            "/api/v1/admin/templates",
+            json!({"name": "broken", "capabilities": ["vault.read", "not.a.capability"]}),
+            Some(&admin_cookie),
+            Some(&admin_csrf),
+        )
+        .await;
+        assert_eq!(bad_template.status(), StatusCode::BAD_REQUEST);
+
+        // Built-in templates are read-only.
+        let templates = request(
+            &app,
+            "GET",
+            "/api/v1/admin/templates",
+            json!({}),
+            Some(&admin_cookie),
+            None,
+        )
+        .await;
+        let templates_body = json_body(templates).await;
+        let builtin_id = templates_body["data"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|template| template["isBuiltin"] == json!(true))
+            .unwrap()["id"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        let builtin_edit = request(
+            &app,
+            "PATCH",
+            &format!("/api/v1/admin/templates/{builtin_id}"),
+            json!({"capabilities": ["vault.read"]}),
+            Some(&admin_cookie),
+            Some(&admin_csrf),
+        )
+        .await;
+        assert_eq!(builtin_edit.status(), StatusCode::BAD_REQUEST);
+
+        // Create a group and add the invited user to it.
+        let group = request(
+            &app,
+            "POST",
+            "/api/v1/admin/groups",
+            json!({"name": "Reviewers", "description": "Reviewers group"}),
+            Some(&admin_cookie),
+            Some(&admin_csrf),
+        )
+        .await;
+        assert_eq!(group.status(), StatusCode::CREATED);
+        let group_body = json_body(group).await;
+        let group_id = group_body["data"]["id"].as_str().unwrap().to_owned();
+        assert_eq!(group_body["data"]["memberCount"], 0);
+
+        let add_to_group = request(
+            &app,
+            "POST",
+            &format!("/api/v1/admin/groups/{group_id}/members/{invited_id}"),
+            json!({}),
+            Some(&admin_cookie),
+            Some(&admin_csrf),
+        )
+        .await;
+        assert_eq!(add_to_group.status(), StatusCode::CREATED);
+
+        let group_members = request(
+            &app,
+            "GET",
+            &format!("/api/v1/admin/groups/{group_id}/members"),
+            json!({}),
+            Some(&admin_cookie),
+            None,
+        )
+        .await;
+        let group_members_body = json_body(group_members).await;
+        assert_eq!(group_members_body["data"].as_array().unwrap().len(), 1);
+        assert_eq!(group_members_body["data"][0]["userId"], invited_id);
+
+        // Before any grant, the invited user cannot see the admin-owned team vault.
+        let invited_before = request(
+            &app,
+            "GET",
+            "/api/v1/vaults",
+            json!({}),
+            Some(&invited_cookie),
+            None,
+        )
+        .await;
+        let invited_before_body = json_body(invited_before).await;
+        assert!(invited_before_body["data"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|vault| vault["id"] != json!(vault_id)));
+
+        // Grant the group the reviewer template on the team vault.
+        let group_grant = request(
+            &app,
+            "PUT",
+            &format!("/api/v1/admin/vaults/{vault_id}/grants/group/{group_id}"),
+            json!({"templateId": reviewer_template_id}),
+            Some(&admin_cookie),
+            Some(&admin_csrf),
+        )
+        .await;
+        assert_eq!(group_grant.status(), StatusCode::OK);
+        let group_grant_body = json_body(group_grant).await;
+        assert_eq!(group_grant_body["data"]["subjectType"], "group");
+        assert_eq!(
+            capability_tokens(&group_grant_body["data"]),
+            vec!["vault.read".to_owned(), "kanban.card.move".to_owned()]
+        );
+
+        // The group grant alone grants access with exactly the template's caps.
+        let invited_granted = request(
+            &app,
+            "GET",
+            "/api/v1/vaults",
+            json!({}),
+            Some(&invited_cookie),
+            None,
+        )
+        .await;
+        let invited_granted_body = json_body(invited_granted).await;
+        let granted_team = invited_granted_body["data"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|vault| vault["id"] == json!(vault_id))
+            .cloned()
+            .unwrap();
+        assert_eq!(
+            capability_tokens(&granted_team),
+            vec!["vault.read".to_owned(), "kanban.card.move".to_owned()]
+        );
+
+        // Adding a direct viewer membership for the same user makes effective
+        // access the most-restrictive intersection of the viewer role and the
+        // group template, narrowing below both sources to just vault.read.
+        let direct_member = request(
+            &app,
+            "POST",
+            &format!("/api/v1/vaults/{vault_id}/members"),
+            json!({"userId": invited_id, "role": "viewer"}),
+            Some(&admin_cookie),
+            Some(&admin_csrf),
+        )
+        .await;
+        assert_eq!(direct_member.status(), StatusCode::CREATED);
+        let intersected = request(
+            &app,
+            "GET",
+            "/api/v1/vaults",
+            json!({}),
+            Some(&invited_cookie),
+            None,
+        )
+        .await;
+        let intersected_body = json_body(intersected).await;
+        let intersected_team = intersected_body["data"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|vault| vault["id"] == json!(vault_id))
+            .cloned()
+            .unwrap();
+        assert_eq!(
+            capability_tokens(&intersected_team),
+            vec!["vault.read".to_owned()]
+        );
+
+        // Listing grants surfaces both the direct user grant and the group grant.
+        let grants = request(
+            &app,
+            "GET",
+            &format!("/api/v1/admin/vaults/{vault_id}/grants"),
+            json!({}),
+            Some(&admin_cookie),
+            None,
+        )
+        .await;
+        let grants_body = json_body(grants).await;
+        let grant_subjects: Vec<&str> = grants_body["data"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|grant| grant["subjectType"].as_str().unwrap())
+            .collect();
+        assert!(grant_subjects.contains(&"group"));
+        assert!(grant_subjects.contains(&"user"));
+
+        // Removing the group grant reverts the user to the viewer-role default.
+        let remove_grant = request(
+            &app,
+            "DELETE",
+            &format!("/api/v1/admin/vaults/{vault_id}/grants/group/{group_id}"),
+            json!({}),
+            Some(&admin_cookie),
+            Some(&admin_csrf),
+        )
+        .await;
+        assert_eq!(remove_grant.status(), StatusCode::NO_CONTENT);
+        let reverted = request(
+            &app,
+            "GET",
+            "/api/v1/vaults",
+            json!({}),
+            Some(&invited_cookie),
+            None,
+        )
+        .await;
+        let reverted_body = json_body(reverted).await;
+        let reverted_team = reverted_body["data"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|vault| vault["id"] == json!(vault_id))
+            .cloned()
+            .unwrap();
+        assert_eq!(
+            capability_tokens(&reverted_team),
+            vec![
+                "vault.read".to_owned(),
+                "vault.search".to_owned(),
+                "vault.viewHistory".to_owned(),
+                "vault.viewActivity".to_owned(),
+            ]
+        );
+
+        // Restore the original team-vault membership set for later assertions.
+        let cleanup_member = request(
+            &app,
+            "DELETE",
+            &format!("/api/v1/vaults/{vault_id}/members/{invited_id}"),
+            json!({}),
+            Some(&admin_cookie),
+            Some(&admin_csrf),
+        )
+        .await;
+        assert_eq!(cleanup_member.status(), StatusCode::NO_CONTENT);
 
         let invalid_path = request(
             &app,
@@ -8070,5 +10146,351 @@ mod tests {
                 .len()
                 >= 3
         );
+
+        // --- Phase 4: semantic kanban enforcement ---
+        //
+        // Placed last so its dedicated vault, extra files, and blobs do not
+        // perturb the global manifest/file/blob-count assertions above.
+
+        let kanban_vault = request(
+            &app,
+            "POST",
+            "/api/v1/vaults",
+            json!({"name": "Kanban Vault"}),
+            Some(&admin_cookie),
+            Some(&admin_csrf),
+        )
+        .await;
+        assert_eq!(kanban_vault.status(), StatusCode::CREATED);
+        let kanban_vault_id = json_body(kanban_vault).await["data"]["id"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+
+        // A template that can write files and move kanban cards, but cannot edit
+        // card content. Granted to the reviewer group (which still contains the
+        // invited user) on the kanban vault.
+        let mover_template = request(
+            &app,
+            "POST",
+            "/api/v1/admin/templates",
+            json!({
+                "name": "kanban-mover",
+                "capabilities": ["vault.read", "file.write", "kanban.card.move"]
+            }),
+            Some(&admin_cookie),
+            Some(&admin_csrf),
+        )
+        .await;
+        assert_eq!(mover_template.status(), StatusCode::CREATED);
+        let mover_template_id = json_body(mover_template).await["data"]["id"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        let mover_grant = request(
+            &app,
+            "PUT",
+            &format!("/api/v1/admin/vaults/{kanban_vault_id}/grants/group/{group_id}"),
+            json!({"templateId": mover_template_id}),
+            Some(&admin_cookie),
+            Some(&admin_csrf),
+        )
+        .await;
+        assert_eq!(mover_grant.status(), StatusCode::OK);
+
+        // The owner (admin) creates a kanban board with two cards in one column.
+        let board_v1 = json!({
+            "columns": [{
+                "id": "c1",
+                "title": "Todo",
+                "cards": [
+                    {"id": "a", "title": "A", "comments": []},
+                    {"id": "b", "title": "B", "comments": []}
+                ]
+            }]
+        });
+        let kanban_file = request(
+            &app,
+            "POST",
+            &format!("/api/v1/vaults/{kanban_vault_id}/files"),
+            json!({
+                "name": "Board.kanban",
+                "kind": "document",
+                "documentType": "kanban",
+                "content": board_v1.to_string()
+            }),
+            Some(&admin_cookie),
+            Some(&admin_csrf),
+        )
+        .await;
+        assert_eq!(kanban_file.status(), StatusCode::CREATED);
+        let kanban_file_id = json_body(kanban_file).await["data"]["id"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+
+        // The move-only group member may reorder cards (kanban.card.move).
+        let board_reordered = json!({
+            "columns": [{
+                "id": "c1",
+                "title": "Todo",
+                "cards": [
+                    {"id": "b", "title": "B", "comments": []},
+                    {"id": "a", "title": "A", "comments": []}
+                ]
+            }]
+        });
+        let allowed_move = request(
+            &app,
+            "POST",
+            &format!("/api/v1/vaults/{kanban_vault_id}/files/{kanban_file_id}/revisions"),
+            json!({"expectedRevisionSequence": 1, "content": board_reordered.to_string()}),
+            Some(&invited_cookie),
+            Some(&invited_csrf),
+        )
+        .await;
+        assert_eq!(allowed_move.status(), StatusCode::CREATED);
+
+        // ...but may not edit card content (kanban.card.editContent), even though
+        // the same baseline file.write succeeded for the reorder above.
+        let board_edited = json!({
+            "columns": [{
+                "id": "c1",
+                "title": "Todo",
+                "cards": [
+                    {"id": "b", "title": "B", "comments": []},
+                    {"id": "a", "title": "A renamed", "comments": []}
+                ]
+            }]
+        });
+        let denied_edit = request(
+            &app,
+            "POST",
+            &format!("/api/v1/vaults/{kanban_vault_id}/files/{kanban_file_id}/revisions"),
+            json!({"expectedRevisionSequence": 2, "content": board_edited.to_string()}),
+            Some(&invited_cookie),
+            Some(&invited_csrf),
+        )
+        .await;
+        assert_eq!(denied_edit.status(), StatusCode::FORBIDDEN);
+        assert_eq!(
+            json_body(denied_edit).await["error"]["code"],
+            "vault_permission_denied"
+        );
+
+        // The owner holds every capability and bypasses semantic kanban diffing,
+        // so the same content edit succeeds for them.
+        let owner_edit = request(
+            &app,
+            "POST",
+            &format!("/api/v1/vaults/{kanban_vault_id}/files/{kanban_file_id}/revisions"),
+            json!({"expectedRevisionSequence": 2, "content": board_edited.to_string()}),
+            Some(&admin_cookie),
+            Some(&admin_csrf),
+        )
+        .await;
+        assert_eq!(owner_edit.status(), StatusCode::CREATED);
+
+        // --- PDF annotation permissions (pdf.comment vs pdf.annotate) ---
+        //
+        // Reuses the kanban vault and reviewer group. Re-grants the group a
+        // comment-only template, then verifies a commenter can add page comments
+        // but not highlights/bookmarks, while the owner can do both.
+
+        let commenter_template = request(
+            &app,
+            "POST",
+            "/api/v1/admin/templates",
+            json!({
+                "name": "pdf-commenter",
+                "capabilities": ["vault.read", "pdf.comment"]
+            }),
+            Some(&admin_cookie),
+            Some(&admin_csrf),
+        )
+        .await;
+        assert_eq!(commenter_template.status(), StatusCode::CREATED);
+        let commenter_template_id = json_body(commenter_template).await["data"]["id"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        let commenter_grant = request(
+            &app,
+            "PUT",
+            &format!("/api/v1/admin/vaults/{kanban_vault_id}/grants/group/{group_id}"),
+            json!({"templateId": commenter_template_id}),
+            Some(&admin_cookie),
+            Some(&admin_csrf),
+        )
+        .await;
+        assert_eq!(commenter_grant.status(), StatusCode::OK);
+
+        // The owner uploads a PDF asset to annotate.
+        let pdf_text = "%PDF-1.4 test document";
+        let pdf_upload = request(
+            &app,
+            "POST",
+            &format!("/api/v1/vaults/{kanban_vault_id}/uploads"),
+            json!({
+                "name": "doc.pdf",
+                "mediaType": "application/pdf",
+                "contentBase64": STANDARD.encode(pdf_text.as_bytes()),
+                "expectedHash": hash_secret(pdf_text)
+            }),
+            Some(&admin_cookie),
+            Some(&admin_csrf),
+        )
+        .await;
+        assert_eq!(pdf_upload.status(), StatusCode::CREATED);
+        let pdf_id = json_body(pdf_upload).await["data"]["id"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+
+        // A fresh PDF has empty annotations at sequence 0.
+        let initial_annotations = request(
+            &app,
+            "GET",
+            &format!("/api/v1/vaults/{kanban_vault_id}/files/{pdf_id}/pdf-annotations"),
+            json!({}),
+            Some(&invited_cookie),
+            None,
+        )
+        .await;
+        assert_eq!(initial_annotations.status(), StatusCode::OK);
+        assert_eq!(json_body(initial_annotations).await["data"]["sequence"], 0);
+
+        // The commenter may add a page comment (pdf.comment).
+        let comment_state = json!({
+            "pageComments": [{"id": "k", "page": 1, "content": "hi", "createdAt": 1, "updatedAt": 1}]
+        });
+        let allowed_comment = request(
+            &app,
+            "PUT",
+            &format!("/api/v1/vaults/{kanban_vault_id}/files/{pdf_id}/pdf-annotations"),
+            json!({"expectedSequence": 0, "state": comment_state}),
+            Some(&invited_cookie),
+            Some(&invited_csrf),
+        )
+        .await;
+        assert_eq!(allowed_comment.status(), StatusCode::OK);
+        assert_eq!(json_body(allowed_comment).await["data"]["sequence"], 1);
+
+        // ...but may not add a bookmark/highlight (pdf.annotate).
+        let annotate_state = json!({
+            "pageComments": [{"id": "k", "page": 1, "content": "hi", "createdAt": 1, "updatedAt": 1}],
+            "bookmarks": [{"id": "b", "page": 1, "createdAt": 1, "updatedAt": 1}]
+        });
+        let denied_annotate = request(
+            &app,
+            "PUT",
+            &format!("/api/v1/vaults/{kanban_vault_id}/files/{pdf_id}/pdf-annotations"),
+            json!({"expectedSequence": 1, "state": annotate_state}),
+            Some(&invited_cookie),
+            Some(&invited_csrf),
+        )
+        .await;
+        assert_eq!(denied_annotate.status(), StatusCode::FORBIDDEN);
+        assert_eq!(
+            json_body(denied_annotate).await["error"]["code"],
+            "vault_permission_denied"
+        );
+
+        // The owner holds every capability, so the same bookmark write succeeds.
+        let owner_annotate = request(
+            &app,
+            "PUT",
+            &format!("/api/v1/vaults/{kanban_vault_id}/files/{pdf_id}/pdf-annotations"),
+            json!({"expectedSequence": 1, "state": annotate_state}),
+            Some(&admin_cookie),
+            Some(&admin_csrf),
+        )
+        .await;
+        assert_eq!(owner_annotate.status(), StatusCode::OK);
+        assert_eq!(json_body(owner_annotate).await["data"]["sequence"], 2);
+
+        // --- User profile: admin username edit, self profile, avatar ---
+
+        // An administrator can rename a user and change their username.
+        let renamed = request(
+            &app,
+            "PATCH",
+            &format!("/api/v1/admin/users/{invited_id}"),
+            json!({"displayName": "Renamed Invited", "username": "invited-renamed"}),
+            Some(&admin_cookie),
+            Some(&admin_csrf),
+        )
+        .await;
+        assert_eq!(renamed.status(), StatusCode::OK);
+        let renamed_body = json_body(renamed).await;
+        assert_eq!(renamed_body["data"]["displayName"], "Renamed Invited");
+        assert_eq!(renamed_body["data"]["username"], "invited-renamed");
+
+        // Duplicate usernames are rejected.
+        let dup_username = request(
+            &app,
+            "PATCH",
+            &format!("/api/v1/admin/users/{invited_id}"),
+            json!({"username": "admin"}),
+            Some(&admin_cookie),
+            Some(&admin_csrf),
+        )
+        .await;
+        assert_eq!(dup_username.status(), StatusCode::BAD_REQUEST);
+
+        // The signed-in admin can update their own profile and UI preferences.
+        let self_update = request(
+            &app,
+            "PATCH",
+            "/api/v1/users/me",
+            json!({"displayName": "Primary Admin", "preferences": {"theme": "midnight"}}),
+            Some(&admin_cookie),
+            Some(&admin_csrf),
+        )
+        .await;
+        assert_eq!(self_update.status(), StatusCode::OK);
+        let self_body = json_body(self_update).await;
+        assert_eq!(self_body["data"]["displayName"], "Primary Admin");
+        assert_eq!(self_body["data"]["preferences"]["theme"], "midnight");
+        assert_eq!(self_body["data"]["hasAvatar"], false);
+
+        // Avatar upload, fetch, and the me-projection of avatar presence.
+        let avatar = request(
+            &app,
+            "PUT",
+            "/api/v1/users/me/avatar",
+            json!({"mediaType": "image/png", "contentBase64": STANDARD.encode([1u8, 2, 3, 4])}),
+            Some(&admin_cookie),
+            Some(&admin_csrf),
+        )
+        .await;
+        assert_eq!(avatar.status(), StatusCode::OK);
+        assert_eq!(json_body(avatar).await["data"]["hasAvatar"], true);
+        let avatar_fetch = request(
+            &app,
+            "GET",
+            &format!("/api/v1/users/{admin_id}/avatar"),
+            json!({}),
+            Some(&admin_cookie),
+            None,
+        )
+        .await;
+        assert_eq!(avatar_fetch.status(), StatusCode::OK);
+        assert_eq!(avatar_fetch.headers()[header::CONTENT_TYPE], "image/png");
+        assert_eq!(response_bytes(avatar_fetch).await, vec![1u8, 2, 3, 4]);
+        let me_after = request(&app, "GET", "/api/v1/users/me", json!({}), Some(&admin_cookie), None).await;
+        assert_eq!(json_body(me_after).await["data"]["hasAvatar"], true);
+
+        // Rejects oversized payloads via an unsupported media type guard first.
+        let bad_avatar = request(
+            &app,
+            "PUT",
+            "/api/v1/users/me/avatar",
+            json!({"mediaType": "text/plain", "contentBase64": STANDARD.encode([0u8])}),
+            Some(&admin_cookie),
+            Some(&admin_csrf),
+        )
+        .await;
+        assert_eq!(bad_avatar.status(), StatusCode::BAD_REQUEST);
     }
 }

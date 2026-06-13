@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { isVaultReadOnly, type HostedVaultMeta, type LocalVaultMeta } from './vault';
+import { isVaultReadOnly, vaultCan, type HostedVaultMeta, type LocalVaultMeta } from './vault';
 
 const localVault: LocalVaultMeta = {
   kind: 'local',
@@ -36,5 +36,28 @@ describe('isVaultReadOnly', () => {
     expect(isVaultReadOnly(hostedVault('viewer'))).toBe(true);
     expect(isVaultReadOnly(hostedVault('editor'))).toBe(false);
     expect(isVaultReadOnly(hostedVault('admin'))).toBe(false);
+  });
+});
+
+describe('vaultCan', () => {
+  it('treats local vaults as fully capable', () => {
+    expect(vaultCan(localVault, 'pdf.comment')).toBe(true);
+    expect(vaultCan(localVault, 'pdf.annotate')).toBe(true);
+    expect(vaultCan({ ...localVault, kind: undefined }, 'pdf.annotate')).toBe(true);
+  });
+
+  it('consults the hosted capability tokens', () => {
+    const commenter = { ...hostedVault('viewer'), capabilities: ['vault.read', 'pdf.comment'] };
+    expect(vaultCan(commenter, 'pdf.comment')).toBe(true);
+    expect(vaultCan(commenter, 'pdf.annotate')).toBe(false);
+
+    const annotator = { ...hostedVault('editor'), capabilities: ['pdf.comment', 'pdf.annotate'] };
+    expect(vaultCan(annotator, 'pdf.annotate')).toBe(true);
+  });
+
+  it('fails closed when capabilities are absent or for null vaults', () => {
+    expect(vaultCan(hostedVault('editor'), 'pdf.annotate')).toBe(false);
+    expect(vaultCan(null, 'pdf.comment')).toBe(false);
+    expect(vaultCan(undefined, 'pdf.comment')).toBe(false);
   });
 });

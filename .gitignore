@@ -36,3 +36,4 @@ flatpak-repo/
 *.flatpak
 flatpak-distribution-plan.md
 .directory
+COLLAB_SERVER_PERMISSIONSYSTEM.md

@@ -78,15 +78,30 @@ vi.mock('../layout/DocumentTopBar', () => ({
   getDocumentFolderPath: () => 'Boards',
 }));
 
+const { FULL_CAPS } = vi.hoisted(() => ({
+  FULL_CAPS: {
+    addCard: true,
+    editContent: true,
+    move: true,
+    comment: true,
+    archive: true,
+    deleteCard: true,
+    columnManage: true,
+  },
+}));
+
 let kanbanContext: {
   board: KanbanBoard;
   updateBoard: (updater: (prev: KanbanBoard) => KanbanBoard) => void;
   relativePath: string;
   knownUsers: Array<{ userId: string; userName: string; userColor: string }>;
+  readOnly: boolean;
+  caps: typeof FULL_CAPS;
 };
 
 vi.mock('../../views/KanbanPage', () => ({
   useKanbanContext: () => kanbanContext,
+  FULL_KANBAN_CAPABILITIES: FULL_CAPS,
 }));
 
 const INITIAL_BOARD: KanbanBoard = {
@@ -138,6 +153,8 @@ function Harness() {
     updateBoard: (updater) => setBoard((prev) => updater(prev)),
     relativePath: 'Boards/test.kanban',
     knownUsers: [{ userId: 'user-2', userName: 'Alex Doe', userColor: '#60a5fa' }],
+    readOnly: false,
+    caps: FULL_CAPS,
   };
 
   return <KanbanBoardView />;

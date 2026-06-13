@@ -535,7 +535,7 @@ function ArchiveView({ onOpenCard }: { onOpenCard: (card: KanbanCard, columnId: 
 // ── Main board ────────────────────────────────────────────────────────────────
 
 export default function KanbanBoardView() {
-  const { board, updateBoard, relativePath, knownUsers, readOnly } = useKanbanContext();
+  const { board, updateBoard, relativePath, knownUsers, readOnly, caps } = useKanbanContext();
   const { vault } = useVaultStore();
   // Vault-scoped filter/automation presets live on the local filesystem under
   // .collab/templates/. Hosted vaults have no such endpoint, so only app-scoped
@@ -1332,7 +1332,7 @@ export default function KanbanBoardView() {
         )}
         <div ref={boardViewportRef} className="flex-1 overflow-x-auto overflow-y-hidden">
           <DndContext
-            sensors={readOnly ? [] : sensors}
+            sensors={(caps.move || caps.columnManage) ? sensors : []}
             collisionDetection={collisionDetection}
             onDragStart={onDragStart}
             onDragOver={onDragOver}
@@ -1346,7 +1346,7 @@ export default function KanbanBoardView() {
               </SortableContext>
 
               {/* Add column */}
-              {!readOnly && (
+              {!readOnly && caps.columnManage && (
               <div className="shrink-0 w-[272px]">
                 {addingColumn ? (
                   <div className="bg-card/60 border border-border/50 rounded-lg p-2 flex flex-col gap-2">

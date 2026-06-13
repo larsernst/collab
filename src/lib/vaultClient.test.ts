@@ -34,6 +34,8 @@ vi.mock('./tauri', () => ({
     deleteSnapshot: vi.fn(),
     clearSnapshotHistory: vi.fn(),
     readNoteAssetDataUrl: vi.fn(),
+    readPdfSidecarState: vi.fn(),
+    writePdfSidecarState: vi.fn(),
     readFileForUpload: vi.fn(),
     saveGeneratedImage: vi.fn(),
     hostedVaultRequest: vi.fn(),
@@ -104,8 +106,28 @@ const hostedDocument = {
   updatedAt: '2026-06-11T08:00:00Z',
 };
 
+const hostedPdf = {
+  id: 'pdf-1',
+  parentId: null,
+  name: 'doc.pdf',
+  relativePath: 'doc.pdf',
+  kind: 'asset' as const,
+  documentType: null,
+  state: 'active' as const,
+  currentRevision: {
+    id: 'pdf-rev-1',
+    sequence: 1,
+    contentHash: 'pdf-hash',
+    sizeBytes: 10,
+    createdByDisplayName: 'Alice',
+    createdAt: '2026-06-11T08:00:00Z',
+  },
+  createdAt: '2026-06-11T08:00:00Z',
+  updatedAt: '2026-06-11T08:00:00Z',
+};
+
 function mockHostedManifest(sequence = 8) {
-  return { vaultId: 'hosted-vault', sequence, files: [rootFolder, hostedDocument] };
+  return { vaultId: 'hosted-vault', sequence, files: [rootFolder, hostedDocument, hostedPdf] };
 }
 
 describe('LocalVaultClient', () => {
@@ -727,5 +749,86 @@ describe('VaultClient adapter contract parity', () => {
   it('keeps the published capability constants aligned with adapter instances', () => {
     expect(local.capabilities).toEqual(LOCAL_VAULT_CAPABILITIES);
     expect(hosted.capabilities).toEqual(HOSTED_VAULT_CAPABILITIES);
+  });
+});
+
+describe('PDF annotations', () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it('routes local PDF annotations through the filesystem sidecar with no version', async () => {
+    const sidecar = {
+      bookmarks: [],
+      highlights: [],
+      textAnnotations: [],
+      pageComments: [{ id: 'k', page: 1, content: 'hi', createdAt: 1, updatedAt: 1 }],
+      viewerState: { lastPage: 2 },
+    };
+    vi.mocked(tauriCommands.readPdfSidecarState).mockResolvedValue(sidecar);
+    const client = new LocalVaultClient(vault);
+
+    await expect(client.readPdfAnnotations('Docs/spec.pdf')).resolves.toEqual({
+      state: sidecar,
+      version: null,
+    });
+    expect(tauriCommands.readPdfSidecarState).toHaveBeenCalledWith('/vault', 'Docs/spec.pdf');
+
+    await client.writePdfAnnotations('Docs/spec.pdf', sidecar, null);
+    expect(tauriCommands.writePdfSidecarState).toHaveBeenCalledWith('/vault', 'Docs/spec.pdf', sidecar);
+  });
+
+  it('reads hosted PDF annotations from the endpoint and normalizes the state', async () => {
+    vi.mocked(tauriCommands.hostedVaultRequest)
+      .mockResolvedValueOnce(mockHostedManifest())
+      .mockResolvedValueOnce({ state: { pageComments: [{ id: 'k' }] }, sequence: 3 });
+    const client = new HostedVaultClient(hostedVault);
+
+    await expect(client.readPdfAnnotations('doc.pdf')).resolves.toEqual({
+      state: {
+        bookmarks: [],
+        highlights: [],
+        textAnnotations: [],
+        pageComments: [{ id: 'k' }],
+        viewerState: null,
+      },
+      version: 3,
+    });
+    expect(tauriCommands.hostedVaultRequest).toHaveBeenLastCalledWith(
+      'https://collab.example.test',
+      'GET',
+      '/api/v1/vaults/hosted-vault/files/pdf-1/pdf-annotations',
+      undefined,
+    );
+  });
+
+  it('writes hosted PDF annotations with the optimistic sequence and drops viewer state', async () => {
+    vi.mocked(tauriCommands.hostedVaultRequest)
+      .mockResolvedValueOnce(mockHostedManifest())
+      .mockResolvedValueOnce({ state: { bookmarks: [{ id: 'b' }] }, sequence: 4 });
+    const client = new HostedVaultClient(hostedVault);
+
+    const state = {
+      bookmarks: [{ id: 'b', page: 1, createdAt: 1, updatedAt: 1 }],
+      highlights: [],
+      textAnnotations: [],
+      pageComments: [],
+      viewerState: { lastPage: 5 },
+    };
+    const result = await client.writePdfAnnotations('doc.pdf', state, 3);
+    expect(result.version).toBe(4);
+    expect(tauriCommands.hostedVaultRequest).toHaveBeenLastCalledWith(
+      'https://collab.example.test',
+      'PUT',
+      '/api/v1/vaults/hosted-vault/files/pdf-1/pdf-annotations',
+      {
+        expectedSequence: 3,
+        // viewerState is intentionally excluded from the shared server state.
+        state: {
+          bookmarks: [{ id: 'b', page: 1, createdAt: 1, updatedAt: 1 }],
+          highlights: [],
+          textAnnotations: [],
+          pageComments: [],
+        },
+      },
+    );
   });
 });

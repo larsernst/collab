@@ -11,6 +11,12 @@ export interface ServerUser {
   lastLoginAt: string | null;
   activeSessions: number;
   isPrimaryAdmin: boolean;
+  /** Per-account UI preferences (e.g. appearance). Opaque object. */
+  preferences?: Record<string, unknown> | null;
+  /** Whether the account has an avatar image served from `/users/{id}/avatar`. */
+  hasAvatar?: boolean;
+  /** Avatar last-updated timestamp, used to cache-bust the avatar URL. */
+  avatarUpdatedAt?: string | null;
 }
 
 export interface AuditEvent {
@@ -157,4 +163,115 @@ export interface HostedVaultManifest {
   vaultId: string;
   sequence: number;
   files: HostedFileEntry[];
+}
+
+// --- Fine-grained permissions ---
+
+export type GrantSubjectType = 'user' | 'group';
+
+export interface PermissionTemplate {
+  id: string;
+  name: string;
+  description: string | null;
+  isBuiltin: boolean;
+  capabilities: string[];
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface UserGroup {
+  id: string;
+  name: string;
+  description: string | null;
+  memberCount: number;
+  createdAt: string;
+}
+
+export interface UserGroupMember {
+  userId: string;
+  username: string;
+  displayName: string;
+  addedAt: string;
+}
+
+export interface VaultGrant {
+  subjectType: GrantSubjectType;
+  subjectId: string;
+  subjectName: string;
+  templateId: string | null;
+  templateName: string | null;
+  capabilities: string[];
+  createdAt: string;
+}
+
+/**
+ * The capability vocabulary grouped by domain, mirroring
+ * `collab_protocol::Capability`. Drives the template capability editor and the
+ * grant capability summaries.
+ */
+export const CAPABILITY_GROUPS: Array<{ domain: string; capabilities: Array<{ token: string; label: string }> }> = [
+  {
+    domain: 'Vault',
+    capabilities: [
+      { token: 'vault.read', label: 'Read' },
+      { token: 'vault.search', label: 'Search' },
+      { token: 'vault.viewHistory', label: 'View history' },
+      { token: 'vault.viewActivity', label: 'View activity' },
+      { token: 'vault.export', label: 'Export' },
+      { token: 'vault.import', label: 'Import' },
+      { token: 'vault.manageMembers', label: 'Manage members' },
+      { token: 'vault.managePermissions', label: 'Manage permissions' },
+      { token: 'vault.manageSnapshots', label: 'Manage snapshots' },
+    ],
+  },
+  {
+    domain: 'Files',
+    capabilities: [
+      { token: 'file.create', label: 'Create' },
+      { token: 'file.write', label: 'Write' },
+      { token: 'file.move', label: 'Move / rename' },
+      { token: 'file.delete', label: 'Delete' },
+      { token: 'file.uploadAsset', label: 'Upload assets' },
+    ],
+  },
+  {
+    domain: 'Kanban',
+    capabilities: [
+      { token: 'kanban.card.create', label: 'Create cards' },
+      { token: 'kanban.card.editContent', label: 'Edit card content' },
+      { token: 'kanban.card.move', label: 'Move cards' },
+      { token: 'kanban.card.comment', label: 'Comment on cards' },
+      { token: 'kanban.card.delete', label: 'Delete cards' },
+      { token: 'kanban.card.archive', label: 'Archive cards' },
+      { token: 'kanban.column.manage', label: 'Manage columns' },
+    ],
+  },
+  {
+    domain: 'PDF',
+    capabilities: [
+      { token: 'pdf.comment', label: 'Add page comments' },
+      { token: 'pdf.annotate', label: 'Annotate (bookmarks/highlights)' },
+    ],
+  },
+  {
+    domain: 'Documents',
+    capabilities: [
+      { token: 'note.edit', label: 'Edit notes' },
+      { token: 'canvas.edit', label: 'Edit canvases' },
+    ],
+  },
+];
+
+/** Every known capability token, in canonical domain order. */
+export const ALL_CAPABILITIES: string[] = CAPABILITY_GROUPS.flatMap((group) =>
+  group.capabilities.map((capability) => capability.token),
+);
+
+/** Human-readable label for a capability token (falls back to the raw token). */
+export function capabilityLabel(token: string): string {
+  for (const group of CAPABILITY_GROUPS) {
+    const match = group.capabilities.find((capability) => capability.token === token);
+    if (match) return `${group.domain}: ${match.label}`;
+  }
+  return token;
 }

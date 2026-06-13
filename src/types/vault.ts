@@ -21,6 +21,13 @@ export interface HostedVaultMeta extends VaultMetaBase {
   serverUrl: string;
   hostedVaultId: string;
   role: MemberRole;
+  /**
+   * The caller's effective capability tokens on this vault (see
+   * `collab_protocol::Capability`). Populated from the vault DTO at open; may be
+   * empty/absent for legacy persisted metadata, in which case capability-gated
+   * controls fail closed until the vault is reopened.
+   */
+  capabilities?: string[];
 }
 
 export interface HostedVaultSummary {
@@ -35,6 +42,8 @@ export interface HostedVaultSummary {
   storageBytes: number;
   createdAt: string;
   updatedAt: string;
+  /** The caller's effective capability tokens on this vault. */
+  capabilities?: string[];
 }
 
 export function hostedVaultMeta(serverUrl: string, vault: HostedVaultSummary): HostedVaultMeta {
@@ -48,6 +57,7 @@ export function hostedVaultMeta(serverUrl: string, vault: HostedVaultSummary): H
     lastOpened: Date.parse(vault.updatedAt) || Date.now(),
     isEncrypted: false,
     role: vault.role,
+    capabilities: vault.capabilities ?? [],
   };
 }
 
@@ -65,6 +75,19 @@ export function vaultKind(vault: VaultMeta): VaultKind {
  */
 export function isVaultReadOnly(vault: VaultMeta | null | undefined): boolean {
   return !!vault && vault.kind === 'hosted' && vault.role === 'viewer';
+}
+
+/**
+ * Whether the caller holds a specific fine-grained capability on the vault.
+ * Local vaults are always fully capable (no roles). Hosted vaults consult the
+ * effective capability tokens carried on the meta; absent capabilities fail
+ * closed (return false) so capability-gated controls stay disabled until the
+ * vault is reopened with a fresh DTO.
+ */
+export function vaultCan(vault: VaultMeta | null | undefined, capability: string): boolean {
+  if (!vault) return false;
+  if (vault.kind !== 'hosted') return true;
+  return (vault.capabilities ?? []).includes(capability);
 }
 
 export interface NoteFile {

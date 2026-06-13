@@ -66,7 +66,7 @@ function getTabTypeForPath(path: string): 'note' | 'canvas' | 'kanban' | 'image'
 }
 
 export default function CardDialog({ card: initialCard, columnId, onClose }: Props) {
-  const { updateBoard, knownUsers, board } = useKanbanContext();
+  const { updateBoard, knownUsers, board, caps } = useKanbanContext();
   const { myUserId, myUserName, myUserColor } = useCollabStore();
   const { openTab }       = useEditorStore();
   const { setActiveView, dateFormat } = useUiStore();
@@ -238,7 +238,8 @@ export default function CardDialog({ card: initialCard, columnId, onClose }: Pro
           {/* Done toggle */}
           <button
             onClick={toggleDone}
-            className="shrink-0 mt-0 transition-colors"
+            disabled={!caps.editContent}
+            className="shrink-0 mt-0 transition-colors disabled:cursor-default"
             title={draft.isDone ? 'Mark incomplete' : 'Mark done'}
           >
             {draft.isDone
@@ -251,6 +252,7 @@ export default function CardDialog({ card: initialCard, columnId, onClose }: Pro
             ref={titleRef}
             value={draft.title}
             onChange={e => patchDraft({ title: e.target.value })}
+            readOnly={!caps.editContent}
             rows={1}
             placeholder="Card title"
             className={cn(
@@ -271,6 +273,7 @@ export default function CardDialog({ card: initialCard, columnId, onClose }: Pro
               <textarea
                 value={draft.description ?? ''}
                 onChange={e => patchDraft({ description: e.target.value || undefined })}
+                readOnly={!caps.editContent}
                 rows={6}
                 placeholder="Add a description..."
                 className="w-full bg-muted/25 border border-border/30 rounded-md text-sm text-foreground p-2.5 resize-none focus:outline-none focus:ring-1 focus:ring-primary/40 placeholder:text-muted-foreground/40"
@@ -278,6 +281,7 @@ export default function CardDialog({ card: initialCard, columnId, onClose }: Pro
             </section>
 
             <CardDialogTagsAttachments
+              caps={caps}
               draft={draft}
               tagInput={tagInput}
               suggestedTags={suggestedTags}
@@ -297,6 +301,7 @@ export default function CardDialog({ card: initialCard, columnId, onClose }: Pro
             />
 
             <CardDialogChecklistComments
+              caps={caps}
               draft={draft}
               board={board}
               checklistInput={checklistInput}
@@ -322,6 +327,7 @@ export default function CardDialog({ card: initialCard, columnId, onClose }: Pro
           </div>
 
           <CardDialogSidebar
+            caps={caps}
             draft={draft}
             priorities={PRIORITIES}
             dateFormat={dateFormat}

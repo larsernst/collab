@@ -196,7 +196,7 @@ interface Props {
 }
 
 export default function KanbanCardView({ card, columnId, isOverlay }: Props) {
-  const { knownUsers, updateBoard, board, relativePath } = useKanbanContext();
+  const { knownUsers, updateBoard, board, relativePath, caps } = useKanbanContext();
   const { myUserId, myUserName } = useCollabStore();
   const { dateFormat } = useUiStore();
   const { boardPath, cardId: editingCardId, setEditing, clearEditing } = useKanbanStore();
@@ -206,8 +206,10 @@ export default function KanbanCardView({ card, columnId, isOverlay }: Props) {
 
   const colColor = board.columns.find(c => c.id === columnId)?.color ?? '#64748b';
 
+  // Dragging a card moves it; disable when the user lacks the move capability so
+  // no rejected write is attempted.
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } =
-    useSortable({ id: card.id });
+    useSortable({ id: card.id, disabled: !caps.move });
 
   const style = isOverlay ? undefined : {
     transform: CSS.Transform.toString(transform),

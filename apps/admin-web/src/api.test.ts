@@ -31,6 +31,13 @@ describe('admin API client', () => {
     expect(headers.get('x-collab-csrf')).toBe('csrf-token');
   });
 
+  it('treats an empty 2xx body as a void result', async () => {
+    // Adding a group member returns 201 with no body; this must not throw.
+    document.cookie = 'collab_csrf=csrf-token';
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response('', { status: 201 })));
+    await expect(serverApi.addGroupMember('group-1', 'user-1')).resolves.toBeUndefined();
+  });
+
   it('surfaces safe server messages and request IDs', async () => {
     vi.stubGlobal(
       'fetch',

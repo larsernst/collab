@@ -11,6 +11,7 @@ import {
 
 import { cn } from '../../lib/utils';
 import type { KanbanBoard, KanbanCard } from '../../types/kanban';
+import { FULL_KANBAN_CAPABILITIES, type KanbanCapabilities } from '../../views/KanbanPage';
 import { Button } from '../ui/button';
 import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from '../ui/command';
 import { Input } from '../ui/input';
@@ -39,6 +40,7 @@ type Props = {
   resolveCardTitle: (cardId: string) => string;
   addComment: () => void;
   deleteComment: (commentId: string) => void;
+  caps?: KanbanCapabilities;
 };
 
 export function CardDialogChecklistComments({
@@ -63,6 +65,7 @@ export function CardDialogChecklistComments({
   resolveCardTitle,
   addComment,
   deleteComment,
+  caps = FULL_KANBAN_CAPABILITIES,
 }: Props) {
   const secondaryFieldClass = 'border-border/40 bg-background/55 text-foreground placeholder:text-muted-foreground/50';
 
@@ -93,6 +96,7 @@ export function CardDialogChecklistComments({
             <div key={item.id} className="flex items-center gap-2 group/item">
               <button
                 onClick={() => toggleChecklistItem(item.id)}
+                disabled={!caps.editContent}
                 className={cn(
                   'w-4 h-4 rounded border shrink-0 flex items-center justify-center transition-colors',
                   item.checked
@@ -116,6 +120,7 @@ export function CardDialogChecklistComments({
                 <input
                   value={item.text}
                   onChange={(e) => updateChecklistText(item.id, e.target.value)}
+                  readOnly={!caps.editContent}
                   className={cn(
                     'flex-1 text-xs bg-transparent focus:outline-none text-foreground/80',
                     item.checked && 'line-through text-muted-foreground',
@@ -123,6 +128,7 @@ export function CardDialogChecklistComments({
                 />
               )}
 
+              {caps.editContent && (
               <button
                 onClick={() => removeChecklistItem(item.id)}
                 className="opacity-0 group-hover/item:opacity-100 text-muted-foreground/50 hover:text-destructive transition-all shrink-0"
@@ -130,10 +136,12 @@ export function CardDialogChecklistComments({
               >
                 <X size={10} />
               </button>
+              )}
             </div>
           ))}
         </div>
 
+        {caps.editContent && (
         <div className="flex gap-1.5">
           <Input
             value={checklistInput}
@@ -191,6 +199,7 @@ export function CardDialogChecklistComments({
             </PopoverContent>
           </Popover>
         </div>
+        )}
       </section>
 
       <section>
@@ -215,7 +224,7 @@ export function CardDialogChecklistComments({
                     <span className="text-[10px] text-muted-foreground/50">
                       {new Date(comment.timestamp).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}
                     </span>
-                    {comment.userId === myUserId && (
+                    {comment.userId === myUserId && caps.comment && (
                       <button
                         onClick={() => deleteComment(comment.id)}
                         className="ml-auto text-muted-foreground/40 hover:text-destructive transition-colors"
@@ -232,6 +241,7 @@ export function CardDialogChecklistComments({
           </div>
         )}
 
+        {caps.comment && (
         <div className="flex gap-2 items-start">
           <div
             className="w-6 h-6 rounded-full flex items-center justify-center text-[10px] font-bold text-white shrink-0 mt-1"
@@ -255,6 +265,7 @@ export function CardDialogChecklistComments({
               )}
           </div>
         </div>
+        )}
       </section>
     </>
   );

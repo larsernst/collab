@@ -6,7 +6,7 @@ import { useVaultStore } from '../store/vaultStore';
 import { useCollabStore } from '../store/collabStore';
 import { useCollabIdentity } from '../lib/collabIdentity';
 import { normalizeKanbanBoard, runKanbanAutomations, type KanbanBoard } from '../types/kanban';
-import { isVaultReadOnly, type KnownUser } from '../types/vault';
+import { isVaultReadOnly, vaultCan, type KnownUser } from '../types/vault';
 import KanbanBoardView from '../components/kanban/KanbanBoard';
 import { ReadOnlyBanner } from '../components/layout/ReadOnlyBanner';
 import { useEditorStore } from '../store/editorStore';
@@ -15,6 +15,33 @@ import { useCollabContext } from '../components/collaboration/CollabProvider';
 
 // ── Context ───────────────────────────────────────────────────────────────────
 
+/**
+ * Per-action kanban capabilities for the open vault. Local vaults are always
+ * fully capable; hosted vaults resolve each flag from the caller's effective
+ * capabilities so controls that would be rejected by the server's semantic
+ * kanban enforcement are never offered.
+ */
+export interface KanbanCapabilities {
+  addCard: boolean;
+  editContent: boolean;
+  move: boolean;
+  comment: boolean;
+  archive: boolean;
+  deleteCard: boolean;
+  columnManage: boolean;
+}
+
+/** All capabilities granted — the default for local vaults and isolated tests. */
+export const FULL_KANBAN_CAPABILITIES: KanbanCapabilities = {
+  addCard: true,
+  editContent: true,
+  move: true,
+  comment: true,
+  archive: true,
+  deleteCard: true,
+  columnManage: true,
+};
+
 interface KanbanCtx {
   board: KanbanBoard;
   updateBoard: (updater: (b: KanbanBoard) => KanbanBoard) => void;
@@ -22,6 +49,8 @@ interface KanbanCtx {
   relativePath: string;
   /** Viewer access to a hosted vault: board mutations are disabled. */
   readOnly: boolean;
+  /** Fine-grained capability gates for individual board actions. */
+  caps: KanbanCapabilities;
 }
 
 const KanbanContext = createContext<KanbanCtx | null>(null);
@@ -50,6 +79,19 @@ export default function KanbanPage({ relativePath }: { relativePath: string | nu
   const { vault } = useVaultStore();
   const client = useMemo(() => (vault ? createVaultClient(vault) : null), [vault]);
   const readOnly = isVaultReadOnly(vault);
+  // Per-action capability gates. A viewer (readOnly) holds none; local vaults
+  // hold all. Hosted writes also require baseline file.write, which the viewer
+  // role already reflects, so an editor-or-better resolves these from their
+  // effective kanban capabilities.
+  const caps = useMemo<KanbanCapabilities>(() => ({
+    addCard: vaultCan(vault, 'kanban.card.create'),
+    editContent: vaultCan(vault, 'kanban.card.editContent'),
+    move: vaultCan(vault, 'kanban.card.move'),
+    comment: vaultCan(vault, 'kanban.card.comment'),
+    archive: vaultCan(vault, 'kanban.card.archive'),
+    deleteCard: vaultCan(vault, 'kanban.card.delete'),
+    columnManage: vaultCan(vault, 'kanban.column.manage'),
+  }), [vault]);
   const { markDirty, markSaved, setSavedHash } = useEditorStore();
   const { peers, addConflict } = useCollabStore();
   // Snapshot authorship follows the effective identity (server-authoritative for hosted).
@@ -202,7 +244,7 @@ export default function KanbanPage({ relativePath }: { relativePath: string | nu
   if (!vault) return null;
 
   return (
-    <KanbanContext.Provider value={{ board, updateBoard, knownUsers, relativePath, readOnly }}>
+    <KanbanContext.Provider value={{ board, updateBoard, knownUsers, relativePath, readOnly, caps }}>
       {readOnly && <ReadOnlyBanner />}
       <KanbanBoardView />
     </KanbanContext.Provider>

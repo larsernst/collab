@@ -11,6 +11,11 @@ vi.mock('./api', () => ({
     acceptInvitation: vi.fn(),
     logout: vi.fn(),
     me: vi.fn(),
+    updateSelf: vi.fn(),
+    changeOwnPassword: vi.fn(),
+    uploadOwnAvatar: vi.fn(),
+    deleteOwnAvatar: vi.fn(),
+    avatarUrl: vi.fn((id: string) => `/api/v1/users/${id}/avatar`),
     overview: vi.fn(),
     users: vi.fn(),
     createUser: vi.fn(),
@@ -41,6 +46,20 @@ vi.mock('./api', () => ({
     importVault: vi.fn(),
     exportVault: vi.fn(),
     auditEvents: vi.fn(),
+    templates: vi.fn(),
+    createTemplate: vi.fn(),
+    updateTemplate: vi.fn(),
+    deleteTemplate: vi.fn(),
+    groups: vi.fn(),
+    createGroup: vi.fn(),
+    updateGroup: vi.fn(),
+    deleteGroup: vi.fn(),
+    groupMembers: vi.fn(),
+    addGroupMember: vi.fn(),
+    removeGroupMember: vi.fn(),
+    vaultGrants: vi.fn(),
+    putVaultGrant: vi.fn(),
+    deleteVaultGrant: vi.fn(),
   },
 }));
 
@@ -109,6 +128,11 @@ describe('admin application', () => {
     });
     vi.mocked(serverApi.vaultFiles).mockResolvedValue({ vaultId: 'vault-1', sequence: 0, files: [] });
     vi.mocked(serverApi.fileRevisions).mockResolvedValue([]);
+    vi.mocked(serverApi.templates).mockResolvedValue([]);
+    vi.mocked(serverApi.groups).mockResolvedValue([]);
+    vi.mocked(serverApi.groupMembers).mockResolvedValue([]);
+    vi.mocked(serverApi.vaultGrants).mockResolvedValue([]);
+    vi.mocked(serverApi.updateSelf).mockResolvedValue(admin);
   });
 
   afterEach(() => {
@@ -629,5 +653,194 @@ describe('admin application', () => {
       accent: 'emerald',
       compact: true,
     });
+  });
+
+  it('renders the permissions overview tree and filters by search', async () => {
+    vi.mocked(serverApi.bootstrapStatus).mockResolvedValue({ required: false });
+    vi.mocked(serverApi.me).mockResolvedValue(admin);
+    vi.mocked(serverApi.users).mockResolvedValue([
+      admin,
+      { ...disabledMember, status: 'active' as const },
+    ]);
+    vi.mocked(serverApi.groups).mockResolvedValue([
+      { id: 'group-1', name: 'Reviewers', description: 'QA reviewers', memberCount: 1, createdAt: '2026-06-09T00:00:00Z' },
+    ]);
+    vi.mocked(serverApi.groupMembers).mockResolvedValue([
+      { userId: 'member-1', username: 'member', displayName: 'Member User', addedAt: '2026-06-09T00:00:00Z' },
+    ]);
+    vi.mocked(serverApi.vaults).mockResolvedValue([
+      { id: 'vault-1', name: 'Team Vault', ownerDisplayName: 'Admin User', status: 'active', members: 2, storageBytes: 0, updatedAt: '2026-06-10T00:00:00Z' },
+    ]);
+    vi.mocked(serverApi.vaultGrants).mockResolvedValue([
+      { subjectType: 'group', subjectId: 'group-1', subjectName: 'Reviewers', templateId: 't1', templateName: 'reviewer', capabilities: ['vault.read'], createdAt: '2026-06-09T00:00:00Z' },
+    ]);
+
+    render(<App />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Permissions' }));
+
+    // Both the group and the users appear in the tree.
+    expect(await screen.findByText('Reviewers')).toBeTruthy();
+    expect(screen.getByText('Member User')).toBeTruthy();
+
+    // Expanding the group reveals its members and vault grants.
+    fireEvent.click(screen.getByText('Reviewers'));
+    expect(await screen.findByText('Vault grants')).toBeTruthy();
+    fireEvent.click(screen.getByText('Vault grants'));
+    expect(await screen.findByText('Team Vault')).toBeTruthy();
+
+    // Searching narrows the tree to matching subjects.
+    fireEvent.change(screen.getByLabelText('Search permissions'), { target: { value: 'review' } });
+    expect(screen.getByText('Reviewers')).toBeTruthy();
+    expect(screen.queryByText('Member User')).toBeNull();
+  });
+
+  it('creates a permission template from grouped capability checkboxes', async () => {
+    vi.mocked(serverApi.bootstrapStatus).mockResolvedValue({ required: false });
+    vi.mocked(serverApi.me).mockResolvedValue(admin);
+    vi.mocked(serverApi.users).mockResolvedValue([admin]);
+    vi.mocked(serverApi.templates).mockResolvedValue([
+      { id: 'builtin-viewer', name: 'viewer', description: 'Read only', isBuiltin: true, capabilities: ['vault.read'], createdAt: '2026-06-09T00:00:00Z', updatedAt: '2026-06-09T00:00:00Z' },
+    ]);
+    vi.mocked(serverApi.createTemplate).mockResolvedValue({
+      id: 'tpl-new', name: 'PDF reviewer', description: null, isBuiltin: false, capabilities: ['vault.read', 'pdf.comment'], createdAt: '2026-06-11T00:00:00Z', updatedAt: '2026-06-11T00:00:00Z',
+    });
+
+    render(<App />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Permissions' }));
+    fireEvent.click(await screen.findByRole('tab', { name: 'Templates' }));
+    // Built-ins are read-only (clone only); custom creation opens the editor.
+    expect(await screen.findByText('viewer')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: /New template/ }));
+
+    const dialog = await screen.findByRole('dialog', { name: 'New template' });
+    fireEvent.change(within(dialog).getByLabelText('Name'), { target: { value: 'PDF reviewer' } });
+    fireEvent.click(within(dialog).getByLabelText('vault.read'));
+    fireEvent.click(within(dialog).getByLabelText('pdf.comment'));
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Create template' }));
+
+    await waitFor(() => expect(serverApi.createTemplate).toHaveBeenCalledWith({
+      name: 'PDF reviewer',
+      description: null,
+      capabilities: ['vault.read', 'pdf.comment'],
+    }));
+  });
+
+  it('edits a user display name and username from the admin users page', async () => {
+    vi.mocked(serverApi.bootstrapStatus).mockResolvedValue({ required: false });
+    vi.mocked(serverApi.me).mockResolvedValue(admin);
+    vi.mocked(serverApi.users).mockResolvedValue([admin]);
+    vi.mocked(serverApi.updateUser).mockResolvedValue({ ...admin, displayName: 'Renamed Admin', username: 'admin2' });
+
+    render(<App />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Users' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Edit' }));
+    const dialog = await screen.findByRole('dialog', { name: 'Edit admin' });
+    fireEvent.change(within(dialog).getByLabelText('Display name'), { target: { value: 'Renamed Admin' } });
+    fireEvent.change(within(dialog).getByLabelText('Username'), { target: { value: 'admin2' } });
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Save changes' }));
+
+    await waitFor(() => expect(serverApi.updateUser).toHaveBeenCalledWith('admin-1', { displayName: 'Renamed Admin', username: 'admin2' }));
+  });
+
+  it('adds a user to a group from the permissions users tab', async () => {
+    vi.mocked(serverApi.bootstrapStatus).mockResolvedValue({ required: false });
+    vi.mocked(serverApi.me).mockResolvedValue(admin);
+    vi.mocked(serverApi.users).mockResolvedValue([admin]);
+    vi.mocked(serverApi.groups).mockResolvedValue([
+      { id: 'group-1', name: 'Reviewers', description: null, memberCount: 0, createdAt: '2026-06-09T00:00:00Z' },
+    ]);
+    vi.mocked(serverApi.addGroupMember).mockResolvedValue(undefined);
+
+    render(<App />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Permissions' }));
+    fireEvent.click(await screen.findByRole('tab', { name: 'Users' }));
+    // Select the user in the picker, then add them to the group.
+    await waitFor(() => expect(document.querySelector('.user-pick')).not.toBeNull());
+    fireEvent.click(document.querySelector('.user-pick') as HTMLElement);
+    fireEvent.click(await screen.findByRole('button', { name: 'Add' }));
+    await waitFor(() => expect(serverApi.addGroupMember).toHaveBeenCalledWith('group-1', 'admin-1'));
+  });
+
+  it('updates the signed-in account profile from the account dialog', async () => {
+    vi.mocked(serverApi.bootstrapStatus).mockResolvedValue({ required: false });
+    vi.mocked(serverApi.me).mockResolvedValue(admin);
+    vi.mocked(serverApi.updateSelf).mockResolvedValue({ ...admin, displayName: 'My New Name' });
+
+    render(<App />);
+    await screen.findByRole('heading', { name: 'Server dashboard' });
+    fireEvent.click(screen.getByRole('button', { name: 'Account settings' }));
+    const dialog = await screen.findByRole('dialog', { name: 'Your account' });
+    fireEvent.change(within(dialog).getByLabelText('Display name'), { target: { value: 'My New Name' } });
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Save profile' }));
+    await waitFor(() => expect(serverApi.updateSelf).toHaveBeenCalledWith({ displayName: 'My New Name' }));
+  });
+
+  it('grants a group access to a vault from the permissions groups tab', async () => {
+    vi.mocked(serverApi.bootstrapStatus).mockResolvedValue({ required: false });
+    vi.mocked(serverApi.me).mockResolvedValue(admin);
+    vi.mocked(serverApi.users).mockResolvedValue([admin]);
+    vi.mocked(serverApi.groups).mockResolvedValue([
+      { id: 'group-1', name: 'Reviewers', description: null, memberCount: 0, createdAt: '2026-06-09T00:00:00Z' },
+    ]);
+    vi.mocked(serverApi.templates).mockResolvedValue([
+      { id: 'tpl-1', name: 'reviewer', description: null, isBuiltin: false, capabilities: ['vault.read'], createdAt: '2026-06-09T00:00:00Z', updatedAt: '2026-06-09T00:00:00Z' },
+    ]);
+    vi.mocked(serverApi.vaults).mockResolvedValue([
+      { id: 'vault-1', name: 'Team Vault', ownerDisplayName: 'Admin User', status: 'active', members: 1, storageBytes: 0, updatedAt: '2026-06-10T00:00:00Z' },
+    ]);
+    vi.mocked(serverApi.putVaultGrant).mockResolvedValue({
+      subjectType: 'group', subjectId: 'group-1', subjectName: 'Reviewers', templateId: 'tpl-1', templateName: 'reviewer', capabilities: ['vault.read'], createdAt: '2026-06-11T00:00:00Z',
+    });
+
+    render(<App />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Permissions' }));
+    fireEvent.click(await screen.findByRole('tab', { name: 'Groups' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Manage' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Configure' }));
+    const dialog = await screen.findByRole('dialog', { name: 'Access for Reviewers' });
+    // Switch the grant source to a template and apply.
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Grant source' }));
+    fireEvent.click(within(dialog).getByRole('option', { name: 'Template' }));
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Apply' }));
+    await waitFor(() => expect(serverApi.putVaultGrant).toHaveBeenCalledWith('vault-1', 'group', 'group-1', { templateId: 'tpl-1' }));
+  });
+
+  it('grants a group access to a vault through a template', async () => {
+    const vaultSummary = { id: 'vault-1', name: 'Team Vault', ownerDisplayName: 'Admin User', status: 'active' as const, members: 1, storageBytes: 0, updatedAt: '2026-06-10T00:00:00Z' };
+    const vaultDetail = {
+      id: 'vault-1', name: 'Team Vault', ownerUserId: 'admin-1', ownerUsername: 'admin', ownerDisplayName: 'Admin User',
+      status: 'active' as const, manifestSequence: 0, members: 1, activeFiles: 0, trashedFiles: 0, storageBytes: 0,
+      createdAt: '2026-06-09T00:00:00Z', updatedAt: '2026-06-10T00:00:00Z',
+    };
+    vi.mocked(serverApi.bootstrapStatus).mockResolvedValue({ required: false });
+    vi.mocked(serverApi.me).mockResolvedValue(admin);
+    vi.mocked(serverApi.users).mockResolvedValue([admin]);
+    vi.mocked(serverApi.vaults).mockResolvedValue([vaultSummary]);
+    vi.mocked(serverApi.vaultDetail).mockResolvedValue(vaultDetail);
+    vi.mocked(serverApi.vaultMembers).mockResolvedValue([
+      { userId: 'admin-1', username: 'admin', displayName: 'Admin User', role: 'admin', owner: true, createdAt: '2026-06-09T00:00:00Z' },
+    ]);
+    vi.mocked(serverApi.vaultActivity).mockResolvedValue([]);
+    vi.mocked(serverApi.groups).mockResolvedValue([
+      { id: 'group-1', name: 'Reviewers', description: null, memberCount: 0, createdAt: '2026-06-09T00:00:00Z' },
+    ]);
+    vi.mocked(serverApi.templates).mockResolvedValue([
+      { id: 'tpl-1', name: 'reviewer', description: null, isBuiltin: false, capabilities: ['vault.read', 'kanban.card.move'], createdAt: '2026-06-09T00:00:00Z', updatedAt: '2026-06-09T00:00:00Z' },
+    ]);
+    vi.mocked(serverApi.putVaultGrant).mockResolvedValue({
+      subjectType: 'group', subjectId: 'group-1', subjectName: 'Reviewers', templateId: 'tpl-1', templateName: 'reviewer', capabilities: ['vault.read', 'kanban.card.move'], createdAt: '2026-06-11T00:00:00Z',
+    });
+
+    render(<App />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Vaults' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Manage Team Vault' }));
+    expect(await screen.findByRole('heading', { name: 'Team Vault' })).toBeTruthy();
+
+    // Pick the reviewer template in the Access grants form and apply.
+    fireEvent.click(screen.getByRole('button', { name: 'Grant template' }));
+    fireEvent.click(screen.getByRole('option', { name: 'reviewer' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Apply grant' }));
+
+    await waitFor(() => expect(serverApi.putVaultGrant).toHaveBeenCalledWith('vault-1', 'group', 'group-1', { templateId: 'tpl-1' }));
   });
 });

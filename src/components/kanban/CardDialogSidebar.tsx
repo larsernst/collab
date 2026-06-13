@@ -13,6 +13,7 @@ import {
 
 import { formatDate } from '../../store/uiStore';
 import type { KanbanBoard, KanbanCard } from '../../types/kanban';
+import { FULL_KANBAN_CAPABILITIES, type KanbanCapabilities } from '../../views/KanbanPage';
 import { cn } from '../../lib/utils';
 import { Button } from '../ui/button';
 import { Calendar as CalendarUI } from '../ui/calendar';
@@ -51,6 +52,7 @@ type Props = {
   moveToColumn: (columnId: string) => void;
   toggleArchive: () => void;
   deleteCard: () => void;
+  caps?: KanbanCapabilities;
 };
 
 export function CardDialogSidebar({
@@ -72,6 +74,7 @@ export function CardDialogSidebar({
   moveToColumn,
   toggleArchive,
   deleteCard,
+  caps = FULL_KANBAN_CAPABILITIES,
 }: Props) {
   const recurrence = draft.recurrence;
   const recurrenceEnabled = Boolean(draft.startDate || draft.dueDate);
@@ -82,6 +85,7 @@ export function CardDialogSidebar({
 
   return (
     <div className="w-52 shrink-0 border-l border-border/30 overflow-y-auto px-4 py-3 flex flex-col gap-4">
+      {caps.editContent && (<>
       <section>
         <label className="section-label flex items-center gap-1"><Flag size={11} /> Priority</label>
         <div className="flex flex-col gap-1">
@@ -196,7 +200,9 @@ export function CardDialogSidebar({
           </div>
         )}
       </section>
+      </>)}
 
+      {caps.move && (
       <section>
         <label className="section-label flex items-center gap-1"><Columns2 size={11} /> Column</label>
         <Select value={currentColumnId} onValueChange={moveToColumn}>
@@ -218,7 +224,9 @@ export function CardDialogSidebar({
           </SelectContent>
         </Select>
       </section>
+      )}
 
+      {caps.editContent && (
       <section>
         <label className="section-label flex items-center gap-1"><Repeat size={11} /> Recurring</label>
         {!recurrenceEnabled ? (
@@ -335,7 +343,9 @@ export function CardDialogSidebar({
           </div>
         )}
       </section>
+      )}
 
+      {caps.archive && (
       <section>
         <button
           onClick={toggleArchive}
@@ -350,6 +360,7 @@ export function CardDialogSidebar({
           {draft.archived ? 'Restore from archive' : 'Archive card'}
         </button>
       </section>
+      )}
 
       {draft.archived && (
         <section>
@@ -373,6 +384,7 @@ export function CardDialogSidebar({
         </section>
       )}
 
+      {caps.deleteCard && (
       <section className="mt-auto pt-3 border-t border-border/20">
         {confirmDelete ? (
           <div className="flex flex-col gap-1.5">
@@ -402,6 +414,7 @@ export function CardDialogSidebar({
           </button>
         )}
       </section>
+      )}
     </div>
   );
 }

@@ -29,6 +29,7 @@ import { useAdminAppearance, type AdminAccent, type AdminTheme } from './theme';
 import type {
   AdminOverview,
   AuditEvent,
+  GrantSubjectType,
   HostedVaultActivityEvent,
   HostedVaultAdminDetail,
   HostedFileEntry,
@@ -37,11 +38,16 @@ import type {
   HostedVaultStorage,
   HostedVaultSummary,
   Invitation,
+  PermissionTemplate,
   ServerUser,
+  UserGroup,
+  UserGroupMember,
+  VaultGrant,
 } from './types';
-import { Badge, Button, Card, Checkbox, ConfirmDialog, Input, PromptDialog, SelectMenu, Separator, Switch } from './ui';
+import { ALL_CAPABILITIES, CAPABILITY_GROUPS, capabilityLabel } from './types';
+import { Badge, Button, Card, Checkbox, ConfirmDialog, DialogShell, Input, PromptDialog, SelectMenu, Separator, Switch } from './ui';
 
-type View = 'dashboard' | 'users' | 'vaults' | 'audit' | 'settings';
+type View = 'dashboard' | 'users' | 'vaults' | 'permissions' | 'audit' | 'settings';
 
 export function isSelectedFile(value: FormDataEntryValue | null): value is File {
   return value instanceof globalThis.File && value.size > 0;
@@ -83,7 +89,7 @@ export function App() {
   if (bootRequired) return <AuthScreen mode="bootstrap" onAuthenticated={(user) => { setBootRequired(false); setMe(user); }} />;
   if (!me) return <AuthScreen mode="login" onAuthenticated={setMe} />;
   if (me.role !== 'admin') return <AccessDenied onLogout={() => setMe(null)} />;
-  return <AdminShell me={me} onLogout={() => setMe(null)} />;
+  return <AdminShell me={me} onMeChange={setMe} onLogout={() => setMe(null)} />;
 }
 
 function InvitationScreen({ token }: { token: string }) {
@@ -173,9 +179,30 @@ function AuthScreen({
   );
 }
 
-function AdminShell({ me, onLogout }: { me: ServerUser; onLogout: () => void }) {
+function AdminShell({ me, onMeChange, onLogout }: { me: ServerUser; onMeChange: (user: ServerUser) => void; onLogout: () => void }) {
   const [view, setView] = useState<View>('dashboard');
   const { appearance, setAppearance } = useAdminAppearance();
+  const [accountOpen, setAccountOpen] = useState(false);
+  // Seed appearance from the account's saved preferences once on mount, so a
+  // user's chosen theme follows their account across browsers.
+  const seeded = useRef(false);
+  useEffect(() => {
+    if (seeded.current) return;
+    seeded.current = true;
+    const saved = (me.preferences as { appearance?: Partial<typeof appearance> } | null | undefined)?.appearance;
+    if (saved) setAppearance((current) => ({ ...current, ...saved }));
+  }, [me, setAppearance, appearance]);
+
+  // Appearance changes apply immediately (localStorage) and persist to the
+  // account's server-side preferences.
+  const persistAppearance: typeof setAppearance = useCallback((updater) => {
+    setAppearance((current) => {
+      const next = typeof updater === 'function' ? (updater as (value: typeof current) => typeof current)(current) : updater;
+      void serverApi.updateSelf({ preferences: { ...(me.preferences ?? {}), appearance: next } }).catch(() => undefined);
+      return next;
+    });
+  }, [me, setAppearance]);
+
   async function logout() {
     await serverApi.logout().catch(() => undefined);
     onLogout();
@@ -188,18 +215,35 @@ function AdminShell({ me, onLogout }: { me: ServerUser; onLogout: () => void }) 
           <NavButton active={view === 'dashboard'} icon={<Gauge />} label="Dashboard" onClick={() => setView('dashboard')} />
           <NavButton active={view === 'users'} icon={<Users />} label="Users" onClick={() => setView('users')} />
           <NavButton active={view === 'vaults'} icon={<Boxes />} label="Vaults" onClick={() => setView('vaults')} />
+          <NavButton active={view === 'permissions'} icon={<ShieldCheck />} label="Permissions" onClick={() => setView('permissions')} />
           <NavButton active={view === 'audit'} icon={<Activity />} label="Audit log" onClick={() => setView('audit')} />
           <NavButton active={view === 'settings'} icon={<Settings />} label="Settings" onClick={() => setView('settings')} />
         </nav>
-        <div className="profile"><div><strong>{me.displayName}</strong><small>{me.username}</small></div><Button variant="ghost" size="icon" title="Sign out" onClick={logout}><LogOut size={17} /></Button></div>
+        <div className="profile">
+          <button type="button" className="profile-button" aria-label="Account settings" onClick={() => setAccountOpen(true)}>
+            <Avatar user={me} size={32} />
+            <div><strong>{me.displayName}</strong><small>{me.username}</small></div>
+          </button>
+          <Button variant="ghost" size="icon" title="Sign out" onClick={logout}><LogOut size={17} /></Button>
+        </div>
       </aside>
       <main className="content">
         {view === 'dashboard' && <Dashboard />}
         {view === 'users' && <UsersPage currentUser={me} />}
         {view === 'vaults' && <VaultsPage />}
+        {view === 'permissions' && <PermissionsPage />}
         {view === 'audit' && <AuditPage />}
-        {view === 'settings' && <SettingsPage appearance={appearance} onChange={setAppearance} />}
+        {view === 'settings' && <SettingsPage appearance={appearance} onChange={persistAppearance} />}
       </main>
+      {accountOpen && (
+        <AccountDialog
+          me={me}
+          appearance={appearance}
+          onAppearanceChange={persistAppearance}
+          onClose={() => setAccountOpen(false)}
+          onUpdated={onMeChange}
+        />
+      )}
     </div>
   );
 }
@@ -291,6 +335,7 @@ function UsersPage({ currentUser }: { currentUser: ServerUser }) {
   const [activity, setActivity] = useState<{ user: ServerUser; events: AuditEvent[] } | null>(null);
   const [confirmDelete, setConfirmDelete] = useState<ServerUser | null>(null);
   const [resetTarget, setResetTarget] = useState<ServerUser | null>(null);
+  const [editTarget, setEditTarget] = useState<ServerUser | null>(null);
   const [error, setError] = useState('');
   const load = useCallback(async () => {
     try {
@@ -350,7 +395,7 @@ function UsersPage({ currentUser }: { currentUser: ServerUser }) {
       {showCreate && <Panel title="Create user" icon={<Plus size={17} />}><form className="inline-form" onSubmit={create}><Field label="Display name" name="displayName" required /><Field label="Username" name="username" required /><Field label="Temporary password" name="password" type="password" required /><label className="check"><Checkbox name="admin" /> Administrator</label><Button size="sm">Create user</Button></form></Panel>}
       {showInvite && <Panel title="Invite user" icon={<KeyRound size={17} />}><form className="inline-form" onSubmit={invite}><Field label="Display name" name="displayName" required /><Field label="Username" name="username" required /><Field label="Expires in hours" name="expiresInHours" type="number" min={1} max={720} defaultValue={72} required /><label className="check"><Checkbox name="admin" /> Administrator</label><Button size="sm">Create link</Button></form>{invitationLink && <div className="invitation-link" role="status"><code>{invitationLink}</code><Button variant="outline" size="sm" onClick={() => navigator.clipboard?.writeText(invitationLink)}>Copy</Button></div>}</Panel>}
       <Panel title={`${users.length} server users`} icon={<Users size={17} />}>
-        <div className="user-list">{users.map((user) => <div className="user-row" key={user.id}><div className="avatar">{user.displayName.slice(0, 2).toUpperCase()}</div><div className="grow"><strong>{user.displayName}</strong><small>{user.username} · {user.role}{user.isPrimaryAdmin ? ' · primary administrator' : ''}</small></div><Badge variant={user.status === 'active' ? 'success' : 'destructive'}>{user.status}</Badge><span className="session-count">{user.activeSessions} sessions</span><Button variant="outline" size="sm" onClick={async () => setActivity({ user, events: await serverApi.userActivity(user.id) })}>Activity</Button><Button variant="outline" size="sm" onClick={() => setResetTarget(user)}>Reset password</Button>{user.status === 'disabled' ? <Button variant="outline" size="sm" disabled={user.isPrimaryAdmin} onClick={() => setDisabled(user, false)}>Re-enable</Button> : <Button variant="outline" size="sm" disabled={user.id === currentUser.id || user.isPrimaryAdmin} onClick={() => setDisabled(user, true)}>Disable</Button>}<Button variant="outline" size="sm" onClick={async () => { await serverApi.revokeSessions(user.id); await load(); }}>Revoke sessions</Button><Button variant="destructive" size="sm" disabled={user.id === currentUser.id || user.isPrimaryAdmin} onClick={() => setConfirmDelete(user)}>Delete account</Button></div>)}</div>
+        <div className="user-list">{users.map((user) => <div className="user-row" key={user.id}><Avatar user={user} /><div className="grow"><strong>{user.displayName}</strong><small>{user.username} · {user.role}{user.isPrimaryAdmin ? ' · primary administrator' : ''}</small></div><Badge variant={user.status === 'active' ? 'success' : 'destructive'}>{user.status}</Badge><span className="session-count">{user.activeSessions} sessions</span><Button variant="outline" size="sm" onClick={() => setEditTarget(user)}>Edit</Button><Button variant="outline" size="sm" onClick={async () => setActivity({ user, events: await serverApi.userActivity(user.id) })}>Activity</Button><Button variant="outline" size="sm" onClick={() => setResetTarget(user)}>Reset password</Button>{user.status === 'disabled' ? <Button variant="outline" size="sm" disabled={user.isPrimaryAdmin} onClick={() => setDisabled(user, false)}>Re-enable</Button> : <Button variant="outline" size="sm" disabled={user.id === currentUser.id || user.isPrimaryAdmin} onClick={() => setDisabled(user, true)}>Disable</Button>}<Button variant="outline" size="sm" onClick={async () => { await serverApi.revokeSessions(user.id); await load(); }}>Revoke sessions</Button><Button variant="destructive" size="sm" disabled={user.id === currentUser.id || user.isPrimaryAdmin} onClick={() => setConfirmDelete(user)}>Delete account</Button></div>)}</div>
       </Panel>
       <Panel title={`${invitations.length} invitations`} icon={<KeyRound size={17} />}><div className="audit-list">{invitations.map((invitation) => <div className="audit-row" key={invitation.id}><div className="grow"><strong>{invitation.displayName}</strong><small>{invitation.username} · expires {new Date(invitation.expiresAt).toLocaleString()}</small></div><span className="request-chip">{invitation.acceptedAt ? 'accepted' : invitation.revokedAt ? 'revoked' : new Date(invitation.expiresAt) < new Date() ? 'expired' : 'pending'}</span></div>)}</div></Panel>
       {activity && <Panel title={`${activity.user.displayName} activity`} icon={<Activity size={17} />}><AuditTable events={activity.events} /></Panel>}
@@ -387,6 +432,13 @@ function UsersPage({ currentUser }: { currentUser: ServerUser }) {
               setError(String(reason));
             }
           }}
+        />
+      )}
+      {editTarget && (
+        <EditUserDialog
+          user={editTarget}
+          onClose={() => setEditTarget(null)}
+          onSaved={() => { setEditTarget(null); void load(); }}
         />
       )}
     </>
@@ -472,6 +524,12 @@ function VaultDetailPage({ vaultId, onBack }: { vaultId: string; onBack: () => v
   const [users, setUsers] = useState<ServerUser[]>([]);
   const [newMemberId, setNewMemberId] = useState('');
   const [newMemberRole, setNewMemberRole] = useState('viewer');
+  const [grants, setGrants] = useState<VaultGrant[]>([]);
+  const [templates, setTemplates] = useState<PermissionTemplate[]>([]);
+  const [groups, setGroups] = useState<UserGroup[]>([]);
+  const [grantSubjectType, setGrantSubjectType] = useState<GrantSubjectType>('group');
+  const [grantSubjectId, setGrantSubjectId] = useState('');
+  const [grantTemplateId, setGrantTemplateId] = useState('');
   const [confirm, setConfirm] = useState<{
     title: string;
     description: string;
@@ -485,13 +543,16 @@ function VaultDetailPage({ vaultId, onBack }: { vaultId: string; onBack: () => v
   const load = useCallback(async () => {
     setError('');
     try {
-      const [nextDetail, nextMembers, nextActivity, nextUsers, nextStorage, nextManifest] = await Promise.all([
+      const [nextDetail, nextMembers, nextActivity, nextUsers, nextStorage, nextManifest, nextGrants, nextTemplates, nextGroups] = await Promise.all([
         serverApi.vaultDetail(vaultId),
         serverApi.vaultMembers(vaultId),
         serverApi.vaultActivity(vaultId),
         serverApi.users(),
         serverApi.vaultStorage(vaultId).catch(() => null),
         serverApi.vaultFiles(vaultId),
+        serverApi.vaultGrants(vaultId).catch(() => []),
+        serverApi.templates().catch(() => []),
+        serverApi.groups().catch(() => []),
       ]);
       setDetail(nextDetail);
       setMembers(nextMembers);
@@ -500,6 +561,9 @@ function VaultDetailPage({ vaultId, onBack }: { vaultId: string; onBack: () => v
       setStorage(nextStorage);
       setFiles(nextManifest.files);
       setManifestSequence(nextManifest.sequence);
+      setGrants(nextGrants);
+      setTemplates(nextTemplates);
+      setGroups(nextGroups);
     } catch (reason) {
       setError(String(reason));
     }
@@ -856,6 +920,79 @@ function VaultDetailPage({ vaultId, onBack }: { vaultId: string; onBack: () => v
             </form>
           )}
         </Panel>
+        <Panel title="Access grants" icon={<ShieldCheck size={17} />}>
+          <p className="subtle">Grant a user or group access through a permission template. User grants override an existing member's capabilities; removing reverts to the role default.</p>
+          <div className="user-list">
+            {grants.length === 0 && <p className="subtle">No grants resolved for this vault.</p>}
+            {grants.map((grant) => (
+              <div className="user-row" key={`${grant.subjectType}:${grant.subjectId}`}>
+                <Badge variant="outline">{grant.subjectType}</Badge>
+                <div className="grow">
+                  <strong>{grant.subjectName}</strong>
+                  <small>{grant.templateName ? `Template: ${grant.templateName}` : 'Custom / role default'}</small>
+                  <div className="capability-summary-row"><CapabilitySummary capabilities={grant.capabilities} /></div>
+                </div>
+                <Button
+                  variant="destructive"
+                  size="sm"
+                  disabled={pendingDelete}
+                  onClick={() => setConfirm({
+                    title: `Remove grant for ${grant.subjectName}?`,
+                    description: grant.subjectType === 'group'
+                      ? 'The group loses its grant on this vault.'
+                      : 'The member reverts to their role default capabilities.',
+                    label: 'Remove grant',
+                    action: () => serverApi.deleteVaultGrant(vaultId, grant.subjectType, grant.subjectId),
+                  })}
+                >
+                  Remove
+                </Button>
+              </div>
+            ))}
+          </div>
+          {!pendingDelete && (
+            <form
+              className="inline-form"
+              onSubmit={(event) => {
+                event.preventDefault();
+                const subjectCandidates = grantSubjectType === 'group'
+                  ? groups.map((group) => group.id)
+                  : members.filter((member) => !member.owner).map((member) => member.userId);
+                const subjectId = subjectCandidates.includes(grantSubjectId) ? grantSubjectId : subjectCandidates[0];
+                if (!subjectId) return;
+                void run(() => serverApi.putVaultGrant(vaultId, grantSubjectType, subjectId, grantTemplateId ? { templateId: grantTemplateId } : {}));
+              }}
+            >
+              <label className="field"><span>Subject</span>
+                <SelectMenu
+                  label="Grant subject type"
+                  value={grantSubjectType}
+                  options={[{ value: 'group', label: 'Group' }, { value: 'user', label: 'User (member)' }]}
+                  onChange={(value) => { setGrantSubjectType(value as GrantSubjectType); setGrantSubjectId(''); }}
+                />
+              </label>
+              <label className="field"><span>{grantSubjectType === 'group' ? 'Group' : 'Member'}</span>
+                <SelectMenu
+                  label="Grant subject"
+                  value={grantSubjectId || (grantSubjectType === 'group' ? groups[0]?.id ?? '' : members.find((member) => !member.owner)?.userId ?? '')}
+                  options={grantSubjectType === 'group'
+                    ? groups.map((group) => ({ value: group.id, label: group.name }))
+                    : members.filter((member) => !member.owner).map((member) => ({ value: member.userId, label: member.displayName }))}
+                  onChange={setGrantSubjectId}
+                />
+              </label>
+              <label className="field"><span>Template</span>
+                <SelectMenu
+                  label="Grant template"
+                  value={grantTemplateId}
+                  options={[{ value: '', label: grantSubjectType === 'user' ? 'Role default' : 'No capabilities' }, ...templates.map((template) => ({ value: template.id, label: template.name }))]}
+                  onChange={setGrantTemplateId}
+                />
+              </label>
+              <Button size="sm">Apply grant</Button>
+            </form>
+          )}
+        </Panel>
         <VaultActivityPanel activity={activity} />
       </>}
       {confirm && (
@@ -1047,6 +1184,999 @@ function AuditPage() {
 function AuditTable({ events }: { events: AuditEvent[] }) {
   if (!events.length) return <p className="subtle">No audit events yet.</p>;
   return <div className="audit-list">{events.map((event) => <div className="audit-row" key={event.id}><span className={`event-dot ${event.result}`} /><div className="grow"><strong>{event.action.replaceAll('.', ' ')}</strong><small>{event.actorDisplayName ?? 'System'} · {new Date(event.createdAt).toLocaleString()}</small></div><span className="request-chip">{event.result}</span></div>)}</div>;
+}
+
+// --- Permissions ---
+
+type PermissionsTab = 'overview' | 'users' | 'groups' | 'templates';
+
+function CapabilitySummary({ capabilities }: { capabilities: string[] }) {
+  if (capabilities.length === 0) return <span className="subtle">No capabilities</span>;
+  if (capabilities.length === ALL_CAPABILITIES.length) return <Badge variant="success">Full access</Badge>;
+  return (
+    <span className="capability-chips">
+      {capabilities.map((token) => (
+        <span className="request-chip" key={token} title={capabilityLabel(token)}>{token}</span>
+      ))}
+    </span>
+  );
+}
+
+function TemplateEditorDialog({
+  template,
+  mode,
+  onClose,
+  onSaved,
+}: {
+  template: PermissionTemplate | null;
+  mode: 'create' | 'edit' | 'clone';
+  onClose: () => void;
+  onSaved: () => void;
+}) {
+  const [name, setName] = useState(mode === 'clone' ? `${template?.name ?? ''} copy` : template?.name ?? '');
+  const [description, setDescription] = useState(template?.description ?? '');
+  const [selected, setSelected] = useState<Set<string>>(new Set(template?.capabilities ?? []));
+  const [error, setError] = useState('');
+  const [busy, setBusy] = useState(false);
+
+  function toggle(token: string) {
+    setSelected((current) => {
+      const next = new Set(current);
+      if (next.has(token)) next.delete(token);
+      else next.add(token);
+      return next;
+    });
+  }
+
+  async function save() {
+    if (!name.trim()) {
+      setError('A template name is required.');
+      return;
+    }
+    setBusy(true);
+    setError('');
+    try {
+      const capabilities = ALL_CAPABILITIES.filter((token) => selected.has(token));
+      const payload = { name: name.trim(), description: description.trim() || null, capabilities };
+      if (mode === 'edit' && template) await serverApi.updateTemplate(template.id, payload);
+      else await serverApi.createTemplate(payload);
+      onSaved();
+    } catch (reason) {
+      setError(String(reason));
+      setBusy(false);
+    }
+  }
+
+  const title = mode === 'edit' ? 'Edit template' : mode === 'clone' ? 'Clone template' : 'New template';
+  return (
+    <DialogShell title={title} description="Choose the capabilities this template grants." onClose={onClose}>
+      <label className="field"><span>Name</span><Input value={name} onChange={(event) => setName(event.target.value)} autoFocus /></label>
+      <label className="field"><span>Description</span><Input value={description} onChange={(event) => setDescription(event.target.value)} /></label>
+      <div className="capability-editor">
+        {CAPABILITY_GROUPS.map((group) => (
+          <div className="capability-group" key={group.domain}>
+            <strong>{group.domain}</strong>
+            {group.capabilities.map((capability) => (
+              <label className="check" key={capability.token}>
+                <Checkbox checked={selected.has(capability.token)} onChange={() => toggle(capability.token)} aria-label={capability.token} />
+                {capability.label}
+              </label>
+            ))}
+          </div>
+        ))}
+      </div>
+      {error && <div className="error-banner" role="alert"><CircleAlert size={16} />{error}</div>}
+      <div className="ui-dialog-actions">
+        <Button variant="outline" onClick={onClose}>Cancel</Button>
+        <Button disabled={busy} onClick={() => void save()}>{mode === 'edit' ? 'Save template' : 'Create template'}</Button>
+      </div>
+    </DialogShell>
+  );
+}
+
+function PermissionsPage() {
+  const [tab, setTab] = useState<PermissionsTab>('overview');
+  const [groups, setGroups] = useState<UserGroup[]>([]);
+  const [templates, setTemplates] = useState<PermissionTemplate[]>([]);
+  const [users, setUsers] = useState<ServerUser[]>([]);
+  const [vaults, setVaults] = useState<HostedVaultSummary[]>([]);
+  const [groupMembers, setGroupMembers] = useState<Record<string, UserGroupMember[]>>({});
+  const [grantsByVault, setGrantsByVault] = useState<Record<string, VaultGrant[]>>({});
+  const [search, setSearch] = useState('');
+  const [error, setError] = useState('');
+  const [editor, setEditor] = useState<{ template: PermissionTemplate | null; mode: 'create' | 'edit' | 'clone' } | null>(null);
+  const [confirm, setConfirm] = useState<{ title: string; description: string; label: string; action: () => Promise<unknown> } | null>(null);
+  const [creatingGroup, setCreatingGroup] = useState(false);
+  const [selectedGroupId, setSelectedGroupId] = useState<string | null>(null);
+
+  const load = useCallback(async () => {
+    setError('');
+    try {
+      const [nextGroups, nextTemplates, nextUsers, nextVaults] = await Promise.all([
+        serverApi.groups(),
+        serverApi.templates(),
+        serverApi.users(),
+        serverApi.vaults(),
+      ]);
+      setGroups(nextGroups);
+      setTemplates(nextTemplates);
+      setUsers(nextUsers);
+      setVaults(nextVaults);
+      const memberEntries = await Promise.all(
+        nextGroups.map(async (group) => [group.id, await serverApi.groupMembers(group.id).catch(() => [])] as const),
+      );
+      setGroupMembers(Object.fromEntries(memberEntries));
+      const grantEntries = await Promise.all(
+        nextVaults.map(async (vault) => [vault.id, await serverApi.vaultGrants(vault.id).catch(() => [])] as const),
+      );
+      setGrantsByVault(Object.fromEntries(grantEntries));
+    } catch (reason) {
+      setError(String(reason));
+    }
+  }, []);
+  useEffect(() => void load(), [load]);
+
+  async function run(action: () => Promise<unknown>) {
+    setError('');
+    try {
+      await action();
+      await load();
+    } catch (reason) {
+      setError(String(reason));
+    }
+  }
+
+  const tabs: Array<{ value: PermissionsTab; label: string }> = [
+    { value: 'overview', label: 'Overview' },
+    { value: 'users', label: 'Users' },
+    { value: 'groups', label: 'Groups' },
+    { value: 'templates', label: 'Templates' },
+  ];
+
+  return (
+    <>
+      <PageHeader eyebrow="ACCESS CONTROL" title="Permissions" subtitle="Reusable templates, user groups, and per-vault grants." />
+      {error && <div className="error-banner" role="alert"><CircleAlert size={16} />{error}</div>}
+      <div className="tab-bar" role="tablist" aria-label="Permissions sections">
+        {tabs.map((entry) => (
+          <Button
+            key={entry.value}
+            role="tab"
+            aria-selected={tab === entry.value}
+            variant="ghost"
+            className={tab === entry.value ? 'active' : ''}
+            onClick={() => setTab(entry.value)}
+          >
+            {entry.label}
+          </Button>
+        ))}
+      </div>
+
+      {tab === 'overview' && (
+        <PermissionsOverview
+          groups={groups}
+          users={users}
+          groupMembers={groupMembers}
+          grantsByVault={grantsByVault}
+          vaults={vaults}
+          search={search}
+          onSearch={setSearch}
+        />
+      )}
+
+      {tab === 'users' && (
+        <PermissionsUsers
+          users={users}
+          groups={groups}
+          templates={templates}
+          vaults={vaults}
+          groupMembers={groupMembers}
+          grantsByVault={grantsByVault}
+          onChange={() => void load()}
+        />
+      )}
+
+      {tab === 'groups' && (
+        <Panel title={`${groups.length} groups`} icon={<Users size={17} />}>
+          <div className="panel-actions"><Button size="sm" onClick={() => setCreatingGroup(true)}><Plus size={15} /> New group</Button></div>
+          {creatingGroup && (
+            <form
+              className="inline-form"
+              onSubmit={(event) => {
+                event.preventDefault();
+                const data = new FormData(event.currentTarget);
+                const name = String(data.get('name') ?? '').trim();
+                if (!name) return;
+                setCreatingGroup(false);
+                void run(() => serverApi.createGroup({ name, description: String(data.get('description') ?? '').trim() || null }));
+              }}
+            >
+              <Field label="Name" name="name" required />
+              <Field label="Description" name="description" />
+              <Button size="sm">Create group</Button>
+            </form>
+          )}
+          <div className="user-list">
+            {groups.map((group) => (
+              <div className="user-row" key={group.id}>
+                <div className="grow"><strong>{group.name}</strong><small>{group.description || 'No description'} · {group.memberCount} members</small></div>
+                <Button variant="outline" size="sm" onClick={() => setSelectedGroupId(selectedGroupId === group.id ? null : group.id)}>
+                  {selectedGroupId === group.id ? 'Close' : 'Manage'}
+                </Button>
+                <Button
+                  variant="destructive"
+                  size="sm"
+                  onClick={() => setConfirm({
+                    title: `Delete ${group.name}?`,
+                    description: 'The group and all its vault grants are removed.',
+                    label: 'Delete group',
+                    action: () => serverApi.deleteGroup(group.id),
+                  })}
+                >
+                  Delete
+                </Button>
+              </div>
+            ))}
+          </div>
+          {selectedGroupId && (() => {
+            const selectedGroup = groups.find((group) => group.id === selectedGroupId) ?? null;
+            if (!selectedGroup) return null;
+            return (
+              <div className="subject-detail">
+                <GroupMembersEditor
+                  group={selectedGroup}
+                  members={groupMembers[selectedGroupId] ?? []}
+                  users={users}
+                  onChange={() => void load()}
+                />
+                <Separator />
+                <SubjectVaultGrants
+                  subjectType="group"
+                  subjectId={selectedGroup.id}
+                  subjectName={selectedGroup.name}
+                  vaults={vaults}
+                  templates={templates}
+                  grantsByVault={grantsByVault}
+                  onChange={() => void load()}
+                />
+              </div>
+            );
+          })()}
+        </Panel>
+      )}
+
+      {tab === 'templates' && (
+        <Panel title={`${templates.length} templates`} icon={<ShieldCheck size={17} />}>
+          <div className="panel-actions"><Button size="sm" onClick={() => setEditor({ template: null, mode: 'create' })}><Plus size={15} /> New template</Button></div>
+          <div className="user-list">
+            {templates.map((template) => (
+              <div className="user-row" key={template.id}>
+                <div className="grow">
+                  <strong>{template.name} {template.isBuiltin && <Badge variant="outline">built-in</Badge>}</strong>
+                  <small>{template.description || 'No description'}</small>
+                  <div className="capability-summary-row"><CapabilitySummary capabilities={template.capabilities} /></div>
+                </div>
+                {template.isBuiltin ? (
+                  <Button variant="outline" size="sm" onClick={() => setEditor({ template, mode: 'clone' })}>Clone</Button>
+                ) : (
+                  <>
+                    <Button variant="outline" size="sm" onClick={() => setEditor({ template, mode: 'edit' })}>Edit</Button>
+                    <Button
+                      variant="destructive"
+                      size="sm"
+                      onClick={() => setConfirm({
+                        title: `Delete ${template.name}?`,
+                        description: 'Grants that reference this template revert to their default capabilities.',
+                        label: 'Delete template',
+                        action: () => serverApi.deleteTemplate(template.id),
+                      })}
+                    >
+                      Delete
+                    </Button>
+                  </>
+                )}
+              </div>
+            ))}
+          </div>
+        </Panel>
+      )}
+
+      {editor && (
+        <TemplateEditorDialog
+          template={editor.template}
+          mode={editor.mode}
+          onClose={() => setEditor(null)}
+          onSaved={() => {
+            setEditor(null);
+            void load();
+          }}
+        />
+      )}
+      {confirm && (
+        <ConfirmDialog
+          destructive
+          title={confirm.title}
+          description={confirm.description}
+          confirmLabel={confirm.label}
+          onCancel={() => setConfirm(null)}
+          onConfirm={() => {
+            const pending = confirm;
+            setConfirm(null);
+            void run(pending.action);
+          }}
+        />
+      )}
+    </>
+  );
+}
+
+function GroupMembersEditor({
+  group,
+  members,
+  users,
+  onChange,
+}: {
+  group: UserGroup | null;
+  members: UserGroupMember[];
+  users: ServerUser[];
+  onChange: () => void;
+}) {
+  const [choice, setChoice] = useState('');
+  const [error, setError] = useState('');
+  if (!group) return null;
+  const memberIds = new Set(members.map((member) => member.userId));
+  const candidates = users.filter((user) => user.status === 'active' && !memberIds.has(user.id));
+  const selected = candidates.some((user) => user.id === choice) ? choice : candidates[0]?.id ?? '';
+
+  async function mutate(action: () => Promise<unknown>) {
+    setError('');
+    try {
+      await action();
+      onChange();
+    } catch (reason) {
+      setError(String(reason));
+    }
+  }
+
+  return (
+    <div className="group-members">
+      <Separator />
+      <strong>Members of {group.name}</strong>
+      {error && <div className="error-banner" role="alert"><CircleAlert size={16} />{error}</div>}
+      <div className="user-list">
+        {members.length === 0 && <p className="subtle">No members yet.</p>}
+        {members.map((member) => (
+          <div className="user-row" key={member.userId}>
+            <div className="avatar">{member.displayName.slice(0, 2).toUpperCase()}</div>
+            <div className="grow"><strong>{member.displayName}</strong><small>{member.username}</small></div>
+            <Button variant="destructive" size="sm" onClick={() => void mutate(() => serverApi.removeGroupMember(group.id, member.userId))}>Remove</Button>
+          </div>
+        ))}
+      </div>
+      {candidates.length > 0 && (
+        <form
+          className="inline-form"
+          onSubmit={(event) => {
+            event.preventDefault();
+            if (selected) void mutate(() => serverApi.addGroupMember(group.id, selected));
+          }}
+        >
+          <label className="field"><span>Add user</span>
+            <SelectMenu
+              label="Add group member"
+              value={selected}
+              options={candidates.map((user) => ({ value: user.id, label: `${user.displayName} (${user.username})` }))}
+              onChange={setChoice}
+            />
+          </label>
+          <Button size="sm">Add member</Button>
+        </form>
+      )}
+    </div>
+  );
+}
+
+function PermissionsOverview({
+  groups,
+  users,
+  groupMembers,
+  grantsByVault,
+  vaults,
+  search,
+  onSearch,
+}: {
+  groups: UserGroup[];
+  users: ServerUser[];
+  groupMembers: Record<string, UserGroupMember[]>;
+  grantsByVault: Record<string, VaultGrant[]>;
+  vaults: HostedVaultSummary[];
+  search: string;
+  onSearch: (value: string) => void;
+}) {
+  const [expanded, setExpanded] = useState<Set<string>>(new Set());
+  const query = search.trim().toLowerCase();
+  const vaultName = (id: string) => vaults.find((vault) => vault.id === id)?.name ?? id;
+
+  // Aggregate grants by subject across every vault.
+  const grantsForSubject = (type: GrantSubjectType, subjectId: string) =>
+    Object.entries(grantsByVault).flatMap(([vaultId, grants]) =>
+      grants.filter((grant) => grant.subjectType === type && grant.subjectId === subjectId).map((grant) => ({ vaultId, grant })),
+    );
+  const groupsForUser = (userId: string) =>
+    groups.filter((group) => (groupMembers[group.id] ?? []).some((member) => member.userId === userId));
+
+  function toggle(key: string) {
+    setExpanded((current) => {
+      const next = new Set(current);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  }
+
+  const visibleGroups = groups.filter((group) => !query || group.name.toLowerCase().includes(query));
+  const visibleUsers = users.filter(
+    (user) => !query || user.displayName.toLowerCase().includes(query) || user.username.toLowerCase().includes(query),
+  );
+
+  function TreeNode({ id, label, sub, children }: { id: string; label: React.ReactNode; sub?: string; children?: React.ReactNode }) {
+    const isOpen = expanded.has(id);
+    return (
+      <div className="tree-node">
+        <button type="button" className="tree-row" aria-expanded={isOpen} onClick={() => toggle(id)}>
+          {children ? (isOpen ? <ChevronDown size={15} /> : <ChevronRight size={15} />) : <span className="tree-spacer" />}
+          <span className="grow"><strong>{label}</strong>{sub && <small> {sub}</small>}</span>
+        </button>
+        {isOpen && children && <div className="tree-children">{children}</div>}
+      </div>
+    );
+  }
+
+  return (
+    <Panel title="Access overview" icon={<Search size={17} />}>
+      <Input placeholder="Search users, groups, and vaults…" value={search} onChange={(event) => onSearch(event.target.value)} aria-label="Search permissions" />
+      <div className="permission-tree">
+        <div className="tree-section">
+          <p className="eyebrow">Groups</p>
+          {visibleGroups.length === 0 && <p className="subtle">No matching groups.</p>}
+          {visibleGroups.map((group) => {
+            const members = groupMembers[group.id] ?? [];
+            const grants = grantsForSubject('group', group.id);
+            return (
+              <TreeNode key={group.id} id={`group:${group.id}`} label={group.name} sub={`· ${members.length} members · ${grants.length} vault grants`}>
+                <TreeNode id={`group:${group.id}:members`} label="Members" sub={`(${members.length})`}>
+                  {members.map((member) => <div className="tree-leaf" key={member.userId}>{member.displayName} <small>{member.username}</small></div>)}
+                  {members.length === 0 && <div className="tree-leaf subtle">None</div>}
+                </TreeNode>
+                <TreeNode id={`group:${group.id}:grants`} label="Vault grants" sub={`(${grants.length})`}>
+                  {grants.map(({ vaultId, grant }) => (
+                    <div className="tree-leaf" key={vaultId}>{vaultName(vaultId)} <small>{grant.templateName ?? `${grant.capabilities.length} capabilities`}</small></div>
+                  ))}
+                  {grants.length === 0 && <div className="tree-leaf subtle">None</div>}
+                </TreeNode>
+              </TreeNode>
+            );
+          })}
+        </div>
+        <div className="tree-section">
+          <p className="eyebrow">Users</p>
+          {visibleUsers.length === 0 && <p className="subtle">No matching users.</p>}
+          {visibleUsers.map((user) => {
+            const userGroups = groupsForUser(user.id);
+            const grants = grantsForSubject('user', user.id);
+            return (
+              <TreeNode key={user.id} id={`user:${user.id}`} label={user.displayName} sub={`· ${user.username}`}>
+                <TreeNode id={`user:${user.id}:groups`} label="Group memberships" sub={`(${userGroups.length})`}>
+                  {userGroups.map((group) => <div className="tree-leaf" key={group.id}>{group.name}</div>)}
+                  {userGroups.length === 0 && <div className="tree-leaf subtle">None</div>}
+                </TreeNode>
+                <TreeNode id={`user:${user.id}:grants`} label="Direct vault grants" sub={`(${grants.length})`}>
+                  {grants.map(({ vaultId, grant }) => (
+                    <div className="tree-leaf" key={vaultId}>{vaultName(vaultId)} <small>{grant.templateName ?? `${grant.capabilities.length} capabilities`}</small></div>
+                  ))}
+                  {grants.length === 0 && <div className="tree-leaf subtle">None</div>}
+                </TreeNode>
+              </TreeNode>
+            );
+          })}
+        </div>
+      </div>
+    </Panel>
+  );
+}
+
+function GrantEditorDialog({
+  vaultId,
+  subjectType,
+  subjectId,
+  subjectName,
+  vaultName,
+  current,
+  templates,
+  onClose,
+  onSaved,
+}: {
+  vaultId: string;
+  subjectType: GrantSubjectType;
+  subjectId: string;
+  subjectName: string;
+  vaultName: string;
+  current: VaultGrant | null;
+  templates: PermissionTemplate[];
+  onClose: () => void;
+  onSaved: () => void;
+}) {
+  const [mode, setMode] = useState<'template' | 'custom'>(current?.templateId ? 'template' : 'custom');
+  const [templateId, setTemplateId] = useState(current?.templateId ?? templates[0]?.id ?? '');
+  const [selected, setSelected] = useState<Set<string>>(new Set(current?.capabilities ?? []));
+  const [error, setError] = useState('');
+  const [busy, setBusy] = useState(false);
+
+  function toggle(token: string) {
+    setSelected((current) => {
+      const next = new Set(current);
+      if (next.has(token)) next.delete(token);
+      else next.add(token);
+      return next;
+    });
+  }
+
+  async function save() {
+    setBusy(true);
+    setError('');
+    try {
+      const payload = mode === 'template'
+        ? { templateId }
+        : { capabilities: ALL_CAPABILITIES.filter((token) => selected.has(token)) };
+      await serverApi.putVaultGrant(vaultId, subjectType, subjectId, payload);
+      onSaved();
+    } catch (reason) {
+      setError(String(reason));
+      setBusy(false);
+    }
+  }
+
+  return (
+    <DialogShell title={`Access for ${subjectName}`} description={`Vault: ${vaultName}`} onClose={onClose}>
+      <div className="settings-row">
+        <span>Source</span>
+        <SelectMenu
+          label="Grant source"
+          value={mode}
+          options={[{ value: 'template', label: 'Template' }, { value: 'custom', label: 'Custom capabilities' }]}
+          onChange={(value) => setMode(value as 'template' | 'custom')}
+        />
+      </div>
+      {mode === 'template' ? (
+        <div className="settings-row">
+          <span>Template</span>
+          <SelectMenu label="Template" value={templateId} options={templates.map((template) => ({ value: template.id, label: template.name }))} onChange={setTemplateId} />
+        </div>
+      ) : (
+        <div className="capability-editor">
+          {CAPABILITY_GROUPS.map((group) => (
+            <div className="capability-group" key={group.domain}>
+              <strong>{group.domain}</strong>
+              {group.capabilities.map((capability) => (
+                <label className="check" key={capability.token}>
+                  <Checkbox checked={selected.has(capability.token)} onChange={() => toggle(capability.token)} aria-label={capability.token} />
+                  {capability.label}
+                </label>
+              ))}
+            </div>
+          ))}
+        </div>
+      )}
+      {error && <div className="error-banner" role="alert"><CircleAlert size={16} />{error}</div>}
+      <div className="ui-dialog-actions">
+        <Button variant="outline" onClick={onClose}>Cancel</Button>
+        <Button disabled={busy} onClick={() => void save()}>Apply</Button>
+      </div>
+    </DialogShell>
+  );
+}
+
+/**
+ * Lists and edits a subject's (user or group) vault grants. Groups can be
+ * granted on any vault; user grants override an existing membership, so new user
+ * grants are added from the vault's own Access section.
+ */
+function SubjectVaultGrants({
+  subjectType,
+  subjectId,
+  subjectName,
+  vaults,
+  templates,
+  grantsByVault,
+  onChange,
+}: {
+  subjectType: GrantSubjectType;
+  subjectId: string;
+  subjectName: string;
+  vaults: HostedVaultSummary[];
+  templates: PermissionTemplate[];
+  grantsByVault: Record<string, VaultGrant[]>;
+  onChange: () => void;
+}) {
+  const [editing, setEditing] = useState<{ vaultId: string; vaultName: string; current: VaultGrant | null } | null>(null);
+  const [addVaultId, setAddVaultId] = useState('');
+  const [error, setError] = useState('');
+
+  const vaultName = (id: string) => vaults.find((vault) => vault.id === id)?.name ?? id;
+  const grants = Object.entries(grantsByVault).flatMap(([vaultId, vaultGrants]) =>
+    vaultGrants
+      .filter((grant) => grant.subjectType === subjectType && grant.subjectId === subjectId)
+      .map((grant) => ({ vaultId, grant })));
+  const grantedIds = new Set(grants.map((entry) => entry.vaultId));
+  const addableVaults = vaults.filter((vault) => !grantedIds.has(vault.id));
+  const addVault = addableVaults.some((vault) => vault.id === addVaultId) ? addVaultId : addableVaults[0]?.id ?? '';
+
+  async function run(action: () => Promise<unknown>) {
+    setError('');
+    try {
+      await action();
+      onChange();
+    } catch (reason) {
+      setError(String(reason));
+    }
+  }
+
+  return (
+    <>
+      <strong>Vault grants</strong>
+      {subjectType === 'user'
+        ? <p className="subtle">Override a member's capabilities per vault. Add a user to a vault from the vault's Access section first.</p>
+        : <p className="subtle">Grant this group access to vaults through a template or specific capabilities.</p>}
+      {error && <div className="error-banner" role="alert"><CircleAlert size={16} />{error}</div>}
+      <div className="user-list">
+        {grants.length === 0 && <p className="subtle">No vault grants.</p>}
+        {grants.map(({ vaultId, grant }) => (
+          <div className="user-row access-grant-row" key={vaultId}>
+            <div className="grow"><strong>{vaultName(vaultId)}</strong><small>{grant.templateName ?? `${grant.capabilities.length} capabilities`}</small></div>
+            <Button variant="outline" size="sm" onClick={() => setEditing({ vaultId, vaultName: vaultName(vaultId), current: grant })}>Edit access</Button>
+            <Button variant="destructive" size="sm" onClick={() => void run(() => serverApi.deleteVaultGrant(vaultId, subjectType, subjectId))}>{subjectType === 'group' ? 'Remove' : 'Reset'}</Button>
+          </div>
+        ))}
+      </div>
+      {subjectType === 'group' && addableVaults.length > 0 && (
+        <form
+          className="inline-form"
+          onSubmit={(event) => {
+            event.preventDefault();
+            if (addVault) setEditing({ vaultId: addVault, vaultName: vaultName(addVault), current: null });
+          }}
+        >
+          <label className="field"><span>Grant on vault</span>
+            <SelectMenu label="Grant group on vault" value={addVault} options={addableVaults.map((vault) => ({ value: vault.id, label: vault.name }))} onChange={setAddVaultId} />
+          </label>
+          <Button size="sm">Configure</Button>
+        </form>
+      )}
+      {editing && (
+        <GrantEditorDialog
+          vaultId={editing.vaultId}
+          vaultName={editing.vaultName}
+          subjectType={subjectType}
+          subjectId={subjectId}
+          subjectName={subjectName}
+          current={editing.current}
+          templates={templates}
+          onClose={() => setEditing(null)}
+          onSaved={() => { setEditing(null); onChange(); }}
+        />
+      )}
+    </>
+  );
+}
+
+function PermissionsUsers({
+  users,
+  groups,
+  templates,
+  vaults,
+  groupMembers,
+  grantsByVault,
+  onChange,
+}: {
+  users: ServerUser[];
+  groups: UserGroup[];
+  templates: PermissionTemplate[];
+  vaults: HostedVaultSummary[];
+  groupMembers: Record<string, UserGroupMember[]>;
+  grantsByVault: Record<string, VaultGrant[]>;
+  onChange: () => void;
+}) {
+  const [search, setSearch] = useState('');
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [addGroupId, setAddGroupId] = useState('');
+  const [error, setError] = useState('');
+
+  const query = search.trim().toLowerCase();
+  const visible = users.filter((user) => !query || user.displayName.toLowerCase().includes(query) || user.username.toLowerCase().includes(query));
+  const selected = users.find((user) => user.id === selectedId) ?? null;
+
+  async function run(action: () => Promise<unknown>) {
+    setError('');
+    try {
+      await action();
+      onChange();
+    } catch (reason) {
+      setError(String(reason));
+    }
+  }
+
+  const memberGroups = selected ? groups.filter((group) => (groupMembers[group.id] ?? []).some((member) => member.userId === selected.id)) : [];
+  const joinableGroups = selected ? groups.filter((group) => !memberGroups.some((joined) => joined.id === group.id)) : [];
+  const joinGroupId = joinableGroups.some((group) => group.id === addGroupId) ? addGroupId : joinableGroups[0]?.id ?? '';
+
+  return (
+    <Panel title="User access" icon={<Users size={17} />}>
+      {error && <div className="error-banner" role="alert"><CircleAlert size={16} />{error}</div>}
+      <Input placeholder="Search users…" value={search} onChange={(event) => setSearch(event.target.value)} aria-label="Search users" />
+      <div className="permission-user-layout">
+        <div className="user-list user-picker">
+          {visible.map((user) => (
+            <button type="button" key={user.id} className={`user-row user-pick${selectedId === user.id ? ' active' : ''}`} onClick={() => setSelectedId(user.id)}>
+              <Avatar user={user} size={28} />
+              <div className="grow"><strong>{user.displayName}</strong><small>{user.username}</small></div>
+            </button>
+          ))}
+          {visible.length === 0 && <p className="subtle">No matching users.</p>}
+        </div>
+        <div className="user-detail">
+          {!selected ? <p className="subtle">Select a user to manage their groups and vault access.</p> : (
+            <>
+              <div className="account-identity"><Avatar user={selected} size={40} /><div><strong>{selected.displayName}</strong><small>{selected.username} · {selected.role}</small></div></div>
+
+              <Separator />
+              <strong>Group memberships</strong>
+              <div className="capability-chips">
+                {memberGroups.length === 0 && <span className="subtle">No groups</span>}
+                {memberGroups.map((group) => (
+                  <span className="request-chip removable" key={group.id}>
+                    {group.name}
+                    <button type="button" aria-label={`Remove from ${group.name}`} onClick={() => void run(() => serverApi.removeGroupMember(group.id, selected.id))}>×</button>
+                  </span>
+                ))}
+              </div>
+              {joinableGroups.length > 0 && (
+                <form className="inline-form" onSubmit={(event) => { event.preventDefault(); if (joinGroupId) void run(() => serverApi.addGroupMember(joinGroupId, selected.id)); }}>
+                  <label className="field"><span>Add to group</span>
+                    <SelectMenu label="Add user to group" value={joinGroupId} options={joinableGroups.map((group) => ({ value: group.id, label: group.name }))} onChange={setAddGroupId} />
+                  </label>
+                  <Button size="sm">Add</Button>
+                </form>
+              )}
+
+              <Separator />
+              <SubjectVaultGrants
+                subjectType="user"
+                subjectId={selected.id}
+                subjectName={selected.displayName}
+                vaults={vaults}
+                templates={templates}
+                grantsByVault={grantsByVault}
+                onChange={onChange}
+              />
+            </>
+          )}
+        </div>
+      </div>
+    </Panel>
+  );
+}
+
+// --- User profile & account ---
+
+function Avatar({ user, size = 36 }: { user: Pick<ServerUser, 'id' | 'displayName' | 'hasAvatar' | 'avatarUpdatedAt'>; size?: number }) {
+  const dimension = { width: size, height: size, minWidth: size };
+  if (user.hasAvatar) {
+    return <img className="avatar avatar-img" style={dimension} width={size} height={size} alt="" src={serverApi.avatarUrl(user.id, user.avatarUpdatedAt)} />;
+  }
+  return <div className="avatar" style={dimension}>{user.displayName.slice(0, 2).toUpperCase()}</div>;
+}
+
+/** Read-only view of a user's group memberships and direct vault grants. */
+function UserAssignments({ userId }: { userId: string }) {
+  const [groups, setGroups] = useState<UserGroup[]>([]);
+  const [grants, setGrants] = useState<Array<{ vaultName: string; grant: VaultGrant }>>([]);
+  const [loading, setLoading] = useState(true);
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      try {
+        const [allGroups, allVaults] = await Promise.all([serverApi.groups(), serverApi.vaults()]);
+        const memberLists = await Promise.all(
+          allGroups.map(async (group) => [group, await serverApi.groupMembers(group.id).catch(() => [])] as const),
+        );
+        const grantLists = await Promise.all(
+          allVaults.map(async (vault) => [vault, await serverApi.vaultGrants(vault.id).catch(() => [])] as const),
+        );
+        if (cancelled) return;
+        setGroups(memberLists.filter(([, members]) => members.some((member) => member.userId === userId)).map(([group]) => group));
+        setGrants(grantLists.flatMap(([vault, vaultGrants]) =>
+          vaultGrants
+            .filter((grant) => grant.subjectType === 'user' && grant.subjectId === userId)
+            .map((grant) => ({ vaultName: vault.name, grant })),
+        ));
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [userId]);
+  if (loading) return <p className="subtle">Loading assignments…</p>;
+  return (
+    <div className="assignments">
+      <div>
+        <strong>Group memberships</strong>
+        {groups.length === 0 ? <p className="subtle">None</p> : <div className="capability-chips">{groups.map((group) => <span className="request-chip" key={group.id}>{group.name}</span>)}</div>}
+      </div>
+      <div>
+        <strong>Vault grants</strong>
+        {grants.length === 0 ? <p className="subtle">None</p> : (
+          <div className="user-list">
+            {grants.map(({ vaultName, grant }) => (
+              <div className="user-row" key={`${vaultName}:${grant.subjectId}`}>
+                <div className="grow"><strong>{vaultName}</strong><small>{grant.templateName ?? `${grant.capabilities.length} capabilities`}</small></div>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function EditUserDialog({ user, onClose, onSaved }: { user: ServerUser; onClose: () => void; onSaved: () => void }) {
+  const [displayName, setDisplayName] = useState(user.displayName);
+  const [username, setUsername] = useState(user.username);
+  const [error, setError] = useState('');
+  const [busy, setBusy] = useState(false);
+
+  async function save() {
+    setBusy(true);
+    setError('');
+    try {
+      const payload: Record<string, unknown> = {};
+      if (displayName.trim() && displayName.trim() !== user.displayName) payload.displayName = displayName.trim();
+      if (username.trim() && username.trim() !== user.username) payload.username = username.trim();
+      if (Object.keys(payload).length > 0) await serverApi.updateUser(user.id, payload);
+      onSaved();
+    } catch (reason) {
+      setError(String(reason));
+      setBusy(false);
+    }
+  }
+
+  return (
+    <DialogShell title={`Edit ${user.username}`} description="Update the account's profile and review its assignments." onClose={onClose}>
+      <label className="field"><span>Display name</span><Input value={displayName} onChange={(event) => setDisplayName(event.target.value)} autoFocus /></label>
+      <label className="field"><span>Username</span><Input value={username} onChange={(event) => setUsername(event.target.value)} /></label>
+      {error && <div className="error-banner" role="alert"><CircleAlert size={16} />{error}</div>}
+      <Separator />
+      <UserAssignments userId={user.id} />
+      <div className="ui-dialog-actions">
+        <Button variant="outline" onClick={onClose}>Close</Button>
+        <Button disabled={busy} onClick={() => void save()}>Save changes</Button>
+      </div>
+    </DialogShell>
+  );
+}
+
+function AccountDialog({
+  me,
+  appearance,
+  onAppearanceChange,
+  onClose,
+  onUpdated,
+}: {
+  me: ServerUser;
+  appearance: ReturnType<typeof useAdminAppearance>['appearance'];
+  onAppearanceChange: ReturnType<typeof useAdminAppearance>['setAppearance'];
+  onClose: () => void;
+  onUpdated: (user: ServerUser) => void;
+}) {
+  const [displayName, setDisplayName] = useState(me.displayName);
+  const [username, setUsername] = useState(me.username);
+  const [error, setError] = useState('');
+  const [status, setStatus] = useState('');
+  const avatarInputRef = useRef<HTMLInputElement>(null);
+  const accents: AdminAccent[] = ['violet', 'blue', 'emerald', 'rose', 'orange', 'cyan'];
+
+  async function run(action: () => Promise<ServerUser | void>, message: string) {
+    setError('');
+    setStatus('');
+    try {
+      const result = await action();
+      if (result) onUpdated(result);
+      setStatus(message);
+    } catch (reason) {
+      setError(String(reason));
+    }
+  }
+
+  async function saveProfile() {
+    const payload: Record<string, unknown> = {};
+    if (displayName.trim() && displayName.trim() !== me.displayName) payload.displayName = displayName.trim();
+    if (username.trim() && username.trim() !== me.username) payload.username = username.trim();
+    if (Object.keys(payload).length === 0) { setStatus('No changes to save.'); return; }
+    await run(() => serverApi.updateSelf(payload), 'Profile updated.');
+  }
+
+  async function onAvatarSelected(event: ChangeEvent<HTMLInputElement>) {
+    const file = event.target.files?.[0];
+    event.target.value = '';
+    if (!file) return;
+    if (file.size > 1024 * 1024) { setError('Avatars must be 1 MB or smaller.'); return; }
+    const base64 = await fileToBase64(file);
+    await run(() => serverApi.uploadOwnAvatar(file.type, base64), 'Avatar updated.');
+  }
+
+  async function changePassword(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const form = new FormData(event.currentTarget);
+    setError('');
+    setStatus('');
+    try {
+      await serverApi.changeOwnPassword(String(form.get('current') ?? ''), String(form.get('next') ?? ''));
+      (event.currentTarget as HTMLFormElement).reset();
+      setStatus('Password changed.');
+    } catch (reason) {
+      setError(String(reason));
+    }
+  }
+
+  return (
+    <DialogShell title="Your account" description="Manage your profile, avatar, password, and appearance." onClose={onClose}>
+      {error && <div className="error-banner" role="alert"><CircleAlert size={16} />{error}</div>}
+      {status && <p className="subtle" role="status">{status}</p>}
+
+      <div className="account-identity">
+        <Avatar user={me} size={56} />
+        <div className="account-avatar-actions">
+          <Button variant="outline" size="sm" onClick={() => avatarInputRef.current?.click()}>Upload avatar</Button>
+          {me.hasAvatar && <Button variant="outline" size="sm" onClick={() => void run(() => serverApi.deleteOwnAvatar(), 'Avatar removed.')}>Remove</Button>}
+          <input ref={avatarInputRef} type="file" accept="image/png,image/jpeg,image/webp,image/gif" hidden onChange={onAvatarSelected} />
+        </div>
+      </div>
+
+      <label className="field"><span>Display name</span><Input value={displayName} onChange={(event) => setDisplayName(event.target.value)} /></label>
+      <label className="field"><span>Username</span><Input value={username} onChange={(event) => setUsername(event.target.value)} /></label>
+      <div className="ui-dialog-actions"><Button size="sm" onClick={() => void saveProfile()}>Save profile</Button></div>
+
+      <Separator />
+      <strong>Appearance</strong>
+      <div className="settings-row">
+        <span>Theme</span>
+        <SelectMenu
+          label="Theme"
+          value={appearance.theme}
+          options={[{ value: 'dark', label: 'Dark' }, { value: 'midnight', label: 'Midnight' }, { value: 'warm', label: 'Warm' }, { value: 'light', label: 'Light' }]}
+          onChange={(value) => onAppearanceChange((current) => ({ ...current, theme: value as AdminTheme }))}
+        />
+      </div>
+      <div className="settings-row">
+        <span>Accent</span>
+        <div className="accent-picker">
+          {accents.map((accent) => (
+            <button key={accent} type="button" className={`accent-dot accent-${accent}${appearance.accent === accent ? ' active' : ''}`} aria-label={accent} onClick={() => onAppearanceChange((current) => ({ ...current, accent }))} />
+          ))}
+        </div>
+      </div>
+      <label className="check"><Switch label="Compact density" checked={appearance.compact} onCheckedChange={(checked) => onAppearanceChange((current) => ({ ...current, compact: checked }))} /> Compact density</label>
+
+      <Separator />
+      <strong>Change password</strong>
+      <form className="account-password" onSubmit={changePassword}>
+        <Field label="Current password" name="current" type="password" autoComplete="current-password" required />
+        <Field label="New password" name="next" type="password" autoComplete="new-password" minLength={12} required />
+        <Button size="sm">Change password</Button>
+      </form>
+
+      <div className="ui-dialog-actions"><Button variant="outline" onClick={onClose}>Close</Button></div>
+    </DialogShell>
+  );
 }
 
 function PageHeader({ eyebrow, title, subtitle, action }: { eyebrow: string; title: string; subtitle: string; action?: React.ReactNode }) {
