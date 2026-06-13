@@ -63,6 +63,17 @@ describe('mathPlotSpec', () => {
     });
   });
 
+  it('infers a single-variable 3D surface from the math body', () => {
+    // A placeholder z= directive over a body that only uses x must still read
+    // the body and sample a valid (y-constant) surface.
+    const parsed = parseMathPlots('%plot3d z=expression, x=-5..5, y=-5..5, samples=20\nx^2+2');
+    expect(parsed).toMatchObject({
+      plots: [{ kind: '3d', expression: 'x^2+2' }],
+      errors: [],
+    });
+    expect(samplePlot3D(parsed.plots[0] as never).finiteCount).toBe(400);
+  });
+
   it('reports invalid ranges without dropping visible math', () => {
     expect(parseMathPlots('%plot2d x=10..-10\ny=x')).toMatchObject({
       mathSource: 'y=x',

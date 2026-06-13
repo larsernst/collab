@@ -7,6 +7,8 @@ interface MathPlot3DProps {
   spec: MathPlot3DSpec;
 }
 
+const INITIAL_VIEW = { yaw: -0.72, pitch: 0.52, distance: 7.1 };
+
 function normalize(value: number, min: number, max: number, size = 4) {
   if (min === max) return 0;
   return ((value - min) / (max - min) - 0.5) * size;
@@ -72,6 +74,7 @@ function buildAxes(THREE: typeof import('three')) {
 
 export function MathPlot3D({ spec }: MathPlot3DProps) {
   const mountRef = useRef<HTMLDivElement | null>(null);
+  const resetRef = useRef<(() => void) | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -127,9 +130,9 @@ export function MathPlot3D({ spec }: MathPlot3DProps) {
         light.position.set(3, 5, 4);
         scene.add(light);
 
-        let yaw = -0.72;
-        let pitch = 0.52;
-        let distance = 7.1;
+        let yaw = INITIAL_VIEW.yaw;
+        let pitch = INITIAL_VIEW.pitch;
+        let distance = INITIAL_VIEW.distance;
         let dragging = false;
         let lastX = 0;
         let lastY = 0;
@@ -193,11 +196,20 @@ export function MathPlot3D({ spec }: MathPlot3DProps) {
           renderer.render(scene, camera);
         };
 
+        // Expose a reset that returns the camera to its initial framing.
+        resetRef.current = () => {
+          yaw = INITIAL_VIEW.yaw;
+          pitch = INITIAL_VIEW.pitch;
+          distance = INITIAL_VIEW.distance;
+          updateCamera();
+        };
+
         updateCamera();
         animate();
         setError(null);
 
         cleanup = () => {
+          resetRef.current = null;
           window.cancelAnimationFrame(frame);
           window.removeEventListener('resize', onResize);
           renderer.domElement.removeEventListener('pointerdown', onPointerDown);
@@ -231,14 +243,31 @@ export function MathPlot3D({ spec }: MathPlot3DProps) {
     <div className="rounded-lg border border-border/45 bg-background/45 p-3">
       <div className="mb-2 flex items-center justify-between gap-3 text-[11px] text-muted-foreground">
         <span className="font-medium text-foreground/85">3D plot</span>
-        <span className="truncate font-mono">z = {spec.expression}</span>
+        <div className="flex min-w-0 items-center gap-2">
+          <span className="truncate font-mono">z = {spec.expression}</span>
+          {!error && (
+            <button
+              type="button"
+              onClick={() => resetRef.current?.()}
+              className="shrink-0 rounded border border-border/50 px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground transition-colors hover:border-border/80 hover:text-foreground"
+              title="Reset the camera to its default angle"
+            >
+              Reset view
+            </button>
+          )}
+        </div>
       </div>
       {error ? (
         <div className="rounded-md border border-destructive/35 bg-destructive/8 px-3 py-2 text-xs text-destructive">
           Could not render 3D plot: {error}
         </div>
       ) : (
-        <div ref={mountRef} className="h-80 w-full overflow-hidden rounded-md bg-muted/15" />
+        <>
+          <div ref={mountRef} className="h-80 w-full overflow-hidden rounded-md bg-muted/15" />
+          <p className="mt-1.5 text-center text-[10px] text-muted-foreground/70">
+            Drag to rotate · scroll to zoom
+          </p>
+        </>
       )}
     </div>
   );

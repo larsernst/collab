@@ -166,7 +166,14 @@ class MathWidget extends WidgetType {
     (dom as HTMLElement & { __cmReactRoot?: Root }).__cmReactRoot?.unmount();
   }
 
-  ignoreEvent() { return false; }
+  ignoreEvent(event: Event) {
+    // Interactive plot canvases (3D orbit/zoom, reset button) must handle their
+    // own pointer and wheel events; tell CodeMirror to leave those alone so the
+    // editor does not hijack the drag. Other events (e.g. clicking the rendered
+    // math to edit it) still flow through the editor.
+    const target = event.target as Element | null;
+    return Boolean(target?.closest?.('.cm-lp-math-plots'));
+  }
 }
 
 function MathPlotPreviewStack({ parsed }: { parsed: ReturnType<typeof parseMathPlots> }) {

@@ -141,10 +141,10 @@ function inferEquationExpression(source: string, target: 'y' | 'z') {
     const expression = stripEquationLeftHandSide(line, target);
     if (expression !== cleanupExpressionSource(line)) return expression;
   }
-  if (target === 'z' && lines.length === 1 && /\bx\b/.test(lines[0]) && /\by\b/.test(lines[0])) {
-    return cleanupExpressionSource(lines[0]);
-  }
-  return target === 'y' && lines.length > 0 ? lines[0] : null;
+  // Otherwise treat the math body as the surface/curve expression directly. A 3D
+  // surface only needs to reference x or y (a body like `x^2+2` is constant in
+  // y), so we no longer require both variables to be present.
+  return lines.length > 0 ? cleanupExpressionSource(lines[0]) : null;
 }
 
 function parseSampleCount(value: string | undefined, fallback: number, max: number) {
