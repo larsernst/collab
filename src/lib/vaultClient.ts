@@ -467,6 +467,11 @@ export class HostedVaultClient implements VaultClient {
     const manifest = await this.manifest();
     const file = this.findByPath(manifest, relativePath);
     const document = await this.request<HostedTextDocument>('GET', `/files/${file.id}`);
+    // Write through to the offline replica cache (best-effort; never blocks the
+    // read, and a missing/unseeded replica is silently ignored).
+    tauriCommands
+      .replicaCacheDocument(this.vault.serverUrl, this.vault.hostedVaultId, file.id, document.content)
+      .catch(() => {});
     return {
       relativePath: document.file.relativePath,
       content: document.content,

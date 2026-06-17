@@ -2,6 +2,7 @@ import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
 import { tauriCommands } from '../lib/tauri';
 import { createVaultClient, requireRuntimeCapability } from '../lib/vaultClient';
+import { seedReplicaFromManifest } from '../lib/vaultReplica';
 import { hostedVaultMeta, type HostedVaultMeta, type HostedVaultSummary, type VaultMeta, type NoteFile } from '../types/vault';
 
 interface VaultState {
@@ -108,6 +109,11 @@ export const useVaultStore = create<VaultState>()(
             await createVaultClient(previousVault).runtime.watch?.stop().catch(() => {});
           }
           const fileTree = sortFileTreeAlphabetically(await createVaultClient(vault).listFiles());
+          // Seed (or refresh) the local offline replica from the server manifest.
+          // Best-effort: a replica failure must never prevent opening the vault.
+          seedReplicaFromManifest(vault).catch((error) => {
+            console.warn('Failed to seed hosted-vault replica:', error);
+          });
           set({
             vault,
             isVaultLocked: false,

@@ -1,6 +1,7 @@
 mod commands;
 mod crypto;
 mod models;
+mod replica;
 mod state;
 #[cfg(test)]
 pub mod test_support;
@@ -206,6 +207,27 @@ pub fn run() {
             // update
             commands::update::check_for_update,
             commands::update::download_and_install_update,
+            // native hosted-vault replica store (offline sync)
+            commands::replica::replica_seed,
+            commands::replica::replica_read_manifest,
+            commands::replica::replica_read_sync_state,
+            commands::replica::replica_write_sync_state,
+            commands::replica::replica_enqueue_operation,
+            commands::replica::replica_list_pending_operations,
+            commands::replica::replica_update_operation_status,
+            commands::replica::replica_remove_operation,
+            commands::replica::replica_record_tombstone,
+            commands::replica::replica_list_tombstones,
+            commands::replica::replica_remove_tombstone,
+            commands::replica::replica_cache_document,
+            commands::replica::replica_read_cached_document,
+            commands::replica::replica_cache_asset,
+            commands::replica::replica_read_cached_asset,
+            commands::replica::replica_cache_crdt_state,
+            commands::replica::replica_read_crdt_state,
+            commands::replica::replica_verify,
+            commands::replica::replica_rebuild,
+            commands::replica::replica_delete,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

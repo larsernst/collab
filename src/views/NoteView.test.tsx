@@ -19,6 +19,7 @@ const tauriMocks = vi.hoisted(() => ({
   renameNote: vi.fn(),
   listNoteSnippets: vi.fn(async () => []),
   hostedVaultRequest: vi.fn(),
+  replicaCacheDocument: vi.fn(async () => undefined),
 }));
 
 const liveMocks = vi.hoisted(() => ({
@@ -46,6 +47,7 @@ vi.mock('../lib/tauri', () => ({
     renameNote: tauriMocks.renameNote,
     listNoteSnippets: tauriMocks.listNoteSnippets,
     hostedVaultRequest: tauriMocks.hostedVaultRequest,
+    replicaCacheDocument: tauriMocks.replicaCacheDocument,
   },
 }));
 

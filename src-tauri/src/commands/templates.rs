@@ -52,18 +52,7 @@ fn now_ms() -> u64 {
         .as_millis() as u64
 }
 
-fn app_config_dir() -> Result<PathBuf, String> {
-    let dir = if let Ok(appdata) = std::env::var("APPDATA") {
-        PathBuf::from(appdata).join("collab")
-    } else {
-        let home = std::env::var("HOME")
-            .or_else(|_| std::env::var("USERPROFILE"))
-            .map_err(|_| "Cannot determine home directory".to_string())?;
-        Path::new(&home).join(".config").join("collab")
-    };
-    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-    Ok(dir)
-}
+use super::app_config_dir;
 
 fn normalize_relative_path(relative_path: &str) -> Result<PathBuf, String> {
     normalize_core_relative_path(relative_path).map_err(|error| error.to_string())

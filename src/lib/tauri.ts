@@ -22,6 +22,14 @@ import type { KanbanAutomationPreset, KanbanFilterPreset, KanbanTemplate, Templa
 import type { NoteSnippet, NoteSnippetDraft, NoteSnippetScope } from '../types/noteSnippet';
 import type { PdfSidecarState } from '../types/pdf';
 import type { UpdateInfo } from '../store/updateStore';
+import type {
+  PendingOperation,
+  PendingOpStatus,
+  ReplicaIntegrityReport,
+  ReplicaManifest,
+  ReplicaSyncState,
+  Tombstone,
+} from './vaultReplica';
 
 export interface LinkPreviewData {
   resolvedUrl: string;
@@ -307,6 +315,57 @@ export const tauriCommands = {
       'hosted_ws_ticket',
       { serverUrl, vaultId },
     ),
+
+  // Native hosted-vault replica store (offline sync)
+  replicaSeed: (
+    serverUrl: string,
+    vaultId: string,
+    vaultName: string,
+    manifest: ReplicaManifest,
+    syncState: ReplicaSyncState,
+  ) => invoke<void>('replica_seed', { serverUrl, vaultId, vaultName, manifest, syncState }),
+  replicaReadManifest: (serverUrl: string, vaultId: string) =>
+    invoke<ReplicaManifest | null>('replica_read_manifest', { serverUrl, vaultId }),
+  replicaReadSyncState: (serverUrl: string, vaultId: string) =>
+    invoke<ReplicaSyncState>('replica_read_sync_state', { serverUrl, vaultId }),
+  replicaWriteSyncState: (serverUrl: string, vaultId: string, syncState: ReplicaSyncState) =>
+    invoke<void>('replica_write_sync_state', { serverUrl, vaultId, syncState }),
+  replicaEnqueueOperation: (serverUrl: string, vaultId: string, operation: PendingOperation) =>
+    invoke<void>('replica_enqueue_operation', { serverUrl, vaultId, operation }),
+  replicaListPendingOperations: (serverUrl: string, vaultId: string) =>
+    invoke<PendingOperation[]>('replica_list_pending_operations', { serverUrl, vaultId }),
+  replicaUpdateOperationStatus: (
+    serverUrl: string,
+    vaultId: string,
+    operationId: string,
+    status: PendingOpStatus,
+  ) => invoke<void>('replica_update_operation_status', { serverUrl, vaultId, operationId, status }),
+  replicaRemoveOperation: (serverUrl: string, vaultId: string, operationId: string) =>
+    invoke<void>('replica_remove_operation', { serverUrl, vaultId, operationId }),
+  replicaRecordTombstone: (serverUrl: string, vaultId: string, tombstone: Tombstone) =>
+    invoke<void>('replica_record_tombstone', { serverUrl, vaultId, tombstone }),
+  replicaListTombstones: (serverUrl: string, vaultId: string) =>
+    invoke<Tombstone[]>('replica_list_tombstones', { serverUrl, vaultId }),
+  replicaRemoveTombstone: (serverUrl: string, vaultId: string, fileId: string) =>
+    invoke<void>('replica_remove_tombstone', { serverUrl, vaultId, fileId }),
+  replicaCacheDocument: (serverUrl: string, vaultId: string, fileId: string, content: string) =>
+    invoke<void>('replica_cache_document', { serverUrl, vaultId, fileId, content }),
+  replicaReadCachedDocument: (serverUrl: string, vaultId: string, fileId: string) =>
+    invoke<string | null>('replica_read_cached_document', { serverUrl, vaultId, fileId }),
+  replicaCacheAsset: (serverUrl: string, vaultId: string, fileId: string, base64Content: string) =>
+    invoke<void>('replica_cache_asset', { serverUrl, vaultId, fileId, base64Content }),
+  replicaReadCachedAsset: (serverUrl: string, vaultId: string, fileId: string) =>
+    invoke<string | null>('replica_read_cached_asset', { serverUrl, vaultId, fileId }),
+  replicaCacheCrdtState: (serverUrl: string, vaultId: string, fileId: string, base64Content: string) =>
+    invoke<void>('replica_cache_crdt_state', { serverUrl, vaultId, fileId, base64Content }),
+  replicaReadCrdtState: (serverUrl: string, vaultId: string, fileId: string) =>
+    invoke<string | null>('replica_read_crdt_state', { serverUrl, vaultId, fileId }),
+  replicaVerify: (serverUrl: string, vaultId: string) =>
+    invoke<ReplicaIntegrityReport>('replica_verify', { serverUrl, vaultId }),
+  replicaRebuild: (serverUrl: string, vaultId: string) =>
+    invoke<ReplicaIntegrityReport>('replica_rebuild', { serverUrl, vaultId }),
+  replicaDelete: (serverUrl: string, vaultId: string) =>
+    invoke<void>('replica_delete', { serverUrl, vaultId }),
 
   // Update
   checkForUpdate: () => invoke<UpdateInfo>('check_for_update'),

@@ -11,12 +11,14 @@ const tauriCommandsMock = vi.hoisted(() => ({
   isFlatpak: vi.fn(),
   showOpenVaultDialog: vi.fn(),
   hostedVaultRequest: vi.fn(),
+  replicaSeed: vi.fn(),
 }));
 
 vi.mock('../lib/tauri', () => ({
   tauriCommands: tauriCommandsMock,
 }));
 
+import type { HostedVaultMeta } from '../types/vault';
 import { sortFileTreeAlphabetically, useVaultStore } from './vaultStore';
 
 describe('vaultStore Flatpak reopen fallback', () => {
@@ -205,5 +207,47 @@ describe('vaultStore Flatpak reopen fallback', () => {
     );
     expect(tauriCommandsMock.openVault).not.toHaveBeenCalled();
     expect(tauriCommandsMock.watchVault).not.toHaveBeenCalled();
+  });
+
+  const hostedVault: HostedVaultMeta = {
+    kind: 'hosted',
+    id: 'hosted-vault',
+    hostedVaultId: 'hosted-vault',
+    serverUrl: 'https://collab.example.test',
+    role: 'editor',
+    name: 'Hosted Vault',
+    path: 'hosted://hosted-vault',
+    lastOpened: 1,
+    isEncrypted: false,
+  };
+
+  it('seeds the offline replica from the manifest when opening a hosted vault', async () => {
+    const manifest = { vaultId: 'hosted-vault', sequence: 4, files: [] };
+    tauriCommandsMock.hostedVaultRequest.mockImplementation((_url, _method, path) =>
+      Promise.resolve(path.endsWith('/manifest') ? manifest : []),
+    );
+    tauriCommandsMock.replicaSeed.mockResolvedValue(undefined);
+
+    await useVaultStore.getState().openHostedVault(hostedVault);
+
+    await vi.waitFor(() => expect(tauriCommandsMock.replicaSeed).toHaveBeenCalled());
+    expect(tauriCommandsMock.replicaSeed).toHaveBeenCalledWith(
+      'https://collab.example.test',
+      'hosted-vault',
+      'Hosted Vault',
+      manifest,
+      expect.objectContaining({ manifestSequence: 4, status: 'idle' }),
+    );
+  });
+
+  it('still opens a hosted vault when replica seeding fails', async () => {
+    tauriCommandsMock.hostedVaultRequest.mockImplementation((_url, _method, path) =>
+      path.endsWith('/manifest') ? Promise.reject(new Error('offline')) : Promise.resolve([]),
+    );
+
+    await useVaultStore.getState().openHostedVault(hostedVault);
+
+    expect(useVaultStore.getState().vault).toEqual(hostedVault);
+    expect(useVaultStore.getState().isLoading).toBe(false);
   });
 });

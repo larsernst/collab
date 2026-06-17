@@ -41,6 +41,7 @@ vi.mock('./tauri', () => ({
     hostedVaultRequest: vi.fn(),
     hostedVaultAssetDataUrl: vi.fn(),
     hostedUserDirectory: vi.fn(),
+    replicaCacheDocument: vi.fn().mockResolvedValue(undefined),
     watchVault: vi.fn(),
     unwatchVault: vi.fn(),
     unlockVault: vi.fn(),
@@ -297,6 +298,22 @@ describe('HostedVaultClient', () => {
       'POST',
       '/api/v1/vaults/hosted-vault/files/file-1/revisions',
       { expectedRevisionSequence: 3, content: '# Next' },
+    );
+  });
+
+  it('write-through caches read documents into the offline replica', async () => {
+    vi.mocked(tauriCommands.hostedVaultRequest)
+      .mockResolvedValueOnce(mockHostedManifest())
+      .mockResolvedValueOnce({ file: hostedDocument, content: '# Test' });
+    const client = new HostedVaultClient(hostedVault);
+
+    await client.readDocument('Notes/Test.md');
+
+    expect(tauriCommands.replicaCacheDocument).toHaveBeenCalledWith(
+      'https://collab.example.test',
+      'hosted-vault',
+      'file-1',
+      '# Test',
     );
   });
 

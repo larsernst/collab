@@ -8,8 +8,20 @@ import type { VaultClient } from './vaultClient';
 vi.mock('./tauri', () => ({
   tauriCommands: {
     hostedWsTicket: vi.fn(),
+    replicaReadCrdtState: vi.fn().mockResolvedValue(null),
+    replicaCacheCrdtState: vi.fn().mockResolvedValue(undefined),
   },
 }));
+
+/** Encode a Y.Doc whose `content` text holds `value`, as the replica would cache it. */
+function seedBase64(value: string): string {
+  const doc = new Y.Doc();
+  doc.getText('content').insert(0, value);
+  const update = Y.encodeStateAsUpdate(doc);
+  let binary = '';
+  for (let i = 0; i < update.length; i += 1) binary += String.fromCharCode(update[i]);
+  return btoa(binary);
+}
 
 const SYNC_UPDATE = 2;
 const AWARENESS = 3;
@@ -277,6 +289,34 @@ describe('openLiveNoteSession', () => {
 
     session.text.insert(0, 'still live');
     expect(socket.sent.some((data) => data instanceof Uint8Array && data[0] === SYNC_UPDATE)).toBe(true);
+    session.destroy();
+  });
+});
+
+describe('openLiveNoteSession offline replica reconnect sync', () => {
+  it('seeds the document from the replica before connecting so offline edits reconcile', async () => {
+    vi.mocked(tauriCommands.replicaReadCrdtState).mockResolvedValue(seedBase64('offline edit'));
+    const { session } = await connectSession();
+    // The seeded offline content is present in the merged document; the empty
+    // server update from the handshake did not clobber it.
+    expect(session.text.toString()).toBe('offline edit');
+    session.destroy();
+  });
+
+  it('persists merged CRDT state to the offline replica after a local edit', async () => {
+    vi.mocked(tauriCommands.replicaReadCrdtState).mockResolvedValue(null);
+    const { session } = await connectSession();
+
+    session.text.insert(0, 'typed offline');
+    await vi.waitFor(() => expect(tauriCommands.replicaCacheCrdtState).toHaveBeenCalled(), {
+      timeout: 2000,
+    });
+    const calls = vi.mocked(tauriCommands.replicaCacheCrdtState).mock.calls;
+    const call = calls[calls.length - 1];
+    expect(call[0]).toBe('https://server');
+    expect(call[1]).toBe('v');
+    expect(call[2]).toBe(FILE_ID);
+    expect(typeof call[3]).toBe('string');
     session.destroy();
   });
 });

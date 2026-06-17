@@ -41,6 +41,8 @@ const NOTE_TEXT_NAME = 'content';
 const CONNECT_TIMEOUT_MS = 8000;
 const RECONNECT_BASE_MS = 1000;
 const RECONNECT_MAX_MS = 15000;
+/** Debounce for writing the merged CRDT state to the offline replica. */
+const PERSIST_DEBOUNCE_MS = 800;
 
 export type LiveStatus = 'connecting' | 'connected' | 'disconnected';
 
@@ -67,6 +69,30 @@ export interface LiveDocumentSession extends LiveDocumentHandle {
 /** Origin tag for updates applied from the network, so they are not re-sent. */
 const REMOTE_ORIGIN = Symbol('live-remote');
 const REMOTE_AWARENESS_ORIGIN = Symbol('live-awareness-remote');
+/**
+ * Origin tag for updates applied while seeding the document from the offline
+ * replica's persisted CRDT state. Seeded state is not re-sent as a fresh local
+ * update (the reconnect state-vector handshake uploads anything the server is
+ * missing) and is not re-persisted (it just came from the cache).
+ */
+const SEED_ORIGIN = Symbol('live-replica-seed');
+
+/** Encode raw bytes as base64 for transport across the Tauri boundary. */
+function bytesToBase64(bytes: Uint8Array): string {
+  let binary = '';
+  const chunk = 0x8000;
+  for (let i = 0; i < bytes.length; i += chunk) {
+    binary += String.fromCharCode(...bytes.subarray(i, i + chunk));
+  }
+  return btoa(binary);
+}
+
+function base64ToBytes(base64: string): Uint8Array {
+  const binary = atob(base64);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i += 1) bytes[i] = binary.charCodeAt(i);
+  return bytes;
+}
 
 function encodeFileId(fileId: string): Uint8Array {
   // Hosted file ids are UUID strings; encode the 16 raw bytes into the header.
@@ -103,11 +129,74 @@ export class WebSocketYProvider {
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private initialSyncPending = false;
   private subscribedCallback: ((ok: boolean) => void) | undefined;
+  private persistTimer: ReturnType<typeof setTimeout> | null = null;
 
-  constructor(private readonly target: LiveTarget) {
+  /**
+   * @param offlineReplica when true, the merged CRDT state is persisted to the
+   * native offline replica on change and the document is seeded from it before
+   * connecting, so edits survive across sessions and reconcile via the
+   * reconnect state-vector handshake.
+   */
+  constructor(
+    private readonly target: LiveTarget,
+    private readonly offlineReplica = false,
+  ) {
     this.fileIdBytes = encodeFileId(target.fileId);
     this.doc.on('update', this.handleLocalUpdate);
+    if (this.offlineReplica) this.doc.on('update', this.handlePersistUpdate);
     this.awareness.on('update', this.handleAwarenessUpdate);
+  }
+
+  /**
+   * Seed the document from the offline replica's persisted CRDT state before the
+   * first connection. No-op when offline replication is disabled or no state has
+   * been cached yet. Best-effort: a replica read failure leaves the document
+   * empty so the normal server handshake seeds it.
+   */
+  async hydrateFromReplica(): Promise<void> {
+    if (!this.offlineReplica || this.destroyed) return;
+    try {
+      const base64 = await tauriCommands.replicaReadCrdtState(
+        this.target.serverUrl,
+        this.target.vaultId,
+        this.target.fileId,
+      );
+      if (base64 && !this.destroyed) {
+        Y.applyUpdate(this.doc, base64ToBytes(base64), SEED_ORIGIN);
+      }
+    } catch {
+      // Best-effort: fall through to a server-seeded document.
+    }
+  }
+
+  private handlePersistUpdate = (_update: Uint8Array, origin: unknown) => {
+    // Seeded state came from the cache; everything else (local edits and merged
+    // remote updates) is persisted so the replica reflects the converged state.
+    if (origin === SEED_ORIGIN) return;
+    this.schedulePersist();
+  };
+
+  private schedulePersist() {
+    if (this.persistTimer) clearTimeout(this.persistTimer);
+    this.persistTimer = setTimeout(() => {
+      this.persistTimer = null;
+      void this.persistNow();
+    }, PERSIST_DEBOUNCE_MS);
+  }
+
+  private async persistNow() {
+    if (!this.offlineReplica) return;
+    try {
+      const state = bytesToBase64(Y.encodeStateAsUpdate(this.doc));
+      await tauriCommands.replicaCacheCrdtState(
+        this.target.serverUrl,
+        this.target.vaultId,
+        this.target.fileId,
+        state,
+      );
+    } catch {
+      // Best-effort caching; never disrupt the live session.
+    }
   }
 
   /** Generic handle without document-shape-specific accessors. */
@@ -122,7 +211,10 @@ export class WebSocketYProvider {
   }
 
   private handleLocalUpdate = (update: Uint8Array, origin: unknown) => {
-    if (origin === REMOTE_ORIGIN) return;
+    // Remote updates are not echoed; seeded offline state is uploaded through the
+    // reconnect state-vector handshake (server SYNC_STEP1 -> our SYNC_UPDATE),
+    // not re-broadcast as a fresh local edit.
+    if (origin === REMOTE_ORIGIN || origin === SEED_ORIGIN) return;
     this.sendBinary(SYNC_UPDATE, update);
   };
 
@@ -366,6 +458,16 @@ export class WebSocketYProvider {
       clearTimeout(this.reconnectTimer);
       this.reconnectTimer = null;
     }
+    if (this.offlineReplica) {
+      // Flush the latest merged state before tearing down so the next session
+      // (or app launch) seeds from the most recent edit.
+      if (this.persistTimer) {
+        clearTimeout(this.persistTimer);
+        this.persistTimer = null;
+      }
+      this.doc.off('update', this.handlePersistUpdate);
+      void this.persistNow();
+    }
     this.doc.off('update', this.handleLocalUpdate);
     // Broadcast a final removal update when destruction is graceful. Unexpected
     // disconnects still age out through y-protocols awareness staleness.
@@ -392,9 +494,21 @@ export class WebSocketYProvider {
  * when live collaboration is unavailable so callers fall back to REST. Shared by
  * the note (text) and structured (JSON) session entry points.
  */
+export interface ConnectLiveOptions {
+  /**
+   * Persist the merged CRDT state to the native offline replica and seed the
+   * document from it before connecting, so edits survive across sessions and
+   * reconcile via the reconnect state-vector handshake. Enabled for notes; left
+   * off for structured (Kanban/canvas) documents whose hydration guards must
+   * not see replica-seeded state.
+   */
+  offlineReplica?: boolean;
+}
+
 export async function connectLiveProvider(
   client: VaultClient,
   relativePath: string,
+  options: ConnectLiveOptions = {},
 ): Promise<WebSocketYProvider | null> {
   if (!client.resolveLiveSession) return null;
   let target: LiveTarget | null;
@@ -405,7 +519,10 @@ export async function connectLiveProvider(
   }
   if (!target) return null;
 
-  const provider = new WebSocketYProvider(target);
+  const provider = new WebSocketYProvider(target, options.offlineReplica ?? false);
+  // Seed any offline edits before the handshake so the state vector reflects
+  // them and the server sends back only what we are missing.
+  await provider.hydrateFromReplica();
   const ok = await provider.connectOnce();
   if (!ok) {
     provider.destroy();
@@ -422,6 +539,6 @@ export async function openLiveNoteSession(
   client: VaultClient,
   relativePath: string,
 ): Promise<LiveDocumentSession | null> {
-  const provider = await connectLiveProvider(client, relativePath);
+  const provider = await connectLiveProvider(client, relativePath, { offlineReplica: true });
   return provider ? provider.noteSession() : null;
 }
