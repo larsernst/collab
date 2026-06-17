@@ -23,6 +23,16 @@ pub async fn is_ready(pool: &PgPool) -> bool {
         .is_ok()
 }
 
+/// Serializes live-PostgreSQL integration tests. They share one database and
+/// `TRUNCATE` it, so they must not run concurrently. Every test that touches the
+/// shared test database holds this guard for its duration.
+#[cfg(test)]
+pub(crate) fn db_test_guard() -> &'static tokio::sync::Mutex<()> {
+    use std::sync::OnceLock;
+    static GUARD: OnceLock<tokio::sync::Mutex<()>> = OnceLock::new();
+    GUARD.get_or_init(|| tokio::sync::Mutex::new(()))
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum DatabaseError {
     #[error(transparent)]

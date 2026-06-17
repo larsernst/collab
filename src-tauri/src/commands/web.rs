@@ -100,7 +100,9 @@ fn validate_url_syntax_for_preview(url: &Url) -> Result<(), String> {
 
     if let Ok(ip) = host.parse::<IpAddr>() {
         if is_blocked_ip(ip) {
-            return Err("Private or local network addresses are not allowed for web previews".into());
+            return Err(
+                "Private or local network addresses are not allowed for web previews".into(),
+            );
         }
     }
 
@@ -172,9 +174,7 @@ fn document_title(document: &Html) -> Option<String> {
 
 fn resolve_optional_url(base: &Url, value: Option<String>) -> Option<String> {
     value.and_then(|raw| {
-        let url = Url::parse(&raw)
-            .or_else(|_| base.join(&raw))
-            .ok()?;
+        let url = Url::parse(&raw).or_else(|_| base.join(&raw)).ok()?;
         if !matches!(url.scheme(), "http" | "https") {
             return None;
         }
@@ -190,10 +190,16 @@ fn classify_embed_policy(
     if let Some(value) = x_frame_options {
         let normalized = value.trim().to_ascii_lowercase();
         if normalized.contains("deny") {
-            return (false, Some("This site forbids framing with X-Frame-Options: DENY.".into()));
+            return (
+                false,
+                Some("This site forbids framing with X-Frame-Options: DENY.".into()),
+            );
         }
         if normalized.contains("sameorigin") {
-            return (false, Some("This site only allows embedding on its own domain.".into()));
+            return (
+                false,
+                Some("This site only allows embedding on its own domain.".into()),
+            );
         }
     }
 
@@ -205,15 +211,24 @@ fn classify_embed_policy(
             .find(|directive| directive.starts_with("frame-ancestors"))
         {
             if frame_ancestors.contains("'none'") {
-                return (false, Some("This site blocks all framing via Content Security Policy.".into()));
+                return (
+                    false,
+                    Some("This site blocks all framing via Content Security Policy.".into()),
+                );
             }
             if frame_ancestors.contains("'self'") {
-                return (false, Some("This site only allows embedding on its own origin.".into()));
+                return (
+                    false,
+                    Some("This site only allows embedding on its own origin.".into()),
+                );
             }
 
             let origin = resolved_url.origin().ascii_serialization();
             if !frame_ancestors.contains('*') && !frame_ancestors.contains(&origin) {
-                return (false, Some("This site restricts which origins may embed it.".into()));
+                return (
+                    false,
+                    Some("This site restricts which origins may embed it.".into()),
+                );
             }
         }
     }
@@ -221,7 +236,10 @@ fn classify_embed_policy(
     (true, None)
 }
 
-async fn read_limited_text_body(response: &mut Response, max_bytes: usize) -> Result<String, String> {
+async fn read_limited_text_body(
+    response: &mut Response,
+    max_bytes: usize,
+) -> Result<String, String> {
     if let Some(content_length) = response.content_length() {
         if content_length > max_bytes as u64 {
             return Err("Remote page is too large to preview safely".into());
@@ -271,7 +289,10 @@ fn link_preview_from_response(
         );
 
         if !is_html_content_type(&content_type) {
-            let favicon_url = resolved_url.join("/favicon.ico").ok().map(|url| url.to_string());
+            let favicon_url = resolved_url
+                .join("/favicon.ico")
+                .ok()
+                .map(|url| url.to_string());
             let title = resolved_url
                 .path_segments()
                 .and_then(|segments| segments.filter(|segment| !segment.is_empty()).last())
@@ -291,41 +312,61 @@ fn link_preview_from_response(
         let html = read_limited_text_body(&mut response, MAX_HTML_PREVIEW_BYTES).await?;
         let document = Html::parse_document(&html);
 
-        let title = first_meta_content(&document, &[
-            r#"meta[property="og:title"]"#,
-            r#"meta[name="twitter:title"]"#,
-        ])
+        let title = first_meta_content(
+            &document,
+            &[
+                r#"meta[property="og:title"]"#,
+                r#"meta[name="twitter:title"]"#,
+            ],
+        )
         .or_else(|| document_title(&document));
 
-        let description = first_meta_content(&document, &[
-            r#"meta[property="og:description"]"#,
-            r#"meta[name="twitter:description"]"#,
-            r#"meta[name="description"]"#,
-        ]);
+        let description = first_meta_content(
+            &document,
+            &[
+                r#"meta[property="og:description"]"#,
+                r#"meta[name="twitter:description"]"#,
+                r#"meta[name="description"]"#,
+            ],
+        );
 
-        let site_name = first_meta_content(&document, &[
-            r#"meta[property="og:site_name"]"#,
-            r#"meta[name="application-name"]"#,
-        ])
+        let site_name = first_meta_content(
+            &document,
+            &[
+                r#"meta[property="og:site_name"]"#,
+                r#"meta[name="application-name"]"#,
+            ],
+        )
         .or_else(|| resolved_url.domain().map(|domain| domain.to_string()));
 
         let image_url = resolve_optional_url(
             &resolved_url,
-            first_meta_content(&document, &[
-                r#"meta[property="og:image"]"#,
-                r#"meta[name="twitter:image"]"#,
-                r#"meta[name="twitter:image:src"]"#,
-            ]),
+            first_meta_content(
+                &document,
+                &[
+                    r#"meta[property="og:image"]"#,
+                    r#"meta[name="twitter:image"]"#,
+                    r#"meta[name="twitter:image:src"]"#,
+                ],
+            ),
         );
 
         let favicon_url = resolve_optional_url(
             &resolved_url,
-            first_href(&document, &[
-                r#"link[rel="icon"]"#,
-                r#"link[rel="shortcut icon"]"#,
-                r#"link[rel="apple-touch-icon"]"#,
-            ])
-            .or_else(|| resolved_url.join("/favicon.ico").ok().map(|url| url.to_string())),
+            first_href(
+                &document,
+                &[
+                    r#"link[rel="icon"]"#,
+                    r#"link[rel="shortcut icon"]"#,
+                    r#"link[rel="apple-touch-icon"]"#,
+                ],
+            )
+            .or_else(|| {
+                resolved_url
+                    .join("/favicon.ico")
+                    .ok()
+                    .map(|url| url.to_string())
+            }),
         );
 
         Ok(LinkPreviewData {
@@ -379,7 +420,9 @@ async fn fetch_link_preview_with_client(
                 .headers()
                 .get(reqwest::header::LOCATION)
                 .and_then(|value| value.to_str().ok())
-                .ok_or_else(|| "Redirect response did not include a valid Location header".to_string())?;
+                .ok_or_else(|| {
+                    "Redirect response did not include a valid Location header".to_string()
+                })?;
             let next_url = current_url
                 .join(location)
                 .or_else(|_| Url::parse(location))
@@ -453,7 +496,8 @@ mod tests {
     #[test]
     fn normalize_input_url_rejects_empty_and_non_http_schemes() {
         let empty = normalize_input_url("   ").expect_err("empty input should fail");
-        let file = normalize_input_url("file:///tmp/test.html").expect_err("file scheme should fail");
+        let file =
+            normalize_input_url("file:///tmp/test.html").expect_err("file scheme should fail");
 
         assert!(empty.contains("URL is required"));
         assert!(file.contains("Only HTTP and HTTPS"));
@@ -481,8 +525,12 @@ mod tests {
         let shared = "100.64.0.1".parse::<IpAddr>().expect("ip should parse");
         let benchmark = "198.18.0.10".parse::<IpAddr>().expect("ip should parse");
         let reserved = "240.0.0.1".parse::<IpAddr>().expect("ip should parse");
-        let mapped_loopback = "::ffff:127.0.0.1".parse::<IpAddr>().expect("ip should parse");
-        let mapped_private = "::ffff:10.0.0.1".parse::<IpAddr>().expect("ip should parse");
+        let mapped_loopback = "::ffff:127.0.0.1"
+            .parse::<IpAddr>()
+            .expect("ip should parse");
+        let mapped_private = "::ffff:10.0.0.1"
+            .parse::<IpAddr>()
+            .expect("ip should parse");
         let public = "93.184.216.34".parse::<IpAddr>().expect("ip should parse");
 
         assert!(is_blocked_ip(shared));
@@ -499,17 +547,28 @@ mod tests {
 
         let deny = classify_embed_policy(&url, Some("DENY"), None);
         let sameorigin = classify_embed_policy(&url, Some("SAMEORIGIN"), None);
-        let csp_none = classify_embed_policy(&url, None, Some("default-src 'self'; frame-ancestors 'none'"));
-        let csp_other = classify_embed_policy(&url, None, Some("frame-ancestors https://another.example"));
+        let csp_none = classify_embed_policy(
+            &url,
+            None,
+            Some("default-src 'self'; frame-ancestors 'none'"),
+        );
+        let csp_other =
+            classify_embed_policy(&url, None, Some("frame-ancestors https://another.example"));
 
         assert_eq!(deny.0, false);
         assert!(deny.1.unwrap_or_default().contains("DENY"));
         assert_eq!(sameorigin.0, false);
         assert!(sameorigin.1.unwrap_or_default().contains("own domain"));
         assert_eq!(csp_none.0, false);
-        assert!(csp_none.1.unwrap_or_default().contains("blocks all framing"));
+        assert!(csp_none
+            .1
+            .unwrap_or_default()
+            .contains("blocks all framing"));
         assert_eq!(csp_other.0, false);
-        assert!(csp_other.1.unwrap_or_default().contains("restricts which origins"));
+        assert!(csp_other
+            .1
+            .unwrap_or_default()
+            .contains("restricts which origins"));
     }
 
     #[test]
@@ -554,14 +613,21 @@ mod tests {
         let base = Url::parse("https://example.com/path/page").expect("url should parse");
 
         let relative = resolve_optional_url(&base, Some("/favicon.ico".into()));
-        let absolute = resolve_optional_url(&base, Some("https://cdn.example.com/image.png".into()));
+        let absolute =
+            resolve_optional_url(&base, Some("https://cdn.example.com/image.png".into()));
         let invalid = resolve_optional_url(&base, Some("::not a url::".into()));
         let file_scheme = resolve_optional_url(&base, Some("file:///tmp/secret.png".into()));
         let data_scheme = resolve_optional_url(&base, Some("data:image/png;base64,abcd".into()));
 
         assert_eq!(relative.as_deref(), Some("https://example.com/favicon.ico"));
-        assert_eq!(absolute.as_deref(), Some("https://cdn.example.com/image.png"));
-        assert_eq!(invalid.as_deref(), Some("https://example.com/path/::not%20a%20url::"));
+        assert_eq!(
+            absolute.as_deref(),
+            Some("https://cdn.example.com/image.png")
+        );
+        assert_eq!(
+            invalid.as_deref(),
+            Some("https://example.com/path/::not%20a%20url::")
+        );
         assert_eq!(file_scheme, None);
         assert_eq!(data_scheme, None);
     }
@@ -611,7 +677,10 @@ mod tests {
         let expected_image = server.url("/images/card.png");
         let expected_favicon = server.url("/favicon.ico");
         assert_eq!(preview.image_url.as_deref(), Some(expected_image.as_str()));
-        assert_eq!(preview.favicon_url.as_deref(), Some(expected_favicon.as_str()));
+        assert_eq!(
+            preview.favicon_url.as_deref(),
+            Some(expected_favicon.as_str())
+        );
         assert!(preview.embeddable);
         assert!(preview.embed_block_reason.is_none());
     }
@@ -631,16 +700,20 @@ mod tests {
             .redirect(reqwest::redirect::Policy::none())
             .build()
             .expect("client should build");
-        let preview = fetch_link_preview_with_client(&client, server.url("/files/manual.pdf"), true, true)
-            .await
-            .expect("non-html preview should fetch");
+        let preview =
+            fetch_link_preview_with_client(&client, server.url("/files/manual.pdf"), true, true)
+                .await
+                .expect("non-html preview should fetch");
 
         asset.assert();
         assert_eq!(preview.resolved_url, server.url("/files/manual.pdf"));
         assert_eq!(preview.title.as_deref(), Some("manual.pdf"));
         assert_eq!(preview.site_name, None);
         let expected_favicon = server.url("/favicon.ico");
-        assert_eq!(preview.favicon_url.as_deref(), Some(expected_favicon.as_str()));
+        assert_eq!(
+            preview.favicon_url.as_deref(),
+            Some(expected_favicon.as_str())
+        );
         assert_eq!(preview.image_url, None);
         assert!(!preview.embeddable);
         assert!(preview
@@ -655,10 +728,8 @@ mod tests {
         let server = MockServer::start_async().await;
         let page = server.mock(|when, then| {
             when.method(GET).path("/article/read_me");
-            then.status(200)
-                .header("content-type", "text/html")
-                .body(
-                    r#"
+            then.status(200).header("content-type", "text/html").body(
+                r#"
                     <html>
                       <head>
                         <title>Readable Article</title>
@@ -667,16 +738,17 @@ mod tests {
                       </head>
                     </html>
                     "#,
-                );
+            );
         });
 
         let client = Client::builder()
             .redirect(reqwest::redirect::Policy::none())
             .build()
             .expect("client should build");
-        let preview = fetch_link_preview_with_client(&client, server.url("/article/read_me"), true, true)
-            .await
-            .expect("html preview should fetch");
+        let preview =
+            fetch_link_preview_with_client(&client, server.url("/article/read_me"), true, true)
+                .await
+                .expect("html preview should fetch");
 
         page.assert();
         let expected_image = server.url("/images/preview-card.jpg");
@@ -684,7 +756,10 @@ mod tests {
         assert_eq!(preview.title.as_deref(), Some("Readable Article"));
         assert_eq!(preview.description.as_deref(), Some("Simple summary"));
         assert_eq!(preview.image_url.as_deref(), Some(expected_image.as_str()));
-        assert_eq!(preview.favicon_url.as_deref(), Some(expected_favicon.as_str()));
+        assert_eq!(
+            preview.favicon_url.as_deref(),
+            Some(expected_favicon.as_str())
+        );
         assert_eq!(preview.site_name, None);
     }
 
@@ -715,7 +790,8 @@ mod tests {
         let server = MockServer::start_async().await;
         let redirect = server.mock(|when, then| {
             when.method(GET).path("/start");
-            then.status(302).header("location", "http://127.0.0.1/internal");
+            then.status(302)
+                .header("location", "http://127.0.0.1/internal");
         });
 
         let client = Client::builder()

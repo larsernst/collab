@@ -8,7 +8,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.4.3"
+version = "0.4.6"
 edition = "2021"
 license = "MIT"
 
@@ -16,9 +16,10 @@ license = "MIT"
 anyhow = "1"
 argon2 = "0.5"
 async-trait = "0.1"
-axum = "0.8"
+axum = { version = "0.8", features = ["ws"] }
 base64 = "0.22"
 chrono = { version = "0.4", features = ["serde"] }
+futures-util = "0.3"
 hex = "0.4"
 http-body-util = "0.1"
 rand = "0.8"
@@ -30,10 +31,12 @@ sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio-r
 tempfile = "3"
 thiserror = "1"
 tokio = { version = "1", features = ["full"] }
+tokio-tungstenite = "0.29"
 tower = { version = "0.5", features = ["util"] }
 tower-http = { version = "0.6", features = ["fs", "request-id", "set-header", "trace"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt", "json"] }
 uuid = { version = "1", features = ["v4", "v7", "serde"] }
 unicode-normalization = "0.1"
+yrs = "0.27"
 zip = "2"

@@ -4,6 +4,7 @@ import type {
   CreatedInvitation,
   HostedVaultActivityEvent,
   HostedVaultAdminDetail,
+  HostedChatMessage,
   HostedFileEntry,
   HostedFileRevision,
   HostedVaultImportResult,
@@ -125,6 +126,8 @@ export const serverApi = {
       body: JSON.stringify(payload),
     }),
   deleteVault: (id: string) => api<void>(`/api/v1/admin/vaults/${id}`, { method: 'DELETE' }),
+  forceDeleteVault: (id: string) =>
+    api<void>(`/api/v1/admin/vaults/${id}/force-delete`, { method: 'POST' }),
   vaultMembers: (id: string) => api<HostedVaultMember[]>(`/api/v1/admin/vaults/${id}/members`),
   addVaultMember: (id: string, payload: Record<string, unknown>) =>
     api<HostedVaultMember>(`/api/v1/admin/vaults/${id}/members`, {
@@ -139,6 +142,7 @@ export const serverApi = {
   removeVaultMember: (id: string, userId: string) =>
     api<void>(`/api/v1/admin/vaults/${id}/members/${userId}`, { method: 'DELETE' }),
   vaultActivity: (id: string) => api<HostedVaultActivityEvent[]>(`/api/v1/admin/vaults/${id}/activity`),
+  vaultChat: (id: string) => api<HostedChatMessage[]>(`/api/v1/vaults/${id}/chat?limit=100`),
   vaultStorage: (id: string) => api<HostedVaultStorage>(`/api/v1/vaults/${id}/storage`),
   vaultFiles: (id: string) => api<HostedVaultManifest>(`/api/v1/vaults/${id}/manifest`),
   fileRevisions: (vaultId: string, fileId: string) =>

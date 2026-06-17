@@ -515,6 +515,18 @@ pub struct HostedVaultActivityEvent {
     pub created_at: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct HostedChatMessage {
+    pub id: String,
+    pub user_id: String,
+    pub user_name: String,
+    pub user_color: String,
+    pub content: String,
+    /// Milliseconds since the Unix epoch, matching the native chat DTO.
+    pub timestamp: u64,
+}
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum HostedFileKind {
@@ -550,6 +562,8 @@ pub struct HostedFileEntry {
     pub document_type: Option<HostedDocumentType>,
     pub state: HostedFileState,
     pub current_revision: Option<HostedFileRevision>,
+    pub trashed_by_display_name: Option<String>,
+    pub trashed_at: Option<String>,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -707,8 +721,23 @@ pub struct AdminOverview {
     pub pending_invitations: i64,
     pub hosted_vaults: i64,
     pub storage: StorageSummary,
+    pub live_collaboration: LiveCollaborationMetrics,
     pub operational_warnings: Vec<OperationalWarning>,
     pub recent_audit_events: Vec<AuditEvent>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct LiveCollaborationMetrics {
+    pub active_connections: u64,
+    pub loaded_rooms: u64,
+    pub active_awareness_states: u64,
+    pub pending_update_count: i64,
+    pub pending_update_bytes: i64,
+    pub updates_last_minute: i64,
+    pub compacted_documents: i64,
+    pub compacted_state_bytes: i64,
+    pub last_compaction_at: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -721,6 +750,77 @@ pub struct AuditEvent {
     pub target_id: Option<String>,
     pub result: String,
     pub created_at: String,
+}
+
+// ---------------------------------------------------------------------------
+// Live collaboration (Phase 5)
+// ---------------------------------------------------------------------------
+
+/// Request body for `POST /api/v1/auth/ws-ticket`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct WsTicketRequest {
+    pub vault_id: String,
+}
+
+/// Single-use credential for opening a vault WebSocket session. The ticket is
+/// presented in the `authenticate` control frame after the upgrade; bearer
+/// tokens never travel in the WebSocket URL.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct WsTicket {
+    pub ticket: String,
+    pub vault_id: String,
+    pub websocket_path: String,
+    pub expires_at: String,
+    pub protocol_version: u32,
+}
+
+/// JSON control frames sent by the client over the document WebSocket.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "type")]
+pub enum WsClientControl {
+    #[serde(rename = "authenticate", rename_all = "camelCase")]
+    Authenticate {
+        ticket: String,
+        #[serde(default)]
+        protocol_version: Option<u32>,
+    },
+    #[serde(rename = "document.subscribe", rename_all = "camelCase")]
+    DocumentSubscribe { file_id: String },
+    #[serde(rename = "document.unsubscribe", rename_all = "camelCase")]
+    DocumentUnsubscribe { file_id: String },
+    #[serde(rename = "ping")]
+    Ping,
+}
+
+/// JSON control frames sent by the server over the document WebSocket.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "type")]
+pub enum WsServerControl {
+    #[serde(rename = "ready", rename_all = "camelCase")]
+    Ready {
+        manifest_sequence: i64,
+        protocol_version: u32,
+        role: HostedVaultRole,
+    },
+    #[serde(rename = "document.subscribed", rename_all = "camelCase")]
+    DocumentSubscribed { file_id: String },
+    #[serde(rename = "error", rename_all = "camelCase")]
+    Error { code: ErrorCode, message: String },
+    #[serde(rename = "pong")]
+    Pong,
+}
+
+/// Binary document-frame message tags. A binary frame is
+/// `[tag: u8][file_id: 16 bytes big-endian UUID][payload]`. Payloads are Yjs v1
+/// encoded bytes: a state vector for `SYNC_STEP1`, an update for `SYNC_UPDATE`.
+pub mod ws_message {
+    pub const SYNC_STEP1: u8 = 1;
+    pub const SYNC_UPDATE: u8 = 2;
+    pub const AWARENESS: u8 = 3;
+    /// Length of the fixed binary header (tag byte + 16-byte file id).
+    pub const HEADER_LEN: usize = 1 + 16;
 }
 
 #[cfg(test)]
@@ -788,5 +888,50 @@ mod tests {
             serde_json::to_value(DataResponse::new(json!({"ready": true}))).unwrap(),
             json!({"data": {"ready": true}})
         );
+    }
+
+    #[test]
+    fn ws_control_frames_use_stable_tagged_wire_format() {
+        use super::{WsClientControl, WsServerControl};
+
+        // Client frames the browser provider sends.
+        assert_eq!(
+            serde_json::to_value(WsClientControl::Authenticate {
+                ticket: "t".into(),
+                protocol_version: Some(1),
+            })
+            .unwrap(),
+            json!({"type": "authenticate", "ticket": "t", "protocolVersion": 1})
+        );
+        assert_eq!(
+            serde_json::to_value(WsClientControl::DocumentSubscribe {
+                file_id: "f".into(),
+            })
+            .unwrap(),
+            json!({"type": "document.subscribe", "fileId": "f"})
+        );
+
+        // Server frames the browser provider must parse.
+        assert_eq!(
+            serde_json::to_value(WsServerControl::Ready {
+                manifest_sequence: 7,
+                protocol_version: 1,
+                role: HostedVaultRole::Editor,
+            })
+            .unwrap(),
+            json!({"type": "ready", "manifestSequence": 7, "protocolVersion": 1, "role": "editor"})
+        );
+        assert_eq!(
+            serde_json::to_value(WsServerControl::Error {
+                code: ErrorCode::VaultPermissionDenied,
+                message: "no".into(),
+            })
+            .unwrap(),
+            json!({"type": "error", "code": "vault_permission_denied", "message": "no"})
+        );
+
+        // Round-trips parse back from the wire form.
+        let parsed: WsClientControl = serde_json::from_value(json!({"type": "ping"})).unwrap();
+        assert_eq!(parsed, WsClientControl::Ping);
     }
 }

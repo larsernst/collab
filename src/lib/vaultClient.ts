@@ -98,6 +98,16 @@ export interface VaultPdfAnnotations {
   version: number | null;
 }
 
+/**
+ * Connection parameters for opening a live collaboration session on a document.
+ * Resolved by {@link VaultClient.resolveLiveSession}.
+ */
+export interface LiveSessionTarget {
+  serverUrl: string;
+  vaultId: string;
+  fileId: string;
+}
+
 export interface VaultClient {
   readonly kind: VaultClientKind;
   readonly id: string;
@@ -168,6 +178,13 @@ export interface VaultClient {
     state: PdfSidecarState,
     expectedVersion: number | null,
   ): Promise<VaultPdfAnnotations>;
+  /**
+   * Resolves the parameters for a live collaboration session for a document, or
+   * `null` when live collaboration is unavailable (local vaults). Hosted vaults
+   * return the server URL, vault id, and stable file id; the live transport then
+   * obtains a WebSocket ticket and connects directly.
+   */
+  resolveLiveSession?(relativePath: string): Promise<LiveSessionTarget | null>;
 }
 
 export const LOCAL_VAULT_CAPABILITIES: VaultClientCapabilities = {
@@ -455,6 +472,16 @@ export class HostedVaultClient implements VaultClient {
       content: document.content,
       version: String(document.file.currentRevision?.sequence ?? 0),
       modifiedAt: timestamp(document.file.updatedAt),
+    };
+  }
+
+  async resolveLiveSession(relativePath: string): Promise<LiveSessionTarget | null> {
+    const manifest = await this.manifest();
+    const file = this.findByPath(manifest, relativePath);
+    return {
+      serverUrl: this.vault.serverUrl,
+      vaultId: this.vault.hostedVaultId,
+      fileId: file.id,
     };
   }
 

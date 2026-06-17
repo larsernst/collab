@@ -16,6 +16,10 @@ import {
 import { useUiStore } from '../store/uiStore';
 import { extractHttpUrls, prefetchWebPreviews } from '../lib/webPreviewCache';
 import { useDocumentSessionState } from '../lib/documentSession';
+import { openLiveNoteSession, type LiveDocumentSession } from '../lib/liveDocumentSession';
+import { useLivePeers } from '../lib/liveAwareness';
+import LivePeers from '../components/collaboration/LivePeers';
+import { yCollab } from 'y-codemirror.next';
 import { createVaultClient } from '../lib/vaultClient';
 import { isVaultReadOnly } from '../types/vault';
 import { ReadOnlyBanner } from '../components/layout/ReadOnlyBanner';
@@ -56,7 +60,7 @@ export default function NoteView({ relativePath }: { relativePath: string }) {
   const { addConflict } = useCollabStore();
   // Snapshot authorship follows the effective identity: server-authoritative for
   // hosted vaults, local client identity otherwise.
-  const { userId: myUserId, userName: myUserName } = useCollabIdentity();
+  const { userId: myUserId, userName: myUserName, userColor: myUserColor } = useCollabIdentity();
   const [content, setContent] = useState<string | null>(null);
   const {
     webPreviewsEnabled,
@@ -68,6 +72,18 @@ export default function NoteView({ relativePath }: { relativePath: string }) {
   const savedContentRef = useRef<string | null>(null);
   const client = useMemo(() => (vault ? createVaultClient(vault) : null), [vault]);
   const readOnly = isVaultReadOnly(vault);
+  // Live co-editing session for hosted notes. When present, the Yjs document
+  // drives the editor and the server persists edits; the REST autosave path is
+  // disabled. When null (local vaults, or the live socket is unreachable), the
+  // existing REST optimistic-write path is used.
+  const [liveSession, setLiveSession] = useState<LiveDocumentSession | null>(null);
+  const collabExtension = useMemo(
+    () => (liveSession ? yCollab(liveSession.text, liveSession.awareness) : null),
+    [liveSession],
+  );
+  // Live co-editors of this note (remote awareness peers). Remote cursors/
+  // selections already render inline via `yCollab`; this surfaces who is here.
+  const livePeers = useLivePeers(liveSession);
   const { hashRef, markLoaded, shouldSkipAutosave, markWriteStarted, shouldCreateSnapshot, runExclusiveSave } = useDocumentSessionState();
   // Mirrors the latest content so a coalesced trailing save always writes the
   // freshest text rather than a value captured when the save was first queued.
@@ -92,6 +108,47 @@ export default function NoteView({ relativePath }: { relativePath: string }) {
   };
 
   useEffect(() => { loadNote(); }, [relativePath, vault?.path]);
+
+  // Open a live collaboration session for hosted notes; fall back to REST when
+  // unavailable. The session is torn down when the note or vault changes.
+  useEffect(() => {
+    if (!client || !relativePath || !client.resolveLiveSession) {
+      setLiveSession(null);
+      return;
+    }
+    let cancelled = false;
+    let opened: LiveDocumentSession | null = null;
+    openLiveNoteSession(client, relativePath)
+      .then((session) => {
+        if (cancelled) {
+          session?.destroy();
+          return;
+        }
+        opened = session;
+        setLiveSession(session);
+      })
+      .catch(() => {
+        // Live collaboration is best-effort; the REST path remains available.
+      });
+    return () => {
+      cancelled = true;
+      opened?.destroy();
+      setLiveSession(null);
+    };
+  }, [client, relativePath]);
+
+  useEffect(() => {
+    if (!liveSession) return;
+    liveSession.awareness.setLocalStateField('user', {
+      id: myUserId,
+      name: myUserName,
+      color: myUserColor,
+    });
+    liveSession.awareness.setLocalStateField('document', {
+      kind: 'note',
+      relativePath,
+    });
+  }, [liveSession, myUserColor, myUserId, myUserName, relativePath]);
 
   useEffect(() => {
     if (!client) return;
@@ -197,6 +254,9 @@ export default function NoteView({ relativePath }: { relativePath: string }) {
 
   const handleChange = (newContent: string) => {
     setContent(newContent);
+    // In a live session the server persists edits via the CRDT relay; there is
+    // no local dirty/REST-save bookkeeping.
+    if (liveSession) return;
     isDirtyRef.current = true;
     markDirty(relativePath);
   };
@@ -219,14 +279,18 @@ export default function NoteView({ relativePath }: { relativePath: string }) {
     if (content === null) return;
     if (shouldSkipAutosave()) return;
     if (readOnly) return;
+    // Live sessions persist through the server, not the REST autosave.
+    if (liveSession) return;
     const t = setTimeout(() => { requestSave(false); }, 600);
     return () => clearTimeout(t);
-  }, [content, shouldSkipAutosave, readOnly]);
+  }, [content, shouldSkipAutosave, readOnly, liveSession]);
 
   // Saves are serialized through the session so overlapping writes never race on
   // slow connections; each run reads the latest content and optimistic version.
   const requestSave = (manual = false): Promise<void> => {
-    if (!client || readOnly) return Promise.resolve();
+    // Live sessions are persisted by the server; the REST write path is disabled
+    // to avoid racing the CRDT materialization with a stale optimistic version.
+    if (!client || readOnly || liveSession) return Promise.resolve();
     return runExclusiveSave(() => performSave(manual));
   };
 
@@ -285,13 +349,17 @@ export default function NoteView({ relativePath }: { relativePath: string }) {
     }
   };
 
-  if (content === null) {
+  if (content === null && !liveSession) {
     return (
       <div className="flex-1 flex items-center justify-center text-muted-foreground">
         Loading…
       </div>
     );
   }
+
+  // In a live session the Yjs document is the source of truth for editor content;
+  // it seeds the initial doc and is then synced by the CRDT binding.
+  const editorContent = liveSession ? liveSession.text.toString() : (content ?? '');
 
   return (
     <div className="flex flex-col h-full overflow-hidden">
@@ -302,12 +370,18 @@ export default function NoteView({ relativePath }: { relativePath: string }) {
           the final flex-grown height, which shifts getBoundingClientRect().top to 0 and
           causes posAtCoords() to be offset by exactly the toolbar height. */}
       <div className="flex-1 min-h-0 relative overflow-hidden">
+        {livePeers.length > 0 && (
+          <div className="absolute top-2 right-3 z-10 rounded-full bg-card/80 backdrop-blur px-2 py-1 shadow-sm border border-border">
+            <LivePeers peers={livePeers} />
+          </div>
+        )}
         <MarkdownEditor
           ref={editorRef}
-          content={content}
+          content={editorContent}
           onChange={handleChange}
           onSave={() => requestSave(true)}
           readOnly={readOnly}
+          collabExtension={collabExtension}
           relativePath={relativePath}
           initialViewState={revealEditorPath === relativePath || pendingSearchJump?.relativePath === relativePath ? null : initialViewState}
           onViewStateChange={(viewState) => setNoteViewState(relativePath, viewState)}

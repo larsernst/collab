@@ -184,7 +184,9 @@ fn build_created_vault_config(
 ) -> VaultConfig {
     let known_users = if let Some(ref uid) = owner_user_id {
         let uname = owner_user_name.clone().unwrap_or_else(|| uid.clone());
-        let ucolor = owner_user_color.clone().unwrap_or_else(|| "#8b5cf6".to_string());
+        let ucolor = owner_user_color
+            .clone()
+            .unwrap_or_else(|| "#8b5cf6".to_string());
         vec![KnownUser {
             user_id: uid.clone(),
             user_name: uname,
@@ -217,16 +219,12 @@ fn create_vault_on_disk_with_recents(
     let canonical_str = canonical.to_string_lossy().to_string();
     let id = Uuid::new_v4().to_string();
 
-    let config = build_created_vault_config(
-        &id,
-        name,
-        owner_user_id,
-        owner_user_name,
-        owner_user_color,
-    );
+    let config =
+        build_created_vault_config(&id, name, owner_user_id, owner_user_name, owner_user_color);
 
     write_vault_config(&canonical_str, &config)?;
-    std::fs::create_dir_all(collab_dir(&canonical_str).join("presence")).map_err(|e| e.to_string())?;
+    std::fs::create_dir_all(collab_dir(&canonical_str).join("presence"))
+        .map_err(|e| e.to_string())?;
 
     let meta = VaultMeta {
         kind: Default::default(),
@@ -372,8 +370,8 @@ pub async fn export_vault(vault_path: String, dest_path: String) -> Result<(), S
     let vault = std::path::Path::new(&vault_path);
     let file = std::fs::File::create(&dest_path).map_err(|e| e.to_string())?;
     let mut zip = zip::ZipWriter::new(file);
-    let options =
-        zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
+    let options = zip::write::SimpleFileOptions::default()
+        .compression_method(zip::CompressionMethod::Deflated);
 
     for entry in WalkDir::new(vault).min_depth(1) {
         let entry = entry.map_err(|e| e.to_string())?;
@@ -501,10 +499,9 @@ mod tests {
             is_encrypted: false,
         };
 
-        write_vault_config_pub(&vault.path_string(), &config)
-            .expect("vault config should write");
-        let roundtrip = read_vault_config_pub(&vault.path_string())
-            .expect("vault config should read");
+        write_vault_config_pub(&vault.path_string(), &config).expect("vault config should write");
+        let roundtrip =
+            read_vault_config_pub(&vault.path_string()).expect("vault config should read");
 
         assert_eq!(roundtrip.id, "vault-1");
         assert_eq!(roundtrip.name, "Project");
@@ -528,8 +525,17 @@ mod tests {
         assert_eq!(recents.len(), 20);
         assert_eq!(recents[0].path, "/vault/10");
         assert_eq!(recents[0].name, "Updated Vault");
-        assert_eq!(recents.iter().filter(|meta| meta.path == "/vault/10").count(), 1);
-        assert_eq!(recents.last().map(|meta| meta.path.as_str()), Some("/vault/19"));
+        assert_eq!(
+            recents
+                .iter()
+                .filter(|meta| meta.path == "/vault/10")
+                .count(),
+            1
+        );
+        assert_eq!(
+            recents.last().map(|meta| meta.path.as_str()),
+            Some("/vault/19")
+        );
     }
 
     #[test]
@@ -541,10 +547,8 @@ mod tests {
             sample_meta("/vault/two".into(), 2),
         ];
 
-        write_recents_to_path(&recents_file, &recents)
-            .expect("recents should write");
-        let roundtrip = read_recents_from_path(&recents_file)
-            .expect("recents should read");
+        write_recents_to_path(&recents_file, &recents).expect("recents should write");
+        let roundtrip = read_recents_from_path(&recents_file).expect("recents should read");
 
         assert_eq!(roundtrip.len(), 2);
         assert_eq!(roundtrip[0].path, "/vault/one");
@@ -554,14 +558,36 @@ mod tests {
     #[test]
     fn filter_existing_recents_prunes_missing_or_non_directory_paths() {
         let vault = TempVault::new().expect("temp vault should exist");
-        vault.create_dir("existing-vault").expect("existing vault dir should be created");
-        vault.write_text("plain-file.txt", "x").expect("plain file should exist");
+        vault
+            .create_dir("existing-vault")
+            .expect("existing vault dir should be created");
+        vault
+            .write_text("plain-file.txt", "x")
+            .expect("plain file should exist");
 
-        let filtered = filter_existing_recents_with_options(vec![
-            sample_meta(vault.resolve("existing-vault").to_string_lossy().to_string(), 1),
-            sample_meta(vault.resolve("missing-vault").to_string_lossy().to_string(), 2),
-            sample_meta(vault.resolve("plain-file.txt").to_string_lossy().to_string(), 3),
-        ], false);
+        let filtered = filter_existing_recents_with_options(
+            vec![
+                sample_meta(
+                    vault
+                        .resolve("existing-vault")
+                        .to_string_lossy()
+                        .to_string(),
+                    1,
+                ),
+                sample_meta(
+                    vault.resolve("missing-vault").to_string_lossy().to_string(),
+                    2,
+                ),
+                sample_meta(
+                    vault
+                        .resolve("plain-file.txt")
+                        .to_string_lossy()
+                        .to_string(),
+                    3,
+                ),
+            ],
+            false,
+        );
 
         assert_eq!(filtered.len(), 1);
         assert!(filtered[0].path.ends_with("existing-vault"));
@@ -570,19 +596,47 @@ mod tests {
     #[test]
     fn filter_existing_recents_keeps_unverified_paths_when_requested() {
         let vault = TempVault::new().expect("temp vault should exist");
-        vault.create_dir("existing-vault").expect("existing vault dir should be created");
-        vault.write_text("plain-file.txt", "x").expect("plain file should exist");
+        vault
+            .create_dir("existing-vault")
+            .expect("existing vault dir should be created");
+        vault
+            .write_text("plain-file.txt", "x")
+            .expect("plain file should exist");
 
-        let filtered = filter_existing_recents_with_options(vec![
-            sample_meta(vault.resolve("existing-vault").to_string_lossy().to_string(), 1),
-            sample_meta(vault.resolve("missing-vault").to_string_lossy().to_string(), 2),
-            sample_meta(vault.resolve("plain-file.txt").to_string_lossy().to_string(), 3),
-        ], true);
+        let filtered = filter_existing_recents_with_options(
+            vec![
+                sample_meta(
+                    vault
+                        .resolve("existing-vault")
+                        .to_string_lossy()
+                        .to_string(),
+                    1,
+                ),
+                sample_meta(
+                    vault.resolve("missing-vault").to_string_lossy().to_string(),
+                    2,
+                ),
+                sample_meta(
+                    vault
+                        .resolve("plain-file.txt")
+                        .to_string_lossy()
+                        .to_string(),
+                    3,
+                ),
+            ],
+            true,
+        );
 
         assert_eq!(filtered.len(), 2);
-        assert!(filtered.iter().any(|meta| meta.path.ends_with("existing-vault")));
-        assert!(filtered.iter().any(|meta| meta.path.ends_with("missing-vault")));
-        assert!(!filtered.iter().any(|meta| meta.path.ends_with("plain-file.txt")));
+        assert!(filtered
+            .iter()
+            .any(|meta| meta.path.ends_with("existing-vault")));
+        assert!(filtered
+            .iter()
+            .any(|meta| meta.path.ends_with("missing-vault")));
+        assert!(!filtered
+            .iter()
+            .any(|meta| meta.path.ends_with("plain-file.txt")));
     }
 
     #[test]
@@ -623,14 +677,21 @@ mod tests {
         assert_eq!(config.name, "Project Vault");
         assert_eq!(config.owner, None);
         assert!(config.members.is_empty());
-        assert!(std::path::Path::new(&meta.path).join(".collab/presence").is_dir());
-        assert_eq!(recents.first().map(|recent| recent.path.as_str()), Some(meta.path.as_str()));
+        assert!(std::path::Path::new(&meta.path)
+            .join(".collab/presence")
+            .is_dir());
+        assert_eq!(
+            recents.first().map(|recent| recent.path.as_str()),
+            Some(meta.path.as_str())
+        );
     }
 
     #[test]
     fn ensure_open_vault_meta_creates_missing_config_and_updates_recents() {
         let vault = TempVault::new().expect("temp vault should exist");
-        vault.create_dir("ExistingVault").expect("vault dir should exist");
+        vault
+            .create_dir("ExistingVault")
+            .expect("vault dir should exist");
         let recents_path = vault.resolve("config/recents.json");
         let meta = ensure_open_vault_meta_with_recents(
             &vault.resolve("ExistingVault").to_string_lossy(),
@@ -642,7 +703,10 @@ mod tests {
 
         assert_eq!(config.name, "ExistingVault");
         assert_eq!(meta.name, "ExistingVault");
-        assert_eq!(recents.first().map(|recent| recent.path.as_str()), Some(meta.path.as_str()));
+        assert_eq!(
+            recents.first().map(|recent| recent.path.as_str()),
+            Some(meta.path.as_str())
+        );
     }
 
     #[test]
@@ -658,13 +722,17 @@ mod tests {
             &recents_path,
         )
         .expect("vault should create");
-        let updated = rename_vault_on_disk_with_recents(&created.path, "Renamed Vault", &recents_path)
-            .expect("rename_vault_on_disk flow should succeed");
+        let updated =
+            rename_vault_on_disk_with_recents(&created.path, "Renamed Vault", &recents_path)
+                .expect("rename_vault_on_disk flow should succeed");
         let config = read_vault_config_pub(&created.path).expect("config should read");
         let recents = read_recents_from_path(&recents_path).expect("recents should read");
 
         assert_eq!(updated.name, "Renamed Vault");
         assert_eq!(config.name, "Renamed Vault");
-        assert_eq!(recents.first().map(|recent| recent.name.as_str()), Some("Renamed Vault"));
+        assert_eq!(
+            recents.first().map(|recent| recent.name.as_str()),
+            Some("Renamed Vault")
+        );
     }
 }

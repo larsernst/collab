@@ -11,7 +11,10 @@ import KanbanBoardView from '../components/kanban/KanbanBoard';
 import { ReadOnlyBanner } from '../components/layout/ReadOnlyBanner';
 import { useEditorStore } from '../store/editorStore';
 import { useDocumentSessionState } from '../lib/documentSession';
+import { openLiveJsonSession, type LiveJsonSession, type JsonObject } from '../lib/liveJsonDocument';
 import { useCollabContext } from '../components/collaboration/CollabProvider';
+import { buildKanbanCardEditors, useLivePeers, type LivePeer, type LiveAwarenessUser } from '../lib/liveAwareness';
+import { useKanbanStore } from '../store/kanbanStore';
 
 // ── Context ───────────────────────────────────────────────────────────────────
 
@@ -51,6 +54,16 @@ interface KanbanCtx {
   readOnly: boolean;
   /** Fine-grained capability gates for individual board actions. */
   caps: KanbanCapabilities;
+  /**
+   * Remote co-editors of this board from the live awareness relay (empty when
+   * editing over REST). Drives the live co-editor strip.
+   */
+  livePeers: LivePeer[];
+  /**
+   * Map of card id -> remote peer currently editing that card, so cards can show
+   * a "being edited by X" indicator. Empty when no live session is active.
+   */
+  remoteCardEditors: Map<string, LiveAwarenessUser>;
 }
 
 const KanbanContext = createContext<KanbanCtx | null>(null);
@@ -71,6 +84,11 @@ function makeDefaultBoard(): KanbanBoard {
       { id: crypto.randomUUID(), title: 'Done',        cards: [] },
     ],
   });
+}
+
+/** Plain-JSON snapshot of a board for the live CRDT structure. */
+function boardToJson(board: KanbanBoard): JsonObject {
+  return JSON.parse(JSON.stringify(normalizeKanbanBoard(board))) as JsonObject;
 }
 
 // ── Component ─────────────────────────────────────────────────────────────────
@@ -95,10 +113,16 @@ export default function KanbanPage({ relativePath }: { relativePath: string | nu
   const { markDirty, markSaved, setSavedHash } = useEditorStore();
   const { peers, addConflict } = useCollabStore();
   // Snapshot authorship follows the effective identity (server-authoritative for hosted).
-  const { userId: myUserId, userName: myUserName } = useCollabIdentity();
+  const { userId: myUserId, userName: myUserName, userColor: myUserColor } = useCollabIdentity();
   const collabTransport = useCollabContext();
   const [board, setBoard]           = useState<KanbanBoard>({ columns: [] });
   const [knownUsers, setKnownUsers] = useState<KnownUser[]>([]);
+  // Live co-editing session for hosted boards; null = REST optimistic-write path.
+  const [liveSession, setLiveSession] = useState<LiveJsonSession | null>(null);
+  // Mirrors the latest board so live edits and remote merges always derive from
+  // the freshest state (including just-applied remote changes).
+  const boardRef = useRef(board);
+  boardRef.current = board;
   const isMountedRef    = useRef(true);
   const isDirtyRef      = useRef(false);
   const saveTimerRef    = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
@@ -159,6 +183,18 @@ export default function KanbanPage({ relativePath }: { relativePath: string | nu
   const updateBoard = useCallback((updater: (b: KanbanBoard) => KanbanBoard) => {
     // Viewers cannot modify the board; drop every mutation so no write is attempted.
     if (readOnly) return;
+    // Live session: apply the edit to the shared CRDT structure; the server
+    // persists it. Derive from the latest board (which includes remote merges)
+    // and avoid mutating inside a setState updater so a double-invoked updater
+    // cannot apply the edit twice.
+    if (liveSession) {
+      const next = updater(boardRef.current);
+      if (next === boardRef.current) return;
+      boardRef.current = next;
+      setBoard(next);
+      liveSession.writeJson(boardToJson(next));
+      return;
+    }
     setBoard(prev => {
       const next = updater(prev);
       if (next === prev) return prev;
@@ -174,7 +210,7 @@ export default function KanbanPage({ relativePath }: { relativePath: string | nu
       );
       return next;
     });
-  }, [markDirty, readOnly, relativePath, runExclusiveSave, saveBoard]);
+  }, [liveSession, markDirty, readOnly, relativePath, runExclusiveSave, saveBoard]);
 
   const loadBoard = useCallback(async (isInitial = false) => {
     if (!client || !relativePath) return;
@@ -205,6 +241,81 @@ export default function KanbanPage({ relativePath }: { relativePath: string | nu
   useEffect(() => {
     loadBoard(true);
   }, [loadBoard]);
+
+  // Open a live co-editing session for hosted boards; fall back to REST when
+  // unavailable. Remote changes (and the initial seeded state) flow in through
+  // `onChange`; the board seeds the room if the server has not already.
+  useEffect(() => {
+    if (!client || !relativePath || !client.resolveLiveSession) {
+      setLiveSession(null);
+      return;
+    }
+    let cancelled = false;
+    let opened: LiveJsonSession | null = null;
+    let off: (() => void) | undefined;
+    openLiveJsonSession(client, relativePath)
+      .then((session) => {
+        if (cancelled || !session) {
+          session?.destroy();
+          return;
+        }
+        opened = session;
+        const initial = session.readJson();
+        if (initial && Object.keys(initial).length > 0) {
+          const next = runKanbanAutomations(normalizeKanbanBoard(initial as unknown as KanbanBoard), 'onBoardOpen');
+          boardRef.current = next;
+          setBoard(next);
+        } else {
+          // The server owns seeding from the current REST revision. Do not seed
+          // an empty live root from React state that may still be the initial
+          // blank board.
+          session.destroy();
+          opened = null;
+          return;
+        }
+        off = session.onChange((json) => {
+          if (cancelled) return;
+          const next = runKanbanAutomations(normalizeKanbanBoard(json as unknown as KanbanBoard), 'onBoardOpen');
+          boardRef.current = next;
+          setBoard(next);
+        });
+        setLiveSession(session);
+      })
+      .catch(() => {
+        // Best-effort; REST remains available.
+      });
+    return () => {
+      cancelled = true;
+      off?.();
+      opened?.destroy();
+      setLiveSession(null);
+    };
+  }, [client, relativePath]);
+
+  useEffect(() => {
+    if (!liveSession) return;
+    liveSession.awareness.setLocalStateField('user', {
+      id: myUserId,
+      name: myUserName,
+      color: myUserColor,
+    });
+    liveSession.awareness.setLocalStateField('document', {
+      kind: 'kanban',
+      relativePath,
+    });
+  }, [liveSession, myUserColor, myUserId, myUserName, relativePath]);
+
+  // ── Live awareness: publish the open card, consume remote peers ──────────
+  const { boardPath: editingBoardPath, cardId: editingCardId } = useKanbanStore();
+  const myOpenCardId = editingBoardPath === relativePath ? editingCardId : null;
+  useEffect(() => {
+    if (!liveSession) return;
+    // Ephemeral only — the card a client has open is awareness, never persisted
+    // as board content.
+    liveSession.awareness.setLocalStateField('kanban', { editingCardId: myOpenCardId ?? null });
+  }, [liveSession, myOpenCardId]);
+  const livePeers = useLivePeers(liveSession);
+  const remoteCardEditors = useMemo(() => buildKanbanCardEditors(livePeers), [livePeers]);
 
   // ── Collab: reload on peer edits ─────────────────────────────────────────
 
@@ -244,7 +355,7 @@ export default function KanbanPage({ relativePath }: { relativePath: string | nu
   if (!vault) return null;
 
   return (
-    <KanbanContext.Provider value={{ board, updateBoard, knownUsers, relativePath, readOnly, caps }}>
+    <KanbanContext.Provider value={{ board, updateBoard, knownUsers, relativePath, readOnly, caps, livePeers, remoteCardEditors }}>
       {readOnly && <ReadOnlyBanner />}
       <KanbanBoardView />
     </KanbanContext.Provider>

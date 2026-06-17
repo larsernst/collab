@@ -2,7 +2,9 @@ use crate::crypto;
 use crate::models::note::{ConflictInfo, NoteContent, NoteFile, WriteResult};
 use crate::state::AppState;
 use base64::Engine as _;
-use collab_core::{normalize_relative_path as normalize_core_relative_path, sha256_bytes, sha256_text};
+use collab_core::{
+    normalize_relative_path as normalize_core_relative_path, sha256_bytes, sha256_text,
+};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -153,7 +155,13 @@ struct DocumentPreviewCacheEntry {
 fn is_ignored_dir_name(name: &str) -> bool {
     matches!(
         name,
-        "node_modules" | "target" | "dist" | "dist-builds" | "build" | "flatpak-build" | "flatpak-repo"
+        "node_modules"
+            | "target"
+            | "dist"
+            | "dist-builds"
+            | "build"
+            | "flatpak-build"
+            | "flatpak-repo"
     )
 }
 
@@ -172,13 +180,26 @@ fn system_time_to_ms(t: SystemTime) -> u64 {
 fn is_allowed_extension(ext: &str) -> bool {
     matches!(
         ext,
-        "md" | "canvas" | "kanban" | "png" | "jpg" | "jpeg" | "gif" | "webp" | "svg" | "bmp" | "ico" | "avif" | "pdf"
+        "md" | "canvas"
+            | "kanban"
+            | "png"
+            | "jpg"
+            | "jpeg"
+            | "gif"
+            | "webp"
+            | "svg"
+            | "bmp"
+            | "ico"
+            | "avif"
+            | "pdf"
     )
 }
 
 fn normalize_relative_path(relative_path: &str) -> Result<PathBuf, String> {
     normalize_core_relative_path(relative_path).map_err(|error| match error {
-        collab_core::PathError::MustBeRelative => "Asset path must be relative to the vault root".into(),
+        collab_core::PathError::MustBeRelative => {
+            "Asset path must be relative to the vault root".into()
+        }
         other => other.to_string(),
     })
 }
@@ -288,10 +309,7 @@ fn write_vault_bytes(
     std::fs::rename(&tmp_path, full_path).map_err(|e| e.to_string())
 }
 
-fn read_vault_bytes(
-    full_path: &Path,
-    key_opt: Option<[u8; 32]>,
-) -> Result<Vec<u8>, String> {
+fn read_vault_bytes(full_path: &Path, key_opt: Option<[u8; 32]>) -> Result<Vec<u8>, String> {
     let raw = std::fs::read(full_path).map_err(|e| e.to_string())?;
     if crypto::is_encrypted_data(&raw) {
         let key = key_opt
@@ -303,20 +321,34 @@ fn read_vault_bytes(
     }
 }
 
-fn read_trash_entry(vault_path: &str, entry_id: &str, key_opt: Option<[u8; 32]>) -> Result<StoredTrashEntry, String> {
-    let metadata_path = resolve_vault_path(vault_path, &trash_entry_metadata_relative_path(entry_id))?;
+fn read_trash_entry(
+    vault_path: &str,
+    entry_id: &str,
+    key_opt: Option<[u8; 32]>,
+) -> Result<StoredTrashEntry, String> {
+    let metadata_path =
+        resolve_vault_path(vault_path, &trash_entry_metadata_relative_path(entry_id))?;
     let bytes = read_vault_bytes(&metadata_path, key_opt)?;
     serde_json::from_slice(&bytes).map_err(|e| e.to_string())
 }
 
-fn write_trash_entry(vault_path: &str, entry: &StoredTrashEntry, key_opt: Option<[u8; 32]>) -> Result<(), String> {
-    let metadata_path = resolve_vault_path(vault_path, &trash_entry_metadata_relative_path(&entry.id))?;
+fn write_trash_entry(
+    vault_path: &str,
+    entry: &StoredTrashEntry,
+    key_opt: Option<[u8; 32]>,
+) -> Result<(), String> {
+    let metadata_path =
+        resolve_vault_path(vault_path, &trash_entry_metadata_relative_path(&entry.id))?;
     let bytes = serde_json::to_vec_pretty(entry).map_err(|e| e.to_string())?;
     write_vault_bytes(&metadata_path, &bytes, key_opt)
 }
 
 fn payload_root_path(vault_path: &str, entry: &StoredTrashEntry) -> Result<PathBuf, String> {
-    Ok(resolve_vault_path(vault_path, &trash_entry_payload_dir_relative_path(&entry.id))?.join(&entry.root_name))
+    Ok(resolve_vault_path(
+        vault_path,
+        &trash_entry_payload_dir_relative_path(&entry.id),
+    )?
+    .join(&entry.root_name))
 }
 
 fn parse_data_url(data_url: &str) -> Result<(&str, &str), String> {
@@ -384,7 +416,12 @@ fn replace_markdown_references(
     old_path: &str,
     new_path: Option<&str>,
 ) -> String {
-    collab_core::references::rewrite_note_references(content, note_relative_path, old_path, new_path)
+    collab_core::references::rewrite_note_references(
+        content,
+        note_relative_path,
+        old_path,
+        new_path,
+    )
 }
 
 use collab_core::references::ReferenceLookupEntry;
@@ -404,7 +441,12 @@ fn collect_note_references(
     lookup: &[ReferenceLookupEntry],
     target_path: &str,
 ) -> Vec<FileReference> {
-    collab_core::references::collect_note_references(content, note_relative_path, lookup, target_path)
+    collab_core::references::collect_note_references(
+        content,
+        note_relative_path,
+        lookup,
+        target_path,
+    )
 }
 
 fn collect_kanban_file_references(
@@ -438,21 +480,32 @@ fn list_file_references_inner(
     let mut references = Vec::new();
 
     for entry in entries {
-        if entry.is_folder || entry.relative_path == target_path || path_matches_or_descends(&entry.relative_path, &target_path) {
+        if entry.is_folder
+            || entry.relative_path == target_path
+            || path_matches_or_descends(&entry.relative_path, &target_path)
+        {
             continue;
         }
 
         let note = match entry.extension.as_str() {
-            "md" | "kanban" | "canvas" => {
-                read_note_from_path(&resolve_vault_path(vault_path, &entry.relative_path)?, &entry.relative_path, key_opt)?
-            }
+            "md" | "kanban" | "canvas" => read_note_from_path(
+                &resolve_vault_path(vault_path, &entry.relative_path)?,
+                &entry.relative_path,
+                key_opt,
+            )?,
             _ => continue,
         };
 
         let mut next = match entry.extension.as_str() {
-            "md" => collect_note_references(&note.content, &entry.relative_path, &lookup, &target_path),
-            "kanban" => collect_kanban_file_references(&note.content, &entry.relative_path, &target_path)?,
-            "canvas" => collect_canvas_file_references(&note.content, &entry.relative_path, &target_path)?,
+            "md" => {
+                collect_note_references(&note.content, &entry.relative_path, &lookup, &target_path)
+            }
+            "kanban" => {
+                collect_kanban_file_references(&note.content, &entry.relative_path, &target_path)?
+            }
+            "canvas" => {
+                collect_canvas_file_references(&note.content, &entry.relative_path, &target_path)?
+            }
             _ => Vec::new(),
         };
         references.append(&mut next);
@@ -467,17 +520,29 @@ fn list_file_references_inner(
     Ok(references)
 }
 
-fn rewrite_kanban_references(content: &str, old_path: &str, new_path: Option<&str>) -> Result<String, String> {
+fn rewrite_kanban_references(
+    content: &str,
+    old_path: &str,
+    new_path: Option<&str>,
+) -> Result<String, String> {
     collab_core::references::rewrite_kanban_references(content, old_path, new_path)
         .map_err(|error| error.to_string())
 }
 
-fn rewrite_canvas_references(content: &str, old_path: &str, new_path: Option<&str>) -> Result<String, String> {
+fn rewrite_canvas_references(
+    content: &str,
+    old_path: &str,
+    new_path: Option<&str>,
+) -> Result<String, String> {
     collab_core::references::rewrite_canvas_references(content, old_path, new_path)
         .map_err(|error| error.to_string())
 }
 
-fn move_image_overlay_if_needed(vault_path: &str, old_path: &str, new_path: &str) -> Result<(), String> {
+fn move_image_overlay_if_needed(
+    vault_path: &str,
+    old_path: &str,
+    new_path: &str,
+) -> Result<(), String> {
     let old_overlay = resolve_vault_path(vault_path, &overlay_relative_path(old_path))?;
     if !old_overlay.exists() {
         return Ok(());
@@ -489,7 +554,10 @@ fn move_image_overlay_if_needed(vault_path: &str, old_path: &str, new_path: &str
     std::fs::rename(old_overlay, new_overlay).map_err(|e| e.to_string())
 }
 
-fn delete_image_overlay_if_needed(vault_path: &str, image_relative_path: &str) -> Result<(), String> {
+fn delete_image_overlay_if_needed(
+    vault_path: &str,
+    image_relative_path: &str,
+) -> Result<(), String> {
     let overlay = resolve_vault_path(vault_path, &overlay_relative_path(image_relative_path))?;
     if overlay.exists() {
         std::fs::remove_file(overlay).map_err(|e| e.to_string())?;
@@ -497,7 +565,10 @@ fn delete_image_overlay_if_needed(vault_path: &str, image_relative_path: &str) -
     Ok(())
 }
 
-fn gather_image_paths_for_entry(vault_path: &str, relative_path: &str) -> Result<Vec<String>, String> {
+fn gather_image_paths_for_entry(
+    vault_path: &str,
+    relative_path: &str,
+) -> Result<Vec<String>, String> {
     let full_path = resolve_vault_path(vault_path, relative_path)?;
     let metadata = std::fs::metadata(&full_path).map_err(|e| e.to_string())?;
     if metadata.is_file() {
@@ -576,7 +647,10 @@ fn generate_trash_entry_id(relative_path: &str) -> String {
     format!("{ts}-{}", &hash[..10])
 }
 
-fn suggest_available_relative_path(vault_path: &str, desired_relative_path: &str) -> Result<String, String> {
+fn suggest_available_relative_path(
+    vault_path: &str,
+    desired_relative_path: &str,
+) -> Result<String, String> {
     let desired = normalize_relative_path(desired_relative_path)?;
     let desired_full = Path::new(vault_path).join(&desired);
     if !desired_full.exists() {
@@ -589,7 +663,10 @@ fn suggest_available_relative_path(vault_path: &str, desired_relative_path: &str
         .and_then(|value| value.to_str())
         .filter(|value| !value.is_empty())
         .unwrap_or("item");
-    let ext = desired.extension().and_then(|value| value.to_str()).filter(|value| !value.is_empty());
+    let ext = desired
+        .extension()
+        .and_then(|value| value.to_str())
+        .filter(|value| !value.is_empty());
     let mut index = 2;
     loop {
         let name = match ext {
@@ -642,7 +719,11 @@ fn move_path_to_trash(
         deleted_at: system_time_to_ms(SystemTime::now()),
         deleted_by_user_id,
         deleted_by_user_name,
-        item_kind: if metadata.is_dir() { "folder".into() } else { "file".into() },
+        item_kind: if metadata.is_dir() {
+            "folder".into()
+        } else {
+            "file".into()
+        },
         extension,
         size: compute_total_size(&full_path)?,
         root_name: root_name.clone(),
@@ -653,7 +734,10 @@ fn move_path_to_trash(
         rewrite_all_references(vault_path, relative_path, None, key_opt)?;
     }
 
-    let payload_dir = resolve_vault_path(vault_path, &trash_entry_payload_dir_relative_path(&entry.id))?;
+    let payload_dir = resolve_vault_path(
+        vault_path,
+        &trash_entry_payload_dir_relative_path(&entry.id),
+    )?;
     std::fs::create_dir_all(&payload_dir).map_err(|e| e.to_string())?;
     std::fs::rename(&full_path, payload_dir.join(root_name)).map_err(|e| e.to_string())?;
     write_trash_entry(vault_path, &entry, key_opt)?;
@@ -672,7 +756,10 @@ fn move_path_to_trash(
     })
 }
 
-fn list_trash_entries_inner(vault_path: &str, key_opt: Option<[u8; 32]>) -> Result<Vec<TrashEntry>, String> {
+fn list_trash_entries_inner(
+    vault_path: &str,
+    key_opt: Option<[u8; 32]>,
+) -> Result<Vec<TrashEntry>, String> {
     let entries_dir = resolve_vault_path(vault_path, trash_entries_relative_dir())?;
     if !entries_dir.exists() {
         return Ok(Vec::new());
@@ -685,15 +772,23 @@ fn list_trash_entries_inner(vault_path: &str, key_opt: Option<[u8; 32]>) -> Resu
             continue;
         }
         let entry_path = entry.path();
-        let Some(file_stem) = entry_path.file_stem().and_then(|value| value.to_str()).map(|value| value.to_string()) else {
+        let Some(file_stem) = entry_path
+            .file_stem()
+            .and_then(|value| value.to_str())
+            .map(|value| value.to_string())
+        else {
             continue;
         };
         let stored = read_trash_entry(vault_path, &file_stem, key_opt)?;
-        let original_full = Path::new(vault_path).join(normalize_relative_path(&stored.original_relative_path)?);
+        let original_full =
+            Path::new(vault_path).join(normalize_relative_path(&stored.original_relative_path)?);
         let restore_conflict = if original_full.exists() {
             Some(RestoreConflictInfo {
                 existing_relative_path: stored.original_relative_path.clone(),
-                suggested_relative_path: suggest_available_relative_path(vault_path, &stored.original_relative_path)?,
+                suggested_relative_path: suggest_available_relative_path(
+                    vault_path,
+                    &stored.original_relative_path,
+                )?,
             })
         } else {
             None
@@ -716,9 +811,17 @@ fn list_trash_entries_inner(vault_path: &str, key_opt: Option<[u8; 32]>) -> Resu
     Ok(items)
 }
 
-fn remap_image_overlays_for_restore(vault_path: &str, entry: &StoredTrashEntry, restored_relative_path: &str) {
+fn remap_image_overlays_for_restore(
+    vault_path: &str,
+    entry: &StoredTrashEntry,
+    restored_relative_path: &str,
+) {
     for image_path in &entry.image_paths {
-        if let Some(remapped) = remap_path(image_path, &entry.original_relative_path, restored_relative_path) {
+        if let Some(remapped) = remap_path(
+            image_path,
+            &entry.original_relative_path,
+            restored_relative_path,
+        ) {
             let _ = move_image_overlay_if_needed(vault_path, image_path, &remapped);
         }
     }
@@ -737,7 +840,8 @@ fn restore_trashed_item_inner(
     key_opt: Option<[u8; 32]>,
 ) -> Result<String, String> {
     let entry = read_trash_entry(vault_path, entry_id, key_opt)?;
-    let restore_target = target_relative_path.unwrap_or_else(|| entry.original_relative_path.clone());
+    let restore_target =
+        target_relative_path.unwrap_or_else(|| entry.original_relative_path.clone());
     let target_normalized = normalize_relative_path(&restore_target)?;
     let target_full = Path::new(vault_path).join(&target_normalized);
     if target_full.exists() {
@@ -761,11 +865,15 @@ fn restore_trashed_item_inner(
         &target_normalized.to_string_lossy().replace('\\', "/"),
     );
 
-    let payload_dir = resolve_vault_path(vault_path, &trash_entry_payload_dir_relative_path(&entry.id))?;
+    let payload_dir = resolve_vault_path(
+        vault_path,
+        &trash_entry_payload_dir_relative_path(&entry.id),
+    )?;
     if payload_dir.exists() {
         let _ = std::fs::remove_dir(&payload_dir);
     }
-    let metadata_path = resolve_vault_path(vault_path, &trash_entry_metadata_relative_path(&entry.id))?;
+    let metadata_path =
+        resolve_vault_path(vault_path, &trash_entry_metadata_relative_path(&entry.id))?;
     if metadata_path.exists() {
         std::fs::remove_file(metadata_path).map_err(|e| e.to_string())?;
     }
@@ -785,11 +893,15 @@ fn purge_trashed_item_inner(
     }
     purge_image_overlays(vault_path, &entry);
 
-    let payload_dir = resolve_vault_path(vault_path, &trash_entry_payload_dir_relative_path(&entry.id))?;
+    let payload_dir = resolve_vault_path(
+        vault_path,
+        &trash_entry_payload_dir_relative_path(&entry.id),
+    )?;
     if payload_dir.exists() {
         std::fs::remove_dir_all(&payload_dir).map_err(|e| e.to_string())?;
     }
-    let metadata_path = resolve_vault_path(vault_path, &trash_entry_metadata_relative_path(&entry.id))?;
+    let metadata_path =
+        resolve_vault_path(vault_path, &trash_entry_metadata_relative_path(&entry.id))?;
     if metadata_path.exists() {
         std::fs::remove_file(&metadata_path).map_err(|e| e.to_string())?;
     }
@@ -814,21 +926,41 @@ fn collect_reference_impacts(
     let mut impacted = Vec::new();
 
     for entry in entries {
-        if entry.is_folder || entry.relative_path == old_path || path_matches_or_descends(&entry.relative_path, old_path) {
+        if entry.is_folder
+            || entry.relative_path == old_path
+            || path_matches_or_descends(&entry.relative_path, old_path)
+        {
             continue;
         }
 
         let impacted_here = match entry.extension.as_str() {
             "md" => {
-                let note = read_note_from_path(&resolve_vault_path(vault_path, &entry.relative_path)?, &entry.relative_path, key_opt)?;
-                replace_markdown_references(&note.content, &entry.relative_path, old_path, Some(new_path)) != note.content
+                let note = read_note_from_path(
+                    &resolve_vault_path(vault_path, &entry.relative_path)?,
+                    &entry.relative_path,
+                    key_opt,
+                )?;
+                replace_markdown_references(
+                    &note.content,
+                    &entry.relative_path,
+                    old_path,
+                    Some(new_path),
+                ) != note.content
             }
             "kanban" => {
-                let note = read_note_from_path(&resolve_vault_path(vault_path, &entry.relative_path)?, &entry.relative_path, key_opt)?;
+                let note = read_note_from_path(
+                    &resolve_vault_path(vault_path, &entry.relative_path)?,
+                    &entry.relative_path,
+                    key_opt,
+                )?;
                 rewrite_kanban_references(&note.content, old_path, Some(new_path))? != note.content
             }
             "canvas" => {
-                let note = read_note_from_path(&resolve_vault_path(vault_path, &entry.relative_path)?, &entry.relative_path, key_opt)?;
+                let note = read_note_from_path(
+                    &resolve_vault_path(vault_path, &entry.relative_path)?,
+                    &entry.relative_path,
+                    key_opt,
+                )?;
                 rewrite_canvas_references(&note.content, old_path, Some(new_path))? != note.content
             }
             _ => false,
@@ -858,16 +990,29 @@ fn preview_path_change_inner(
 
     let metadata = std::fs::metadata(&old_full).map_err(|e| e.to_string())?;
     let item_kind = if metadata.is_dir() { "folder" } else { "file" }.to_string();
-    let old_parent = old_normalized.parent().map(|p| p.to_string_lossy().replace('\\', "/")).unwrap_or_default();
-    let new_parent = new_normalized.parent().map(|p| p.to_string_lossy().replace('\\', "/")).unwrap_or_default();
-    let old_name = old_normalized.file_name().and_then(|value| value.to_str()).unwrap_or_default();
-    let new_name = new_normalized.file_name().and_then(|value| value.to_str()).unwrap_or_default();
+    let old_parent = old_normalized
+        .parent()
+        .map(|p| p.to_string_lossy().replace('\\', "/"))
+        .unwrap_or_default();
+    let new_parent = new_normalized
+        .parent()
+        .map(|p| p.to_string_lossy().replace('\\', "/"))
+        .unwrap_or_default();
+    let old_name = old_normalized
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or_default();
+    let new_name = new_normalized
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or_default();
     let operation = match (old_parent != new_parent, old_name != new_name) {
         (true, true) => "move-and-rename",
         (true, false) => "move",
         (false, true) => "rename",
         (false, false) => "unchanged",
-    }.to_string();
+    }
+    .to_string();
 
     let blocked_reason = if old_str == new_str {
         Some("The destination matches the current path".into())
@@ -905,32 +1050,71 @@ fn rewrite_all_references(
     let entries = collect_entries(vault_path)?;
 
     for entry in entries {
-        if entry.is_folder || entry.relative_path == old_path || path_matches_or_descends(&entry.relative_path, old_path) {
+        if entry.is_folder
+            || entry.relative_path == old_path
+            || path_matches_or_descends(&entry.relative_path, old_path)
+        {
             continue;
         }
 
         let updated = match entry.extension.as_str() {
             "md" => {
-                let note = read_note_from_path(&resolve_vault_path(vault_path, &entry.relative_path)?, &entry.relative_path, key_opt)?;
-                let next = replace_markdown_references(&note.content, &entry.relative_path, old_path, new_path);
-                if next == note.content { None } else { Some(next) }
+                let note = read_note_from_path(
+                    &resolve_vault_path(vault_path, &entry.relative_path)?,
+                    &entry.relative_path,
+                    key_opt,
+                )?;
+                let next = replace_markdown_references(
+                    &note.content,
+                    &entry.relative_path,
+                    old_path,
+                    new_path,
+                );
+                if next == note.content {
+                    None
+                } else {
+                    Some(next)
+                }
             }
             "kanban" => {
-                let note = read_note_from_path(&resolve_vault_path(vault_path, &entry.relative_path)?, &entry.relative_path, key_opt)?;
+                let note = read_note_from_path(
+                    &resolve_vault_path(vault_path, &entry.relative_path)?,
+                    &entry.relative_path,
+                    key_opt,
+                )?;
                 let next = rewrite_kanban_references(&note.content, old_path, new_path)?;
-                if next == note.content { None } else { Some(next) }
+                if next == note.content {
+                    None
+                } else {
+                    Some(next)
+                }
             }
             "canvas" => {
-                let note = read_note_from_path(&resolve_vault_path(vault_path, &entry.relative_path)?, &entry.relative_path, key_opt)?;
+                let note = read_note_from_path(
+                    &resolve_vault_path(vault_path, &entry.relative_path)?,
+                    &entry.relative_path,
+                    key_opt,
+                )?;
                 let next = rewrite_canvas_references(&note.content, old_path, new_path)?;
-                if next == note.content { None } else { Some(next) }
+                if next == note.content {
+                    None
+                } else {
+                    Some(next)
+                }
             }
             _ => None,
         };
 
         if let Some(next_content) = updated {
             let full_path = resolve_vault_path(vault_path, &entry.relative_path)?;
-            write_note_to_path(&full_path, &entry.relative_path, next_content, None, None, key_opt)?;
+            write_note_to_path(
+                &full_path,
+                &entry.relative_path,
+                next_content,
+                None,
+                None,
+                key_opt,
+            )?;
         }
     }
 
@@ -962,7 +1146,11 @@ fn read_note_from_path(
         .map(system_time_to_ms)
         .unwrap_or(0);
 
-    Ok(NoteContent { content, hash, modified_at })
+    Ok(NoteContent {
+        content,
+        hash,
+        modified_at,
+    })
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -973,7 +1161,10 @@ struct TextEditHunk {
 }
 
 fn split_text_preserving_newlines(content: &str) -> Vec<String> {
-    content.split_inclusive('\n').map(|part| part.to_string()).collect()
+    content
+        .split_inclusive('\n')
+        .map(|part| part.to_string())
+        .collect()
 }
 
 fn compute_line_edit_hunks(base: &str, modified: &str) -> Vec<TextEditHunk> {
@@ -1133,7 +1324,9 @@ fn write_note_to_path(
                         });
                     }
 
-                    if let Some(merged) = try_auto_merge_text(base, &content_to_write, &current.content) {
+                    if let Some(merged) =
+                        try_auto_merge_text(base, &content_to_write, &current.content)
+                    {
                         if merged == current.content {
                             return Ok(WriteResult {
                                 hash: current.hash,
@@ -1186,7 +1379,11 @@ fn write_note_to_path(
     std::fs::rename(&tmp_path, full_path).map_err(|e| e.to_string())?;
 
     let hash = compute_hash(&content_to_write);
-    Ok(WriteResult { hash, merged_content, conflict: None })
+    Ok(WriteResult {
+        hash,
+        merged_content,
+        conflict: None,
+    })
 }
 
 fn create_note_at_path(
@@ -1212,10 +1409,7 @@ fn create_note_at_path(
     std::fs::write(full_path, &bytes_to_write).map_err(|e| e.to_string())?;
 
     let metadata = std::fs::metadata(full_path).map_err(|e| e.to_string())?;
-    let modified_at = metadata
-        .modified()
-        .map(system_time_to_ms)
-        .unwrap_or(0);
+    let modified_at = metadata.modified().map(system_time_to_ms).unwrap_or(0);
 
     let ext = full_path
         .extension()
@@ -1258,18 +1452,12 @@ fn collect_entries(vault_path: &str) -> Result<Vec<NoteFile>, String> {
             .to_string_lossy()
             .replace('\\', "/");
 
-        let name = entry
-            .file_name()
-            .to_string_lossy()
-            .to_string();
+        let name = entry.file_name().to_string_lossy().to_string();
 
         let metadata = entry.metadata().map_err(|e| e.to_string())?;
 
         if metadata.is_dir() {
-            let modified_at = metadata
-                .modified()
-                .map(system_time_to_ms)
-                .unwrap_or(0);
+            let modified_at = metadata.modified().map(system_time_to_ms).unwrap_or(0);
 
             entries.push(NoteFile {
                 relative_path,
@@ -1290,10 +1478,7 @@ fn collect_entries(vault_path: &str) -> Result<Vec<NoteFile>, String> {
                 continue;
             }
 
-            let modified_at = metadata
-                .modified()
-                .map(system_time_to_ms)
-                .unwrap_or(0);
+            let modified_at = metadata.modified().map(system_time_to_ms).unwrap_or(0);
 
             entries.push(NoteFile {
                 relative_path,
@@ -1313,15 +1498,8 @@ fn collect_entries(vault_path: &str) -> Result<Vec<NoteFile>, String> {
 /// Build a tree from the flat list. Folders get their children nested.
 fn build_tree(entries: Vec<NoteFile>) -> Vec<NoteFile> {
     // Separate folders and files
-    let mut folders: Vec<NoteFile> = entries
-        .iter()
-        .filter(|e| e.is_folder)
-        .cloned()
-        .collect();
-    let files: Vec<NoteFile> = entries
-        .into_iter()
-        .filter(|e| !e.is_folder)
-        .collect();
+    let mut folders: Vec<NoteFile> = entries.iter().filter(|e| e.is_folder).cloned().collect();
+    let files: Vec<NoteFile> = entries.into_iter().filter(|e| !e.is_folder).collect();
 
     // Sort folders by depth descending so we can nest deepest first
     folders.sort_by(|a, b| {
@@ -1492,10 +1670,7 @@ pub fn write_image_overlay(
 }
 
 #[tauri::command]
-pub fn delete_image_overlay(
-    vault_path: String,
-    image_relative_path: String,
-) -> Result<(), String> {
+pub fn delete_image_overlay(vault_path: String, image_relative_path: String) -> Result<(), String> {
     let relative_path = overlay_relative_path(&image_relative_path);
     let full_path = resolve_vault_path(&vault_path, &relative_path)?;
     if full_path.exists() {
@@ -1560,7 +1735,9 @@ pub fn read_cached_document_preview_data_url(
     let cache_entry: DocumentPreviewCacheEntry =
         serde_json::from_slice(&metadata_bytes).map_err(|e| e.to_string())?;
 
-    if cache_entry.source_modified_at != source_modified_at || cache_entry.source_size != source_size {
+    if cache_entry.source_modified_at != source_modified_at
+        || cache_entry.source_size != source_size
+    {
         return Ok(None);
     }
 
@@ -1662,7 +1839,10 @@ pub fn import_asset_into_vault(
 ) -> Result<String, String> {
     let source = Path::new(&source_path);
     if !source.is_file() {
-        return Err(format!("Source asset does not exist or is not a file: {}", source_path));
+        return Err(format!(
+            "Source asset does not exist or is not a file: {}",
+            source_path
+        ));
     }
 
     let folder = target_folder.unwrap_or_else(|| "Pictures".into());
@@ -1740,41 +1920,40 @@ pub fn read_file_for_upload(source_path: String) -> Result<HostedUploadPayload, 
 #[cfg(test)]
 mod tests {
     use super::{
-        build_tree, collect_entries, create_note_at_path, extension_for_mime, guess_mime_type,
-        document_preview_cache_metadata_relative_path, document_preview_cache_payload_relative_path,
-        list_file_references_inner,
-        is_allowed_extension, normalize_relative_path, overlay_relative_path, parse_data_url,
-        pdf_sidecar_relative_path,
-        list_trash_entries_inner, move_path_to_trash, preview_path_change_inner, purge_trashed_item_inner,
-        read_note_from_path, read_vault_bytes, remap_path,
-        replace_markdown_references, resolve_vault_path, rewrite_all_references,
+        build_tree, collect_entries, create_note_at_path,
+        document_preview_cache_metadata_relative_path,
+        document_preview_cache_payload_relative_path, extension_for_mime, guess_mime_type,
+        is_allowed_extension, list_file_references_inner, list_trash_entries_inner,
+        move_path_to_trash, normalize_relative_path, overlay_relative_path, parse_data_url,
+        pdf_sidecar_relative_path, preview_path_change_inner, purge_trashed_item_inner,
+        read_note_from_path, read_vault_bytes, remap_path, replace_markdown_references,
+        resolve_vault_path, restore_trashed_item_inner, rewrite_all_references,
         rewrite_canvas_references, rewrite_kanban_references, sanitize_file_name,
-        should_skip_walk_entry, restore_trashed_item_inner, unique_target_path, write_note_to_path,
-        write_vault_bytes,
+        should_skip_walk_entry, unique_target_path, write_note_to_path, write_vault_bytes,
     };
     use crate::{crypto, test_support::TempVault};
     use std::path::{Path, PathBuf};
 
     #[test]
     fn normalize_relative_path_accepts_safe_paths() {
-        let normalized = normalize_relative_path("Notes/../Notes/Test.md")
-            .expect("path should normalize");
+        let normalized =
+            normalize_relative_path("Notes/../Notes/Test.md").expect("path should normalize");
 
         assert_eq!(normalized, PathBuf::from("Notes/Test.md"));
     }
 
     #[test]
     fn normalize_relative_path_rejects_escaping_paths() {
-        let err = normalize_relative_path("../../etc/passwd")
-            .expect_err("escaping path should fail");
+        let err =
+            normalize_relative_path("../../etc/passwd").expect_err("escaping path should fail");
 
         assert!(err.contains("escapes the vault root"));
     }
 
     #[test]
     fn resolve_vault_path_stays_under_the_vault_root() {
-        let resolved = resolve_vault_path("/vault-root", "Notes/Test.md")
-            .expect("path should resolve");
+        let resolved =
+            resolve_vault_path("/vault-root", "Notes/Test.md").expect("path should resolve");
 
         assert_eq!(resolved, PathBuf::from("/vault-root").join("Notes/Test.md"));
     }
@@ -1805,8 +1984,8 @@ mod tests {
 
     #[test]
     fn parse_data_url_accepts_valid_base64_urls() {
-        let (mime, encoded) = parse_data_url("data:image/png;base64,abcd1234")
-            .expect("data url should parse");
+        let (mime, encoded) =
+            parse_data_url("data:image/png;base64,abcd1234").expect("data url should parse");
 
         assert_eq!(mime, "image/png");
         assert_eq!(encoded, "abcd1234");
@@ -1814,12 +1993,12 @@ mod tests {
 
     #[test]
     fn parse_data_url_rejects_invalid_urls() {
-        let missing_prefix = parse_data_url("image/png;base64,abcd")
-            .expect_err("missing data prefix should fail");
+        let missing_prefix =
+            parse_data_url("image/png;base64,abcd").expect_err("missing data prefix should fail");
         let malformed = parse_data_url("data:image/png;base64")
             .expect_err("missing payload separator should fail");
-        let not_base64 = parse_data_url("data:image/png,abcd")
-            .expect_err("missing base64 marker should fail");
+        let not_base64 =
+            parse_data_url("data:image/png,abcd").expect_err("missing base64 marker should fail");
 
         assert!(missing_prefix.contains("valid data URL"));
         assert!(malformed.contains("malformed"));
@@ -1836,7 +2015,9 @@ mod tests {
     #[test]
     fn unique_target_path_increments_when_file_exists() {
         let vault = TempVault::new().expect("temp vault should exist");
-        vault.create_dir("Pictures").expect("pictures dir should be created");
+        vault
+            .create_dir("Pictures")
+            .expect("pictures dir should be created");
         vault
             .write_text("Pictures/image.png", "existing")
             .expect("existing file should be written");
@@ -1857,8 +2038,14 @@ mod tests {
 
     #[test]
     fn remap_path_updates_exact_and_descendant_matches() {
-        assert_eq!(remap_path("Docs/file.pdf", "Docs/file.pdf", "Archive/file.pdf"), Some("Archive/file.pdf".into()));
-        assert_eq!(remap_path("Docs/sub/file.pdf", "Docs", "Archive"), Some("Archive/sub/file.pdf".into()));
+        assert_eq!(
+            remap_path("Docs/file.pdf", "Docs/file.pdf", "Archive/file.pdf"),
+            Some("Archive/file.pdf".into())
+        );
+        assert_eq!(
+            remap_path("Docs/sub/file.pdf", "Docs", "Archive"),
+            Some("Archive/sub/file.pdf".into())
+        );
         assert_eq!(remap_path("Other/file.pdf", "Docs", "Archive"), None);
     }
 
@@ -1876,15 +2063,13 @@ mod tests {
             "Pictures/demo.png",
             Some("Archive/demo.png"),
         );
-        assert!(renamed.contains("![](../Archive/demo.png)") || renamed.contains("![Preview](../Archive/demo.png)"));
+        assert!(
+            renamed.contains("![](../Archive/demo.png)")
+                || renamed.contains("![Preview](../Archive/demo.png)")
+        );
         assert!(renamed.contains("![[../Archive/demo.png|Preview]]"));
 
-        let removed = replace_markdown_references(
-            content,
-            "Notes/today.md",
-            "Docs/spec.pdf",
-            None,
-        );
+        let removed = replace_markdown_references(content, "Notes/today.md", "Docs/spec.pdf", None);
         assert!(removed.contains("Spec"));
         assert!(!removed.contains("../Docs/spec.pdf"));
     }
@@ -1945,16 +2130,35 @@ mod tests {
     #[test]
     fn rewrite_all_references_updates_notes_boards_and_canvas_files() {
         let vault = TempVault::new().expect("temp vault should exist");
-        vault.write_text("Notes/a.md", "![Img](../Pictures/demo.png)\n[Spec](../Docs/spec.pdf)\n").expect("note should be written");
+        vault
+            .write_text(
+                "Notes/a.md",
+                "![Img](../Pictures/demo.png)\n[Spec](../Docs/spec.pdf)\n",
+            )
+            .expect("note should be written");
         vault.write_text("Board.kanban", r#"{"columns":[{"id":"c1","title":"Todo","cards":[{"id":"card-1","title":"Card","assignees":[],"tags":[],"comments":[],"checklist":[],"attachmentPaths":["Docs/spec.pdf"],"relativePath":"Docs/spec.pdf"}]}]}"#).expect("board should be written");
         vault.write_text("Board.canvas", r#"{"nodes":[{"id":"n1","type":"file","relativePath":"Docs/spec.pdf"}],"edges":[],"viewport":{"x":0,"y":0,"zoom":1}}"#).expect("canvas should be written");
 
-        rewrite_all_references(&vault.path_string(), "Docs/spec.pdf", Some("Archive/spec.pdf"), None)
-            .expect("references should rewrite");
+        rewrite_all_references(
+            &vault.path_string(),
+            "Docs/spec.pdf",
+            Some("Archive/spec.pdf"),
+            None,
+        )
+        .expect("references should rewrite");
 
-        assert!(vault.read_text("Notes/a.md").expect("note should be readable").contains("../Archive/spec.pdf"));
-        assert!(vault.read_text("Board.kanban").expect("board should be readable").contains("Archive/spec.pdf"));
-        assert!(vault.read_text("Board.canvas").expect("canvas should be readable").contains("Archive/spec.pdf"));
+        assert!(vault
+            .read_text("Notes/a.md")
+            .expect("note should be readable")
+            .contains("../Archive/spec.pdf"));
+        assert!(vault
+            .read_text("Board.kanban")
+            .expect("board should be readable")
+            .contains("Archive/spec.pdf"));
+        assert!(vault
+            .read_text("Board.canvas")
+            .expect("canvas should be readable")
+            .contains("Archive/spec.pdf"));
     }
 
     #[test]
@@ -1972,18 +2176,39 @@ mod tests {
     #[test]
     fn collect_entries_filters_hidden_ignored_and_disallowed_files() {
         let vault = TempVault::new().expect("temp vault should exist");
-        vault.write_text("Notes/alpha.md", "# Alpha").expect("note should be written");
-        vault.write_text("Board.kanban", "{}").expect("kanban should be written");
-        vault.write_text("Canvas.canvas", "{}").expect("canvas should be written");
-        vault.write_bytes("Pictures/image.png", b"png").expect("image should be written");
-        vault.write_bytes("Docs/file.pdf", b"pdf").expect("pdf should be written");
-        vault.write_text(".secret.md", "# hidden").expect("hidden file should be written");
-        vault.write_text("node_modules/skip.md", "# skip").expect("ignored file should be written");
-        vault.write_text("target/skip.md", "# skip").expect("ignored file should be written");
-        vault.write_text("Scripts/file.exe", "echo hi").expect("disallowed file should be written");
+        vault
+            .write_text("Notes/alpha.md", "# Alpha")
+            .expect("note should be written");
+        vault
+            .write_text("Board.kanban", "{}")
+            .expect("kanban should be written");
+        vault
+            .write_text("Canvas.canvas", "{}")
+            .expect("canvas should be written");
+        vault
+            .write_bytes("Pictures/image.png", b"png")
+            .expect("image should be written");
+        vault
+            .write_bytes("Docs/file.pdf", b"pdf")
+            .expect("pdf should be written");
+        vault
+            .write_text(".secret.md", "# hidden")
+            .expect("hidden file should be written");
+        vault
+            .write_text("node_modules/skip.md", "# skip")
+            .expect("ignored file should be written");
+        vault
+            .write_text("target/skip.md", "# skip")
+            .expect("ignored file should be written");
+        vault
+            .write_text("Scripts/file.exe", "echo hi")
+            .expect("disallowed file should be written");
 
         let entries = collect_entries(&vault.path_string()).expect("entries should collect");
-        let relative_paths: Vec<String> = entries.into_iter().map(|entry| entry.relative_path).collect();
+        let relative_paths: Vec<String> = entries
+            .into_iter()
+            .map(|entry| entry.relative_path)
+            .collect();
 
         assert!(relative_paths.contains(&"Notes/alpha.md".to_string()));
         assert!(relative_paths.contains(&"Board.kanban".to_string()));
@@ -1991,42 +2216,82 @@ mod tests {
         assert!(relative_paths.contains(&"Pictures/image.png".to_string()));
         assert!(relative_paths.contains(&"Docs/file.pdf".to_string()));
         assert!(!relative_paths.contains(&".secret.md".to_string()));
-        assert!(!relative_paths.iter().any(|path| path.starts_with("node_modules/")));
-        assert!(!relative_paths.iter().any(|path| path.starts_with("target/")));
+        assert!(!relative_paths
+            .iter()
+            .any(|path| path.starts_with("node_modules/")));
+        assert!(!relative_paths
+            .iter()
+            .any(|path| path.starts_with("target/")));
         assert!(!relative_paths.contains(&"Scripts/file.exe".to_string()));
     }
 
     #[test]
     fn build_tree_nests_folder_children_and_sorts_alphabetically_at_each_level() {
         let vault = TempVault::new().expect("temp vault should exist");
-        vault.write_text("Alpha.md", "# Alpha").expect("root note should be written");
-        vault.write_text("Zoo.kanban", "{}").expect("root board should be written");
-        vault.write_text("Notes/Zeta.md", "# Zeta").expect("note should be written");
-        vault.write_text("Notes/Alpha.md", "# Alpha").expect("note should be written");
-        vault.write_text("Notes/Projects/Alpha.md", "# Alpha").expect("nested note should be written");
-        vault.write_text("Root.md", "# Root").expect("root note should be written");
+        vault
+            .write_text("Alpha.md", "# Alpha")
+            .expect("root note should be written");
+        vault
+            .write_text("Zoo.kanban", "{}")
+            .expect("root board should be written");
+        vault
+            .write_text("Notes/Zeta.md", "# Zeta")
+            .expect("note should be written");
+        vault
+            .write_text("Notes/Alpha.md", "# Alpha")
+            .expect("note should be written");
+        vault
+            .write_text("Notes/Projects/Alpha.md", "# Alpha")
+            .expect("nested note should be written");
+        vault
+            .write_text("Root.md", "# Root")
+            .expect("root note should be written");
 
         let entries = collect_entries(&vault.path_string()).expect("entries should collect");
         let tree = build_tree(entries);
 
         let root_names: Vec<&str> = tree.iter().map(|entry| entry.name.as_str()).collect();
-        assert_eq!(root_names, vec!["Alpha.md", "Notes", "Root.md", "Zoo.kanban"]);
+        assert_eq!(
+            root_names,
+            vec!["Alpha.md", "Notes", "Root.md", "Zoo.kanban"]
+        );
 
-        let notes_folder = tree.iter().find(|entry| entry.relative_path == "Notes").expect("notes folder should exist");
-        let notes_children = notes_folder.children.as_ref().expect("notes folder should have children");
-        let notes_child_names: Vec<&str> = notes_children.iter().map(|entry| entry.name.as_str()).collect();
+        let notes_folder = tree
+            .iter()
+            .find(|entry| entry.relative_path == "Notes")
+            .expect("notes folder should exist");
+        let notes_children = notes_folder
+            .children
+            .as_ref()
+            .expect("notes folder should have children");
+        let notes_child_names: Vec<&str> = notes_children
+            .iter()
+            .map(|entry| entry.name.as_str())
+            .collect();
         assert_eq!(notes_child_names, vec!["Alpha.md", "Projects", "Zeta.md"]);
         let nested_folder = notes_children
             .iter()
             .find(|entry| entry.relative_path == "Notes/Projects")
             .expect("nested folder should exist");
-        let nested_children = nested_folder.children.as_ref().expect("nested folder should have children");
-        let nested_child_names: Vec<&str> = nested_children.iter().map(|entry| entry.name.as_str()).collect();
+        let nested_children = nested_folder
+            .children
+            .as_ref()
+            .expect("nested folder should have children");
+        let nested_child_names: Vec<&str> = nested_children
+            .iter()
+            .map(|entry| entry.name.as_str())
+            .collect();
         assert_eq!(nested_child_names, vec!["Alpha.md"]);
 
-        assert!(tree.iter().any(|entry| entry.relative_path == "Root.md" && !entry.is_folder));
-        assert!(notes_children.iter().any(|entry| entry.relative_path == "Notes/Zeta.md"));
-        assert!(nested_children.iter().any(|entry| entry.relative_path == "Notes/Projects/Alpha.md"));
+        assert!(tree
+            .iter()
+            .any(|entry| entry.relative_path == "Root.md" && !entry.is_folder));
+        assert!(notes_children
+            .iter()
+            .any(|entry| entry.relative_path == "Notes/Zeta.md"));
+        assert!(nested_children
+            .iter()
+            .any(|entry| entry.relative_path == "Notes/Projects/Alpha.md"));
     }
 
     #[test]
@@ -2047,9 +2312,12 @@ mod tests {
         let salt = [7u8; 32];
         let key = crypto::derive_key("files-test-password", &salt).expect("key should derive");
 
-        write_vault_bytes(&target, b"secret bytes", Some(key)).expect("encrypted write should succeed");
+        write_vault_bytes(&target, b"secret bytes", Some(key))
+            .expect("encrypted write should succeed");
 
-        let raw = vault.read_bytes("Notes/secret.md").expect("raw bytes should be readable");
+        let raw = vault
+            .read_bytes("Notes/secret.md")
+            .expect("raw bytes should be readable");
         assert!(crypto::is_encrypted_data(&raw));
 
         let bytes = read_vault_bytes(&target, Some(key)).expect("encrypted read should succeed");
@@ -2061,8 +2329,8 @@ mod tests {
         let vault = TempVault::new().expect("temp vault should exist");
         let target = vault.resolve("Notes/Test.md");
 
-        let created = create_note_at_path(&target, "Notes/Test.md", None)
-            .expect("note should be created");
+        let created =
+            create_note_at_path(&target, "Notes/Test.md", None).expect("note should be created");
         assert_eq!(created.relative_path, "Notes/Test.md");
         assert_eq!(created.extension, "md");
 
@@ -2139,9 +2407,13 @@ mod tests {
         .expect("write should succeed with auto merge");
 
         assert!(result.conflict.is_none());
-        let merged = result.merged_content.expect("merged content should be returned");
+        let merged = result
+            .merged_content
+            .expect("merged content should be returned");
         assert_eq!(merged, "alpha\nbeta updated by them\ngamma updated by us\n");
-        let on_disk = vault.read_text("Notes/Test.md").expect("merged note should be readable");
+        let on_disk = vault
+            .read_text("Notes/Test.md")
+            .expect("merged note should be readable");
         assert_eq!(on_disk, merged);
     }
 
@@ -2204,7 +2476,9 @@ mod tests {
     #[test]
     fn trash_roundtrip_moves_lists_restores_and_purges_items() {
         let vault = TempVault::new().expect("temp vault should exist");
-        vault.write_text("Notes/alpha.md", "# Alpha").expect("note should be written");
+        vault
+            .write_text("Notes/alpha.md", "# Alpha")
+            .expect("note should be written");
 
         let trashed = move_path_to_trash(
             &vault.path_string(),
@@ -2218,43 +2492,75 @@ mod tests {
 
         assert!(!vault.resolve("Notes/alpha.md").exists());
 
-        let listed = list_trash_entries_inner(&vault.path_string(), None).expect("trash should list");
+        let listed =
+            list_trash_entries_inner(&vault.path_string(), None).expect("trash should list");
         assert_eq!(listed.len(), 1);
         assert_eq!(listed[0].id, trashed.id);
         assert_eq!(listed[0].deleted_by_user_name.as_deref(), Some("Test User"));
 
-        let restored_path = restore_trashed_item_inner(&vault.path_string(), &trashed.id, None, None)
-            .expect("restore should succeed");
+        let restored_path =
+            restore_trashed_item_inner(&vault.path_string(), &trashed.id, None, None)
+                .expect("restore should succeed");
         assert_eq!(restored_path, "Notes/alpha.md");
         assert!(vault.resolve("Notes/alpha.md").exists());
 
-        let trashed_again = move_path_to_trash(&vault.path_string(), "Notes/alpha.md", None, None, false, None)
-            .expect("move to trash should succeed again");
+        let trashed_again = move_path_to_trash(
+            &vault.path_string(),
+            "Notes/alpha.md",
+            None,
+            None,
+            false,
+            None,
+        )
+        .expect("move to trash should succeed again");
         purge_trashed_item_inner(&vault.path_string(), &trashed_again.id, false, None)
             .expect("purge should succeed");
-        assert!(list_trash_entries_inner(&vault.path_string(), None).expect("trash should list").is_empty());
+        assert!(list_trash_entries_inner(&vault.path_string(), None)
+            .expect("trash should list")
+            .is_empty());
     }
 
     #[test]
     fn trash_listing_reports_restore_conflicts() {
         let vault = TempVault::new().expect("temp vault should exist");
-        vault.write_text("Docs/spec.pdf", "pdf").expect("pdf should exist");
+        vault
+            .write_text("Docs/spec.pdf", "pdf")
+            .expect("pdf should exist");
 
-        let trashed = move_path_to_trash(&vault.path_string(), "Docs/spec.pdf", None, None, false, None)
-            .expect("move to trash should succeed");
-        vault.write_text("Docs/spec.pdf", "replacement").expect("replacement file should exist");
+        let trashed = move_path_to_trash(
+            &vault.path_string(),
+            "Docs/spec.pdf",
+            None,
+            None,
+            false,
+            None,
+        )
+        .expect("move to trash should succeed");
+        vault
+            .write_text("Docs/spec.pdf", "replacement")
+            .expect("replacement file should exist");
 
-        let listed = list_trash_entries_inner(&vault.path_string(), None).expect("trash should list");
-        let entry = listed.into_iter().find(|entry| entry.id == trashed.id).expect("entry should exist");
-        let conflict = entry.restore_conflict.expect("restore conflict should be reported");
+        let listed =
+            list_trash_entries_inner(&vault.path_string(), None).expect("trash should list");
+        let entry = listed
+            .into_iter()
+            .find(|entry| entry.id == trashed.id)
+            .expect("entry should exist");
+        let conflict = entry
+            .restore_conflict
+            .expect("restore conflict should be reported");
         assert_eq!(conflict.existing_relative_path, "Docs/spec.pdf");
-        assert!(conflict.suggested_relative_path.starts_with("Docs/spec-restored-"));
+        assert!(conflict
+            .suggested_relative_path
+            .starts_with("Docs/spec-restored-"));
     }
 
     #[test]
     fn move_to_trash_can_remove_references_immediately() {
         let vault = TempVault::new().expect("temp vault should exist");
-        vault.write_text("Docs/spec.pdf", "pdf").expect("pdf should exist");
+        vault
+            .write_text("Docs/spec.pdf", "pdf")
+            .expect("pdf should exist");
         vault
             .write_text("Notes/alpha.md", "[Spec](../Docs/spec.pdf)\n")
             .expect("note should exist");
@@ -2269,14 +2575,18 @@ mod tests {
         )
         .expect("move to trash should succeed");
 
-        let note = vault.read_text("Notes/alpha.md").expect("note should still exist");
+        let note = vault
+            .read_text("Notes/alpha.md")
+            .expect("note should still exist");
         assert!(!note.contains("../Docs/spec.pdf"));
     }
 
     #[test]
     fn rename_move_preview_reports_reference_impacts() {
         let vault = TempVault::new().expect("temp vault should exist");
-        vault.write_text("Docs/spec.pdf", "pdf").expect("pdf should exist");
+        vault
+            .write_text("Docs/spec.pdf", "pdf")
+            .expect("pdf should exist");
         vault
             .write_text("Notes/alpha.md", "[Spec](../Docs/spec.pdf)")
             .expect("note should exist");
@@ -2297,15 +2607,21 @@ mod tests {
 
         assert_eq!(preview.operation, "move");
         assert_eq!(preview.item_kind, "file");
-        assert!(preview.affected_reference_paths.contains(&"Notes/alpha.md".to_string()));
-        assert!(preview.affected_reference_paths.contains(&"Board.canvas".to_string()));
+        assert!(preview
+            .affected_reference_paths
+            .contains(&"Notes/alpha.md".to_string()));
+        assert!(preview
+            .affected_reference_paths
+            .contains(&"Board.canvas".to_string()));
         assert_eq!(preview.blocked_reason, None);
     }
 
     #[test]
     fn list_file_references_reports_note_kanban_and_canvas_hits() {
         let vault = TempVault::new().expect("temp vault should exist");
-        vault.write_text("Docs/spec.pdf", "pdf").expect("pdf should exist");
+        vault
+            .write_text("Docs/spec.pdf", "pdf")
+            .expect("pdf should exist");
         vault
             .write_text(
                 "Notes/alpha.md",
@@ -2328,25 +2644,25 @@ mod tests {
         let references = list_file_references_inner(&vault.path_string(), "Docs/spec.pdf", None)
             .expect("references should list");
 
-        assert!(references.iter().any(|entry|
-            entry.source_relative_path == "Notes/alpha.md"
-            && entry.reference_kind == "note-markdown-link"
-            && entry.display_label.as_deref() == Some("Spec Doc")
-        ));
-        assert!(references.iter().any(|entry|
-            entry.source_relative_path == "Notes/alpha.md"
-            && entry.reference_kind == "note-wikilink"
-            && entry.display_label.as_deref() == Some("PDF Alias")
-        ));
-        assert!(references.iter().any(|entry|
-            entry.source_relative_path == "Board.kanban"
-            && entry.reference_kind == "kanban-attachment"
-            && entry.display_label.as_deref() == Some("Review spec")
-        ));
-        assert!(references.iter().any(|entry|
-            entry.source_relative_path == "Board.canvas"
-            && entry.reference_kind == "canvas-file-node"
-        ));
+        assert!(references
+            .iter()
+            .any(|entry| entry.source_relative_path == "Notes/alpha.md"
+                && entry.reference_kind == "note-markdown-link"
+                && entry.display_label.as_deref() == Some("Spec Doc")));
+        assert!(references
+            .iter()
+            .any(|entry| entry.source_relative_path == "Notes/alpha.md"
+                && entry.reference_kind == "note-wikilink"
+                && entry.display_label.as_deref() == Some("PDF Alias")));
+        assert!(references
+            .iter()
+            .any(|entry| entry.source_relative_path == "Board.kanban"
+                && entry.reference_kind == "kanban-attachment"
+                && entry.display_label.as_deref() == Some("Review spec")));
+        assert!(references
+            .iter()
+            .any(|entry| entry.source_relative_path == "Board.canvas"
+                && entry.reference_kind == "canvas-file-node"));
     }
 
     #[test]
@@ -2365,16 +2681,16 @@ mod tests {
         let references = list_file_references_inner(&vault.path_string(), "Notes/target.md", None)
             .expect("references should list");
 
-        assert!(references.iter().any(|entry|
-            entry.source_relative_path == "Notes/source.md"
-            && entry.reference_kind == "note-wikilink"
-            && entry.display_label.as_deref() == Some("target.md")
-        ));
-        assert!(references.iter().any(|entry|
-            entry.source_relative_path == "Notes/source.md"
-            && entry.reference_kind == "note-wikilink"
-            && entry.display_label.as_deref() == Some("Target Alias")
-        ));
+        assert!(references
+            .iter()
+            .any(|entry| entry.source_relative_path == "Notes/source.md"
+                && entry.reference_kind == "note-wikilink"
+                && entry.display_label.as_deref() == Some("target.md")));
+        assert!(references
+            .iter()
+            .any(|entry| entry.source_relative_path == "Notes/source.md"
+                && entry.reference_kind == "note-wikilink"
+                && entry.display_label.as_deref() == Some("Target Alias")));
     }
 
     #[test]
@@ -2406,7 +2722,14 @@ pub fn write_note(
 ) -> Result<WriteResult, String> {
     let full_path = resolve_vault_path(&vault_path, &relative_path)?;
     let key_opt: Option<[u8; 32]> = *state.encryption_key.read();
-    write_note_to_path(&full_path, &relative_path, content, expected_hash, base_content, key_opt)
+    write_note_to_path(
+        &full_path,
+        &relative_path,
+        content,
+        expected_hash,
+        base_content,
+        key_opt,
+    )
 }
 
 #[tauri::command]
@@ -2442,7 +2765,10 @@ pub fn delete_note(
             .and_then(|value| value.to_str())
             .map(|value| value.to_ascii_lowercase())
             .unwrap_or_default();
-        if matches!(ext.as_str(), "png" | "jpg" | "jpeg" | "gif" | "webp" | "svg" | "bmp" | "ico" | "avif") {
+        if matches!(
+            ext.as_str(),
+            "png" | "jpg" | "jpeg" | "gif" | "webp" | "svg" | "bmp" | "ico" | "avif"
+        ) {
             let _ = delete_image_overlay_if_needed(&vault_path, &relative_path);
         }
     }
@@ -2501,14 +2827,16 @@ pub fn purge_trashed_item(
     state: State<AppState>,
 ) -> Result<(), String> {
     let key_opt: Option<[u8; 32]> = *state.encryption_key.read();
-    purge_trashed_item_inner(&vault_path, &entry_id, remove_references.unwrap_or(false), key_opt)
+    purge_trashed_item_inner(
+        &vault_path,
+        &entry_id,
+        remove_references.unwrap_or(false),
+        key_opt,
+    )
 }
 
 #[tauri::command]
-pub fn purge_all_trash(
-    vault_path: String,
-    state: State<AppState>,
-) -> Result<(), String> {
+pub fn purge_all_trash(vault_path: String, state: State<AppState>) -> Result<(), String> {
     let key_opt: Option<[u8; 32]> = *state.encryption_key.read();
     purge_all_trash_inner(&vault_path, key_opt)
 }
@@ -2563,7 +2891,10 @@ pub fn rename_note(
         .and_then(|value| value.to_str())
         .map(|value| value.to_ascii_lowercase())
         .unwrap_or_default();
-    if matches!(ext.as_str(), "png" | "jpg" | "jpeg" | "gif" | "webp" | "svg" | "bmp" | "ico" | "avif") {
+    if matches!(
+        ext.as_str(),
+        "png" | "jpg" | "jpeg" | "gif" | "webp" | "svg" | "bmp" | "ico" | "avif"
+    ) {
         let _ = move_image_overlay_if_needed(&vault_path, &old_path, &new_path);
     }
 

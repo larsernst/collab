@@ -33,6 +33,8 @@ describe('vaultFileImport categorization', () => {
     expect(importCategoryForName('scan.pdf')).toBe('pdf');
     expect(importCategoryForName('notes.md')).toBe('markdown');
     expect(importCategoryForName('readme.markdown')).toBe('markdown');
+    expect(importCategoryForName('diagram.canvas')).toBe('canvas');
+    expect(importCategoryForName('tasks.kanban')).toBe('kanban');
     expect(importCategoryForName('archive.zip')).toBeNull();
     expect(importCategoryForName('noext')).toBeNull();
   });
@@ -85,6 +87,43 @@ describe('importExternalFilesIntoVault', () => {
     expect((client as any).createDocument).toHaveBeenCalledWith('Docs/notes.md');
     expect((client as any).writeDocument).toHaveBeenCalledWith('Docs/notes.md', '# Title', 'v0', '');
     expect(result.imported).toEqual(['Docs/notes.md']);
+  });
+
+  it.each([
+    ['canvas', 'diagram.canvas', '{"nodes":[],"edges":[],"viewport":{"x":0,"y":0,"zoom":1}}'],
+    ['kanban', 'tasks.kanban', '{"columns":[]}'],
+  ])('imports valid %s files as text documents', async (_category, name, content) => {
+    const { client } = makeClient();
+    vi.mocked(tauriCommands.readFileForUpload).mockResolvedValue({
+      name,
+      mediaType: 'application/json',
+      contentBase64: btoa(content),
+      expectedHash: 'hash',
+    });
+
+    const result = await importExternalFilesIntoVault(client, [`/x/${name}`], { targetFolder: 'Recovered' });
+
+    expect((client as any).createDocument).toHaveBeenCalledWith(`Recovered/${name}`);
+    expect((client as any).writeDocument).toHaveBeenCalledWith(`Recovered/${name}`, content, 'v0', '');
+    expect(result.imported).toEqual([`Recovered/${name}`]);
+  });
+
+  it.each([
+    ['broken.canvas', '{"nodes":[]}'],
+    ['broken.kanban', '{"cards":[]}'],
+  ])('rejects structurally invalid Collab documents before creating them', async (name, content) => {
+    const { client } = makeClient();
+    vi.mocked(tauriCommands.readFileForUpload).mockResolvedValue({
+      name,
+      mediaType: 'application/json',
+      contentBase64: btoa(content),
+      expectedHash: 'hash',
+    });
+
+    const result = await importExternalFilesIntoVault(client, [`/x/${name}`]);
+
+    expect((client as any).createDocument).not.toHaveBeenCalled();
+    expect(result.failed).toHaveLength(1);
   });
 
   it('reports unsupported files without aborting the rest', async () => {

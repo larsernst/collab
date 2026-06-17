@@ -24,6 +24,7 @@ pub struct ServerConfig {
     pub session_ttl_hours: i64,
     pub native_access_ttl_minutes: i64,
     pub native_refresh_ttl_days: i64,
+    pub ws_ticket_ttl_seconds: i64,
     pub max_file_bytes: usize,
     pub max_import_bytes: usize,
     pub max_import_expanded_bytes: usize,
@@ -43,6 +44,7 @@ impl Default for ServerConfig {
             session_ttl_hours: 12,
             native_access_ttl_minutes: 15,
             native_refresh_ttl_days: 30,
+            ws_ticket_ttl_seconds: 30,
             max_file_bytes: 256 * 1024 * 1024,
             max_import_bytes: 512 * 1024 * 1024,
             max_import_expanded_bytes: 2 * 1024 * 1024 * 1024,
@@ -122,6 +124,11 @@ impl ServerConfig {
                 .parse()
                 .map_err(|_| ConfigError::Invalid("COLLAB_NATIVE_REFRESH_TTL_DAYS"))?;
         }
+        if let Ok(value) = env::var("COLLAB_WS_TICKET_TTL_SECONDS") {
+            self.ws_ticket_ttl_seconds = value
+                .parse()
+                .map_err(|_| ConfigError::Invalid("COLLAB_WS_TICKET_TTL_SECONDS"))?;
+        }
         if let Ok(value) = env::var("COLLAB_MAX_FILE_BYTES") {
             self.max_file_bytes = value
                 .parse()
@@ -173,6 +180,9 @@ impl ServerConfig {
         }
         if self.native_refresh_ttl_days <= 0 || self.native_refresh_ttl_days > 365 {
             return Err(ConfigError::Invalid("COLLAB_NATIVE_REFRESH_TTL_DAYS"));
+        }
+        if self.ws_ticket_ttl_seconds <= 0 || self.ws_ticket_ttl_seconds > 600 {
+            return Err(ConfigError::Invalid("COLLAB_WS_TICKET_TTL_SECONDS"));
         }
         if self.max_file_bytes == 0 || self.max_file_bytes > 8 * 1024 * 1024 * 1024 {
             return Err(ConfigError::Invalid("COLLAB_MAX_FILE_BYTES"));

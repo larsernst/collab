@@ -29,6 +29,15 @@ export interface AuditEvent {
   createdAt: string;
 }
 
+export interface HostedChatMessage {
+  id: string;
+  userId: string;
+  userName: string;
+  userColor: string;
+  content: string;
+  timestamp: number;
+}
+
 export interface AdminOverview {
   health: 'ok' | 'degraded';
   serverVersion: string;
@@ -42,6 +51,17 @@ export interface AdminOverview {
   storage: {
     databaseBytes: number;
     blobBytes: number;
+  };
+  liveCollaboration: {
+    activeConnections: number;
+    loadedRooms: number;
+    activeAwarenessStates: number;
+    pendingUpdateCount: number;
+    pendingUpdateBytes: number;
+    updatesLastMinute: number;
+    compactedDocuments: number;
+    compactedStateBytes: number;
+    lastCompactionAt: string | null;
   };
   operationalWarnings: OperationalWarning[];
   recentAuditEvents: AuditEvent[];
@@ -155,6 +175,8 @@ export interface HostedFileEntry {
   documentType: 'note' | 'kanban' | 'canvas' | null;
   state: HostedFileState;
   currentRevision: HostedFileRevision | null;
+  trashedByDisplayName?: string | null;
+  trashedAt?: string | null;
   createdAt: string;
   updatedAt: string;
 }

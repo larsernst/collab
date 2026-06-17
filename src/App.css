@@ -496,6 +496,15 @@
   stroke: color-mix(in oklch, var(--primary) 88%, white 12%);
 }
 
+/* Ephemeral live awareness: a node a remote collaborator currently has selected
+   is ringed in that peer's color (never persisted, driven by the awareness
+   relay). */
+.canvas-flow .react-flow__node.canvas-node-remote-selected {
+  box-shadow:
+    0 0 0 2px var(--remote-peer-color, var(--primary)),
+    0 0 0 5px color-mix(in oklch, var(--remote-peer-color, var(--primary)) 28%, transparent);
+}
+
 .cm-search-panel {
   display: flex;
   flex-direction: column;

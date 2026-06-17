@@ -282,8 +282,16 @@ fn columns_or_settings_changed(old: &Board, new: &Board) -> bool {
     if old.settings != new.settings {
         return true;
     }
-    let old_ids: Vec<&str> = old.columns.iter().map(|column| column.id.as_str()).collect();
-    let new_ids: Vec<&str> = new.columns.iter().map(|column| column.id.as_str()).collect();
+    let old_ids: Vec<&str> = old
+        .columns
+        .iter()
+        .map(|column| column.id.as_str())
+        .collect();
+    let new_ids: Vec<&str> = new
+        .columns
+        .iter()
+        .map(|column| column.id.as_str())
+        .collect();
     if old_ids != new_ids {
         return true;
     }
@@ -315,7 +323,9 @@ mod tests {
 
     #[test]
     fn adding_a_card_requires_create() {
-        let old = board(single_column(json!([{ "id": "a", "title": "A", "comments": [] }])));
+        let old = board(single_column(
+            json!([{ "id": "a", "title": "A", "comments": [] }]),
+        ));
         let new = board(single_column(json!([
             { "id": "a", "title": "A", "comments": [] },
             { "id": "b", "title": "B", "comments": [] },
@@ -332,7 +342,9 @@ mod tests {
             { "id": "a", "title": "A", "comments": [] },
             { "id": "b", "title": "B", "comments": [] },
         ])));
-        let new = board(single_column(json!([{ "id": "a", "title": "A", "comments": [] }])));
+        let new = board(single_column(
+            json!([{ "id": "a", "title": "A", "comments": [] }]),
+        ));
         assert_eq!(
             classify_changes(&old, &new),
             HashSet::from([KanbanCapability::CardDelete])
@@ -341,8 +353,12 @@ mod tests {
 
     #[test]
     fn editing_card_content_requires_edit_content_only() {
-        let old = board(single_column(json!([{ "id": "a", "title": "A", "comments": [] }])));
-        let new = board(single_column(json!([{ "id": "a", "title": "A renamed", "comments": [] }])));
+        let old = board(single_column(
+            json!([{ "id": "a", "title": "A", "comments": [] }]),
+        ));
+        let new = board(single_column(
+            json!([{ "id": "a", "title": "A renamed", "comments": [] }]),
+        ));
         assert_eq!(
             classify_changes(&old, &new),
             HashSet::from([KanbanCapability::CardEditContent])
@@ -351,7 +367,9 @@ mod tests {
 
     #[test]
     fn changing_comments_requires_comment_only() {
-        let old = board(single_column(json!([{ "id": "a", "title": "A", "comments": [] }])));
+        let old = board(single_column(
+            json!([{ "id": "a", "title": "A", "comments": [] }]),
+        ));
         let new = board(single_column(json!([{
             "id": "a",
             "title": "A",
@@ -365,7 +383,9 @@ mod tests {
 
     #[test]
     fn archiving_requires_archive_not_edit_content() {
-        let old = board(single_column(json!([{ "id": "a", "title": "A", "comments": [] }])));
+        let old = board(single_column(
+            json!([{ "id": "a", "title": "A", "comments": [] }]),
+        ));
         let new = board(single_column(json!([{
             "id": "a",
             "title": "A",
@@ -492,20 +512,21 @@ mod tests {
     fn parsing_against_empty_previous_treats_cards_as_created() {
         // From a truly empty board, both the new column and its card are added,
         // so the write requires column management as well as card creation.
-        let new = board(single_column(json!([{ "id": "a", "title": "A", "comments": [] }])));
+        let new = board(single_column(
+            json!([{ "id": "a", "title": "A", "comments": [] }]),
+        ));
         assert_eq!(
             classify_changes(&Board::empty(), &new),
-            HashSet::from([
-                KanbanCapability::CardCreate,
-                KanbanCapability::ColumnManage,
-            ])
+            HashSet::from([KanbanCapability::CardCreate, KanbanCapability::ColumnManage,])
         );
     }
 
     #[test]
     fn adding_a_card_to_an_existing_empty_column_requires_only_create() {
         let old = board(single_column(json!([])));
-        let new = board(single_column(json!([{ "id": "a", "title": "A", "comments": [] }])));
+        let new = board(single_column(
+            json!([{ "id": "a", "title": "A", "comments": [] }]),
+        ));
         assert_eq!(
             classify_changes(&old, &new),
             HashSet::from([KanbanCapability::CardCreate])
@@ -514,7 +535,10 @@ mod tests {
 
     #[test]
     fn invalid_json_is_rejected() {
-        assert!(matches!(Board::parse(b"not json"), Err(KanbanParseError::Json)));
+        assert!(matches!(
+            Board::parse(b"not json"),
+            Err(KanbanParseError::Json)
+        ));
         assert!(matches!(Board::parse(b"[]"), Err(KanbanParseError::Shape)));
     }
 }

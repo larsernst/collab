@@ -1,6 +1,6 @@
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import type { ChatMessage, PresenceEntry } from '../types/collab';
-import type { VaultConfig } from '../types/vault';
+import type { HostedVaultMeta, VaultConfig, VaultMeta } from '../types/vault';
 import { tauriCommands } from './tauri';
 
 export type Unsubscribe = () => void;
@@ -72,6 +72,58 @@ export class FileSystemTransport implements CollabTransport {
   }
 }
 
-export function createCollabTransport(vaultPath: string): CollabTransport {
-  return new FileSystemTransport(vaultPath);
+export class HostedServerTransport implements CollabTransport {
+  constructor(private vault: HostedVaultMeta) {}
+
+  broadcastPresence(_entry: PresenceEntry) {
+    return Promise.resolve();
+  }
+
+  readPresence() {
+    return Promise.resolve([]);
+  }
+
+  clearPresence(_userId: string) {
+    return Promise.resolve();
+  }
+
+  async sendChatMessage(msg: ChatMessage) {
+    await tauriCommands.hostedVaultRequest<ChatMessage>(
+      this.vault.serverUrl,
+      'POST',
+      `/api/v1/vaults/${this.vault.hostedVaultId}/chat`,
+      { id: msg.id, content: msg.content },
+    );
+  }
+
+  readChatMessages(limit: number) {
+    return tauriCommands.hostedVaultRequest<ChatMessage[]>(
+      this.vault.serverUrl,
+      'GET',
+      `/api/v1/vaults/${this.vault.hostedVaultId}/chat?limit=${encodeURIComponent(String(limit))}`,
+    );
+  }
+
+  readVaultConfig(): Promise<VaultConfig> {
+    return Promise.resolve({ id: this.vault.hostedVaultId, name: this.vault.name, knownUsers: [], owner: '', members: [] });
+  }
+
+  onPresenceChanged(_cb: () => void): Unsubscribe {
+    return () => {};
+  }
+
+  onChatUpdated(cb: () => void): Unsubscribe {
+    const interval = window.setInterval(cb, 5000);
+    return () => window.clearInterval(interval);
+  }
+
+  onConfigChanged(_cb: () => void): Unsubscribe {
+    return () => {};
+  }
+}
+
+export function createCollabTransport(vault: VaultMeta): CollabTransport {
+  return vault.kind === 'hosted'
+    ? new HostedServerTransport(vault)
+    : new FileSystemTransport(vault.path);
 }

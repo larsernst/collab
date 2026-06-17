@@ -5,7 +5,6 @@
 ///
 /// vault.enc (JSON in {vault}/.collab/vault.enc):
 ///   { "salt": "<hex 32B>", "check": "<hex CENC+nonce+ciphertext of VERIFY_PLAIN>" }
-
 use aes_gcm::{
     aead::{Aead, KeyInit},
     Aes256Gcm, Key, Nonce,
@@ -70,9 +69,9 @@ pub fn decrypt_bytes(key: &[u8; 32], data: &[u8]) -> Result<Vec<u8>, String> {
     let ciphertext = &data[4 + NONCE_LEN..];
     let cipher = Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(key));
 
-    cipher.decrypt(nonce, ciphertext).map_err(|_| {
-        "Decryption failed — incorrect password or corrupted file".to_string()
-    })
+    cipher
+        .decrypt(nonce, ciphertext)
+        .map_err(|_| "Decryption failed — incorrect password or corrupted file".to_string())
 }
 
 // ─── vault.enc helpers ────────────────────────────────────────────────────────
@@ -128,8 +127,7 @@ pub fn verify_enc_header(key: &[u8; 32], header: &EncHeader) -> Result<(), Strin
 /// Full round-trip: load vault.enc → derive key → verify → return key.
 pub fn load_key_from_password(vault_path: &str, password: &str) -> Result<[u8; 32], String> {
     let header = load_enc_header(vault_path)?;
-    let salt_vec = hex::decode(&header.salt)
-        .map_err(|e| format!("Corrupt vault.enc salt: {e}"))?;
+    let salt_vec = hex::decode(&header.salt).map_err(|e| format!("Corrupt vault.enc salt: {e}"))?;
     let salt: [u8; 32] = salt_vec
         .try_into()
         .map_err(|_| "vault.enc salt has wrong length".to_string())?;
@@ -141,7 +139,11 @@ pub fn load_key_from_password(vault_path: &str, password: &str) -> Result<[u8; 3
 // ─── Vault-wide encrypt/decrypt ───────────────────────────────────────────────
 
 fn is_vaultfile(path: &Path) -> bool {
-    match path.extension().map(|e| e.to_string_lossy().to_lowercase()).as_deref() {
+    match path
+        .extension()
+        .map(|e| e.to_string_lossy().to_lowercase())
+        .as_deref()
+    {
         Some("md") | Some("canvas") | Some("kanban") => true,
         _ => false,
     }
@@ -150,15 +152,23 @@ fn is_vaultfile(path: &Path) -> bool {
 /// Encrypt every note file in `vault_path` that is not already encrypted.
 pub fn encrypt_vault_files(vault_path: &str, key: &[u8; 32]) -> Result<(), String> {
     use walkdir::WalkDir;
-    for entry in WalkDir::new(vault_path).min_depth(1).into_iter().filter_entry(|e| {
-        let name = e.file_name().to_string_lossy();
-        !name.starts_with('.')
-    }) {
+    for entry in WalkDir::new(vault_path)
+        .min_depth(1)
+        .into_iter()
+        .filter_entry(|e| {
+            let name = e.file_name().to_string_lossy();
+            !name.starts_with('.')
+        })
+    {
         let entry = entry.map_err(|e| e.to_string())?;
         let path = entry.path();
-        if !path.is_file() || !is_vaultfile(path) { continue; }
+        if !path.is_file() || !is_vaultfile(path) {
+            continue;
+        }
         let raw = std::fs::read(path).map_err(|e| e.to_string())?;
-        if is_encrypted_data(&raw) { continue; } // already encrypted
+        if is_encrypted_data(&raw) {
+            continue;
+        } // already encrypted
         let encrypted = encrypt_bytes(key, &raw)?;
         std::fs::write(path, &encrypted).map_err(|e| e.to_string())?;
     }
@@ -168,15 +178,23 @@ pub fn encrypt_vault_files(vault_path: &str, key: &[u8; 32]) -> Result<(), Strin
 /// Decrypt every note file in `vault_path` that carries the CENC header.
 pub fn decrypt_vault_files(vault_path: &str, key: &[u8; 32]) -> Result<(), String> {
     use walkdir::WalkDir;
-    for entry in WalkDir::new(vault_path).min_depth(1).into_iter().filter_entry(|e| {
-        let name = e.file_name().to_string_lossy();
-        !name.starts_with('.')
-    }) {
+    for entry in WalkDir::new(vault_path)
+        .min_depth(1)
+        .into_iter()
+        .filter_entry(|e| {
+            let name = e.file_name().to_string_lossy();
+            !name.starts_with('.')
+        })
+    {
         let entry = entry.map_err(|e| e.to_string())?;
         let path = entry.path();
-        if !path.is_file() || !is_vaultfile(path) { continue; }
+        if !path.is_file() || !is_vaultfile(path) {
+            continue;
+        }
         let raw = std::fs::read(path).map_err(|e| e.to_string())?;
-        if !is_encrypted_data(&raw) { continue; } // plaintext
+        if !is_encrypted_data(&raw) {
+            continue;
+        } // plaintext
         let plain = decrypt_bytes(key, &raw)?;
         std::fs::write(path, &plain).map_err(|e| e.to_string())?;
     }
@@ -187,16 +205,15 @@ pub fn decrypt_vault_files(vault_path: &str, key: &[u8; 32]) -> Result<(), Strin
 mod tests {
     use super::{
         create_enc_header, decrypt_bytes, derive_key, encrypt_bytes, is_encrypted_data,
-        load_key_from_password, load_enc_header, save_enc_header, verify_enc_header, MAGIC,
+        load_enc_header, load_key_from_password, save_enc_header, verify_enc_header, MAGIC,
     };
     use crate::test_support::TempVault;
 
     fn sample_salt() -> [u8; 32] {
         [
-            0x10, 0x21, 0x32, 0x43, 0x54, 0x65, 0x76, 0x87,
-            0x98, 0xa9, 0xba, 0xcb, 0xdc, 0xed, 0xfe, 0x0f,
-            0x1f, 0x2e, 0x3d, 0x4c, 0x5b, 0x6a, 0x79, 0x88,
-            0x97, 0xa6, 0xb5, 0xc4, 0xd3, 0xe2, 0xf1, 0x00,
+            0x10, 0x21, 0x32, 0x43, 0x54, 0x65, 0x76, 0x87, 0x98, 0xa9, 0xba, 0xcb, 0xdc, 0xed,
+            0xfe, 0x0f, 0x1f, 0x2e, 0x3d, 0x4c, 0x5b, 0x6a, 0x79, 0x88, 0x97, 0xa6, 0xb5, 0xc4,
+            0xd3, 0xe2, 0xf1, 0x00,
         ]
     }
 
@@ -204,8 +221,10 @@ mod tests {
     fn derive_key_is_stable_for_same_password_and_salt() {
         let salt = sample_salt();
 
-        let key_a = derive_key("correct horse battery staple", &salt).expect("key derivation should succeed");
-        let key_b = derive_key("correct horse battery staple", &salt).expect("key derivation should succeed");
+        let key_a = derive_key("correct horse battery staple", &salt)
+            .expect("key derivation should succeed");
+        let key_b = derive_key("correct horse battery staple", &salt)
+            .expect("key derivation should succeed");
 
         assert_eq!(key_a, key_b);
         assert_eq!(key_a.len(), 32);
@@ -249,7 +268,8 @@ mod tests {
     fn decrypt_rejects_corrupted_ciphertext() {
         let salt = sample_salt();
         let key = derive_key("corruption-check", &salt).expect("key derivation should succeed");
-        let mut encrypted = encrypt_bytes(&key, b"important note").expect("encryption should succeed");
+        let mut encrypted =
+            encrypt_bytes(&key, b"important note").expect("encryption should succeed");
 
         let last = encrypted.len() - 1;
         encrypted[last] ^= 0xff;
@@ -280,11 +300,13 @@ mod tests {
     #[test]
     fn verify_enc_header_rejects_wrong_key() {
         let salt = sample_salt();
-        let right_key = derive_key("correct-password", &salt).expect("key derivation should succeed");
+        let right_key =
+            derive_key("correct-password", &salt).expect("key derivation should succeed");
         let wrong_key = derive_key("wrong-password", &salt).expect("key derivation should succeed");
         let header = create_enc_header(&right_key, &salt).expect("header should be created");
 
-        let err = verify_enc_header(&wrong_key, &header).expect_err("wrong key should fail verification");
+        let err =
+            verify_enc_header(&wrong_key, &header).expect_err("wrong key should fail verification");
 
         assert!(err.contains("incorrect password or corrupted file"));
     }

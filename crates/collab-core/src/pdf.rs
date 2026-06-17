@@ -96,14 +96,22 @@ mod tests {
 
     #[test]
     fn identical_states_require_nothing() {
-        let value = state(json!([]), json!([]), json!([{ "id": "k", "content": "hi" }]));
+        let value = state(
+            json!([]),
+            json!([]),
+            json!([{ "id": "k", "content": "hi" }]),
+        );
         assert!(classify_changes(&value, &value).is_empty());
     }
 
     #[test]
     fn changing_page_comments_requires_comment_only() {
         let old = state(json!([]), json!([]), json!([]));
-        let new = state(json!([]), json!([]), json!([{ "id": "k", "page": 1, "content": "hi" }]));
+        let new = state(
+            json!([]),
+            json!([]),
+            json!([{ "id": "k", "page": 1, "content": "hi" }]),
+        );
         assert_eq!(
             classify_changes(&old, &new),
             HashSet::from([PdfCapability::Comment])
@@ -123,7 +131,11 @@ mod tests {
     #[test]
     fn changing_a_highlight_requires_annotate() {
         let old = state(json!([]), json!([]), json!([]));
-        let new = state(json!([]), json!([{ "id": "h", "page": 1, "text": "x" }]), json!([]));
+        let new = state(
+            json!([]),
+            json!([{ "id": "h", "page": 1, "text": "x" }]),
+            json!([]),
+        );
         assert_eq!(
             classify_changes(&old, &new),
             HashSet::from([PdfCapability::Annotate])
@@ -164,7 +176,8 @@ mod tests {
     #[test]
     fn missing_and_empty_collections_compare_equal() {
         let old = json!({});
-        let new = json!({ "pageComments": [], "bookmarks": [], "highlights": [], "textAnnotations": [] });
+        let new =
+            json!({ "pageComments": [], "bookmarks": [], "highlights": [], "textAnnotations": [] });
         assert!(classify_changes(&old, &new).is_empty());
     }
 }

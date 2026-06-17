@@ -41,6 +41,7 @@ import { cn } from '../../lib/utils';
 import { useKanbanContext } from '../../views/KanbanPage';
 import { useCollabStore } from '../../store/collabStore';
 import { useKanbanStore } from '../../store/kanbanStore';
+import LivePeers from '../collaboration/LivePeers';
 import { formatDate, useUiStore } from '../../store/uiStore';
 import { useVaultStore } from '../../store/vaultStore';
 import { createVaultClient } from '../../lib/vaultClient';
@@ -535,7 +536,7 @@ function ArchiveView({ onOpenCard }: { onOpenCard: (card: KanbanCard, columnId: 
 // ── Main board ────────────────────────────────────────────────────────────────
 
 export default function KanbanBoardView() {
-  const { board, updateBoard, relativePath, knownUsers, readOnly, caps } = useKanbanContext();
+  const { board, updateBoard, relativePath, knownUsers, readOnly, caps, livePeers } = useKanbanContext();
   const { vault } = useVaultStore();
   // Vault-scoped filter/automation presets live on the local filesystem under
   // .collab/templates/. Hosted vaults have no such endpoint, so only app-scoped
@@ -586,6 +587,7 @@ export default function KanbanBoardView() {
     () => peers.filter(p => p.activeFile === relativePath),
     [peers, relativePath],
   );
+
   const archivedCount = useMemo(
     () => board.columns.reduce((count, column) => count + column.cards.filter((card) => card.archived).length, 0),
     [board.columns],
@@ -1122,6 +1124,7 @@ export default function KanbanBoardView() {
                 ))}
               </div>
             )}
+            <LivePeers peers={livePeers} />
           </>
         }
         secondary={

@@ -3,23 +3,27 @@ import { tauriCommands } from './tauri';
 
 /**
  * External-file import for vaults. Adding documents/images/notes to a vault is
- * limited to images, PDFs, and markdown so an import never injects an arbitrary
- * or unsupported binary. Images and PDFs are stored as binary assets through the
- * mode-agnostic `externalAssetImport` capability; markdown becomes a real text
- * note document (so it opens and edits like any other note) on both local and
- * hosted vaults.
+ * limited to images, PDFs, markdown, canvas, and Kanban so an import never
+ * injects an arbitrary or unsupported binary. Images and PDFs are stored as
+ * binary assets through the mode-agnostic `externalAssetImport` capability;
+ * markdown and Collab structured files become real text documents on both local
+ * and hosted vaults.
  */
 export const IMPORT_IMAGE_EXTENSIONS = ['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg', 'bmp', 'ico', 'avif'];
 export const IMPORT_PDF_EXTENSIONS = ['pdf'];
 export const IMPORT_MARKDOWN_EXTENSIONS = ['md', 'markdown'];
+export const IMPORT_CANVAS_EXTENSIONS = ['canvas'];
+export const IMPORT_KANBAN_EXTENSIONS = ['kanban'];
 
 export const IMPORTABLE_EXTENSIONS = [
   ...IMPORT_IMAGE_EXTENSIONS,
   ...IMPORT_PDF_EXTENSIONS,
   ...IMPORT_MARKDOWN_EXTENSIONS,
+  ...IMPORT_CANVAS_EXTENSIONS,
+  ...IMPORT_KANBAN_EXTENSIONS,
 ];
 
-export type ImportableCategory = 'image' | 'pdf' | 'markdown';
+export type ImportableCategory = 'image' | 'pdf' | 'markdown' | 'canvas' | 'kanban';
 
 export function fileBaseName(sourcePath: string): string {
   const segments = sourcePath.split(/[/\\]/);
@@ -36,6 +40,8 @@ export function importCategoryForName(name: string): ImportableCategory | null {
   if (IMPORT_IMAGE_EXTENSIONS.includes(ext)) return 'image';
   if (IMPORT_PDF_EXTENSIONS.includes(ext)) return 'pdf';
   if (IMPORT_MARKDOWN_EXTENSIONS.includes(ext)) return 'markdown';
+  if (IMPORT_CANVAS_EXTENSIONS.includes(ext)) return 'canvas';
+  if (IMPORT_KANBAN_EXTENSIONS.includes(ext)) return 'kanban';
   return null;
 }
 
@@ -63,13 +69,34 @@ function joinVaultPath(folder: string | undefined, name: string): string {
  * written through the mode-agnostic `VaultClient` so the same path works for both
  * local and hosted vaults.
  */
-async function importMarkdownAsNote(
+function validateStructuredDocument(text: string, category: 'canvas' | 'kanban') {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    throw new Error(`The .${category} file does not contain valid JSON.`);
+  }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    throw new Error(`The .${category} file must contain a JSON object.`);
+  }
+  const record = parsed as Record<string, unknown>;
+  if (category === 'canvas' && (!Array.isArray(record.nodes) || !Array.isArray(record.edges))) {
+    throw new Error('The .canvas file must contain nodes and edges arrays.');
+  }
+  if (category === 'kanban' && !Array.isArray(record.columns)) {
+    throw new Error('The .kanban file must contain a columns array.');
+  }
+}
+
+async function importTextDocument(
   client: VaultClient,
   sourcePath: string,
   targetFolder: string | undefined,
+  category: 'markdown' | 'canvas' | 'kanban',
 ): Promise<string> {
   const payload = await tauriCommands.readFileForUpload(sourcePath);
   const text = decodeUtf8Base64(payload.contentBase64);
+  if (category !== 'markdown') validateStructuredDocument(text, category);
   const targetPath = joinVaultPath(targetFolder, payload.name);
   await client.createDocument(targetPath);
   // A freshly created note starts empty; write the source content as its first
@@ -80,11 +107,11 @@ async function importMarkdownAsNote(
 }
 
 /**
- * Imports the given desktop files into the vault, routing each by type. Markdown
- * becomes a note; images and PDFs become binary assets. When `targetFolder` is
- * omitted, images default to the app-managed `Pictures/` folder and everything
- * else lands at the vault root. Each file is imported independently so one bad
- * file never aborts the rest; failures are reported per file.
+ * Imports the given desktop files into the vault, routing each by type. Markdown,
+ * canvas, and Kanban become text documents; images and PDFs become binary
+ * assets. When `targetFolder` is omitted, images default to the app-managed
+ * `Pictures/` folder and everything else lands at the vault root. Each file is
+ * imported independently so one bad file never aborts the rest.
  */
 export async function importExternalFilesIntoVault(
   client: VaultClient,
@@ -99,11 +126,11 @@ export async function importExternalFilesIntoVault(
     const category = importCategoryForName(name);
     try {
       if (!category) {
-        result.failed.push({ name, error: 'Unsupported file type. Only images, PDFs, and markdown can be imported.' });
+        result.failed.push({ name, error: 'Unsupported file type. Only images, PDFs, markdown, canvas, and Kanban files can be imported.' });
         continue;
       }
-      if (category === 'markdown') {
-        result.imported.push(await importMarkdownAsNote(client, sourcePath, options.targetFolder));
+      if (category === 'markdown' || category === 'canvas' || category === 'kanban') {
+        result.imported.push(await importTextDocument(client, sourcePath, options.targetFolder, category));
         continue;
       }
       if (!assetImporter) {

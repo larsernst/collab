@@ -3,11 +3,12 @@ import { Send } from 'lucide-react';
 import { useCollabStore } from '../../../store/collabStore';
 import { useVaultStore } from '../../../store/vaultStore';
 import { useUiStore } from '../../../store/uiStore';
-import { tauriCommands } from '../../../lib/tauri';
-import { createVaultClient } from '../../../lib/vaultClient';
+import { useCollabIdentity } from '../../../lib/collabIdentity';
+import { createCollabTransport } from '../../../lib/collabTransport';
 import type { ChatMessage } from '../../../types/collab';
 import { Button } from '../../ui/button';
 import { Textarea } from '../../ui/textarea';
+import { useCollabContext } from '../CollabProvider';
 
 function MessageRow({ msg, isSelf }: { msg: ChatMessage; isSelf: boolean }) {
   const date = new Date(msg.timestamp);
@@ -75,18 +76,16 @@ function TypingIndicator({ users }: { users: Array<{ userId: string; userName: s
 export function ChatPanel() {
   const { vault } = useVaultStore();
   const { isSidebarOpen, sidebarPanel, collabTab } = useUiStore();
+  const identity = useCollabIdentity();
   const {
-    myUserId,
-    myUserName,
-    myUserColor,
     peers,
     chatMessages,
     appendChatMessage,
     setChatTypingUntil,
   } = useCollabStore();
-  // Chat is filesystem-backed under .collab/chat/; hosted vaults have no chat
-  // transport yet, so the panel is shown as unavailable rather than failing sends.
-  const supportsChat = vault ? createVaultClient(vault).capabilities.nativeFilesystem : false;
+  const contextTransport = useCollabContext();
+  const transport = contextTransport ?? (vault ? createCollabTransport(vault) : null);
+  const supportsChat = !!transport && !!vault;
   const [text, setText] = useState('');
   const [sending, setSending] = useState(false);
   const [typingNow, setTypingNow] = useState(() => Date.now());
@@ -128,15 +127,15 @@ export function ChatPanel() {
 
   const send = useCallback(async () => {
     const content = text.trim();
-    if (!content || !vault || sending || !supportsChat) return;
+    if (!content || !vault || sending || !supportsChat || !transport) return;
     setText('');
     publishTypingState('', true);
     setSending(true);
     const msg = {
       id: crypto.randomUUID(),
-      userId: myUserId,
-      userName: myUserName,
-      userColor: myUserColor,
+      userId: identity.userId,
+      userName: identity.userName,
+      userColor: identity.userColor,
       content,
       timestamp: Date.now(),
     };
@@ -144,13 +143,13 @@ export function ChatPanel() {
     // fire after the 500ms watcher debounce and replace the list (idempotent).
     appendChatMessage(msg);
     try {
-      await tauriCommands.sendChatMessage(vault.path, msg);
+      await transport.sendChatMessage(msg);
     } catch {
       setText(content);
     } finally {
       setSending(false);
     }
-  }, [text, vault, myUserId, myUserName, myUserColor, sending, supportsChat]);
+  }, [text, vault, identity.userId, identity.userName, identity.userColor, sending, supportsChat, transport]);
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === 'Enter' && !e.shiftKey) {
@@ -177,7 +176,7 @@ export function ChatPanel() {
           </p>
         ) : (
           chatMessages.map((msg) => (
-            <MessageRow key={msg.id} msg={msg} isSelf={msg.userId === myUserId} />
+            <MessageRow key={msg.id} msg={msg} isSelf={msg.userId === identity.userId} />
           ))
         )}
         {typingUsers.length > 0 && <TypingIndicator users={typingUsers} />}

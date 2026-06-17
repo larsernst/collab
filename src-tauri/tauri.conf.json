@@ -4,7 +4,7 @@
   "version": "../package.json",
   "identifier": "com.azazel.collab",
   "build": {
-    "beforeDevCommand": "pnpm dev",
+    "beforeDevCommand": "node node_modules/vite/bin/vite.js",
     "devUrl": "http://localhost:1420",
     "beforeBuildCommand": "pnpm build",
     "frontendDist": "../dist"

@@ -151,6 +151,52 @@ pub async fn hosted_vault_request(
     decode_hosted_json_response(request.send().await.map_err(server_request_error)?).await
 }
 
+/// Exchanges the connected server session for a single-use live-collaboration
+/// WebSocket ticket bound to one vault. The bearer token stays in Rust; the
+/// webview receives only the opaque ticket plus the `ws(s)://` URL to open. The
+/// WebSocket itself authenticates with the ticket, not a bearer token.
+#[tauri::command]
+pub async fn hosted_ws_ticket(
+    state: State<'_, AppState>,
+    server_url: String,
+    vault_id: String,
+) -> Result<Value, String> {
+    validate_identifier(&vault_id)?;
+    let session = state.server_session.read().clone().ok_or_else(|| {
+        "Connect to the Collab server before starting live collaboration.".to_string()
+    })?;
+    require_connected_server(&session, &server_url)?;
+    let response = server_client(session.allow_invalid_certificates)?
+        .post(format!("{}/api/v1/auth/ws-ticket", session.server_url))
+        .bearer_auth(&session.access_token)
+        .json(&serde_json::json!({ "vaultId": vault_id }))
+        .send()
+        .await
+        .map_err(server_request_error)?;
+    let data = decode_hosted_json_response(response).await?;
+    let ticket = data
+        .get("ticket")
+        .and_then(Value::as_str)
+        .ok_or_else(|| "The server returned an invalid ticket response.".to_string())?;
+    let websocket_path = data
+        .get("websocketPath")
+        .and_then(Value::as_str)
+        .ok_or_else(|| "The server returned an invalid ticket response.".to_string())?;
+    // Derive the WebSocket origin from the connected HTTP origin.
+    let ws_origin = if let Some(rest) = session.server_url.strip_prefix("https://") {
+        format!("wss://{rest}")
+    } else if let Some(rest) = session.server_url.strip_prefix("http://") {
+        format!("ws://{rest}")
+    } else {
+        return Err("The connected server URL is not valid.".to_string());
+    };
+    Ok(serde_json::json!({
+        "ticket": ticket,
+        "websocketUrl": format!("{}{}", ws_origin.trim_end_matches('/'), websocket_path),
+        "protocolVersion": data.get("protocolVersion").cloned().unwrap_or(Value::Null),
+    }))
+}
+
 #[tauri::command]
 pub async fn hosted_vault_asset_data_url(
     state: State<'_, AppState>,

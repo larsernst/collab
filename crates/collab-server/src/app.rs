@@ -30,16 +30,19 @@ pub struct AppState {
     pub database: PgPool,
     pub blobs: Arc<dyn BlobStorage>,
     pub login_limiter: LoginRateLimiter,
+    pub hub: Arc<crate::ws::Hub>,
     pub started_at: Instant,
 }
 
 impl AppState {
     pub fn new(config: ServerConfig, database: PgPool, blobs: Arc<dyn BlobStorage>) -> Self {
+        let hub = Arc::new(crate::ws::Hub::new(database.clone(), blobs.clone()));
         Self {
             config,
             database,
             blobs,
             login_limiter: LoginRateLimiter::default(),
+            hub,
             started_at: Instant::now(),
         }
     }
@@ -61,7 +64,9 @@ pub fn build_router(state: AppState) -> Router {
         .route("/api/v1/auth/refresh", post(api::refresh))
         .route("/api/v1/auth/native/logout", post(api::native_logout))
         .route("/api/v1/auth/invitations/{token}/accept", post(api::accept_invitation))
+        .route("/api/v1/auth/ws-ticket", post(api::issue_ws_ticket))
         .route("/api/v1/auth/logout", post(api::logout))
+        .route("/ws/v1/vaults/{vault_id}", get(crate::ws::vault_ws))
         .route("/api/v1/users/me", get(api::me).patch(api::update_self))
         .route("/api/v1/users/me/password", post(api::change_password))
         .route(
@@ -161,6 +166,10 @@ pub fn build_router(state: AppState) -> Router {
             "/api/v1/vaults/{vault_id}/export",
             get(api::export_vault_zip),
         )
+        .route(
+            "/api/v1/vaults/{vault_id}/chat",
+            get(api::list_chat_messages).post(api::send_chat_message),
+        )
         .route("/api/v1/admin/overview", get(api::overview))
         .route("/api/v1/admin/users", get(api::list_users).post(api::create_user))
         .route(
@@ -189,6 +198,10 @@ pub fn build_router(state: AppState) -> Router {
             get(api::admin_vault_detail)
                 .patch(api::admin_update_vault)
                 .delete(api::admin_delete_vault),
+        )
+        .route(
+            "/api/v1/admin/vaults/{vault_id}/force-delete",
+            post(api::admin_force_delete_vault),
         )
         .route(
             "/api/v1/admin/vaults/{vault_id}/members",

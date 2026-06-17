@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { Position } from '@xyflow/react';
 
 import {
+  buildCanvasEdgeLayout,
   buildOrthogonalCanvasEdgePath,
   fromFlowEdge,
   getAnchoredEdgeGeometry,
@@ -11,6 +12,12 @@ import {
 } from './CanvasEdgeTypes';
 
 describe('CanvasEdgeTypes', () => {
+  it('ignores transient live nodes without positions when building edge layout', () => {
+    expect(() => buildCanvasEdgeLayout([
+      { id: 'partial-live-node' },
+    ] as Parameters<typeof buildCanvasEdgeLayout>[0], [])).not.toThrow();
+  });
+
   it('fills edge defaults for a new connection', () => {
     expect(getCanvasEdgeData()).toEqual({
       label: '',

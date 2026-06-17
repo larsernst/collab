@@ -1,4 +1,4 @@
-import { useEffect, useRef, createContext, useContext, ReactNode } from 'react';
+import { useEffect, useMemo, useRef, createContext, useContext, ReactNode } from 'react';
 import { listen } from '@tauri-apps/api/event';
 import { toast } from 'sonner';
 import { getAppVersion } from '../../lib/tauri';
@@ -7,7 +7,7 @@ import { useEditorStore } from '../../store/editorStore';
 import { useCollabStore } from '../../store/collabStore';
 import { useUiStore } from '../../store/uiStore';
 import { tauriCommands } from '../../lib/tauri';
-import { FileSystemTransport, type CollabTransport } from '../../lib/collabTransport';
+import { createCollabTransport, type CollabTransport } from '../../lib/collabTransport';
 import type { ChatMessage } from '../../types/collab';
 import { vaultKind } from '../../types/vault';
 
@@ -43,12 +43,9 @@ export function CollabProvider({ children }: { children: ReactNode }) {
     activeTabPathRef.current = activeTabPath;
   }, [activeTabPath]);
 
-  const transportRef = useRef<FileSystemTransport | null>(null);
-  useEffect(() => {
-    transportRef.current = vault && vaultKind(vault) === 'local'
-      ? new FileSystemTransport(vault.path)
-      : null;
-  }, [vault]);
+  const transport = useMemo(() => (vault ? createCollabTransport(vault) : null), [vault]);
+  const transportRef = useRef<CollabTransport | null>(null);
+  transportRef.current = transport;
 
   const broadcastPresence = async (activeFile: string | null) => {
     if (!vault || !transportRef.current) return;
@@ -121,23 +118,22 @@ export function CollabProvider({ children }: { children: ReactNode }) {
 
   // Interval broadcast + presence listener + chat listener
   useEffect(() => {
-    if (!vault || !transportRef.current) return;
+    if (!vault || !transport) return;
 
     const interval = setInterval(() => broadcastPresence(activeTabPathRef.current), 10000);
     refreshPeers();
 
-    const unsubPresence = transportRef.current.onPresenceChanged(refreshPeers);
+    const unsubPresence = transport.onPresenceChanged(refreshPeers);
 
     // Load initial chat messages
-    transportRef.current.readChatMessages(100).then((msgs) => {
+    transport.readChatMessages(100).then((msgs) => {
       knownMessageIdsRef.current = new Set(msgs.map((msg) => msg.id));
       setChatMessages(msgs);
     }).catch(() => {});
 
-    const unsubChat = transportRef.current.onChatUpdated(async () => {
+    const unsubChat = transport.onChatUpdated(async () => {
       try {
-        if (!transportRef.current) return;
-        const msgs = await transportRef.current.readChatMessages(100);
+        const msgs = await transport.readChatMessages(100);
         handleIncomingMessages(msgs, 'replace');
       } catch {}
     });
@@ -156,7 +152,7 @@ export function CollabProvider({ children }: { children: ReactNode }) {
       unsubChat();
       unsubChatMessage?.();
     };
-  }, [vault?.path, myUserId]);
+  }, [transport, vault?.path, myUserId]);
 
   useEffect(() => {
     if (!vault || !transportRef.current) return;
@@ -166,7 +162,7 @@ export function CollabProvider({ children }: { children: ReactNode }) {
   }, [vault?.path, myUserId]);
 
   return (
-    <CollabContext.Provider value={transportRef.current}>
+    <CollabContext.Provider value={transport}>
       {children}
     </CollabContext.Provider>
   );

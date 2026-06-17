@@ -1,5 +1,7 @@
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import * as Y from 'yjs';
+import { Awareness } from 'y-protocols/awareness';
 
 import { useCollabStore } from '../store/collabStore';
 import { useEditorStore } from '../store/editorStore';
@@ -17,6 +19,10 @@ const tauriMocks = vi.hoisted(() => ({
   renameNote: vi.fn(),
   listNoteSnippets: vi.fn(async () => []),
   hostedVaultRequest: vi.fn(),
+}));
+
+const liveMocks = vi.hoisted(() => ({
+  openLiveNoteSession: vi.fn(async () => null as unknown),
 }));
 
 vi.mock('@tauri-apps/api/event', () => ({
@@ -41,6 +47,16 @@ vi.mock('../lib/tauri', () => ({
     listNoteSnippets: tauriMocks.listNoteSnippets,
     hostedVaultRequest: tauriMocks.hostedVaultRequest,
   },
+}));
+
+// Live collaboration is disabled by default in these tests; the dedicated live
+// test overrides this to return a session.
+vi.mock('../lib/liveDocumentSession', () => ({
+  openLiveNoteSession: liveMocks.openLiveNoteSession,
+}));
+
+vi.mock('y-codemirror.next', () => ({
+  yCollab: vi.fn(() => []),
 }));
 
 vi.mock('../components/editor/EditorToolbar', () => ({
@@ -292,6 +308,71 @@ describe('NoteView external reload behavior', () => {
     const callsAfterLoad = tauriMocks.hostedVaultRequest.mock.calls.length;
     fireEvent.click(screen.getByRole('button', { name: 'change' }));
     // Wait past the autosave debounce window; no write request must be issued.
+    await new Promise((resolve) => setTimeout(resolve, 800));
+    expect(tauriMocks.hostedVaultRequest.mock.calls.length).toBe(callsAfterLoad);
+  });
+
+  it('drives a hosted note from the live session and never writes through REST', async () => {
+    const hostedFile = {
+      id: 'file-1',
+      parentId: null,
+      name: 'a.md',
+      relativePath: 'Notes/a.md',
+      kind: 'document',
+      documentType: 'note',
+      state: 'active',
+      currentRevision: {
+        id: 'revision-1',
+        sequence: 1,
+        contentHash: 'hash-1',
+        sizeBytes: 11,
+        createdByDisplayName: 'Test User',
+        createdAt: '2026-06-11T08:00:00Z',
+      },
+      createdAt: '2026-06-11T08:00:00Z',
+      updatedAt: '2026-06-11T08:00:00Z',
+    };
+    useVaultStore.setState({
+      vault: {
+        kind: 'hosted',
+        id: 'hosted-vault',
+        hostedVaultId: 'hosted-vault',
+        serverUrl: 'https://collab.example.test',
+        role: 'editor',
+        name: 'Hosted Vault',
+        path: 'hosted://hosted-vault',
+        lastOpened: Date.now(),
+        isEncrypted: false,
+      },
+    });
+    tauriMocks.hostedVaultRequest
+      .mockResolvedValueOnce({ vaultId: 'hosted-vault', sequence: 1, files: [hostedFile] })
+      .mockResolvedValueOnce({ file: hostedFile, content: 'rest body' });
+
+    // The live session exposes a Yjs document seeded with the live content.
+    const ydoc = new Y.Doc();
+    const text = ydoc.getText('content');
+    text.insert(0, 'live body');
+    const session = {
+      doc: ydoc,
+      text,
+      awareness: new Awareness(ydoc),
+      getStatus: () => 'connected' as const,
+      onStatus: () => () => {},
+      destroy: vi.fn(),
+    };
+    liveMocks.openLiveNoteSession.mockResolvedValueOnce(session);
+
+    render(<NoteView relativePath="Notes/a.md" />);
+
+    // The editor shows the live document content, not the REST content.
+    await waitFor(() => {
+      expect(screen.getByTestId('editor-content').textContent).toBe('live body');
+    });
+
+    const callsAfterLoad = tauriMocks.hostedVaultRequest.mock.calls.length;
+    fireEvent.click(screen.getByRole('button', { name: 'change' }));
+    // Past the autosave debounce: live edits persist via the server, never REST.
     await new Promise((resolve) => setTimeout(resolve, 800));
     expect(tauriMocks.hostedVaultRequest.mock.calls.length).toBe(callsAfterLoad);
   });

@@ -196,13 +196,17 @@ interface Props {
 }
 
 export default function KanbanCardView({ card, columnId, isOverlay }: Props) {
-  const { knownUsers, updateBoard, board, relativePath, caps } = useKanbanContext();
+  const { knownUsers, updateBoard, board, relativePath, caps, remoteCardEditors } = useKanbanContext();
   const { myUserId, myUserName } = useCollabStore();
   const { dateFormat } = useUiStore();
   const { boardPath, cardId: editingCardId, setEditing, clearEditing } = useKanbanStore();
   const [destPicker, setDestPicker] = useState<KanbanColumn[] | null>(null);
 
   const dialogOpen = !isOverlay && editingCardId === card.id && boardPath === relativePath;
+
+  // A remote live co-editor currently has this card open. Surfaced as an
+  // ephemeral ring + avatar so concurrent edits are visible.
+  const remoteEditor = isOverlay ? undefined : remoteCardEditors.get(card.id);
 
   const colColor = board.columns.find(c => c.id === columnId)?.color ?? '#64748b';
 
@@ -361,11 +365,25 @@ export default function KanbanCardView({ card, columnId, isOverlay }: Props) {
       <ContextMenuTrigger asChild>
       <div
         ref={setNodeRef}
-        style={style}
+        style={
+          remoteEditor
+            ? { ...style, borderRadius: 8, boxShadow: `0 0 0 2px ${remoteEditor.color}` }
+            : style
+        }
+        className={remoteEditor ? 'relative' : undefined}
         {...attributes}
         {...listeners}
         onClick={() => !isOverlay && openDialog()}
       >
+        {remoteEditor && (
+          <div
+            className="absolute -top-2 -right-2 z-10 w-5 h-5 rounded-full flex items-center justify-center text-white text-[10px] font-bold border-2 border-background app-fade-scale-in"
+            style={{ backgroundColor: remoteEditor.color }}
+            title={`${remoteEditor.name} is editing this card`}
+          >
+            {remoteEditor.name.charAt(0).toUpperCase()}
+          </div>
+        )}
         <KanbanCardInner
           card={card}
           colColor={colColor}

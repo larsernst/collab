@@ -8,18 +8,27 @@ use tauri::{AppHandle, Emitter, State};
 fn is_ignored_dir_name(name: &str) -> bool {
     matches!(
         name,
-        "node_modules" | "target" | "dist" | "dist-builds" | "build" | "flatpak-build" | "flatpak-repo"
+        "node_modules"
+            | "target"
+            | "dist"
+            | "dist-builds"
+            | "build"
+            | "flatpak-build"
+            | "flatpak-repo"
     )
 }
 
 fn should_ignore_relative_path(relative: &str) -> bool {
-    relative
-        .split('/')
-        .any(|segment| !segment.is_empty() && (segment.starts_with('.') || is_ignored_dir_name(segment)))
+    relative.split('/').any(|segment| {
+        !segment.is_empty() && (segment.starts_with('.') || is_ignored_dir_name(segment))
+    })
 }
 
 fn nearest_visible_relative_parent(relative: &str) -> Option<String> {
-    let mut segments: Vec<&str> = relative.split('/').filter(|segment| !segment.is_empty()).collect();
+    let mut segments: Vec<&str> = relative
+        .split('/')
+        .filter(|segment| !segment.is_empty())
+        .collect();
     while !segments.is_empty() {
         segments.pop();
         if segments.is_empty() {
@@ -48,56 +57,55 @@ pub fn watch_vault(
     let app_handle = app.clone();
     let vault_path_clone = vault_path.clone();
 
-    let mut debouncer =
-        new_debouncer(
-            Duration::from_millis(500),
-            move |res: DebounceEventResult| {
-                if let Ok(events) = res {
-                    for event in events {
-                        let path = &event.path;
+    let mut debouncer = new_debouncer(
+        Duration::from_millis(500),
+        move |res: DebounceEventResult| {
+            if let Ok(events) = res {
+                for event in events {
+                    let path = &event.path;
 
-                        // Get relative path string
-                        let relative = path
-                            .strip_prefix(&vault_path_clone)
-                            .unwrap_or(path)
-                            .to_string_lossy()
-                            .replace('\\', "/");
+                    // Get relative path string
+                    let relative = path
+                        .strip_prefix(&vault_path_clone)
+                        .unwrap_or(path)
+                        .to_string_lossy()
+                        .replace('\\', "/");
 
-                        if relative.starts_with(".collab/presence/") {
-                            let _ = app_handle.emit("collab:presence-changed", serde_json::json!({}));
-                            continue;
-                        }
-
-                        if relative == ".collab/chat/messages.json" {
-                            let _ = app_handle.emit("collab:chat-updated", serde_json::json!({}));
-                            continue;
-                        }
-
-                        if relative == ".collab/vault.json" {
-                            let _ = app_handle.emit("collab:config-changed", serde_json::json!({}));
-                            continue;
-                        }
-
-                        if should_ignore_relative_path(&relative) {
-                            if let Some(parent) = nearest_visible_relative_parent(&relative) {
-                                let payload = serde_json::json!({ "path": parent });
-                                let _ = app_handle.emit("vault:file-modified", &payload);
-                            }
-                            continue;
-                        }
-
-                        // Skip all other .collab directory changes
-                        if relative.starts_with(".collab/") {
-                            continue;
-                        }
-
-                        let payload = serde_json::json!({ "path": relative });
-                        let _ = app_handle.emit("vault:file-modified", &payload);
+                    if relative.starts_with(".collab/presence/") {
+                        let _ = app_handle.emit("collab:presence-changed", serde_json::json!({}));
+                        continue;
                     }
+
+                    if relative == ".collab/chat/messages.json" {
+                        let _ = app_handle.emit("collab:chat-updated", serde_json::json!({}));
+                        continue;
+                    }
+
+                    if relative == ".collab/vault.json" {
+                        let _ = app_handle.emit("collab:config-changed", serde_json::json!({}));
+                        continue;
+                    }
+
+                    if should_ignore_relative_path(&relative) {
+                        if let Some(parent) = nearest_visible_relative_parent(&relative) {
+                            let payload = serde_json::json!({ "path": parent });
+                            let _ = app_handle.emit("vault:file-modified", &payload);
+                        }
+                        continue;
+                    }
+
+                    // Skip all other .collab directory changes
+                    if relative.starts_with(".collab/") {
+                        continue;
+                    }
+
+                    let payload = serde_json::json!({ "path": relative });
+                    let _ = app_handle.emit("vault:file-modified", &payload);
                 }
-            },
-        )
-        .map_err(|e| e.to_string())?;
+            }
+        },
+    )
+    .map_err(|e| e.to_string())?;
 
     debouncer
         .watcher()

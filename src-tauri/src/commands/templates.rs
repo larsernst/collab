@@ -73,14 +73,20 @@ fn resolve_vault_path(vault_path: &str, relative_path: &str) -> Result<PathBuf, 
     Ok(Path::new(vault_path).join(normalize_relative_path(relative_path)?))
 }
 
-fn scope_templates_dir(vault_path: Option<&str>, source: &TemplateSource) -> Result<PathBuf, String> {
+fn scope_templates_dir(
+    vault_path: Option<&str>,
+    source: &TemplateSource,
+) -> Result<PathBuf, String> {
     let dir = match source {
         TemplateSource::Builtin => {
             return Err("Built-in templates are bundled with the application".into());
         }
         TemplateSource::Vault => {
             let vault_path = vault_path.ok_or("Vault path is required for vault templates")?;
-            Path::new(vault_path).join(".collab").join("templates").join("kanban")
+            Path::new(vault_path)
+                .join(".collab")
+                .join("templates")
+                .join("kanban")
         }
         TemplateSource::App => app_config_dir()?.join("templates").join("kanban"),
     };
@@ -98,11 +104,17 @@ fn scope_kanban_preset_dir(
     Ok(dir)
 }
 
-fn scope_note_snippets_dir(vault_path: Option<&str>, scope: &NoteSnippetScope) -> Result<PathBuf, String> {
+fn scope_note_snippets_dir(
+    vault_path: Option<&str>,
+    scope: &NoteSnippetScope,
+) -> Result<PathBuf, String> {
     let dir = match scope {
         NoteSnippetScope::Vault => {
             let vault_path = vault_path.ok_or("Vault path is required for vault note snippets")?;
-            Path::new(vault_path).join(".collab").join("templates").join("notes")
+            Path::new(vault_path)
+                .join(".collab")
+                .join("templates")
+                .join("notes")
         }
         NoteSnippetScope::App => app_config_dir()?.join("templates").join("notes"),
     };
@@ -140,14 +152,22 @@ fn template_file_name(name: &str) -> String {
         .trim()
         .trim_matches('.')
         .to_string();
-    let stem = if safe.is_empty() { "template".to_string() } else { safe };
+    let stem = if safe.is_empty() {
+        "template".to_string()
+    } else {
+        safe
+    };
     let mut hasher = Sha256::new();
     hasher.update(name.as_bytes());
     let digest = hex::encode(hasher.finalize());
     format!("{stem}--{}.json", &digest[..10])
 }
 
-fn template_path(vault_path: Option<&str>, source: &TemplateSource, name: &str) -> Result<PathBuf, String> {
+fn template_path(
+    vault_path: Option<&str>,
+    source: &TemplateSource,
+    name: &str,
+) -> Result<PathBuf, String> {
     Ok(scope_templates_dir(vault_path, source)?.join(template_file_name(name)))
 }
 
@@ -171,11 +191,19 @@ fn snippet_file_name(id: &str) -> String {
         .trim()
         .trim_matches('.')
         .to_string();
-    let stem = if safe.is_empty() { "snippet".to_string() } else { safe };
+    let stem = if safe.is_empty() {
+        "snippet".to_string()
+    } else {
+        safe
+    };
     format!("{stem}.json")
 }
 
-fn snippet_path(vault_path: Option<&str>, scope: &NoteSnippetScope, id: &str) -> Result<PathBuf, String> {
+fn snippet_path(
+    vault_path: Option<&str>,
+    scope: &NoteSnippetScope,
+    id: &str,
+) -> Result<PathBuf, String> {
     Ok(scope_note_snippets_dir(vault_path, scope)?.join(snippet_file_name(id)))
 }
 
@@ -454,13 +482,7 @@ fn default_blank_board() -> Value {
     json!({ "columns": [] })
 }
 
-fn board_column(
-    id: &str,
-    title: &str,
-    color: &str,
-    cards: Vec<Value>,
-    options: Value,
-) -> Value {
+fn board_column(id: &str, title: &str, color: &str, cards: Vec<Value>, options: Value) -> Value {
     let mut column = json!({
         "id": id,
         "title": title,
@@ -650,7 +672,13 @@ pub fn save_kanban_template(
     if source == TemplateSource::Builtin {
         return Err("Built-in templates cannot be modified".into());
     }
-    write_template_to_scope(vault_path.as_deref(), &source, &template_name, board, &state)
+    write_template_to_scope(
+        vault_path.as_deref(),
+        &source,
+        &template_name,
+        board,
+        &state,
+    )
 }
 
 #[tauri::command]
@@ -680,7 +708,8 @@ pub fn copy_kanban_template(
     if to_source == TemplateSource::Builtin {
         return Err("Built-in templates cannot be overwritten".into());
     }
-    let template = read_template_by_name(vault_path.as_deref(), &from_source, &template_name, &state)?;
+    let template =
+        read_template_by_name(vault_path.as_deref(), &from_source, &template_name, &state)?;
     write_template_to_scope(
         vault_path.as_deref(),
         &to_source,
@@ -739,7 +768,10 @@ pub fn apply_kanban_template(
         std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
     }
     if full_path.exists() {
-        return Err(format!("A board already exists at '{}'", destination_relative_path));
+        return Err(format!(
+            "A board already exists at '{}'",
+            destination_relative_path
+        ));
     }
 
     let content = serde_json::to_vec_pretty(&template.board).map_err(|e| e.to_string())?;
@@ -868,7 +900,13 @@ pub fn copy_kanban_filter_preset(
     }
     let path = preset_path(vault_path.as_deref(), &from_source, "filters", &preset_name)?;
     let preset = load_filter_preset_from_path(&path, from_source, &state)?;
-    write_filter_preset_to_scope(vault_path.as_deref(), &to_source, &preset.name, preset.spec, &state)
+    write_filter_preset_to_scope(
+        vault_path.as_deref(),
+        &to_source,
+        &preset.name,
+        preset.spec,
+        &state,
+    )
 }
 
 #[tauri::command]
@@ -946,9 +984,20 @@ pub fn copy_kanban_automation_preset(
     if to_source == TemplateSource::Builtin {
         return Err("Built-in presets cannot be overwritten".into());
     }
-    let path = preset_path(vault_path.as_deref(), &from_source, "automations", &preset_name)?;
+    let path = preset_path(
+        vault_path.as_deref(),
+        &from_source,
+        "automations",
+        &preset_name,
+    )?;
     let preset = load_automation_preset_from_path(&path, from_source, &state)?;
-    write_automation_preset_to_scope(vault_path.as_deref(), &to_source, &preset.name, preset.rule, &state)
+    write_automation_preset_to_scope(
+        vault_path.as_deref(),
+        &to_source,
+        &preset.name,
+        preset.rule,
+        &state,
+    )
 }
 
 #[tauri::command]
@@ -1041,8 +1090,8 @@ mod tests {
 
     #[test]
     fn normalize_relative_path_rejects_escaping_template_paths() {
-        let err = normalize_relative_path("../../outside.json")
-            .expect_err("escaping path should fail");
+        let err =
+            normalize_relative_path("../../outside.json").expect_err("escaping path should fail");
 
         assert!(err.contains("escapes the vault root"));
     }
@@ -1095,8 +1144,8 @@ mod tests {
         )
         .expect("template file should be written");
 
-        let (name, board) = parse_template_file(&path.to_string_lossy())
-            .expect("template file should parse");
+        let (name, board) =
+            parse_template_file(&path.to_string_lossy()).expect("template file should parse");
 
         assert_eq!(name, "Imported Template");
         assert_eq!(board, json!({ "columns": [] }));
@@ -1115,8 +1164,8 @@ mod tests {
         )
         .expect("template file should be written");
 
-        let (name, board) = parse_template_file(&path.to_string_lossy())
-            .expect("raw board payload should parse");
+        let (name, board) =
+            parse_template_file(&path.to_string_lossy()).expect("raw board payload should parse");
 
         assert_eq!(name, "Roadmap");
         assert_eq!(board, json!({ "columns": [] }));
@@ -1135,8 +1184,8 @@ mod tests {
         )
         .expect("template file should be written");
 
-        let err = parse_template_file(&path.to_string_lossy())
-            .expect_err("invalid template should fail");
+        let err =
+            parse_template_file(&path.to_string_lossy()).expect_err("invalid template should fail");
 
         assert!(err.contains("valid kanban template"));
     }

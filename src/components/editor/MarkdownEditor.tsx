@@ -1,6 +1,6 @@
 import { forwardRef, useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { EditorState } from '@codemirror/state';
+import { EditorState, type Extension } from '@codemirror/state';
 import { useUiStore, EDITOR_FONTS } from '../../store/uiStore';
 import {
   EditorView,
@@ -72,6 +72,12 @@ interface MarkdownEditorProps {
   onViewStateChange?: (editorViewState: MarkdownEditorViewState) => void;
   /** Render the note as non-editable (viewer access to a hosted vault). */
   readOnly?: boolean;
+  /**
+   * When set, a `y-codemirror.next` binding for a live hosted session. The Yjs
+   * document drives the editor content, so the controlled `content` prop is only
+   * used to seed the initial doc and the external-content sync is disabled.
+   */
+  collabExtension?: Extension | null;
 }
 
 type MathSolverActionState = MathSolverActionDetail;
@@ -382,7 +388,7 @@ function MathSolverActionPopover({
 // ─── Component ───────────────────────────────────────────────────────────────
 
 export const MarkdownEditor = forwardRef<MarkdownEditorHandle, MarkdownEditorProps>(
-  function MarkdownEditor({ content, onChange, onSave, relativePath, initialViewState = null, onViewStateChange, readOnly = false }, ref) {
+  function MarkdownEditor({ content, onChange, onSave, relativePath, initialViewState = null, onViewStateChange, readOnly = false, collabExtension = null }, ref) {
     const containerRef = useRef<HTMLDivElement>(null);
     const viewRef = useRef<EditorView | null>(null);
     const [editorView, setEditorView] = useState<EditorView | null>(null);
@@ -603,6 +609,7 @@ export const MarkdownEditor = forwardRef<MarkdownEditorHandle, MarkdownEditorPro
         updateListener,
         livePreviewExtension: [createLivePreviewPlugin(relativePath), createSnippetSessionExtension()],
         readOnly,
+        extraExtensions: collabExtension ?? [],
       });
 
       let view: EditorView;
@@ -651,10 +658,13 @@ export const MarkdownEditor = forwardRef<MarkdownEditorHandle, MarkdownEditorPro
         setEditorView(null);
       };
       // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [relativePath, readOnly]);
+    }, [relativePath, readOnly, collabExtension]);
 
-    // Sync external content changes (e.g. file reloaded from disk)
+    // Sync external content changes (e.g. file reloaded from disk). Disabled when
+    // a live collaboration binding owns the document — Yjs drives content there
+    // and a controlled overwrite would fight the CRDT.
     useEffect(() => {
+      if (collabExtension) return;
       const view = viewRef.current;
       if (!view) return;
       const current = view.state.doc.toString();

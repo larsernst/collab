@@ -648,7 +648,13 @@ export function getAnchoredEdgeGeometry({
 }
 
 function getNodeGeometryMap(nodes: FlowNode<CanvasNodeData>[]) {
-  return new Map(nodes.map((node) => [
+  return new Map(nodes.filter((node) => (
+    !!node
+    && typeof node.id === 'string'
+    && !!node.position
+    && Number.isFinite(node.position.x)
+    && Number.isFinite(node.position.y)
+  )).map((node) => [
     node.id,
     {
       centerX: (node.position.x ?? 0) + (

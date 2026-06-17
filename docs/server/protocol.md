@@ -122,6 +122,10 @@ tokens in memory and refresh tokens in the operating system credential store.
 Administration collection endpoints return only typed, redacted data.
 The first bootstrapped administrator is marked as the primary administrator;
 status updates cannot disable it and the user deletion endpoint rejects it.
+The admin overview includes live-collaboration metrics for open WebSocket
+connections, loaded document rooms, active awareness states, recent CRDT update
+rate, pending update-log size, compacted document count/bytes, and the last
+compaction timestamp.
 
 Administration vault endpoints act with server-operator authority and do not
 require vault membership. `GET /admin/vaults/{vaultId}` returns a
@@ -148,6 +152,7 @@ Vault management:
 - `PATCH|DELETE /api/v1/vaults/{vaultId}/members/{userId}`
 - `GET /api/v1/vaults/{vaultId}/storage`
 - `POST /api/v1/vaults/{vaultId}/import`
+- `GET|POST /api/v1/vaults/{vaultId}/chat`
 - `GET /api/v1/vaults/{vaultId}/export`
 
 The initial import/export implementation is admin-only. Import accepts a
@@ -253,40 +258,88 @@ Resumable streaming upload sessions remain a later Phase 4 task.
 
 ## WebSocket Protocol
 
-Connection:
+Connection (implemented in Phase 5):
 
-1. Obtain a single-use ticket with `POST /api/v1/auth/ws-ticket`.
+1. Obtain a single-use ticket with `POST /api/v1/auth/ws-ticket` (body
+   `{ "vaultId": "..." }`). The caller authenticates with its normal browser
+   session or native access token and must already hold read access to the
+   vault. The ticket is stored hashed, is bound to that one vault and user,
+   expires quickly (`COLLAB_WS_TICKET_TTL_SECONDS`, default 30s), and is
+   single-use. Bearer tokens never travel in the WebSocket URL.
 2. Connect to `/ws/v1/vaults/{vaultId}`.
-3. Send an `authenticate` control message containing the ticket.
-4. Server validates membership and returns `ready` with the current manifest sequence.
+3. Send an `authenticate` control frame containing the ticket (optionally a
+   `protocolVersion`).
+4. The server checks `protocolVersion` first and, on a mismatch, closes with
+   `protocol_version_unsupported` **before** consuming the ticket, so the still
+   single-use ticket can be retried by a compatible client. Otherwise it
+   validates and consumes the ticket, re-resolves the user's vault capabilities,
+   and returns `ready` with the current manifest sequence, the caller's derived
+   role, and the negotiated `protocolVersion` (which the client validates before
+   subscribing) — or an `error` frame and closes.
 
-Control messages are JSON text frames with:
+Two frame shapes travel over the socket:
 
-```json
-{
-  "type": "document.subscribe",
-  "messageId": "019...",
-  "payload": {}
-}
-```
+* **JSON text frames** carry control messages, tagged by `type`:
 
-Initial message types:
+  ```json
+  { "type": "document.subscribe", "fileId": "019..." }
+  ```
 
-- `authenticate`
-- `ready`
-- `document.subscribe`
-- `document.unsubscribe`
-- `document.sync`
-- `awareness.update`
-- `manifest.updated`
-- `operation.conflict`
-- `chat.send`
-- `chat.message`
-- `error`
-- `ping`
-- `pong`
+* **Binary frames** carry CRDT and awareness traffic with a fixed header:
+  `[tag: u8][fileId: 16-byte UUID][payload]`. Payloads are Yjs v1 encoded bytes
+  (a state vector for `SYNC_STEP1`, an update for `SYNC_UPDATE`, or a
+  y-protocols awareness update for `AWARENESS`), wire-compatible with the
+  browser's Yjs documents.
 
-CRDT updates use binary frames with a compact header containing message type, protocol version, and file ID. Awareness and chat are rate-limited separately from durable document updates.
+Implemented control messages:
+
+- `authenticate` (client) / `ready` (server)
+- `document.subscribe` (client) / `document.subscribed` (server)
+- `document.unsubscribe` (client)
+- `ping` (client) / `pong` (server)
+- `error` (server)
+
+Implemented binary message tags: `SYNC_STEP1` (1), `SYNC_UPDATE` (2), and
+`AWARENESS` (3).
+
+Authorization is enforced on every message: a session needs read access to
+subscribe and editor (`file.write`) access on an active vault to apply a
+`SYNC_UPDATE`; viewers receive a read-only stream and a `SYNC_UPDATE` from a
+viewer is rejected with `vault_permission_denied` and never persisted. Document
+updates are persisted to an append-only per-file log and broadcast to other
+subscribed sessions; a freshly connected client recovers state through the
+`SYNC_STEP1`/`SYNC_UPDATE` handshake. Native live providers do not expose a
+session to document editors until the initial state-vector response has been
+applied, preventing an empty local CRDT from briefly becoming authoritative.
+Handshake/no-op updates remain in the CRDT log for convergence but do not wake
+the materializer or create normal document revisions.
+
+Structured `.kanban` and `.canvas` JSON numbers are encoded as Yjs numbers, not
+Yjs BigInt. Native clients normalize legacy BigInt values to ordinary JSON
+numbers at the live-transport boundary so numeric validation and serialization
+remain compatible with normal JSON.
+
+Canvas live subscriptions are enabled with destructive-write guards: the server
+reseeds degenerate rooms from the canonical REST revision and refuses to
+materialize a node-losing canvas over populated content. The native client also
+waits for live hydration before writing and falls back to REST when a live root
+is empty or loses canonical nodes.
+
+Awareness updates are allowed for every subscribed reader, including viewers,
+and are relayed only to other sessions subscribed to the same document. The
+server retains the latest payload from each active session in memory so a late
+subscriber can immediately render current peers; awareness is never written to
+the CRDT update log, materialized revision, or vault content. Oversized
+awareness payloads are ignored, and clients ignore malformed peer awareness
+without interrupting the durable document session.
+
+Hosted chat is exposed through `GET|POST /api/v1/vaults/{vaultId}/chat`.
+Clients send only `{ id, content }`; `id` is an idempotency UUID and the server
+stamps the authenticated user id, display name, deterministic color, and
+timestamp. Listing requires `vault.read`; sending requires `vault.read` on an
+active vault. Planned for later Phase 6/7 units: `manifest.updated` /
+`operation.conflict` notifications and separate rate limits for awareness and
+chat versus durable document updates.
 
 ## Idempotency and Concurrency
 

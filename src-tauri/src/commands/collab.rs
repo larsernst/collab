@@ -124,7 +124,11 @@ pub fn clear_presence(vault_path: String, user_id: String) -> Result<(), String>
 
 // ── Vault config ──────────────────────────────────────────────────────────────
 
-fn write_config_atomic(vault_path: &str, config: &VaultConfig, app: &AppHandle) -> Result<(), String> {
+fn write_config_atomic(
+    vault_path: &str,
+    config: &VaultConfig,
+    app: &AppHandle,
+) -> Result<(), String> {
     let config_path = vault_config_path(vault_path);
     if let Some(parent) = config_path.parent() {
         std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
@@ -142,7 +146,10 @@ fn write_config_atomic(vault_path: &str, config: &VaultConfig, app: &AppHandle) 
 pub fn get_vault_config(vault_path: String) -> Result<VaultConfig, String> {
     let config_path = vault_config_path(&vault_path);
     if !config_path.exists() {
-        return Err(format!("vault.json not found at '{}'", config_path.display()));
+        return Err(format!(
+            "vault.json not found at '{}'",
+            config_path.display()
+        ));
     }
     let data = std::fs::read_to_string(&config_path).map_err(|e| e.to_string())?;
     serde_json::from_str(&data).map_err(|e| e.to_string())
@@ -167,7 +174,12 @@ pub fn register_known_user(
         existing.user_color = user_color;
         existing.last_seen = now;
     } else {
-        config.known_users.push(KnownUser { user_id, user_name, user_color, last_seen: now });
+        config.known_users.push(KnownUser {
+            user_id,
+            user_name,
+            user_color,
+            last_seen: now,
+        });
     }
 
     write_config_atomic(&vault_path, &config, &app)?;
@@ -221,8 +233,7 @@ pub fn create_snapshot(
     let dir = history_dir(&vault_path).join(&key);
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
 
-    std::fs::write(dir.join(format!("{}.snap", id)), &content)
-        .map_err(|e| e.to_string())?;
+    std::fs::write(dir.join(format!("{}.snap", id)), &content).map_err(|e| e.to_string())?;
 
     let meta = SnapshotMeta {
         id: id.clone(),
@@ -306,7 +317,7 @@ pub fn delete_snapshot(
     let index_path = dir.join("index.json");
 
     if !index_path.exists() {
-      return Ok(());
+        return Ok(());
     }
 
     let data = std::fs::read_to_string(&index_path).map_err(|e| e.to_string())?;
@@ -336,10 +347,7 @@ pub fn delete_snapshot(
 }
 
 #[tauri::command]
-pub fn clear_snapshot_history(
-    vault_path: String,
-    relative_path: String,
-) -> Result<(), String> {
+pub fn clear_snapshot_history(vault_path: String, relative_path: String) -> Result<(), String> {
     let dir = history_dir(&vault_path).join(path_key(&relative_path));
     if dir.exists() {
         std::fs::remove_dir_all(&dir).map_err(|e| e.to_string())?;
@@ -356,8 +364,7 @@ pub fn restore_snapshot(
     restoring_user_name: String,
     state: State<AppState>,
 ) -> Result<WriteResult, String> {
-    let snapshot_content =
-        read_snapshot(vault_path.clone(), relative_path.clone(), snapshot_id)?;
+    let snapshot_content = read_snapshot(vault_path.clone(), relative_path.clone(), snapshot_id)?;
 
     // Auto-snapshot the current state so the restore can be undone
     let full_path = Path::new(&vault_path).join(&relative_path);
@@ -370,7 +377,9 @@ pub fn restore_snapshot(
                     let bytes = crypto::decrypt_bytes(&k, &raw).map_err(|e| e.to_string())?;
                     String::from_utf8(bytes).map_err(|e| e.to_string())?
                 }
-                None => return Err("Vault is encrypted but no decryption key is loaded".to_string()),
+                None => {
+                    return Err("Vault is encrypted but no decryption key is loaded".to_string())
+                }
             }
         } else {
             String::from_utf8(raw).map_err(|e| e.to_string())?
@@ -401,7 +410,11 @@ pub fn restore_snapshot(
     std::fs::write(&tmp, &bytes).map_err(|e| e.to_string())?;
     std::fs::rename(&tmp, &full_path).map_err(|e| e.to_string())?;
 
-    Ok(WriteResult { hash: compute_hash(&snapshot_content), merged_content: None, conflict: None })
+    Ok(WriteResult {
+        hash: compute_hash(&snapshot_content),
+        merged_content: None,
+        conflict: None,
+    })
 }
 
 #[cfg(test)]
@@ -412,10 +425,7 @@ mod tests {
         write_presence,
     };
     use crate::{
-        models::{
-            collab::ChatMessage,
-            presence::PresenceEntry,
-        },
+        models::{collab::ChatMessage, presence::PresenceEntry},
         test_support::TempVault,
     };
 
@@ -467,16 +477,14 @@ mod tests {
         )
         .expect("stale presence should write");
 
-        let presence = read_all_presence(vault.path_string())
-            .expect("presence should read");
+        let presence = read_all_presence(vault.path_string()).expect("presence should read");
 
         assert_eq!(presence.len(), 1);
         assert_eq!(presence[0].user_id, "fresh");
 
-        clear_presence(vault.path_string(), "fresh".into())
-            .expect("presence file should clear");
-        let cleared = read_all_presence(vault.path_string())
-            .expect("presence should read after clear");
+        clear_presence(vault.path_string(), "fresh".into()).expect("presence file should clear");
+        let cleared =
+            read_all_presence(vault.path_string()).expect("presence should read after clear");
         assert!(cleared.is_empty());
     }
 
@@ -489,8 +497,8 @@ mod tests {
                 .expect("chat message should persist");
         }
 
-        let latest = read_chat_messages(vault.path_string(), 3)
-            .expect("latest chat messages should read");
+        let latest =
+            read_chat_messages(vault.path_string(), 3).expect("latest chat messages should read");
 
         assert_eq!(latest.len(), 3);
         assert_eq!(latest[0].id, "msg-502");
@@ -565,7 +573,10 @@ mod tests {
 
         assert_eq!(snapshots.len(), 50);
         assert_eq!(snapshots.first().map(|meta| meta.label.clone()), Some(None));
-        assert_eq!(snapshots.last().map(|meta| meta.id.as_str()).is_some(), true);
+        assert_eq!(
+            snapshots.last().map(|meta| meta.id.as_str()).is_some(),
+            true
+        );
     }
 
     #[test]
@@ -592,8 +603,12 @@ mod tests {
         )
         .expect("second snapshot should create");
 
-        delete_snapshot(vault.path_string(), "Notes/Test.md".into(), second.id.clone())
-            .expect("snapshot should delete");
+        delete_snapshot(
+            vault.path_string(),
+            "Notes/Test.md".into(),
+            second.id.clone(),
+        )
+        .expect("snapshot should delete");
 
         let snapshots = list_snapshots(vault.path_string(), "Notes/Test.md".into())
             .expect("snapshots should list");

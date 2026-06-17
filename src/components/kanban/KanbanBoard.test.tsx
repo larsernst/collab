@@ -97,6 +97,8 @@ let kanbanContext: {
   knownUsers: Array<{ userId: string; userName: string; userColor: string }>;
   readOnly: boolean;
   caps: typeof FULL_CAPS;
+  livePeers: never[];
+  remoteCardEditors: Map<string, { id: string; name: string; color: string }>;
 };
 
 vi.mock('../../views/KanbanPage', () => ({
@@ -155,6 +157,8 @@ function Harness() {
     knownUsers: [{ userId: 'user-2', userName: 'Alex Doe', userColor: '#60a5fa' }],
     readOnly: false,
     caps: FULL_CAPS,
+    livePeers: [],
+    remoteCardEditors: new Map(),
   };
 
   return <KanbanBoardView />;

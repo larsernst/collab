@@ -1,6 +1,6 @@
+use crate::commands::vault::{read_vault_config_pub, write_vault_config_pub};
 use crate::crypto;
 use crate::state::AppState;
-use crate::commands::vault::{read_vault_config_pub, write_vault_config_pub};
 use rand::RngCore;
 use tauri::State;
 

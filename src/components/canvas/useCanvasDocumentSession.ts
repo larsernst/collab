@@ -3,12 +3,26 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { Node as FlowNode, Viewport } from '@xyflow/react';
 
 import { createVaultClient } from '../../lib/vaultClient';
+import { openLiveJsonSession, type LiveJsonSession, type JsonObject } from '../../lib/liveJsonDocument';
 import type { CanvasData, CanvasEdge } from '../../types/canvas';
 import type { VaultMeta } from '../../types/vault';
 import type { CanvasNodeData } from './CanvasNodeTypes';
 import type { CanvasFlowEdge } from './CanvasEdgeTypes';
 
 const SAVE_DEBOUNCE_MS = 600;
+const LIVE_WRITE_DEBOUNCE_MS = 300;
+// Re-enabled once the canvas CRDT path gained safety guarantees: the client only
+// writes after the live state exactly matches the initial server snapshot
+// (`liveHydratedRef`), refuses to open a session whose live state has lost REST
+// nodes (`lostRestNodes`), and falls back to REST on an empty live root; the
+// server refuses to materialize a node-losing canvas over a populated revision
+// and reseeds a degenerate room from the canonical revision on load.
+const LIVE_CANVAS_ENABLED = true;
+
+/** Plain-JSON snapshot of canvas data for the live CRDT structure. */
+function canvasToJson(canvas: CanvasData): JsonObject {
+  return JSON.parse(JSON.stringify(canvas)) as JsonObject;
+}
 const EMPTY_CANVAS: CanvasData = {
   nodes: [],
   edges: [],
@@ -16,9 +30,34 @@ const EMPTY_CANVAS: CanvasData = {
 };
 
 export function sanitizeLoadedCanvasData(canvas: CanvasData) {
-  const nodeIds = new Set(canvas.nodes.map((node) => node.id));
-  const edges = canvas.edges.filter((edge) => nodeIds.has(edge.source) && nodeIds.has(edge.target));
-  const changed = edges.length !== canvas.edges.length;
+  const inputNodes = Array.isArray(canvas?.nodes) ? canvas.nodes : [];
+  const inputEdges = Array.isArray(canvas?.edges) ? canvas.edges : [];
+  const nodes = inputNodes.filter((node) => (
+    !!node
+    && typeof node.id === 'string'
+    && typeof node.type === 'string'
+    && !!node.position
+    && Number.isFinite(node.position.x)
+    && Number.isFinite(node.position.y)
+  ));
+  const nodeIds = new Set(nodes.map((node) => node.id));
+  const edges = inputEdges.filter((edge) => (
+    !!edge
+    && typeof edge.id === 'string'
+    && typeof edge.source === 'string'
+    && typeof edge.target === 'string'
+    && nodeIds.has(edge.source)
+    && nodeIds.has(edge.target)
+  ));
+  const viewport = canvas?.viewport
+    && Number.isFinite(canvas.viewport.x)
+    && Number.isFinite(canvas.viewport.y)
+    && Number.isFinite(canvas.viewport.zoom)
+    ? canvas.viewport
+    : EMPTY_CANVAS.viewport;
+  const changed = nodes.length !== inputNodes.length
+    || edges.length !== inputEdges.length
+    || viewport !== canvas?.viewport;
 
   if (!changed) {
     return { canvas, changed: false };
@@ -27,7 +66,9 @@ export function sanitizeLoadedCanvasData(canvas: CanvasData) {
   return {
     canvas: {
       ...canvas,
+      nodes,
       edges,
+      viewport,
     },
     changed: true,
   };
@@ -58,6 +99,7 @@ interface UseCanvasDocumentSessionOptions {
   addConflict: (conflict: { relativePath: string; ourContent: string; theirContent: string }) => void;
   myUserId: string;
   myUserName: string;
+  myUserColor?: string;
   isMountedRef: React.RefObject<boolean>;
   isDirtyRef: React.RefObject<boolean>;
   hashRef: React.RefObject<string | undefined>;
@@ -93,6 +135,7 @@ export function useCanvasDocumentSession({
   addConflict,
   myUserId,
   myUserName,
+  myUserColor,
   isMountedRef,
   isDirtyRef,
   hashRef,
@@ -109,7 +152,38 @@ export function useCanvasDocumentSession({
   const saveTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const pendingViewportRef = useRef<Viewport | null>(null);
   const savedCanvasContentRef = useRef<string | null>(null);
+  const restCanvasRef = useRef<CanvasData | null>(null);
+  const [restLoadedPath, setRestLoadedPath] = useState<string | null>(null);
   const [loadRevision, setLoadRevision] = useState(0);
+  // Live co-editing session for hosted canvases; null = REST optimistic writes.
+  const [liveSession, setLiveSession] = useState<LiveJsonSession | null>(null);
+  const liveWriteTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  const liveHydratedRef = useRef(false);
+  const expectedLiveCanvasRef = useRef<string | null>(null);
+
+  // Applies a canvas document (remote live change or seed) to the editor state.
+  const applyCanvas = useCallback((canvas: CanvasData) => {
+    const sanitized = sanitizeLoadedCanvasData(canvas).canvas;
+    resetPreviewState();
+    setViewport(sanitized.viewport ?? EMPTY_CANVAS.viewport);
+    setNodes(buildFlowNode(sanitized));
+    setEdges((sanitized.edges ?? []).map(toFlowEdge));
+    pendingViewportRef.current = sanitized.viewport ?? EMPTY_CANVAS.viewport;
+    setLoadRevision((prev) => prev + 1);
+  }, [buildFlowNode, resetPreviewState, setEdges, setNodes, setViewport, toFlowEdge]);
+
+  const applyLiveCanvas = useCallback((canvas: CanvasData) => {
+    const sanitized = sanitizeLoadedCanvasData(canvas).canvas;
+    liveHydratedRef.current = false;
+    // Compare hydration against the exact ReactFlow round-trip because flow
+    // conversion normalizes defaults and object key order.
+    expectedLiveCanvasRef.current = JSON.stringify(canvasToJson({
+      nodes: buildFlowNode(sanitized).map(fromFlowNode),
+      edges: sanitized.edges.map(toFlowEdge).map(fromFlowEdge),
+      viewport: sanitized.viewport,
+    }));
+    applyCanvas(sanitized);
+  }, [applyCanvas, buildFlowNode, fromFlowEdge, fromFlowNode, toFlowEdge]);
 
   const loadCanvas = useCallback(async (isInitial = false) => {
     if (!client || !relativePath) return;
@@ -131,7 +205,7 @@ export function useCanvasDocumentSession({
 
         // Viewers cannot persist; skip the dangling-edge repair write and keep
         // the sanitized canvas in memory only.
-        if (sanitized.changed && !readOnly) {
+        if (sanitized.changed && !readOnly && client.capabilities.nativeFilesystem) {
           try {
             const repairedResult = await client.writeDocument(
               relativePath,
@@ -151,6 +225,8 @@ export function useCanvasDocumentSession({
       }
 
       markLoaded(currentHash);
+      restCanvasRef.current = canvas;
+      setRestLoadedPath(relativePath);
       isDirtyRef.current = false;
       setSavedHash(relativePath, currentHash);
       resetPreviewState();
@@ -159,7 +235,9 @@ export function useCanvasDocumentSession({
       setEdges(canvas.edges.map(toFlowEdge));
       pendingViewportRef.current = canvas.viewport ?? EMPTY_CANVAS.viewport;
       setLoadRevision((prev) => prev + 1);
-    } catch {}
+    } catch {
+      setRestLoadedPath(relativePath);
+    }
   }, [
     buildFlowNode,
     client,
@@ -180,6 +258,127 @@ export function useCanvasDocumentSession({
     if (!relativePath) return;
     void loadCanvas(true);
   }, [loadCanvas, relativePath]);
+
+  // Open a live co-editing session for hosted canvases; fall back to REST when
+  // unavailable. Remote changes flow in through `onChange`.
+  useEffect(() => {
+    if (
+      !LIVE_CANVAS_ENABLED
+      || !client
+      || !relativePath
+      || !client.resolveLiveSession
+      || restLoadedPath !== relativePath
+    ) {
+      liveHydratedRef.current = false;
+      expectedLiveCanvasRef.current = null;
+      setLiveSession(null);
+      return;
+    }
+    let cancelled = false;
+    let opened: LiveJsonSession | null = null;
+    let off: (() => void) | undefined;
+    openLiveJsonSession(client, relativePath)
+      .then((session) => {
+        if (cancelled || !session) {
+          session?.destroy();
+          return;
+        }
+        opened = session;
+        const initial = session.readJson();
+        if (initial && Object.keys(initial).length > 0) {
+          const liveCanvas = sanitizeLoadedCanvasData(initial as unknown as CanvasData).canvas;
+          const restCanvas = restCanvasRef.current;
+          const liveNodeIds = new Set(liveCanvas.nodes.map((node) => node.id));
+          const lostRestNodes = restCanvas?.nodes.some((node) => !liveNodeIds.has(node.id)) ?? false;
+          if (lostRestNodes) {
+            // A live room must not replace the current canonical revision with a
+            // suspiciously sparse state. This recovers rooms damaged by the
+            // early structured-live startup/bigint regressions without
+            // automatically writing or guessing at the missing content.
+            session.destroy();
+            opened = null;
+            return;
+          }
+          applyLiveCanvas(liveCanvas);
+        } else {
+          // The server owns seeding from the current REST revision. An empty
+          // root means it could not provide a valid live canvas; keep the REST
+          // document visible instead of seeding from potentially stale React
+          // state (which may still be the initial empty canvas).
+          session.destroy();
+          opened = null;
+          return;
+        }
+        off = session.onChange((json) => {
+          if (!cancelled) applyLiveCanvas(json as unknown as CanvasData);
+        });
+        setLiveSession(session);
+      })
+      .catch(() => {
+        // Best-effort; REST remains available.
+      });
+    return () => {
+      cancelled = true;
+      off?.();
+      opened?.destroy();
+      liveHydratedRef.current = false;
+      expectedLiveCanvasRef.current = null;
+      setLiveSession(null);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [applyLiveCanvas, client, relativePath, restLoadedPath]);
+
+  useEffect(() => {
+    if (!liveSession) return;
+    liveSession.awareness.setLocalStateField('user', {
+      id: myUserId,
+      name: myUserName,
+      color: myUserColor,
+    });
+    liveSession.awareness.setLocalStateField('document', {
+      kind: 'canvas',
+      relativePath,
+    });
+  }, [liveSession, myUserColor, myUserId, myUserName, relativePath]);
+
+  // Publish the nodes this client currently has selected as ephemeral canvas
+  // awareness so peers can see what each collaborator is working on. Only sent
+  // when the selection set actually changes (not on every drag tick), and never
+  // persisted as document content.
+  const publishedSelectionRef = useRef<string>('');
+  useEffect(() => {
+    if (!liveSession) return;
+    const selectedNodeIds = nodes.filter((node) => node.selected).map((node) => node.id);
+    const key = selectedNodeIds.join(',');
+    if (key === publishedSelectionRef.current) return;
+    publishedSelectionRef.current = key;
+    liveSession.awareness.setLocalStateField('canvas', { selectedNodeIds });
+  }, [liveSession, nodes]);
+
+  // Push local canvas edits into the live structure (debounced). Writing a value
+  // that already matches the shared document is a no-op, so remote-applied
+  // changes do not echo back.
+  useEffect(() => {
+    if (!liveSession || readOnly) return;
+    const localCanvas = canvasToJson({
+      nodes: nodes.map(fromFlowNode),
+      edges: edges.map(fromFlowEdge),
+      viewport,
+    });
+    if (!liveHydratedRef.current) {
+      if (JSON.stringify(localCanvas) === expectedLiveCanvasRef.current) {
+        liveHydratedRef.current = true;
+      }
+      return;
+    }
+    if (liveWriteTimerRef.current) clearTimeout(liveWriteTimerRef.current);
+    liveWriteTimerRef.current = setTimeout(() => {
+      liveSession.writeJson(localCanvas);
+    }, LIVE_WRITE_DEBOUNCE_MS);
+    return () => {
+      if (liveWriteTimerRef.current) clearTimeout(liveWriteTimerRef.current);
+    };
+  }, [liveSession, readOnly, nodes, edges, viewport, fromFlowNode, fromFlowEdge]);
 
   useEffect(() => {
     const nextViewport = pendingViewportRef.current;
@@ -284,7 +483,8 @@ export function useCanvasDocumentSession({
 
   useEffect(() => {
     if (!vault || !relativePath) return;
-    if (pauseAutosave || readOnly) {
+    // Live sessions persist through the server, not the REST autosave path.
+    if (pauseAutosave || readOnly || liveSession) {
       if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
       return;
     }
@@ -302,5 +502,7 @@ export function useCanvasDocumentSession({
     return () => {
       if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
     };
-  }, [edges, isDirtyRef, markDirty, nodes, pauseAutosave, readOnly, relativePath, runExclusiveSave, saveCanvas, shouldSkipAutosave, vault, viewport]);
+  }, [edges, isDirtyRef, liveSession, markDirty, nodes, pauseAutosave, readOnly, relativePath, runExclusiveSave, saveCanvas, shouldSkipAutosave, vault, viewport]);
+
+  return { liveSession };
 }

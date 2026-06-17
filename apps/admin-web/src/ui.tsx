@@ -134,11 +134,13 @@ export function DialogShell({
   description,
   onClose,
   children,
+  className,
 }: {
   title: string;
   description?: string;
   onClose: () => void;
   children: React.ReactNode;
+  className?: string;
 }) {
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
@@ -150,7 +152,7 @@ export function DialogShell({
   return (
     <div className="ui-dialog-overlay" role="presentation" onClick={onClose}>
       <Card
-        className="ui-dialog"
+        className={cn('ui-dialog', className)}
         role="dialog"
         aria-modal="true"
         aria-label={title}

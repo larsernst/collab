@@ -41,7 +41,8 @@ small,.subtle { color:var(--muted-foreground); }
 
 .ui-button { display:inline-flex; align-items:center; justify-content:center; gap:7px; border:1px solid transparent; border-radius:8px; min-height:36px; padding:8px 12px; color:var(--foreground); font-weight:650; transition:background .15s,border-color .15s,color .15s; }
 .ui-button-default { background:var(--primary); color:var(--primary-foreground); }
-.ui-button-outline { background:var(--card); border-color:var(--border); }
+.ui-button-outline { background:transparent; border-color:var(--primary); color:var(--primary); }
+.ui-button-outline:hover { background:var(--primary-soft); border-color:var(--primary); }
 .ui-button-ghost { background:transparent; color:var(--muted-foreground); }
 .ui-button-destructive { background:color-mix(in srgb,var(--destructive) 12%,transparent); border-color:color-mix(in srgb,var(--destructive) 30%,transparent); color:var(--destructive); }
 .ui-button:hover { filter:brightness(1.08); }
@@ -61,6 +62,17 @@ small,.subtle { color:var(--muted-foreground); }
 .ui-select-option[aria-selected="true"] { color:var(--primary); }
 .ui-dialog-overlay { position:fixed; inset:0; z-index:50; display:grid; place-items:center; padding:24px; background:rgba(0,0,0,.45); backdrop-filter:blur(4px); }
 .ui-dialog { width:min(400px,100%); padding:20px; display:grid; gap:8px; box-shadow:0 24px 64px rgba(0,0,0,.35); }
+.ui-dialog-wide { width:min(880px,100%); max-height:calc(100vh - 48px); overflow-y:auto; }
+.ui-dialog-section { margin-top:14px; }
+.ui-dialog-section>h3 { font-size:12px; font-weight:700; letter-spacing:.08em; text-transform:uppercase; color:var(--muted-foreground); margin:0 0 8px; }
+.subsection-heading { font-size:12px; font-weight:700; letter-spacing:.08em; text-transform:uppercase; color:var(--muted-foreground); margin:22px 0 8px; }
+.subsection-heading:first-of-type { margin-top:0; }
+/* Files modal: a fixed-size shell whose middle region scrolls so the page and
+   dialog never reflow as folders, search results, or trash change. */
+.ui-dialog-files { width:min(1100px,94vw); height:min(82vh,780px); display:flex; flex-direction:column; gap:10px; overflow:hidden; }
+.ui-dialog-files > h2, .ui-dialog-files > p, .ui-dialog-files > .file-browser-toolbar, .ui-dialog-files > .ui-dialog-actions { flex:none; margin-top:0; }
+.files-modal-body { flex:1; min-height:0; overflow:auto; padding-right:4px; }
+.files-modal-body .file-browser-summary { margin-top:0; }
 .ui-dialog h2 { font-size:15px; }
 .ui-dialog>p { font-size:12px; color:var(--muted-foreground); }
 .ui-dialog form { display:grid; gap:12px; margin-top:6px; }
@@ -92,6 +104,11 @@ nav { display:grid; gap:3px; } nav .ui-button { justify-content:flex-start; min-
 .metric-grid { display:grid; grid-template-columns:repeat(3,1fr); gap:13px; margin-bottom:18px; }
 .storage-grid { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:13px; margin-bottom:16px; }
 .transfer-actions { display:flex; align-items:end; justify-content:space-between; gap:16px; flex-wrap:wrap; }
+.chat-log-list { display:grid; gap:8px; margin-top:12px; }
+.chat-log-row { display:flex; gap:10px; align-items:flex-start; padding:10px; border:1px solid var(--border); border-radius:12px; background:color-mix(in srgb,var(--muted) 28%,transparent); }
+.chat-log-row .avatar { flex:none; color:white; }
+.chat-log-meta { display:flex; align-items:baseline; justify-content:space-between; gap:12px; }
+.chat-log-row p { margin:4px 0 0; color:var(--foreground); white-space:pre-wrap; overflow-wrap:anywhere; font-size:13px; }
 .file-browser-toolbar { display:flex; align-items:center; justify-content:space-between; gap:12px; margin-bottom:8px; }
 .file-breadcrumbs { display:flex; align-items:center; flex-wrap:wrap; gap:2px; min-width:0; }
 .file-breadcrumbs > span { display:flex; align-items:center; gap:2px; }
@@ -103,6 +120,7 @@ nav { display:grid; gap:3px; } nav .ui-button { justify-content:flex-start; min-
 .file-browser-summary { margin:0 0 8px; }
 .file-browser { display:grid; gap:2px; overflow-x:auto; }
 .file-row { display:grid; grid-template-columns:minmax(260px,2fr) 100px 190px 100px minmax(300px,auto); gap:12px; align-items:center; min-width:980px; padding:9px 4px; border-bottom:1px solid var(--border); font-size:12px; }
+.trash-file-row { grid-template-columns:minmax(260px,2fr) 100px 190px 160px minmax(330px,auto); }
 .file-header { color:var(--muted-foreground); font-weight:600; }
 .file-name { display:flex; gap:8px; align-items:center; min-width:0; }.file-name svg { color:var(--primary); flex:none; }.file-name span { display:grid; min-width:0; }.file-name strong { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }.file-name small { color:var(--muted-foreground); }
 .file-open-button { appearance:none; border:0; background:none; color:var(--foreground); padding:0; margin:0; text-align:left; font:inherit; font-weight:600; cursor:pointer; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }

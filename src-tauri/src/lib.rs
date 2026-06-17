@@ -1,7 +1,7 @@
-mod models;
-mod state;
 mod commands;
 mod crypto;
+mod models;
+mod state;
 #[cfg(test)]
 pub mod test_support;
 
@@ -9,8 +9,7 @@ use state::AppState;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    let builder = tauri::Builder::default()
-        .manage(AppState::new());
+    let builder = tauri::Builder::default().manage(AppState::new());
 
     #[cfg(target_os = "linux")]
     let builder = if std::env::var_os("FLATPAK_ID").is_some() {
@@ -50,49 +49,53 @@ pub fn run() {
             // before the `scale-changed` signal (where actual zooming occurs) can fire.
             #[cfg(target_os = "linux")]
             {
-                use tauri::Manager;
                 use gtk::prelude::*;
-                use webkit2gtk::{WebViewExt, SettingsExt};
+                use tauri::Manager;
+                use webkit2gtk::{SettingsExt, WebViewExt};
 
                 if let Some(webview_window) = app.get_webview_window("main") {
-                    webview_window.with_webview(|wv| {
-                        let webview = wv.inner();
+                    webview_window
+                        .with_webview(|wv| {
+                            let webview = wv.inner();
 
-                        // Force hardware acceleration so GPU compositing is active.
-                        // Required for backdrop-filter blur on Wayland/Hyprland.
-                        if let Some(settings) = WebViewExt::settings(&webview) {
-                            SettingsExt::set_hardware_acceleration_policy(
-                                &settings,
-                                webkit2gtk::HardwareAccelerationPolicy::Always,
-                            );
-                            // Keep touchpad scrolling predictable across Linux WebKitGTK builds.
-                            // AppImage's bundled runtime has been especially prone to rough
-                            // inertial scrolling and accidental horizontal swipe navigation.
-                            SettingsExt::set_enable_smooth_scrolling(&settings, true);
-                            SettingsExt::set_enable_back_forward_navigation_gestures(&settings, false);
-                        }
-
-                        unsafe {
-                            let key = b"wk-view-zoom-gesture\0".as_ptr() as *const std::os::raw::c_char;
-                            let gesture_ptr = glib::gobject_ffi::g_object_get_data(
-                                webview.as_ptr() as *mut glib::gobject_ffi::GObject,
-                                key,
-                            );
-                            if !gesture_ptr.is_null() {
-                                // Borrow the GtkGestureZoom without taking ownership.
-                                let gesture: gtk::GestureZoom =
-                                    glib::translate::from_glib_none(
-                                        gesture_ptr as *mut gtk_sys::GtkGestureZoom
-                                    );
-                                // Connect to `begin` — WebKit only records initial state here;
-                                // the actual zoom happens in `scale-changed`. Denying in `begin`
-                                // prevents GTK from delivering further events for this sequence.
-                                gesture.connect_begin(|g: &gtk::GestureZoom, _seq| {
-                                    g.set_state(gtk::EventSequenceState::Denied);
-                                });
+                            // Force hardware acceleration so GPU compositing is active.
+                            // Required for backdrop-filter blur on Wayland/Hyprland.
+                            if let Some(settings) = WebViewExt::settings(&webview) {
+                                SettingsExt::set_hardware_acceleration_policy(
+                                    &settings,
+                                    webkit2gtk::HardwareAccelerationPolicy::Always,
+                                );
+                                // Keep touchpad scrolling predictable across Linux WebKitGTK builds.
+                                // AppImage's bundled runtime has been especially prone to rough
+                                // inertial scrolling and accidental horizontal swipe navigation.
+                                SettingsExt::set_enable_smooth_scrolling(&settings, true);
+                                SettingsExt::set_enable_back_forward_navigation_gestures(
+                                    &settings, false,
+                                );
                             }
-                        }
-                    }).ok();
+
+                            unsafe {
+                                let key = b"wk-view-zoom-gesture\0".as_ptr()
+                                    as *const std::os::raw::c_char;
+                                let gesture_ptr = glib::gobject_ffi::g_object_get_data(
+                                    webview.as_ptr() as *mut glib::gobject_ffi::GObject,
+                                    key,
+                                );
+                                if !gesture_ptr.is_null() {
+                                    // Borrow the GtkGestureZoom without taking ownership.
+                                    let gesture: gtk::GestureZoom = glib::translate::from_glib_none(
+                                        gesture_ptr as *mut gtk_sys::GtkGestureZoom,
+                                    );
+                                    // Connect to `begin` — WebKit only records initial state here;
+                                    // the actual zoom happens in `scale-changed`. Denying in `begin`
+                                    // prevents GTK from delivering further events for this sequence.
+                                    gesture.connect_begin(|g: &gtk::GestureZoom, _seq| {
+                                        g.set_state(gtk::EventSequenceState::Denied);
+                                    });
+                                }
+                            }
+                        })
+                        .ok();
                 }
             }
             Ok(())
@@ -145,6 +148,7 @@ pub fn run() {
             commands::server::hosted_vault_asset_data_url,
             commands::server::hosted_user_directory,
             commands::server::hosted_vault_export_zip,
+            commands::server::hosted_ws_ticket,
             // templates
             commands::templates::list_kanban_templates,
             commands::templates::save_kanban_template,

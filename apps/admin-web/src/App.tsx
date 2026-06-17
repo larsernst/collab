@@ -13,18 +13,22 @@ import {
   History,
   KeyRound,
   LogOut,
+  MessageSquare,
   Plus,
   RefreshCw,
+  RotateCcw,
   Search,
   Server,
   Settings,
   ShieldCheck,
   SunMoon,
+  Trash2,
   Upload,
   Users,
 } from 'lucide-react';
 import { ChangeEvent, FormEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { serverApi } from './api';
+import { useAutoRefresh } from './useAutoRefresh';
 import { useAdminAppearance, type AdminAccent, type AdminTheme } from './theme';
 import type {
   AdminOverview,
@@ -32,6 +36,7 @@ import type {
   GrantSubjectType,
   HostedVaultActivityEvent,
   HostedVaultAdminDetail,
+  HostedChatMessage,
   HostedFileEntry,
   HostedFileRevision,
   HostedVaultMember,
@@ -303,8 +308,9 @@ function SettingsPage({
 function Dashboard() {
   const [overview, setOverview] = useState<AdminOverview | null>(null);
   const [error, setError] = useState('');
-  const load = useCallback(() => serverApi.overview().then(setOverview).catch((reason) => setError(String(reason))), []);
+  const load = useCallback(() => serverApi.overview().then((data) => { setOverview(data); setError(''); }).catch((reason) => setError(String(reason))), []);
   useEffect(() => void load(), [load]);
+  useAutoRefresh(load);
   return (
     <>
       <PageHeader eyebrow="OPERATIONS" title="Server dashboard" subtitle="A quiet overview of identities, sessions, and server activity." action={<IconButton label="Refresh dashboard" onClick={load}><RefreshCw size={16} /></IconButton>} />
@@ -319,6 +325,20 @@ function Dashboard() {
           <Metric icon={<Database />} label="Database storage" value={formatBytes(overview.storage.databaseBytes)} detail={`${formatBytes(overview.storage.blobBytes)} blobs`} />
           <Metric icon={<KeyRound />} label="Pending invitations" value={overview.pendingInvitations} detail="One-time expiring links" />
         </div>
+        <Panel title="Live collaboration" icon={<Activity size={17} />}>
+          <div className="storage-grid">
+            <Metric icon={<Activity />} label="Live connections" value={overview.liveCollaboration.activeConnections} detail="Open WebSocket sessions" />
+            <Metric icon={<Boxes />} label="Loaded rooms" value={overview.liveCollaboration.loadedRooms} detail={`${overview.liveCollaboration.activeAwarenessStates} awareness states`} />
+            <Metric icon={<Gauge />} label="Update rate" value={overview.liveCollaboration.updatesLastMinute} detail="Durable updates in the last minute" />
+            <Metric icon={<Database />} label="CRDT update log" value={overview.liveCollaboration.pendingUpdateCount} detail={`${formatBytes(overview.liveCollaboration.pendingUpdateBytes)} pending compaction`} />
+            <Metric
+              icon={<Database />}
+              label="Compacted documents"
+              value={overview.liveCollaboration.compactedDocuments}
+              detail={`${formatBytes(overview.liveCollaboration.compactedStateBytes)} compacted${overview.liveCollaboration.lastCompactionAt ? ` · ${new Date(overview.liveCollaboration.lastCompactionAt).toLocaleString()}` : ''}`}
+            />
+          </div>
+        </Panel>
         {overview.operationalWarnings.length > 0 && <Panel title="Operational warnings" icon={<CircleAlert size={17} />}><div className="warning-list">{overview.operationalWarnings.map((warning) => <div className="warning-row" key={warning.code}><CircleAlert size={16} /><div><strong>{warning.code.replaceAll('_', ' ')}</strong><small>{warning.message}</small></div></div>)}</div></Panel>}
         <Panel title="Recent activity" icon={<Activity size={17} />}><AuditTable events={overview.recentAuditEvents} /></Panel>
       </>}
@@ -342,9 +362,11 @@ function UsersPage({ currentUser }: { currentUser: ServerUser }) {
       const [nextUsers, nextInvitations] = await Promise.all([serverApi.users(), serverApi.invitations()]);
       setUsers(nextUsers);
       setInvitations(nextInvitations);
+      setError('');
     } catch (reason) { setError(String(reason)); }
   }, []);
   useEffect(() => void load(), [load]);
+  useAutoRefresh(load);
   async function create(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const form = new FormData(event.currentTarget);
@@ -398,7 +420,17 @@ function UsersPage({ currentUser }: { currentUser: ServerUser }) {
         <div className="user-list">{users.map((user) => <div className="user-row" key={user.id}><Avatar user={user} /><div className="grow"><strong>{user.displayName}</strong><small>{user.username} · {user.role}{user.isPrimaryAdmin ? ' · primary administrator' : ''}</small></div><Badge variant={user.status === 'active' ? 'success' : 'destructive'}>{user.status}</Badge><span className="session-count">{user.activeSessions} sessions</span><Button variant="outline" size="sm" onClick={() => setEditTarget(user)}>Edit</Button><Button variant="outline" size="sm" onClick={async () => setActivity({ user, events: await serverApi.userActivity(user.id) })}>Activity</Button><Button variant="outline" size="sm" onClick={() => setResetTarget(user)}>Reset password</Button>{user.status === 'disabled' ? <Button variant="outline" size="sm" disabled={user.isPrimaryAdmin} onClick={() => setDisabled(user, false)}>Re-enable</Button> : <Button variant="outline" size="sm" disabled={user.id === currentUser.id || user.isPrimaryAdmin} onClick={() => setDisabled(user, true)}>Disable</Button>}<Button variant="outline" size="sm" onClick={async () => { await serverApi.revokeSessions(user.id); await load(); }}>Revoke sessions</Button><Button variant="destructive" size="sm" disabled={user.id === currentUser.id || user.isPrimaryAdmin} onClick={() => setConfirmDelete(user)}>Delete account</Button></div>)}</div>
       </Panel>
       <Panel title={`${invitations.length} invitations`} icon={<KeyRound size={17} />}><div className="audit-list">{invitations.map((invitation) => <div className="audit-row" key={invitation.id}><div className="grow"><strong>{invitation.displayName}</strong><small>{invitation.username} · expires {new Date(invitation.expiresAt).toLocaleString()}</small></div><span className="request-chip">{invitation.acceptedAt ? 'accepted' : invitation.revokedAt ? 'revoked' : new Date(invitation.expiresAt) < new Date() ? 'expired' : 'pending'}</span></div>)}</div></Panel>
-      {activity && <Panel title={`${activity.user.displayName} activity`} icon={<Activity size={17} />}><AuditTable events={activity.events} /></Panel>}
+      {activity && (
+        <DialogShell
+          title={`${activity.user.displayName} activity`}
+          description={`Recent account events for ${activity.user.username}.`}
+          onClose={() => setActivity(null)}
+          className="ui-dialog-wide"
+        >
+          <AuditTable events={activity.events} />
+          <div className="ui-dialog-actions"><Button variant="outline" onClick={() => setActivity(null)}>Close</Button></div>
+        </DialogShell>
+      )}
       {confirmDelete && (
         <ConfirmDialog
           destructive
@@ -449,9 +481,11 @@ function VaultsPage() {
   const [vaults, setVaults] = useState<HostedVaultSummary[]>([]);
   const [selectedVaultId, setSelectedVaultId] = useState<string | null>(null);
   const [showCreate, setShowCreate] = useState(false);
+  const [forceDelete, setForceDelete] = useState<HostedVaultSummary | null>(null);
   const [error, setError] = useState('');
-  const load = useCallback(() => serverApi.vaults().then(setVaults).catch((reason) => setError(String(reason))), []);
+  const load = useCallback(() => serverApi.vaults().then((data) => { setVaults(data); setError(''); }).catch((reason) => setError(String(reason))), []);
   useEffect(() => void load(), [load]);
+  useAutoRefresh(load);
   async function create(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const form = new FormData(event.currentTarget);
@@ -495,25 +529,38 @@ function VaultsPage() {
                 <div className="grow"><strong>{vault.name}</strong><small>{vault.ownerDisplayName} · {vault.members} members · {formatBytes(vault.storageBytes)}</small></div>
                 <span className={`status ${vault.status === 'active' ? 'active' : 'disabled'}`}>{vault.status.replace('_', ' ')}</span>
                 <Button variant="outline" size="sm" aria-label={`Manage ${vault.name}`} onClick={() => setSelectedVaultId(vault.id)}>Manage</Button>
+                {vault.status === 'pending_delete' && (
+                  <Button variant="destructive" size="sm" aria-label={`Force delete ${vault.name}`} onClick={() => setForceDelete(vault)}>Force delete</Button>
+                )}
               </div>
             ))}
           </div>
         </Panel>
       )}
+      {forceDelete && (
+        <ConfirmDialog
+          destructive
+          title={`Permanently delete ${forceDelete.name}?`}
+          description="This irreversibly removes the vault and all of its files, revisions, members, grants, and history. This cannot be undone."
+          confirmLabel="Force delete"
+          onCancel={() => setForceDelete(null)}
+          onConfirm={() => {
+            const vault = forceDelete;
+            setForceDelete(null);
+            setError('');
+            void serverApi.forceDeleteVault(vault.id).then(load).catch((reason) => setError(String(reason)));
+          }}
+        />
+      )}
     </>
   );
 }
-
-const ROLE_OPTIONS = [
-  { value: 'viewer', label: 'viewer' },
-  { value: 'editor', label: 'editor' },
-  { value: 'admin', label: 'admin' },
-];
 
 function VaultDetailPage({ vaultId, onBack }: { vaultId: string; onBack: () => void }) {
   const [detail, setDetail] = useState<HostedVaultAdminDetail | null>(null);
   const [members, setMembers] = useState<HostedVaultMember[]>([]);
   const [activity, setActivity] = useState<HostedVaultActivityEvent[]>([]);
+  const [chatMessages, setChatMessages] = useState<HostedChatMessage[]>([]);
   const [storage, setStorage] = useState<HostedVaultStorage | null>(null);
   const [files, setFiles] = useState<HostedFileEntry[]>([]);
   const [manifestSequence, setManifestSequence] = useState(0);
@@ -523,13 +570,17 @@ function VaultDetailPage({ vaultId, onBack }: { vaultId: string; onBack: () => v
   const [dropTargetId, setDropTargetId] = useState<string | null | '__root__'>(null);
   const [users, setUsers] = useState<ServerUser[]>([]);
   const [newMemberId, setNewMemberId] = useState('');
-  const [newMemberRole, setNewMemberRole] = useState('viewer');
   const [grants, setGrants] = useState<VaultGrant[]>([]);
   const [templates, setTemplates] = useState<PermissionTemplate[]>([]);
   const [groups, setGroups] = useState<UserGroup[]>([]);
   const [grantSubjectType, setGrantSubjectType] = useState<GrantSubjectType>('group');
   const [grantSubjectId, setGrantSubjectId] = useState('');
-  const [grantTemplateId, setGrantTemplateId] = useState('');
+  const [grantEditor, setGrantEditor] = useState<{
+    subjectType: GrantSubjectType;
+    subjectId: string;
+    subjectName: string;
+    current: VaultGrant | null;
+  } | null>(null);
   const [confirm, setConfirm] = useState<{
     title: string;
     description: string;
@@ -538,15 +589,18 @@ function VaultDetailPage({ vaultId, onBack }: { vaultId: string; onBack: () => v
   } | null>(null);
   const [renaming, setRenaming] = useState(false);
   const [importing, setImporting] = useState(false);
+  const [filesOpen, setFilesOpen] = useState(false);
+  const [forceDeleting, setForceDeleting] = useState(false);
   const importInputRef = useRef<HTMLInputElement>(null);
   const [error, setError] = useState('');
   const load = useCallback(async () => {
     setError('');
     try {
-      const [nextDetail, nextMembers, nextActivity, nextUsers, nextStorage, nextManifest, nextGrants, nextTemplates, nextGroups] = await Promise.all([
+      const [nextDetail, nextMembers, nextActivity, nextChatMessages, nextUsers, nextStorage, nextManifest, nextGrants, nextTemplates, nextGroups] = await Promise.all([
         serverApi.vaultDetail(vaultId),
         serverApi.vaultMembers(vaultId),
         serverApi.vaultActivity(vaultId),
+        serverApi.vaultChat(vaultId).catch(() => []),
         serverApi.users(),
         serverApi.vaultStorage(vaultId).catch(() => null),
         serverApi.vaultFiles(vaultId),
@@ -557,6 +611,7 @@ function VaultDetailPage({ vaultId, onBack }: { vaultId: string; onBack: () => v
       setDetail(nextDetail);
       setMembers(nextMembers);
       setActivity(nextActivity);
+      setChatMessages(nextChatMessages);
       setUsers(nextUsers);
       setStorage(nextStorage);
       setFiles(nextManifest.files);
@@ -569,6 +624,7 @@ function VaultDetailPage({ vaultId, onBack }: { vaultId: string; onBack: () => v
     }
   }, [vaultId]);
   useEffect(() => void load(), [load]);
+  useAutoRefresh(load);
 
   async function run(action: () => Promise<unknown>) {
     setError('');
@@ -587,9 +643,8 @@ function VaultDetailPage({ vaultId, onBack }: { vaultId: string; onBack: () => v
   async function addMember(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (!memberChoice) return;
-    await run(() => serverApi.addVaultMember(vaultId, { userId: memberChoice, role: newMemberRole }));
+    await run(() => serverApi.addVaultMember(vaultId, { userId: memberChoice, role: 'viewer' }));
     setNewMemberId('');
-    setNewMemberRole('viewer');
   }
 
   async function importVault(event: ChangeEvent<HTMLInputElement>) {
@@ -662,6 +717,15 @@ function VaultDetailPage({ vaultId, onBack }: { vaultId: string; onBack: () => v
     }));
   }
 
+  async function performTrashOperation(file: HostedFileEntry, operationType: 'restore' | 'purge') {
+    await serverApi.moveFile(vaultId, {
+      clientOperationId: crypto.randomUUID(),
+      baseManifestSequence: manifestSequence,
+      operationType,
+      targetFileId: file.id,
+    });
+  }
+
   function handleDropOnTarget(targetParentId: string | null) {
     const fileId = draggingFileId;
     setDraggingFileId(null);
@@ -681,16 +745,23 @@ function VaultDetailPage({ vaultId, onBack }: { vaultId: string; onBack: () => v
     return folders;
   }, [currentFolder, filesById]);
   const normalizedSearch = fileSearch.trim().toLocaleLowerCase();
+  const activeFiles = useMemo(() => files.filter((file) => file.state === 'active'), [files]);
   const visibleFiles = useMemo(() => {
     const matching = normalizedSearch
-      ? files.filter((file) => file.relativePath.toLocaleLowerCase().includes(normalizedSearch))
-      : files.filter((file) => file.parentId === currentFolderId);
+      ? activeFiles.filter((file) => file.relativePath.toLocaleLowerCase().includes(normalizedSearch))
+      : activeFiles.filter((file) => file.parentId === currentFolderId);
     return [...matching].sort((left, right) => {
       if (left.kind === 'folder' && right.kind !== 'folder') return -1;
       if (left.kind !== 'folder' && right.kind === 'folder') return 1;
       return left.name.localeCompare(right.name, undefined, { sensitivity: 'base' });
     });
-  }, [currentFolderId, files, normalizedSearch]);
+  }, [activeFiles, currentFolderId, normalizedSearch]);
+  const trashedFiles = useMemo(() => {
+    const trashedIds = new Set(files.filter((file) => file.state === 'trashed').map((file) => file.id));
+    return files
+      .filter((file) => file.state === 'trashed' && (!file.parentId || !trashedIds.has(file.parentId)))
+      .sort((left, right) => (right.trashedAt ?? '').localeCompare(left.trashedAt ?? ''));
+  }, [files]);
 
   function openFolder(folderId: string | null) {
     setCurrentFolderId(folderId);
@@ -705,7 +776,10 @@ function VaultDetailPage({ vaultId, onBack }: { vaultId: string; onBack: () => v
       {detail.status === 'active' && <Button variant="outline" size="sm" onClick={() => run(() => serverApi.updateVault(vaultId, { status: 'archived' }))}>Archive vault</Button>}
       {detail.status === 'archived' && <Button variant="outline" size="sm" onClick={() => run(() => serverApi.updateVault(vaultId, { status: 'active' }))}>Reactivate vault</Button>}
       {pendingDelete ? (
-        <Button variant="outline" size="sm" onClick={() => run(() => serverApi.updateVault(vaultId, { status: 'active' }))}>Restore vault</Button>
+        <>
+          <Button variant="outline" size="sm" onClick={() => run(() => serverApi.updateVault(vaultId, { status: 'active' }))}>Restore vault</Button>
+          <Button variant="destructive" size="sm" onClick={() => setForceDeleting(true)}>Force delete</Button>
+        </>
       ) : (
         <Button
           variant="destructive"
@@ -770,6 +844,16 @@ function VaultDetailPage({ vaultId, onBack }: { vaultId: string; onBack: () => v
           <p className="subtle">Import requires an empty active vault. Server administrators can transfer content across every hosted vault.</p>
         </Panel>
         <Panel title="Vault files" icon={<Folder size={17} />}>
+          <p className="subtle">{detail.activeFiles} active {detail.activeFiles === 1 ? 'file' : 'files'} · {detail.trashedFiles} in trash. Open the browser to navigate folders, move, download, and manage trashed items.</p>
+          <div className="panel-actions"><Button size="sm" onClick={() => setFilesOpen(true)}><FolderOpen size={16} />Browse files</Button></div>
+        </Panel>
+        {filesOpen && (
+          <DialogShell
+            title="Vault files"
+            description={`Browse, move, download, and manage files in ${detail.name}.`}
+            onClose={() => setFilesOpen(false)}
+            className="ui-dialog-files"
+          >
           <div className="file-browser-toolbar">
             <nav className="file-breadcrumbs" aria-label="Vault file path">
               <Button
@@ -811,6 +895,7 @@ function VaultDetailPage({ vaultId, onBack }: { vaultId: string; onBack: () => v
               />
             </label>
           </div>
+          <div className="files-modal-body">
           <p className="subtle file-browser-summary">
             {normalizedSearch
               ? `${visibleFiles.length} matches across the vault`
@@ -865,23 +950,63 @@ function VaultDetailPage({ vaultId, onBack }: { vaultId: string; onBack: () => v
             })}
             {visibleFiles.length === 0 && <div className="file-browser-empty">{normalizedSearch ? 'No files match this search.' : 'This folder is empty.'}</div>}
           </div>
-        </Panel>
-        <Panel title={`${members.length} members`} icon={<Users size={17} />}>
+          <div className="ui-dialog-section">
+            <h3>Trash ({trashedFiles.length})</h3>
+            <p className="subtle">Trashed top-level items are kept separately from active vault files. Restoring a folder also restores its contents.</p>
+            <div className="file-browser">
+              <div className="file-row trash-file-row file-header">
+                <span>Original path</span><span>Size</span><span>Deleted</span><span>Deleted by</span><span>Actions</span>
+              </div>
+              {trashedFiles.map((file) => (
+                <div className="file-row trash-file-row" key={file.id}>
+                  <div className="file-name">
+                    {file.kind === 'folder' ? <Folder size={16} /> : <FileIcon size={16} />}
+                    <span><strong>{file.relativePath}</strong><small>{file.kind}{file.documentType ? ` · ${file.documentType}` : ''}</small></span>
+                  </div>
+                  <span>{file.currentRevision ? formatBytes(file.currentRevision.sizeBytes) : '—'}</span>
+                  <span>{file.trashedAt ? new Date(file.trashedAt).toLocaleString() : 'Unknown'}</span>
+                  <span>{file.trashedByDisplayName ?? 'Unknown user'}</span>
+                  <div className="actions">
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      disabled={pendingDelete}
+                      onClick={() => void run(() => performTrashOperation(file, 'restore'))}
+                    >
+                      <RotateCcw size={15} />Restore
+                    </Button>
+                    <Button
+                      variant="destructive"
+                      size="sm"
+                      disabled={pendingDelete}
+                      onClick={() => setConfirm({
+                        title: `Permanently delete ${file.name}?`,
+                        description: 'This removes the item and its retained trash record. This action cannot be undone.',
+                        label: 'Delete permanently',
+                        action: () => performTrashOperation(file, 'purge'),
+                      })}
+                    >
+                      <Trash2 size={15} />Delete permanently
+                    </Button>
+                  </div>
+                </div>
+              ))}
+              {trashedFiles.length === 0 && <div className="file-browser-empty">Trash is empty.</div>}
+            </div>
+          </div>
+          </div>
+          <div className="ui-dialog-actions"><Button variant="outline" onClick={() => setFilesOpen(false)}>Close</Button></div>
+          </DialogShell>
+        )}
+        <Panel title="Members & access" icon={<Users size={17} />}>
+          <h3 className="subsection-heading">Members ({members.length})</h3>
+          <p className="subtle">Membership determines who can receive direct vault access. Configure effective permissions under Access grants.</p>
           <div className="user-list">
             {members.map((member) => (
               <div className="user-row" key={member.userId}>
                 <div className="avatar">{member.displayName.slice(0, 2).toUpperCase()}</div>
                 <div className="grow"><strong>{member.displayName}</strong><small>{member.username}{member.owner ? ' · owner' : ''}</small></div>
-                {member.owner ? <Badge variant="success">admin</Badge> : (
-                  <SelectMenu
-                    size="sm"
-                    label={`Role for ${member.username}`}
-                    value={member.role}
-                    options={ROLE_OPTIONS}
-                    disabled={pendingDelete}
-                    onChange={(role) => void run(() => serverApi.updateVaultMember(vaultId, member.userId, { role }))}
-                  />
-                )}
+                <Badge variant={member.owner ? 'success' : 'outline'}>{member.owner ? 'owner' : 'member'}</Badge>
                 <Button
                   variant="destructive"
                   size="sm"
@@ -908,20 +1033,12 @@ function VaultDetailPage({ vaultId, onBack }: { vaultId: string; onBack: () => v
                   onChange={setNewMemberId}
                 />
               </label>
-              <label className="field"><span>Role</span>
-                <SelectMenu
-                  label="New member role"
-                  value={newMemberRole}
-                  options={ROLE_OPTIONS}
-                  onChange={setNewMemberRole}
-                />
-              </label>
               <Button size="sm">Add member</Button>
             </form>
           )}
-        </Panel>
-        <Panel title="Access grants" icon={<ShieldCheck size={17} />}>
-          <p className="subtle">Grant a user or group access through a permission template. User grants override an existing member's capabilities; removing reverts to the role default.</p>
+          <Separator />
+          <h3 className="subsection-heading">Access grants ({grants.length})</h3>
+          <p className="subtle">Grant a user or group access through a reusable template or a custom capability set. User grants override the member baseline; removing one reverts to that baseline.</p>
           <div className="user-list">
             {grants.length === 0 && <p className="subtle">No grants resolved for this vault.</p>}
             {grants.map((grant) => (
@@ -933,9 +1050,22 @@ function VaultDetailPage({ vaultId, onBack }: { vaultId: string; onBack: () => v
                   <div className="capability-summary-row"><CapabilitySummary capabilities={grant.capabilities} /></div>
                 </div>
                 <Button
+                  variant="outline"
+                  size="sm"
+                  disabled={pendingDelete || (grant.subjectType === 'user' && grant.subjectId === detail.ownerUserId)}
+                  onClick={() => setGrantEditor({
+                    subjectType: grant.subjectType,
+                    subjectId: grant.subjectId,
+                    subjectName: grant.subjectName,
+                    current: grant,
+                  })}
+                >
+                  Configure
+                </Button>
+                <Button
                   variant="destructive"
                   size="sm"
-                  disabled={pendingDelete}
+                  disabled={pendingDelete || (grant.subjectType === 'user' && grant.subjectId === detail.ownerUserId)}
                   onClick={() => setConfirm({
                     title: `Remove grant for ${grant.subjectName}?`,
                     description: grant.subjectType === 'group'
@@ -960,7 +1090,11 @@ function VaultDetailPage({ vaultId, onBack }: { vaultId: string; onBack: () => v
                   : members.filter((member) => !member.owner).map((member) => member.userId);
                 const subjectId = subjectCandidates.includes(grantSubjectId) ? grantSubjectId : subjectCandidates[0];
                 if (!subjectId) return;
-                void run(() => serverApi.putVaultGrant(vaultId, grantSubjectType, subjectId, grantTemplateId ? { templateId: grantTemplateId } : {}));
+                const subjectName = grantSubjectType === 'group'
+                  ? groups.find((group) => group.id === subjectId)?.name
+                  : members.find((member) => member.userId === subjectId)?.displayName;
+                if (!subjectName) return;
+                setGrantEditor({ subjectType: grantSubjectType, subjectId, subjectName, current: null });
               }}
             >
               <label className="field"><span>Subject</span>
@@ -981,18 +1115,11 @@ function VaultDetailPage({ vaultId, onBack }: { vaultId: string; onBack: () => v
                   onChange={setGrantSubjectId}
                 />
               </label>
-              <label className="field"><span>Template</span>
-                <SelectMenu
-                  label="Grant template"
-                  value={grantTemplateId}
-                  options={[{ value: '', label: grantSubjectType === 'user' ? 'Role default' : 'No capabilities' }, ...templates.map((template) => ({ value: template.id, label: template.name }))]}
-                  onChange={setGrantTemplateId}
-                />
-              </label>
-              <Button size="sm">Apply grant</Button>
+              <Button size="sm">Configure access</Button>
             </form>
           )}
         </Panel>
+        <VaultChatLogPanel messages={chatMessages} />
         <VaultActivityPanel activity={activity} />
       </>}
       {confirm && (
@@ -1009,6 +1136,20 @@ function VaultDetailPage({ vaultId, onBack }: { vaultId: string; onBack: () => v
           }}
         />
       )}
+      {forceDeleting && detail && (
+        <ConfirmDialog
+          destructive
+          title={`Permanently delete ${detail.name}?`}
+          description="This irreversibly removes the vault and all of its files, revisions, members, grants, and history. This cannot be undone."
+          confirmLabel="Force delete"
+          onCancel={() => setForceDeleting(false)}
+          onConfirm={() => {
+            setForceDeleting(false);
+            setError('');
+            void serverApi.forceDeleteVault(vaultId).then(onBack).catch((reason) => setError(String(reason)));
+          }}
+        />
+      )}
       {renaming && detail && (
         <PromptDialog
           title="Rename vault"
@@ -1020,6 +1161,22 @@ function VaultDetailPage({ vaultId, onBack }: { vaultId: string; onBack: () => v
           onSubmit={(name) => {
             setRenaming(false);
             void run(() => serverApi.updateVault(vaultId, { name }));
+          }}
+        />
+      )}
+      {grantEditor && detail && (
+        <GrantEditorDialog
+          vaultId={vaultId}
+          subjectType={grantEditor.subjectType}
+          subjectId={grantEditor.subjectId}
+          subjectName={grantEditor.subjectName}
+          vaultName={detail.name}
+          current={grantEditor.current}
+          templates={templates}
+          onClose={() => setGrantEditor(null)}
+          onSaved={() => {
+            setGrantEditor(null);
+            void load();
           }}
         />
       )}
@@ -1128,6 +1285,33 @@ function FileHistoryMenu({
   );
 }
 
+function VaultChatLogPanel({ messages }: { messages: HostedChatMessage[] }) {
+  const ordered = [...messages].sort((left, right) => right.timestamp - left.timestamp);
+  return (
+    <Panel title="Chat log" icon={<MessageSquare size={17} />}>
+      {ordered.length === 0 ? <p className="subtle">No chat messages recorded for this vault yet.</p> : (
+        <>
+          <p className="subtle">Most recent {ordered.length} server-routed chat {ordered.length === 1 ? 'message' : 'messages'}.</p>
+          <div className="chat-log-list">
+            {ordered.map((message) => (
+              <div className="chat-log-row" key={message.id}>
+                <div className="avatar" style={{ background: message.userColor }}>{message.userName.slice(0, 2).toUpperCase()}</div>
+                <div className="grow">
+                  <div className="chat-log-meta">
+                    <strong>{message.userName}</strong>
+                    <small>{new Date(message.timestamp).toLocaleString()}</small>
+                  </div>
+                  <p>{message.content}</p>
+                </div>
+              </div>
+            ))}
+          </div>
+        </>
+      )}
+    </Panel>
+  );
+}
+
 // Vault activity condensed into a card with the three most recent events plus a
 // collapsible submenu for the full log.
 function VaultActivityPanel({ activity }: { activity: HostedVaultActivityEvent[] }) {
@@ -1177,7 +1361,9 @@ function VaultActivityPanel({ activity }: { activity: HostedVaultActivityEvent[]
 
 function AuditPage() {
   const [events, setEvents] = useState<AuditEvent[]>([]);
-  useEffect(() => void serverApi.auditEvents().then(setEvents), []);
+  const load = useCallback(() => serverApi.auditEvents().then(setEvents).catch(() => undefined), []);
+  useEffect(() => void load(), [load]);
+  useAutoRefresh(load);
   return <><PageHeader eyebrow="SECURITY" title="Audit log" subtitle="Redacted authentication and administration events." /><Panel title="Recent events" icon={<ShieldCheck size={17} />}><AuditTable events={events} /></Panel></>;
 }
 
@@ -1315,6 +1501,7 @@ function PermissionsPage() {
     }
   }, []);
   useEffect(() => void load(), [load]);
+  useAutoRefresh(load);
 
   async function run(action: () => Promise<unknown>) {
     setError('');

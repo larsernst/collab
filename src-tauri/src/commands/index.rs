@@ -12,7 +12,13 @@ use walkdir::WalkDir;
 fn is_ignored_dir_name(name: &str) -> bool {
     matches!(
         name,
-        "node_modules" | "target" | "dist" | "dist-builds" | "build" | "flatpak-build" | "flatpak-repo"
+        "node_modules"
+            | "target"
+            | "dist"
+            | "dist-builds"
+            | "build"
+            | "flatpak-build"
+            | "flatpak-repo"
     )
 }
 
@@ -100,12 +106,7 @@ fn extract_tags(content: &str) -> Vec<String> {
                     tags.extend(
                         inner
                             .split(',')
-                            .map(|t| {
-                                t.trim()
-                                    .trim_matches('"')
-                                    .trim_matches('\'')
-                                    .to_string()
-                            })
+                            .map(|t| t.trim().trim_matches('"').trim_matches('\'').to_string())
                             .filter(|t| !t.is_empty()),
                     );
                 } else {
@@ -113,12 +114,7 @@ fn extract_tags(content: &str) -> Vec<String> {
                 }
             } else if in_tags {
                 if let Some(tag) = line.trim().strip_prefix("- ") {
-                    tags.push(
-                        tag.trim()
-                            .trim_matches('"')
-                            .trim_matches('\'')
-                            .to_string(),
-                    );
+                    tags.push(tag.trim().trim_matches('"').trim_matches('\'').to_string());
                 } else {
                     in_tags = false;
                 }

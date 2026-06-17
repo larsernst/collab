@@ -157,7 +157,7 @@ export default function FileTree() {
   const treeContainerRef = useRef<HTMLDivElement | null>(null);
   const readOnly = isVaultReadOnly(vault);
 
-  // ── External file import (images, PDFs, markdown) ──────────────────────────
+  // ── External file import (images, PDFs, markdown, canvas, Kanban) ──────────
   const importFiles = useCallback(async (sourcePaths: string[], targetFolder?: string) => {
     if (!vault || sourcePaths.length === 0) return;
     try {
@@ -686,7 +686,7 @@ export default function FileTree() {
                     <FileUp size={13} />
                   </button>
                 </TooltipTrigger>
-                <TooltipContent side="bottom" className="text-xs text-foreground">Add files (images, PDFs, markdown)</TooltipContent>
+                <TooltipContent side="bottom" className="text-xs text-foreground">Add files (images, PDFs, markdown, canvas, Kanban)</TooltipContent>
               </Tooltip>
             )}
           </div>

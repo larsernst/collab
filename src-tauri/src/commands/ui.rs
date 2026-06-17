@@ -11,9 +11,13 @@ pub async fn set_ui_zoom(zoom: f64, window: tauri::WebviewWindow) -> Result<(), 
 #[tauri::command]
 pub fn is_appimage() -> bool {
     #[cfg(target_os = "linux")]
-    { std::env::var_os("APPIMAGE").is_some() }
+    {
+        std::env::var_os("APPIMAGE").is_some()
+    }
     #[cfg(not(target_os = "linux"))]
-    { false }
+    {
+        false
+    }
 }
 
 /// Returns true when running inside a Flatpak sandbox.
@@ -22,9 +26,13 @@ pub fn is_appimage() -> bool {
 #[tauri::command]
 pub fn is_flatpak() -> bool {
     #[cfg(target_os = "linux")]
-    { std::env::var_os("FLATPAK_ID").is_some() }
+    {
+        std::env::var_os("FLATPAK_ID").is_some()
+    }
     #[cfg(not(target_os = "linux"))]
-    { false }
+    {
+        false
+    }
 }
 
 /// Returns true when the AppImage blur compatibility fallback is explicitly enabled.
@@ -32,7 +40,9 @@ pub fn is_flatpak() -> bool {
 #[tauri::command]
 pub fn should_disable_blur() -> bool {
     matches!(
-        std::env::var("COLLAB_APPIMAGE_DISABLE_BLUR").ok().as_deref(),
+        std::env::var("COLLAB_APPIMAGE_DISABLE_BLUR")
+            .ok()
+            .as_deref(),
         Some("1") | Some("true") | Some("TRUE") | Some("yes") | Some("YES")
     )
 }

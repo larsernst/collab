@@ -30,7 +30,7 @@ const importExternalFilesIntoVault = vi.fn(
 );
 vi.mock('../../lib/vaultFileImport', () => ({
   importExternalFilesIntoVault: (...args: unknown[]) => importExternalFilesIntoVault(...args),
-  IMPORTABLE_EXTENSIONS: ['png', 'pdf', 'md'],
+  IMPORTABLE_EXTENSIONS: ['png', 'pdf', 'md', 'canvas', 'kanban'],
 }));
 
 vi.mock('sonner', () => ({
@@ -410,7 +410,7 @@ describe('FileTree folder collapse state', () => {
     render(<FileTree />);
     fireEvent.click(screen.getByLabelText('Add files to vault'));
 
-    await waitFor(() => expect(tauriCommands.showOpenFilesDialog).toHaveBeenCalledWith(['png', 'pdf', 'md']));
+    await waitFor(() => expect(tauriCommands.showOpenFilesDialog).toHaveBeenCalledWith(['png', 'pdf', 'md', 'canvas', 'kanban']));
     await waitFor(() => expect(importExternalFilesIntoVault).toHaveBeenCalled());
     expect(importExternalFilesIntoVault.mock.calls[0][1]).toEqual(['/desktop/cat.png']);
   });

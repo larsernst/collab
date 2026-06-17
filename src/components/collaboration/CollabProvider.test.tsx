@@ -43,7 +43,10 @@ vi.mock('../../lib/collabTransport', () => {
     onConfigChanged = transportMocks.onConfigChanged;
   }
 
-  return { FileSystemTransport };
+  return {
+    FileSystemTransport,
+    createCollabTransport: vi.fn(() => new FileSystemTransport('/vault')),
+  };
 });
 
 vi.mock('sonner', () => ({

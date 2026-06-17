@@ -225,19 +225,20 @@ pub fn rewrite_note_references(
         }
     });
 
-    let content = IMAGE_WIKI.replace_all(&content, |caps: &Captures| {
-        match rewrite_target_reference(&caps[1], note_relative_path, old_path, new_path) {
-            Some(Some(next_target)) => {
-                if let Some(label) = caps.get(3) {
-                    format!("![[{next_target}|{}]]", label.as_str())
-                } else {
-                    format!("![[{next_target}]]")
+    let content =
+        IMAGE_WIKI.replace_all(&content, |caps: &Captures| {
+            match rewrite_target_reference(&caps[1], note_relative_path, old_path, new_path) {
+                Some(Some(next_target)) => {
+                    if let Some(label) = caps.get(3) {
+                        format!("![[{next_target}|{}]]", label.as_str())
+                    } else {
+                        format!("![[{next_target}]]")
+                    }
                 }
+                Some(None) => String::new(),
+                None => caps[0].to_string(),
             }
-            Some(None) => String::new(),
-            None => caps[0].to_string(),
-        }
-    });
+        });
 
     let content_string = content.into_owned();
     let content = LINK_MD.replace_all(&content_string, |caps: &Captures| {
@@ -276,10 +277,7 @@ pub fn rewrite_note_references(
     .into_owned()
 }
 
-pub fn resolve_note_target_reference(
-    raw_target: &str,
-    note_relative_path: &str,
-) -> Option<String> {
+pub fn resolve_note_target_reference(raw_target: &str, note_relative_path: &str) -> Option<String> {
     let trimmed = raw_target.trim();
     if trimmed.is_empty()
         || trimmed.starts_with("data:")
@@ -573,8 +571,7 @@ pub fn collect_canvas_references(
         if !matches!(node_type, "file" | "note") {
             continue;
         }
-        let Some(relative_path) = node.get("relativePath").and_then(|value| value.as_str())
-        else {
+        let Some(relative_path) = node.get("relativePath").and_then(|value| value.as_str()) else {
             continue;
         };
         if !path_matches_or_descends(relative_path, target_path) {
@@ -619,7 +616,10 @@ pub fn rewrite_kanban_references(
     };
 
     for column in columns {
-        let Some(cards) = column.get_mut("cards").and_then(|cards| cards.as_array_mut()) else {
+        let Some(cards) = column
+            .get_mut("cards")
+            .and_then(|cards| cards.as_array_mut())
+        else {
             continue;
         };
         for card in cards {
@@ -644,7 +644,10 @@ pub fn rewrite_kanban_references(
                 })
                 .unwrap_or_default();
 
-            if let Some(path) = card_obj.get("relativePath").and_then(|value| value.as_str()) {
+            if let Some(path) = card_obj
+                .get("relativePath")
+                .and_then(|value| value.as_str())
+            {
                 if !remaining_paths.iter().any(|candidate| candidate == path)
                     && !path_matches_or_descends(path, old_path)
                 {
@@ -687,7 +690,10 @@ pub fn rewrite_canvas_references(
 ) -> Result<String, ReferenceError> {
     let mut value: serde_json::Value = serde_json::from_str(content)
         .map_err(|error| ReferenceError::InvalidDocument(error.to_string()))?;
-    let Some(nodes) = value.get_mut("nodes").and_then(|nodes| nodes.as_array_mut()) else {
+    let Some(nodes) = value
+        .get_mut("nodes")
+        .and_then(|nodes| nodes.as_array_mut())
+    else {
         return Ok(content.to_string());
     };
 
@@ -699,8 +705,9 @@ pub fn rewrite_canvas_references(
                 .and_then(|value| value.as_str())
                 .unwrap_or_default();
             if matches!(node_type, "file" | "note") {
-                if let Some(relative_path) =
-                    node_obj.get("relativePath").and_then(|value| value.as_str())
+                if let Some(relative_path) = node_obj
+                    .get("relativePath")
+                    .and_then(|value| value.as_str())
                 {
                     if path_matches_or_descends(relative_path, old_path) {
                         if let Some(next_path) =
@@ -757,7 +764,8 @@ mod tests {
     #[test]
     fn rewrite_note_references_rewrites_links_and_removes_deleted_targets() {
         let content = "See [doc](Docs/Spec.md) and ![img](Media/pic.png) plus [[Docs/Spec.md|Spec]] and external [x](https://example.com/a.md).";
-        let renamed = rewrite_note_references(content, "Index.md", "Docs/Spec.md", Some("Docs/Final.md"));
+        let renamed =
+            rewrite_note_references(content, "Index.md", "Docs/Spec.md", Some("Docs/Final.md"));
         assert!(renamed.contains("[doc](Docs/Final.md)"));
         assert!(renamed.contains("[[Docs/Final.md|Spec]]"));
         assert!(renamed.contains("https://example.com/a.md"));
@@ -828,7 +836,8 @@ mod tests {
             }]
         })
         .to_string();
-        let renamed = rewrite_kanban_references(&board, "Docs/Spec.md", Some("Docs/Final.md")).unwrap();
+        let renamed =
+            rewrite_kanban_references(&board, "Docs/Spec.md", Some("Docs/Final.md")).unwrap();
         assert!(renamed.contains("Docs/Final.md"));
         assert!(renamed.contains("Other.md"));
 
@@ -848,7 +857,8 @@ mod tests {
             "edges": []
         })
         .to_string();
-        let renamed = rewrite_canvas_references(&canvas, "Media/pic.png", Some("Assets/pic.png")).unwrap();
+        let renamed =
+            rewrite_canvas_references(&canvas, "Media/pic.png", Some("Assets/pic.png")).unwrap();
         assert!(renamed.contains("Assets/pic.png"));
         assert!(renamed.contains("Docs/Spec.md"));
 

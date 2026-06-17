@@ -302,6 +302,11 @@ export const tauriCommands = {
     invoke<UserDirectoryEntry[]>('hosted_user_directory', { serverUrl, query }),
   hostedVaultExportZip: (serverUrl: string, vaultId: string, destinationPath: string) =>
     invoke<void>('hosted_vault_export_zip', { serverUrl, vaultId, destinationPath }),
+  hostedWsTicket: (serverUrl: string, vaultId: string) =>
+    invoke<{ ticket: string; websocketUrl: string; protocolVersion: number | null }>(
+      'hosted_ws_ticket',
+      { serverUrl, vaultId },
+    ),
 
   // Update
   checkForUpdate: () => invoke<UpdateInfo>('check_for_update'),

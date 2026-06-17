@@ -14,22 +14,20 @@ use axum::{
     Json,
 };
 use base64::{engine::general_purpose::STANDARD, Engine};
+use collab_protocol::GrantSubjectType;
 use collab_protocol::{
     capabilities_for_role, AdminOverview, ApiError, AuditEvent, BootstrapStatus, BrowserSession,
-    Capability, CreatedInvitation,
-    DataResponse, ErrorCode, ErrorResponse, HealthState, HostedDocumentType, HostedFileEntry,
-    HostedFileKind, HostedFileReference, HostedFileRevision, HostedFileState,
-    HostedPdfAnnotations, HostedReferenceImpact, HostedRevisionContent, HostedSearchResult,
-    HostedSnapshot,
-    HostedStructuralOperationPreview, HostedStructuralOperationResult,
-    HostedStructuralOperationType, HostedTextDocument, HostedVault, HostedVaultActivityEvent,
-    HostedVaultAdminDetail, HostedVaultImportResult, HostedVaultManifest, HostedVaultMember,
-    HostedVaultRole, HostedVaultStatus, HostedVaultStorage, HostedVaultSummary, Invitation,
-    NativeSession, OperationalWarning, PermissionTemplate, ServerUser, ServerUserRole,
-    StorageSummary, UserDirectoryEntry, UserGroup, UserGroupMember, VaultGrant,
-    WritePdfAnnotationsRequest,
+    Capability, CreatedInvitation, DataResponse, ErrorCode, ErrorResponse, HealthState,
+    HostedChatMessage, HostedDocumentType, HostedFileEntry, HostedFileKind, HostedFileReference,
+    HostedFileRevision, HostedFileState, HostedPdfAnnotations, HostedReferenceImpact,
+    HostedRevisionContent, HostedSearchResult, HostedSnapshot, HostedStructuralOperationPreview,
+    HostedStructuralOperationResult, HostedStructuralOperationType, HostedTextDocument,
+    HostedVault, HostedVaultActivityEvent, HostedVaultAdminDetail, HostedVaultImportResult,
+    HostedVaultManifest, HostedVaultMember, HostedVaultRole, HostedVaultStatus, HostedVaultStorage,
+    HostedVaultSummary, Invitation, LiveCollaborationMetrics, NativeSession, OperationalWarning,
+    PermissionTemplate, ServerUser, ServerUserRole, StorageSummary, UserDirectoryEntry, UserGroup,
+    UserGroupMember, VaultGrant, WritePdfAnnotationsRequest, WsTicket, WsTicketRequest,
 };
-use collab_protocol::GrantSubjectType;
 use serde::Deserialize;
 use serde_json::{json, Value};
 use sqlx::{PgPool, Postgres, Row, Transaction};
@@ -270,6 +268,19 @@ pub struct StructuralOperationPreviewRequest {
 #[derive(Debug, Deserialize)]
 pub struct VaultSearchQuery {
     pub q: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChatQuery {
+    pub limit: Option<i64>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SendChatMessageRequest {
+    pub id: Uuid,
+    pub content: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -829,7 +840,9 @@ pub async fn upload_self_avatar(
     }
     let bytes = STANDARD
         .decode(payload.content_base64.trim())
-        .map_err(|_| ApiFailure::validation("The avatar image could not be decoded.", request_id.clone()))?;
+        .map_err(|_| {
+            ApiFailure::validation("The avatar image could not be decoded.", request_id.clone())
+        })?;
     if bytes.is_empty() || bytes.len() > MAX_AVATAR_BYTES {
         return Err(ApiFailure::validation(
             "Avatars must be between 1 byte and 1 MB.",
@@ -891,9 +904,10 @@ pub async fn get_user_avatar(
         HeaderValue::from_str(media_type.as_deref().unwrap_or("image/png"))
             .unwrap_or_else(|_| HeaderValue::from_static("image/png")),
     );
-    response
-        .headers_mut()
-        .insert(header::CACHE_CONTROL, HeaderValue::from_static("private, max-age=300"));
+    response.headers_mut().insert(
+        header::CACHE_CONTROL,
+        HeaderValue::from_static("private, max-age=300"),
+    );
     Ok(response)
 }
 
@@ -1182,6 +1196,74 @@ pub async fn list_vault_members(
     Ok(Json(DataResponse::new(
         load_vault_members(&state.database, vault_id, &request_id).await?,
     )))
+}
+
+pub async fn list_chat_messages(
+    State(state): State<AppState>,
+    Extension(request_id): Extension<String>,
+    headers: HeaderMap,
+    Path(vault_id): Path<Uuid>,
+    Query(query): Query<ChatQuery>,
+) -> Result<Json<DataResponse<Vec<HostedChatMessage>>>, ApiFailure> {
+    let actor = require_authenticated_user(&state, &headers, &request_id).await?;
+    require_capability(
+        &state.database,
+        vault_id,
+        user_uuid(&actor.user),
+        Capability::VaultRead,
+        &request_id,
+    )
+    .await?;
+    let limit = query.limit.unwrap_or(100).clamp(1, 500);
+    Ok(Json(DataResponse::new(
+        load_chat_messages(&state.database, vault_id, limit, &request_id).await?,
+    )))
+}
+
+pub async fn send_chat_message(
+    State(state): State<AppState>,
+    Extension(request_id): Extension<String>,
+    headers: HeaderMap,
+    Path(vault_id): Path<Uuid>,
+    Json(payload): Json<SendChatMessageRequest>,
+) -> Result<(StatusCode, Json<DataResponse<HostedChatMessage>>), ApiFailure> {
+    let actor = require_any_user(&state, &headers, &request_id).await?;
+    require_active_capability(
+        &state.database,
+        vault_id,
+        &actor.user,
+        Capability::VaultRead,
+        &request_id,
+    )
+    .await?;
+    let content = payload.content.trim();
+    if content.is_empty() || content.chars().count() > 4000 {
+        return Err(ApiFailure::validation(
+            "Chat messages must be between 1 and 4000 characters.",
+            request_id,
+        ));
+    }
+    let actor_id = user_uuid(&actor.user);
+    sqlx::query(
+        r#"
+        INSERT INTO hosted_chat_messages (id, vault_id, sender_user_id, content)
+        VALUES ($1, $2, $3, $4)
+        ON CONFLICT (id) DO NOTHING
+        "#,
+    )
+    .bind(payload.id)
+    .bind(vault_id)
+    .bind(actor_id)
+    .bind(content)
+    .execute(&state.database)
+    .await
+    .map_err(|_| ApiFailure::server(request_id.clone()))?;
+    Ok((
+        StatusCode::CREATED,
+        Json(DataResponse::new(
+            load_chat_message(&state.database, vault_id, payload.id, &request_id).await?,
+        )),
+    ))
 }
 
 pub async fn add_vault_member(
@@ -1989,6 +2071,197 @@ pub async fn restore_file_snapshot(
     ))
 }
 
+/// Materializes live CRDT document content (note text, or serialized Kanban /
+/// canvas JSON) into a normal text revision so REST reads, history, search, and
+/// export stay valid while a document is being co-edited. Called by the
+/// live-collaboration layer after edits settle.
+///
+/// Returns `Ok(true)` when a new revision was written, `Ok(false)` when nothing
+/// changed (identical content) or the target is not an active document in an
+/// active vault. The write reuses the same revision/manifest/activity path as
+/// `write_text_revision` but is authoritative: it carries no optimistic
+/// expected-sequence check because the CRDT room is the source of truth.
+pub(crate) async fn persist_materialized_document(
+    database: &PgPool,
+    blobs: &dyn crate::storage::BlobStorage,
+    vault_id: Uuid,
+    file_id: Uuid,
+    content: &str,
+    author: Option<Uuid>,
+) -> Result<bool, ApiFailure> {
+    let request_id = Uuid::new_v4().to_string();
+    let bytes = content.as_bytes();
+    let digest = blobs
+        .put(bytes)
+        .await
+        .map_err(|_| ApiFailure::server(request_id.clone()))?;
+    let mut transaction = database
+        .begin()
+        .await
+        .map_err(|_| ApiFailure::server(request_id.clone()))?;
+    // Only materialize into active vaults; archived/pending-delete vaults are
+    // skipped rather than erroring.
+    let vault =
+        sqlx::query("SELECT status::text AS status FROM hosted_vaults WHERE id = $1 FOR UPDATE")
+            .bind(vault_id)
+            .fetch_optional(&mut *transaction)
+            .await
+            .map_err(|_| ApiFailure::server(request_id.clone()))?;
+    let Some(vault) = vault else { return Ok(false) };
+    if vault.get::<String, _>("status") != "active" {
+        return Ok(false);
+    }
+    let current = sqlx::query(
+        r#"
+        SELECT f.kind::text AS kind, f.state::text AS state, r.sequence, r.blob_digest
+        FROM hosted_file_entries f
+        LEFT JOIN hosted_file_revisions r ON r.id = f.current_revision_id
+        WHERE f.vault_id = $1 AND f.id = $2
+        FOR UPDATE OF f
+        "#,
+    )
+    .bind(vault_id)
+    .bind(file_id)
+    .fetch_optional(&mut *transaction)
+    .await
+    .map_err(|_| ApiFailure::server(request_id.clone()))?;
+    let Some(current) = current else {
+        return Ok(false);
+    };
+    if current.get::<String, _>("kind") != "document"
+        || current.get::<String, _>("state") != "active"
+    {
+        return Ok(false);
+    }
+    // Skip when the live content already matches the current revision.
+    if current.get::<Option<String>, _>("blob_digest").as_deref() == Some(digest.as_str()) {
+        return Ok(false);
+    }
+    let next_sequence = current.get::<Option<i64>, _>("sequence").unwrap_or(0) + 1;
+    let revision_id = Uuid::now_v7();
+    insert_blob_record(
+        &mut transaction,
+        &digest,
+        bytes.len(),
+        "text/plain",
+        &request_id,
+    )
+    .await?;
+    sqlx::query(
+        "INSERT INTO hosted_file_revisions (id, vault_id, file_id, sequence, blob_digest, content_hash, size_bytes, created_by) VALUES ($1, $2, $3, $4, $5, $5, $6, $7)",
+    )
+    .bind(revision_id)
+    .bind(vault_id)
+    .bind(file_id)
+    .bind(next_sequence)
+    .bind(&digest)
+    .bind(bytes.len() as i64)
+    .bind(author)
+    .execute(&mut *transaction)
+    .await
+    .map_err(|_| ApiFailure::server(request_id.clone()))?;
+    sqlx::query(
+        "UPDATE hosted_file_entries SET current_revision_id = $1, updated_at = NOW() WHERE id = $2",
+    )
+    .bind(revision_id)
+    .bind(file_id)
+    .execute(&mut *transaction)
+    .await
+    .map_err(|_| ApiFailure::server(request_id.clone()))?;
+    increment_manifest(&mut transaction, vault_id, &request_id).await?;
+    vault_activity_event(
+        &mut transaction,
+        vault_id,
+        author,
+        "file.revision_created",
+        Some("file"),
+        Some(&file_id.to_string()),
+        json!({"revisionSequence": next_sequence, "source": "live"}),
+        &request_id,
+    )
+    .await?;
+    transaction
+        .commit()
+        .await
+        .map_err(|_| ApiFailure::server(request_id.clone()))?;
+    Ok(true)
+}
+
+/// Loads the current materialized text content of a document, used to seed a new
+/// live CRDT room from existing REST content. Returns `None` when the file has
+/// no current text revision.
+pub(crate) async fn load_current_document_text(
+    database: &PgPool,
+    blobs: &dyn crate::storage::BlobStorage,
+    vault_id: Uuid,
+    file_id: Uuid,
+) -> Option<String> {
+    let digest: Option<String> = sqlx::query_scalar(
+        r#"
+        SELECT r.blob_digest
+        FROM hosted_file_entries f
+        JOIN hosted_file_revisions r ON r.id = f.current_revision_id
+        WHERE f.vault_id = $1 AND f.id = $2 AND f.kind = 'document' AND f.state = 'active'
+        "#,
+    )
+    .bind(vault_id)
+    .bind(file_id)
+    .fetch_optional(database)
+    .await
+    .ok()
+    .flatten();
+    let digest = digest?;
+    let bytes = blobs.get(&digest).await.ok().flatten()?;
+    String::from_utf8(bytes).ok()
+}
+
+/// Issues a single-use, short-lived ticket for opening a live-collaboration
+/// WebSocket session on a vault. The caller authenticates with their normal
+/// browser session or native access token and must already hold read access to
+/// the vault. The ticket is stored hashed and presented in the WebSocket
+/// `authenticate` frame, so bearer tokens never travel in the WebSocket URL.
+pub async fn issue_ws_ticket(
+    State(state): State<AppState>,
+    Extension(request_id): Extension<String>,
+    headers: HeaderMap,
+    Json(payload): Json<WsTicketRequest>,
+) -> Result<Json<DataResponse<WsTicket>>, ApiFailure> {
+    let actor = require_any_user(&state, &headers, &request_id).await?;
+    let vault_id = Uuid::parse_str(payload.vault_id.trim())
+        .map_err(|_| ApiFailure::validation("The vault id is not valid.", request_id.clone()))?;
+    // Only users who can already read the vault may obtain a session ticket.
+    require_capability(
+        &state.database,
+        vault_id,
+        user_uuid(&actor.user),
+        Capability::VaultRead,
+        &request_id,
+    )
+    .await?;
+    let ticket = generate_secret();
+    let ticket_hash = hash_secret(&ticket);
+    let expires_at =
+        chrono::Utc::now() + chrono::Duration::seconds(state.config.ws_ticket_ttl_seconds);
+    sqlx::query(
+        "INSERT INTO ws_tickets (id, ticket_hash, user_id, vault_id, expires_at) VALUES ($1, $2, $3, $4, $5)",
+    )
+    .bind(Uuid::now_v7())
+    .bind(&ticket_hash)
+    .bind(user_uuid(&actor.user))
+    .bind(vault_id)
+    .bind(expires_at)
+    .execute(&state.database)
+    .await
+    .map_err(|_| ApiFailure::server(request_id.clone()))?;
+    Ok(Json(DataResponse::new(WsTicket {
+        ticket,
+        vault_id: vault_id.to_string(),
+        websocket_path: format!("/ws/v1/vaults/{vault_id}"),
+        expires_at: expires_at.to_rfc3339(),
+        protocol_version: collab_protocol::PROTOCOL_VERSION,
+    })))
+}
+
 pub async fn write_text_revision(
     State(state): State<AppState>,
     Extension(request_id): Extension<String>,
@@ -2202,7 +2475,10 @@ pub async fn write_pdf_annotations(
     .map_err(|_| ApiFailure::server(request_id.clone()))?
     .ok_or_else(|| ApiFailure::not_found(request_id.clone()))?;
     if file.get::<String, _>("state") != "active"
-        || !file.get::<String, _>("name").to_lowercase().ends_with(".pdf")
+        || !file
+            .get::<String, _>("name")
+            .to_lowercase()
+            .ends_with(".pdf")
     {
         return Err(ApiFailure::validation(
             "Only active PDF files can carry annotations.",
@@ -3311,7 +3587,8 @@ pub async fn download_vault_folder_archive(
         .iter()
         .filter(|file| file.state == HostedFileState::Active)
     {
-        if file.relative_path != folder_path && !file.relative_path.starts_with(&descendant_prefix) {
+        if file.relative_path != folder_path && !file.relative_path.starts_with(&descendant_prefix)
+        {
             continue;
         }
         let entry_path = file
@@ -3350,9 +3627,7 @@ pub async fn download_vault_folder_archive(
         .name
         .chars()
         .map(|character| {
-            if matches!(character, ' ' | '-' | '_' | '.')
-                || character.is_ascii_alphanumeric()
-            {
+            if matches!(character, ' ' | '-' | '_' | '.') || character.is_ascii_alphanumeric() {
                 character
             } else {
                 '_'
@@ -3458,6 +3733,21 @@ pub async fn overview(
     .await
     .map_err(|_| ApiFailure::server(request_id.clone()))?;
     let events = list_audit_events(&state.database, 8, &request_id).await?;
+    let runtime_live_metrics = state.hub.runtime_metrics().await;
+    let persisted_live_metrics = sqlx::query(
+        r#"
+        SELECT
+          (SELECT COUNT(*) FROM crdt_updates) AS pending_update_count,
+          (SELECT COALESCE(SUM(octet_length(update_bytes)), 0) FROM crdt_updates) AS pending_update_bytes,
+          (SELECT COUNT(*) FROM crdt_updates WHERE created_at >= NOW() - INTERVAL '60 seconds') AS updates_last_minute,
+          (SELECT COUNT(*) FROM crdt_documents) AS compacted_documents,
+          (SELECT COALESCE(SUM(octet_length(doc_state)), 0) FROM crdt_documents) AS compacted_state_bytes,
+          (SELECT MAX(updated_at) FROM crdt_documents) AS last_compaction_at
+        "#,
+    )
+    .fetch_one(&state.database)
+    .await
+    .map_err(|_| ApiFailure::server(request_id.clone()))?;
     let database_bytes =
         sqlx::query_scalar::<_, i64>("SELECT pg_database_size(current_database())")
             .fetch_one(&state.database)
@@ -3504,6 +3794,19 @@ pub async fn overview(
         storage: StorageSummary {
             database_bytes,
             blob_bytes,
+        },
+        live_collaboration: LiveCollaborationMetrics {
+            active_connections: runtime_live_metrics.active_connections,
+            loaded_rooms: runtime_live_metrics.loaded_rooms,
+            active_awareness_states: runtime_live_metrics.active_awareness_states,
+            pending_update_count: persisted_live_metrics.get("pending_update_count"),
+            pending_update_bytes: persisted_live_metrics.get("pending_update_bytes"),
+            updates_last_minute: persisted_live_metrics.get("updates_last_minute"),
+            compacted_documents: persisted_live_metrics.get("compacted_documents"),
+            compacted_state_bytes: persisted_live_metrics.get("compacted_state_bytes"),
+            last_compaction_at: persisted_live_metrics
+                .get::<Option<chrono::DateTime<chrono::Utc>>, _>("last_compaction_at")
+                .map(|value| value.to_rfc3339()),
         },
         operational_warnings: warnings,
         recent_audit_events: events,
@@ -4051,7 +4354,9 @@ pub async fn create_group(
     .bind(user_uuid(&actor.user))
     .execute(&mut *transaction)
     .await
-    .map_err(|error| unique_violation_or_server(error, "A group with that name already exists.", &request_id))?;
+    .map_err(|error| {
+        unique_violation_or_server(error, "A group with that name already exists.", &request_id)
+    })?;
     audit(
         &mut transaction,
         Some(&actor.user.id),
@@ -4088,7 +4393,9 @@ pub async fn update_group(
         .as_deref()
         .map(|value| validate_entity_name(value, "Group name", &request_id))
         .transpose()?;
-    let description = payload.description.map(|value| normalize_optional_text(Some(value)));
+    let description = payload
+        .description
+        .map(|value| normalize_optional_text(Some(value)));
     let mut transaction = state
         .database
         .begin()
@@ -4108,7 +4415,9 @@ pub async fn update_group(
     .bind(group_id)
     .execute(&mut *transaction)
     .await
-    .map_err(|error| unique_violation_or_server(error, "A group with that name already exists.", &request_id))?;
+    .map_err(|error| {
+        unique_violation_or_server(error, "A group with that name already exists.", &request_id)
+    })?;
     if updated.rows_affected() == 0 {
         return Err(ApiFailure::not_found(request_id));
     }
@@ -4344,7 +4653,9 @@ pub async fn update_template(
         .as_deref()
         .map(|value| validate_entity_name(value, "Template name", &request_id))
         .transpose()?;
-    let description = payload.description.map(|value| normalize_optional_text(Some(value)));
+    let description = payload
+        .description
+        .map(|value| normalize_optional_text(Some(value)));
     let capabilities = payload
         .capabilities
         .as_deref()
@@ -4372,7 +4683,13 @@ pub async fn update_template(
     .bind(template_id)
     .execute(&mut *transaction)
     .await
-    .map_err(|error| unique_violation_or_server(error, "A template with that name already exists.", &request_id))?;
+    .map_err(|error| {
+        unique_violation_or_server(
+            error,
+            "A template with that name already exists.",
+            &request_id,
+        )
+    })?;
     audit(
         &mut transaction,
         Some(&actor.user.id),
@@ -4758,6 +5075,59 @@ pub async fn admin_delete_vault(
         &mut transaction,
         Some(&actor.user.id),
         "admin.vault.delete",
+        Some("vault"),
+        Some(&vault_id.to_string()),
+        "success",
+        &request_id,
+        json!({}),
+    )
+    .await?;
+    transaction
+        .commit()
+        .await
+        .map_err(|_| ApiFailure::server(request_id))?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// Permanently and irrecoverably removes a hosted vault. Only a vault already
+/// marked for deletion (`pending_delete`) can be force-deleted, so a single
+/// destructive click can never skip the soft-delete step. Cascading foreign
+/// keys remove the vault's memberships, file entries, revisions, grants,
+/// note index, PDF annotations, and CRDT documents in the same statement.
+/// Deduplicated blobs are intentionally left untouched for later garbage
+/// collection because they may be shared across vaults.
+pub async fn admin_force_delete_vault(
+    State(state): State<AppState>,
+    Extension(request_id): Extension<String>,
+    headers: HeaderMap,
+    Path(vault_id): Path<Uuid>,
+) -> Result<StatusCode, ApiFailure> {
+    let actor = require_admin_csrf(&state, &headers, &request_id).await?;
+    if require_vault_exists(&state.database, vault_id, &request_id).await?
+        != HostedVaultStatus::PendingDelete
+    {
+        return Err(ApiFailure::validation(
+            "A vault must be marked for deletion before it can be force-deleted.",
+            request_id,
+        ));
+    }
+    let mut transaction = state
+        .database
+        .begin()
+        .await
+        .map_err(|_| ApiFailure::server(request_id.clone()))?;
+    let deleted = sqlx::query("DELETE FROM hosted_vaults WHERE id = $1")
+        .bind(vault_id)
+        .execute(&mut *transaction)
+        .await
+        .map_err(|_| ApiFailure::server(request_id.clone()))?;
+    if deleted.rows_affected() == 0 {
+        return Err(ApiFailure::not_found(request_id));
+    }
+    audit(
+        &mut transaction,
+        Some(&actor.user.id),
+        "admin.vault.force_delete",
         Some("vault"),
         Some(&vault_id.to_string()),
         "success",
@@ -5261,7 +5631,7 @@ fn parse_vault_status(status: &str) -> HostedVaultStatus {
 
 /// The fully resolved capability set for a (user, vault) pair, plus the
 /// owner/server-admin flags and vault status that several handlers branch on.
-struct EffectiveAccess {
+pub(crate) struct EffectiveAccess {
     owner: bool,
     server_admin: bool,
     status: HostedVaultStatus,
@@ -5271,13 +5641,18 @@ struct EffectiveAccess {
 impl EffectiveAccess {
     /// Whether the user effectively holds a capability. Owners and active server
     /// administrators implicitly hold every capability.
-    fn has(&self, capability: Capability) -> bool {
+    pub(crate) fn has(&self, capability: Capability) -> bool {
         self.owner || self.server_admin || self.capabilities.contains(&capability)
+    }
+
+    /// Whether the vault is active (not archived or pending deletion).
+    pub(crate) fn status(&self) -> HostedVaultStatus {
+        self.status
     }
 
     /// A coarse role derived from the effective capabilities, used to keep the
     /// legacy `VaultAccess { role }` contract working for unmigrated call sites.
-    fn derived_role(&self) -> HostedVaultRole {
+    pub(crate) fn derived_role(&self) -> HostedVaultRole {
         if self.owner || self.server_admin || self.has(Capability::VaultManageMembers) {
             HostedVaultRole::Admin
         } else if self.has(Capability::FileWrite) {
@@ -5310,7 +5685,7 @@ fn tokens_to_capabilities(tokens: &[String]) -> HashSet<Capability> {
 /// administrators bypass resolution with the full capability set. Returns
 /// `not_found` when the vault does not exist or the user has no grant source —
 /// matching the pre-existing membership-or-admin visibility rule.
-async fn resolve_vault_capabilities(
+pub(crate) async fn resolve_vault_capabilities(
     pool: &PgPool,
     vault_id: Uuid,
     user_id: Uuid,
@@ -5460,9 +5835,7 @@ fn enforce_kanban_write(
 
 /// The capability required to apply (or preview) a non-purge structural
 /// operation. Purge is handled separately as an admin-only action.
-fn structural_operation_capability(
-    operation_type: HostedStructuralOperationType,
-) -> Capability {
+fn structural_operation_capability(operation_type: HostedStructuralOperationType) -> Capability {
     match operation_type {
         HostedStructuralOperationType::Rename | HostedStructuralOperationType::Move => {
             Capability::FileMove
@@ -5520,7 +5893,8 @@ async fn require_active_capability(
     capability: Capability,
     request_id: &str,
 ) -> Result<EffectiveAccess, ApiFailure> {
-    let access = require_capability(pool, vault_id, user_uuid(user), capability, request_id).await?;
+    let access =
+        require_capability(pool, vault_id, user_uuid(user), capability, request_id).await?;
     if access.status != HostedVaultStatus::Active {
         return Err(ApiFailure::vault_archived(request_id.to_owned()));
     }
@@ -5679,6 +6053,87 @@ fn vault_member_from_row(row: &sqlx::postgres::PgRow) -> HostedVaultMember {
     }
 }
 
+async fn load_chat_messages(
+    pool: &PgPool,
+    vault_id: Uuid,
+    limit: i64,
+    request_id: &str,
+) -> Result<Vec<HostedChatMessage>, ApiFailure> {
+    let rows = sqlx::query(
+        r#"
+        SELECT m.id, m.content, m.created_at,
+               u.id AS user_id, COALESCE(u.display_name, 'Deleted user') AS user_name
+        FROM hosted_chat_messages m
+        LEFT JOIN users u ON u.id = m.sender_user_id
+        WHERE m.vault_id = $1
+        ORDER BY m.created_at DESC, m.id DESC
+        LIMIT $2
+        "#,
+    )
+    .bind(vault_id)
+    .bind(limit)
+    .fetch_all(pool)
+    .await
+    .map_err(|_| ApiFailure::server(request_id.to_owned()))?;
+    let mut messages = rows.iter().map(chat_message_from_row).collect::<Vec<_>>();
+    messages.reverse();
+    Ok(messages)
+}
+
+async fn load_chat_message(
+    pool: &PgPool,
+    vault_id: Uuid,
+    message_id: Uuid,
+    request_id: &str,
+) -> Result<HostedChatMessage, ApiFailure> {
+    let row = sqlx::query(
+        r#"
+        SELECT m.id, m.content, m.created_at,
+               u.id AS user_id, COALESCE(u.display_name, 'Deleted user') AS user_name
+        FROM hosted_chat_messages m
+        LEFT JOIN users u ON u.id = m.sender_user_id
+        WHERE m.vault_id = $1 AND m.id = $2
+        "#,
+    )
+    .bind(vault_id)
+    .bind(message_id)
+    .fetch_optional(pool)
+    .await
+    .map_err(|_| ApiFailure::server(request_id.to_owned()))?
+    .ok_or_else(|| ApiFailure::not_found(request_id.to_owned()))?;
+    Ok(chat_message_from_row(&row))
+}
+
+fn chat_message_from_row(row: &sqlx::postgres::PgRow) -> HostedChatMessage {
+    let user_id = row
+        .get::<Option<Uuid>, _>("user_id")
+        .map(|id| id.to_string())
+        .unwrap_or_else(|| "deleted-user".to_owned());
+    let timestamp = row
+        .get::<chrono::DateTime<chrono::Utc>, _>("created_at")
+        .timestamp_millis()
+        .max(0) as u64;
+    HostedChatMessage {
+        id: row.get::<Uuid, _>("id").to_string(),
+        user_color: user_color_for_id(&user_id),
+        user_id,
+        user_name: row.get("user_name"),
+        content: row.get("content"),
+        timestamp,
+    }
+}
+
+fn user_color_for_id(seed: &str) -> String {
+    const COLORS: [&str; 8] = [
+        "#ef4444", "#f97316", "#eab308", "#22c55e", "#14b8a6", "#3b82f6", "#8b5cf6", "#ec4899",
+    ];
+    let mut hash: i32 = 0;
+    for codepoint in seed.chars().map(|value| value as i32) {
+        hash = codepoint.wrapping_add((hash << 5).wrapping_sub(hash));
+    }
+    COLORS[(hash.unsigned_abs() as usize) % COLORS.len()].to_owned()
+}
+
 /// Validates and trims a group/template display name (1–128 characters).
 fn validate_entity_name(value: &str, label: &str, request_id: &str) -> Result<String, ApiFailure> {
     let trimmed = value.trim();
@@ -5702,7 +6157,12 @@ fn normalize_optional_text(value: Option<String>) -> Option<String> {
 /// Maps a unique-constraint violation to a friendly validation error and any
 /// other database failure to a generic server error.
 fn unique_violation_or_server(error: sqlx::Error, message: &str, request_id: &str) -> ApiFailure {
-    if error.as_database_error().and_then(|value| value.code()).as_deref() == Some("23505") {
+    if error
+        .as_database_error()
+        .and_then(|value| value.code())
+        .as_deref()
+        == Some("23505")
+    {
         ApiFailure::validation(message.to_owned(), request_id.to_owned())
     } else {
         ApiFailure::server(request_id.to_owned())
@@ -5732,10 +6192,7 @@ fn validate_capability_tokens(
         .collect())
 }
 
-fn parse_grant_subject_type(
-    value: &str,
-    request_id: &str,
-) -> Result<GrantSubjectType, ApiFailure> {
+fn parse_grant_subject_type(value: &str, request_id: &str) -> Result<GrantSubjectType, ApiFailure> {
     match value {
         "user" => Ok(GrantSubjectType::User),
         "group" => Ok(GrantSubjectType::Group),
@@ -5787,11 +6244,12 @@ async fn require_group_exists(
     group_id: Uuid,
     request_id: &str,
 ) -> Result<(), ApiFailure> {
-    let exists = sqlx::query_scalar::<_, bool>("SELECT EXISTS(SELECT 1 FROM user_groups WHERE id = $1)")
-        .bind(group_id)
-        .fetch_one(pool)
-        .await
-        .map_err(|_| ApiFailure::server(request_id.to_owned()))?;
+    let exists =
+        sqlx::query_scalar::<_, bool>("SELECT EXISTS(SELECT 1 FROM user_groups WHERE id = $1)")
+            .bind(group_id)
+            .fetch_one(pool)
+            .await
+            .map_err(|_| ApiFailure::server(request_id.to_owned()))?;
     if !exists {
         return Err(ApiFailure::not_found(request_id.to_owned()));
     }
@@ -5803,12 +6261,13 @@ async fn require_template_exists(
     template_id: Uuid,
     request_id: &str,
 ) -> Result<(), ApiFailure> {
-    let exists =
-        sqlx::query_scalar::<_, bool>("SELECT EXISTS(SELECT 1 FROM permission_templates WHERE id = $1)")
-            .bind(template_id)
-            .fetch_one(pool)
-            .await
-            .map_err(|_| ApiFailure::server(request_id.to_owned()))?;
+    let exists = sqlx::query_scalar::<_, bool>(
+        "SELECT EXISTS(SELECT 1 FROM permission_templates WHERE id = $1)",
+    )
+    .bind(template_id)
+    .fetch_one(pool)
+    .await
+    .map_err(|_| ApiFailure::server(request_id.to_owned()))?;
     if !exists {
         return Err(ApiFailure::validation(
             "The referenced template does not exist.",
@@ -6516,12 +6975,15 @@ async fn load_vault_manifest(
         SELECT f.id, f.parent_id, f.name, f.kind::text AS kind,
                f.document_type::text AS document_type, f.state::text AS state,
                f.created_at, f.updated_at,
+               trash.trashed_at, trasher.display_name AS trashed_by_display_name,
                r.id AS revision_id, r.sequence AS revision_sequence,
                r.content_hash, r.size_bytes, r.created_at AS revision_created_at,
                creator.display_name AS revision_creator_display_name
         FROM hosted_file_entries f
         LEFT JOIN hosted_file_revisions r ON r.id = f.current_revision_id
         LEFT JOIN users creator ON creator.id = r.created_by
+        LEFT JOIN hosted_trash_records trash ON trash.file_id = f.id
+        LEFT JOIN users trasher ON trasher.id = trash.trashed_by
         WHERE f.vault_id = $1
         ORDER BY f.created_at ASC
         "#,
@@ -6575,6 +7037,10 @@ fn file_entry_from_row(
                 document_type: parse_document_type(row.get("document_type")),
                 state: parse_file_state(row.get::<String, _>("state").as_str()),
                 current_revision: revision_from_current_row(row),
+                trashed_by_display_name: row.get("trashed_by_display_name"),
+                trashed_at: row
+                    .get::<Option<chrono::DateTime<chrono::Utc>>, _>("trashed_at")
+                    .map(|value| value.to_rfc3339()),
                 created_at: row
                     .get::<chrono::DateTime<chrono::Utc>, _>("created_at")
                     .to_rfc3339(),
@@ -7677,8 +8143,8 @@ impl IntoResponse for ApiFailure {
 #[cfg(test)]
 mod tests {
     use super::{
-        cookie, indexed_note_tags, indexed_note_title, parse_vault_zip, search_excerpt,
-        Capability, STANDARD,
+        cookie, indexed_note_tags, indexed_note_title, parse_vault_zip, search_excerpt, Capability,
+        STANDARD,
     };
     use crate::auth::hash_secret;
     use crate::{
@@ -7827,9 +8293,7 @@ mod tests {
                 super::HostedVaultRole::Editor => {
                     ("a0000000-0000-4000-8000-000000000002", "editor")
                 }
-                super::HostedVaultRole::Admin => {
-                    ("a0000000-0000-4000-8000-000000000003", "admin")
-                }
+                super::HostedVaultRole::Admin => ("a0000000-0000-4000-8000-000000000003", "admin"),
             };
             let capabilities: Vec<String> = super::capabilities_for_role(role)
                 .into_iter()
@@ -7904,6 +8368,9 @@ mod tests {
         let Ok(url) = std::env::var("COLLAB_TEST_DATABASE_URL") else {
             return;
         };
+        // Serialize with other live-PostgreSQL tests that share and truncate the
+        // same database.
+        let _db_guard = crate::database::db_test_guard().lock().await;
         let pool = PgPoolOptions::new()
             .max_connections(5)
             .connect(&url)
@@ -9597,6 +10064,25 @@ mod tests {
             json_body(trash_with_reference_removal).await["data"]["rewrittenDocumentIds"],
             json!([index_id])
         );
+        let trashed_manifest = request(
+            &app,
+            "GET",
+            &format!("/api/v1/vaults/{vault_id}/manifest"),
+            json!({}),
+            Some(&admin_cookie),
+            None,
+        )
+        .await;
+        let trashed_manifest_body = json_body(trashed_manifest).await;
+        let trashed_document = trashed_manifest_body["data"]["files"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|file| file["id"] == document_id)
+            .unwrap();
+        assert_eq!(trashed_document["state"], "trashed");
+        assert!(trashed_document["trashedByDisplayName"].is_string());
+        assert!(trashed_document["trashedAt"].is_string());
         let scrubbed_index = request(
             &app,
             "GET",
@@ -9779,7 +10265,10 @@ mod tests {
         )
         .await;
         assert_eq!(folder_archive.status(), StatusCode::OK);
-        assert_eq!(folder_archive.headers()[header::CONTENT_TYPE], "application/zip");
+        assert_eq!(
+            folder_archive.headers()[header::CONTENT_TYPE],
+            "application/zip"
+        );
         let folder_bytes = response_bytes(folder_archive).await;
         let mut folder_zip = zip::ZipArchive::new(Cursor::new(folder_bytes)).unwrap();
         let mut folder_note = String::new();
@@ -9791,6 +10280,58 @@ mod tests {
         assert_eq!(folder_note, "# Imported\nsearchable archive");
         // The unrelated Pictures asset must not leak into a Notes-only archive.
         assert!(folder_zip.by_name("Pictures/image.bin").is_err());
+
+        let chat_message_id = Uuid::now_v7();
+        let sent_chat = request(
+            &app,
+            "POST",
+            &format!("/api/v1/vaults/{vault_id}/chat"),
+            json!({
+                "id": chat_message_id,
+                "content": "Hello from hosted chat"
+            }),
+            Some(&member_cookie),
+            Some(&member_csrf),
+        )
+        .await;
+        assert_eq!(sent_chat.status(), StatusCode::CREATED);
+        let sent_chat_body = json_body(sent_chat).await;
+        assert_eq!(sent_chat_body["data"]["id"], chat_message_id.to_string());
+        assert_eq!(sent_chat_body["data"]["userId"], member_id);
+        assert_eq!(sent_chat_body["data"]["userName"], "Member User");
+        assert_eq!(sent_chat_body["data"]["content"], "Hello from hosted chat");
+        assert!(sent_chat_body["data"]["timestamp"].as_u64().unwrap() > 0);
+
+        let listed_chat = request(
+            &app,
+            "GET",
+            &format!("/api/v1/vaults/{vault_id}/chat?limit=10"),
+            json!({}),
+            Some(&admin_cookie),
+            None,
+        )
+        .await;
+        assert_eq!(listed_chat.status(), StatusCode::OK);
+        let listed_chat_body = json_body(listed_chat).await;
+        assert_eq!(
+            listed_chat_body["data"][0]["id"],
+            chat_message_id.to_string()
+        );
+        assert_eq!(listed_chat_body["data"][0]["userId"], member_id);
+
+        let empty_chat = request(
+            &app,
+            "POST",
+            &format!("/api/v1/vaults/{vault_id}/chat"),
+            json!({
+                "id": Uuid::now_v7(),
+                "content": "   "
+            }),
+            Some(&member_cookie),
+            Some(&member_csrf),
+        )
+        .await;
+        assert_eq!(empty_chat.status(), StatusCode::BAD_REQUEST);
 
         let archived = request(
             &app,
@@ -10139,6 +10680,14 @@ mod tests {
         assert_eq!(overview.status(), StatusCode::OK);
         let overview_body = json_body(overview).await;
         assert_eq!(overview_body["data"]["users"], 2);
+        assert!(overview_body["data"]["liveCollaboration"]["loadedRooms"]
+            .as_u64()
+            .is_some());
+        assert!(
+            overview_body["data"]["liveCollaboration"]["updatesLastMinute"]
+                .as_i64()
+                .is_some()
+        );
         assert!(
             overview_body["data"]["recentAuditEvents"]
                 .as_array()
@@ -10478,7 +11027,15 @@ mod tests {
         assert_eq!(avatar_fetch.status(), StatusCode::OK);
         assert_eq!(avatar_fetch.headers()[header::CONTENT_TYPE], "image/png");
         assert_eq!(response_bytes(avatar_fetch).await, vec![1u8, 2, 3, 4]);
-        let me_after = request(&app, "GET", "/api/v1/users/me", json!({}), Some(&admin_cookie), None).await;
+        let me_after = request(
+            &app,
+            "GET",
+            "/api/v1/users/me",
+            json!({}),
+            Some(&admin_cookie),
+            None,
+        )
+        .await;
         assert_eq!(json_body(me_after).await["data"]["hasAvatar"], true);
 
         // Rejects oversized payloads via an unsupported media type guard first.
@@ -10492,5 +11049,52 @@ mod tests {
         )
         .await;
         assert_eq!(bad_avatar.status(), StatusCode::BAD_REQUEST);
+
+        // Force-deleting is only allowed once a vault is marked for deletion, so a
+        // single destructive request can never skip the soft-delete step.
+        let force_too_early = request(
+            &app,
+            "POST",
+            &format!("/api/v1/admin/vaults/{vault_id}/force-delete"),
+            json!({}),
+            Some(&admin_cookie),
+            Some(&admin_csrf),
+        )
+        .await;
+        assert_eq!(force_too_early.status(), StatusCode::BAD_REQUEST);
+
+        let mark_for_deletion = request(
+            &app,
+            "DELETE",
+            &format!("/api/v1/admin/vaults/{vault_id}"),
+            json!({}),
+            Some(&admin_cookie),
+            Some(&admin_csrf),
+        )
+        .await;
+        assert_eq!(mark_for_deletion.status(), StatusCode::NO_CONTENT);
+
+        let force_delete = request(
+            &app,
+            "POST",
+            &format!("/api/v1/admin/vaults/{vault_id}/force-delete"),
+            json!({}),
+            Some(&admin_cookie),
+            Some(&admin_csrf),
+        )
+        .await;
+        assert_eq!(force_delete.status(), StatusCode::NO_CONTENT);
+
+        // The vault and its cascaded content are permanently gone.
+        let gone = request(
+            &app,
+            "GET",
+            &format!("/api/v1/admin/vaults/{vault_id}"),
+            json!({}),
+            Some(&admin_cookie),
+            None,
+        )
+        .await;
+        assert_eq!(gone.status(), StatusCode::NOT_FOUND);
     }
 }

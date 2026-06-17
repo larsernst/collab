@@ -68,6 +68,11 @@ type CreateMarkdownEditorStateOptions = {
   slashCommandOverride: CompletionSource;
   /** When true the document is not editable (viewer access to a hosted vault). */
   readOnly?: boolean;
+  /**
+   * Extra extensions appended last, e.g. the `y-codemirror.next` collaboration
+   * binding when a live hosted session is active. Empty for the normal path.
+   */
+  extraExtensions?: Extension;
 };
 
 export function createMarkdownEditorCompartments(): MarkdownEditorCompartments {
@@ -120,6 +125,7 @@ export function createMarkdownEditorState({
   livePreviewExtension,
   slashCommandOverride,
   readOnly = false,
+  extraExtensions = [],
 }: CreateMarkdownEditorStateOptions) {
   const initialCompartmentExtensions = buildMarkdownEditorInitialExtensions(compartments, compartmentExtensions);
   // `readOnly` blocks document transactions; `editable.of(false)` also drops the
@@ -165,6 +171,7 @@ export function createMarkdownEditorState({
         updateListener,
         asciiArrowLigatures(),
         EditorView.lineWrapping,
+        extraExtensions,
       ],
     });
   } catch (err) {
@@ -184,6 +191,7 @@ export function createMarkdownEditorState({
         updateListener,
         asciiArrowLigatures(),
         EditorView.lineWrapping,
+        extraExtensions,
       ],
     });
   }

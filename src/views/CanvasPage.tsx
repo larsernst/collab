@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
 import '@xyflow/react/dist/style.css';
 import { getDocument, GlobalWorkerOptions } from 'pdfjs-dist';
 import {
@@ -87,6 +87,9 @@ import { useNoteIndexStore } from '../store/noteIndexStore';
 import { useCollabContext } from '../components/collaboration/CollabProvider';
 import { isVaultReadOnly, type KnownUser } from '../types/vault';
 import { ReadOnlyBanner } from '../components/layout/ReadOnlyBanner';
+import LivePeers from '../components/collaboration/LivePeers';
+import { dedupePeersByUser, useLivePeers } from '../lib/liveAwareness';
+import { cn } from '../lib/utils';
 
 const pdfWorkerUrl = new URL('pdfjs-dist/build/pdf.worker.mjs', import.meta.url).toString();
 GlobalWorkerOptions.workerSrc = pdfWorkerUrl;
@@ -502,7 +505,7 @@ function CanvasBoard({ relativePath }: { relativePath: string | null }) {
   const setSavedHash = useEditorStore((state) => state.setSavedHash);
   const addConflict = useCollabStore((state) => state.addConflict);
   // Snapshot authorship follows the effective identity (server-authoritative for hosted).
-  const { userId: myUserId, userName: myUserName } = useCollabIdentity();
+  const { userId: myUserId, userName: myUserName, userColor: myUserColor } = useCollabIdentity();
   const setActiveView = useUiStore((state) => state.setActiveView);
   const canvasWebCardDefaultMode = useUiStore((state) => state.canvasWebCardDefaultMode);
   const canvasWebCardAutoLoad = useUiStore((state) => state.canvasWebCardAutoLoad);
@@ -739,7 +742,7 @@ function CanvasBoard({ relativePath }: { relativePath: string | null }) {
     webPreviewsEnabled,
   ]);
 
-  useCanvasDocumentSession({
+  const { liveSession } = useCanvasDocumentSession({
     reactFlow,
     vault,
     relativePath,
@@ -760,6 +763,7 @@ function CanvasBoard({ relativePath }: { relativePath: string | null }) {
     addConflict,
     myUserId,
     myUserName,
+    myUserColor,
     isMountedRef,
     isDirtyRef,
     hashRef,
@@ -772,6 +776,34 @@ function CanvasBoard({ relativePath }: { relativePath: string | null }) {
     shouldCreateSnapshot,
     runExclusiveSave,
   });
+
+  // ── Live awareness: co-editors and their node selections ─────────────────
+  const livePeers = useLivePeers(liveSession);
+  const remoteSelections = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const peer of dedupePeersByUser(livePeers)) {
+      const color = peer.user?.color;
+      if (!color) continue;
+      for (const nodeId of peer.canvas?.selectedNodeIds ?? []) {
+        map.set(nodeId, color);
+      }
+    }
+    return map;
+  }, [livePeers]);
+  // Decorate nodes a remote peer has selected with a colored ring. Identity is
+  // preserved for untouched nodes so ReactFlow does not re-render the whole graph.
+  const displayNodes = useMemo(() => {
+    if (remoteSelections.size === 0) return nodes;
+    return nodes.map((node) => {
+      const color = remoteSelections.get(node.id);
+      if (!color) return node;
+      return {
+        ...node,
+        className: cn(node.className, 'canvas-node-remote-selected'),
+        style: { ...node.style, '--remote-peer-color': color } as CSSProperties,
+      };
+    });
+  }, [nodes, remoteSelections]);
 
   useEffect(() => {
     setEdgeLabelDraft(selectedEdge?.data?.label ?? '');
@@ -1449,6 +1481,7 @@ function CanvasBoard({ relativePath }: { relativePath: string | null }) {
             <span className="shrink-0 text-xs text-muted-foreground">
               {nodes.length} {nodes.length === 1 ? 'card' : 'cards'} and {edges.length} {edges.length === 1 ? 'link' : 'links'}
             </span>
+            <LivePeers peers={livePeers} />
           </>
         }
         secondary={
@@ -1540,7 +1573,7 @@ function CanvasBoard({ relativePath }: { relativePath: string | null }) {
 
       <CanvasEdgeLayoutProvider value={edgeLayout}>
         <ReactFlow<FlowNode<CanvasNodeData>, CanvasFlowEdge>
-          nodes={nodes}
+          nodes={displayNodes}
           edges={edges}
           onNodesChange={onNodesChange}
           onEdgesChange={onEdgesChange}
