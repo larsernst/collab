@@ -8,6 +8,7 @@ import { useCollabIdentity } from '../lib/collabIdentity';
 import { MarkdownEditor, type MarkdownEditorHandle } from '../components/editor/MarkdownEditor';
 import { EditorToolbar } from '../components/editor/EditorToolbar';
 import { toast } from 'sonner';
+import { Loader2 } from 'lucide-react';
 import {
   addTagToContent,
   ensureTagsLine,
@@ -351,8 +352,9 @@ export default function NoteView({ relativePath }: { relativePath: string }) {
 
   if (content === null && !liveSession) {
     return (
-      <div className="flex-1 flex items-center justify-center text-muted-foreground">
-        Loading…
+      <div className="flex-1 flex items-center justify-center gap-2 text-sm text-muted-foreground">
+        <Loader2 size={16} className="animate-spin" />
+        Loading note…
       </div>
     );
   }

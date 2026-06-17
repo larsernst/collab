@@ -5,6 +5,7 @@ import { useCollabStore } from '../../store/collabStore';
 import { useEditorStore } from '../../store/editorStore';
 import { useUiStore } from '../../store/uiStore';
 import { useVaultStore } from '../../store/vaultStore';
+import { useServerStore } from '../../store/serverStore';
 
 const transportMocks = vi.hoisted(() => ({
   broadcastPresence: vi.fn(async () => {}),
@@ -105,6 +106,7 @@ describe('CollabProvider presence lifecycle', () => {
       chatMessages: [],
       chatTypingUntil: null,
     });
+    useServerStore.setState({ status: null } as never);
   });
 
   afterEach(() => {
@@ -155,7 +157,7 @@ describe('CollabProvider presence lifecycle', () => {
     expect(transportMocks.onConfigChanged).not.toHaveBeenCalled();
   });
 
-  it('does not start the local collaboration transport for a hosted vault', async () => {
+  it('broadcasts hosted presence with the authenticated server identity', async () => {
     useVaultStore.setState({
       vault: {
         kind: 'hosted',
@@ -169,6 +171,21 @@ describe('CollabProvider presence lifecycle', () => {
         lastOpened: Date.now(),
       },
     });
+    useServerStore.setState({
+      status: {
+        connected: true,
+        serverUrl: 'https://collab.example.test',
+        allowInvalidCertificates: false,
+        user: {
+          id: 'server-user-1',
+          username: 'server-user',
+          displayName: 'Server User',
+          role: 'member',
+          status: 'active',
+        },
+        accessExpiresAt: '2026-06-17T12:00:00Z',
+      },
+    } as never);
 
     render(
       <CollabProvider>
@@ -176,8 +193,13 @@ describe('CollabProvider presence lifecycle', () => {
       </CollabProvider>,
     );
 
-    await Promise.resolve();
     expect(tauriCommands.registerKnownUser).not.toHaveBeenCalled();
-    expect(transportMocks.broadcastPresence).not.toHaveBeenCalled();
+    await waitFor(() => {
+      expect(transportMocks.broadcastPresence).toHaveBeenCalledWith(expect.objectContaining({
+        userId: 'server-user-1',
+        userName: 'Server User',
+        activeFile: 'Notes/a.md',
+      }));
+    });
   });
 });

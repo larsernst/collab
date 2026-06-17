@@ -1,6 +1,6 @@
 import { useEffect, useCallback, useMemo, useRef, useState, createContext, useContext } from 'react';
 import { listen } from '@tauri-apps/api/event';
-import { LayoutDashboard } from 'lucide-react';
+import { LayoutDashboard, Loader2 } from 'lucide-react';
 import { createVaultClient } from '../lib/vaultClient';
 import { useVaultStore } from '../store/vaultStore';
 import { useCollabStore } from '../store/collabStore';
@@ -119,6 +119,8 @@ export default function KanbanPage({ relativePath }: { relativePath: string | nu
   const [knownUsers, setKnownUsers] = useState<KnownUser[]>([]);
   // Live co-editing session for hosted boards; null = REST optimistic-write path.
   const [liveSession, setLiveSession] = useState<LiveJsonSession | null>(null);
+  const liveSessionRef = useRef<LiveJsonSession | null>(null);
+  const [isLoadingBoard, setIsLoadingBoard] = useState(false);
   // Mirrors the latest board so live edits and remote merges always derive from
   // the freshest state (including just-applied remote changes).
   const boardRef = useRef(board);
@@ -214,9 +216,11 @@ export default function KanbanPage({ relativePath }: { relativePath: string | nu
 
   const loadBoard = useCallback(async (isInitial = false) => {
     if (!client || !relativePath) return;
+    if (isInitial) setIsLoadingBoard(true);
     try {
       const { content, version } = await client.readDocument(relativePath);
       if (!isMountedRef.current) return;
+      if (liveSessionRef.current) return;
       if (content.trim()) {
         const parsed: KanbanBoard = JSON.parse(content);
         setBoard(runKanbanAutomations(normalizeKanbanBoard(parsed), 'onBoardOpen'));
@@ -235,7 +239,10 @@ export default function KanbanPage({ relativePath }: { relativePath: string | nu
         markLoaded(result.version);
         setSavedHash(relativePath, result.version);
       }
-    } catch {}
+    } catch {
+    } finally {
+      if (isMountedRef.current && !liveSessionRef.current) setIsLoadingBoard(false);
+    }
   }, [client, markLoaded, readOnly, relativePath, setSavedHash]);
 
   useEffect(() => {
@@ -279,7 +286,9 @@ export default function KanbanPage({ relativePath }: { relativePath: string | nu
           boardRef.current = next;
           setBoard(next);
         });
+        liveSessionRef.current = session;
         setLiveSession(session);
+        setIsLoadingBoard(false);
       })
       .catch(() => {
         // Best-effort; REST remains available.
@@ -288,6 +297,7 @@ export default function KanbanPage({ relativePath }: { relativePath: string | nu
       cancelled = true;
       off?.();
       opened?.destroy();
+      liveSessionRef.current = null;
       setLiveSession(null);
     };
   }, [client, relativePath]);
@@ -353,6 +363,15 @@ export default function KanbanPage({ relativePath }: { relativePath: string | nu
   }
 
   if (!vault) return null;
+
+  if (isLoadingBoard && board.columns.length === 0) {
+    return (
+      <div className="flex h-full items-center justify-center gap-2 text-sm text-muted-foreground">
+        <Loader2 size={16} className="animate-spin" />
+        Loading board…
+      </div>
+    );
+  }
 
   return (
     <KanbanContext.Provider value={{ board, updateBoard, knownUsers, relativePath, readOnly, caps, livePeers, remoteCardEditors }}>

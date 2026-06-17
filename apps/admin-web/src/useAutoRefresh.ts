@@ -13,7 +13,7 @@ import { useEffect, useRef } from 'react';
  * `load` is read through a ref, so the interval is not torn down and recreated
  * when the callback identity changes between renders.
  */
-export const DEFAULT_AUTO_REFRESH_MS = 15_000;
+export const DEFAULT_AUTO_REFRESH_MS = 5_000;
 
 export function useAutoRefresh(
   load: () => void | Promise<void>,

@@ -170,6 +170,12 @@ pub fn build_router(state: AppState) -> Router {
             "/api/v1/vaults/{vault_id}/chat",
             get(api::list_chat_messages).post(api::send_chat_message),
         )
+        .route(
+            "/api/v1/vaults/{vault_id}/presence",
+            get(api::list_presence)
+                .put(api::write_presence)
+                .delete(api::clear_presence),
+        )
         .route("/api/v1/admin/overview", get(api::overview))
         .route("/api/v1/admin/users", get(api::list_users).post(api::create_user))
         .route(

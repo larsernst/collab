@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { tauriCommands } from '../lib/tauri';
 import { useServerStore, isServerSessionExpired, isEffectivelyConnected } from './serverStore';
+import { useVaultStore } from './vaultStore';
 
 vi.mock('../lib/tauri', () => ({
   tauriCommands: {
@@ -39,6 +40,7 @@ describe('serverStore', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     useServerStore.setState({ status: null, hostedVaults: [], isLoading: false, error: null });
+    useVaultStore.setState({ vault: null, fileTree: [], isLoading: false } as never);
   });
 
   it('refreshes the native session and lists hosted vaults', async () => {
@@ -82,6 +84,37 @@ describe('serverStore', () => {
       { name: 'New Vault' },
     );
     expect(useServerStore.getState().hostedVaults).toEqual([hostedVault]);
+  });
+
+  it('refreshes the currently open hosted vault role and capabilities', async () => {
+    useServerStore.setState({ status: connected, hostedVaults: [] });
+    useVaultStore.setState({
+      vault: {
+        kind: 'hosted',
+        id: 'vault-1',
+        hostedVaultId: 'vault-1',
+        serverUrl: 'https://collab.example.test',
+        name: 'Hosted Vault',
+        path: 'hosted://vault-1',
+        lastOpened: 1,
+        isEncrypted: false,
+        role: 'viewer',
+        capabilities: ['vault.read'],
+      },
+    } as never);
+    vi.mocked(tauriCommands.hostedVaultRequest).mockResolvedValue([{
+      ...hostedVault,
+      role: 'editor',
+      capabilities: ['vault.read', 'file.write', 'kanban.card.move'],
+      updatedAt: '2026-06-11T09:00:00Z',
+    }]);
+
+    await useServerStore.getState().loadHostedVaults();
+
+    expect(useVaultStore.getState().vault).toMatchObject({
+      role: 'editor',
+      capabilities: ['vault.read', 'file.write', 'kanban.card.move'],
+    });
   });
 
   it('refuses to create a hosted vault when disconnected', async () => {

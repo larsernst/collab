@@ -75,16 +75,34 @@ export class FileSystemTransport implements CollabTransport {
 export class HostedServerTransport implements CollabTransport {
   constructor(private vault: HostedVaultMeta) {}
 
-  broadcastPresence(_entry: PresenceEntry) {
-    return Promise.resolve();
+  async broadcastPresence(entry: PresenceEntry) {
+    await tauriCommands.hostedVaultRequest<void>(
+      this.vault.serverUrl,
+      'PUT',
+      `/api/v1/vaults/${this.vault.hostedVaultId}/presence`,
+      {
+        activeFile: entry.activeFile,
+        cursorLine: entry.cursorLine,
+        chatTypingUntil: entry.chatTypingUntil,
+        appVersion: entry.appVersion,
+      },
+    );
   }
 
   readPresence() {
-    return Promise.resolve([]);
+    return tauriCommands.hostedVaultRequest<PresenceEntry[]>(
+      this.vault.serverUrl,
+      'GET',
+      `/api/v1/vaults/${this.vault.hostedVaultId}/presence`,
+    );
   }
 
-  clearPresence(_userId: string) {
-    return Promise.resolve();
+  async clearPresence(_userId: string) {
+    await tauriCommands.hostedVaultRequest<void>(
+      this.vault.serverUrl,
+      'DELETE',
+      `/api/v1/vaults/${this.vault.hostedVaultId}/presence`,
+    );
   }
 
   async sendChatMessage(msg: ChatMessage) {
@@ -108,8 +126,9 @@ export class HostedServerTransport implements CollabTransport {
     return Promise.resolve({ id: this.vault.hostedVaultId, name: this.vault.name, knownUsers: [], owner: '', members: [] });
   }
 
-  onPresenceChanged(_cb: () => void): Unsubscribe {
-    return () => {};
+  onPresenceChanged(cb: () => void): Unsubscribe {
+    const interval = window.setInterval(cb, 3000);
+    return () => window.clearInterval(interval);
   }
 
   onChatUpdated(cb: () => void): Unsubscribe {

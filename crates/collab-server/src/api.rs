@@ -19,14 +19,15 @@ use collab_protocol::{
     capabilities_for_role, AdminOverview, ApiError, AuditEvent, BootstrapStatus, BrowserSession,
     Capability, CreatedInvitation, DataResponse, ErrorCode, ErrorResponse, HealthState,
     HostedChatMessage, HostedDocumentType, HostedFileEntry, HostedFileKind, HostedFileReference,
-    HostedFileRevision, HostedFileState, HostedPdfAnnotations, HostedReferenceImpact,
-    HostedRevisionContent, HostedSearchResult, HostedSnapshot, HostedStructuralOperationPreview,
-    HostedStructuralOperationResult, HostedStructuralOperationType, HostedTextDocument,
-    HostedVault, HostedVaultActivityEvent, HostedVaultAdminDetail, HostedVaultImportResult,
-    HostedVaultManifest, HostedVaultMember, HostedVaultRole, HostedVaultStatus, HostedVaultStorage,
-    HostedVaultSummary, Invitation, LiveCollaborationMetrics, NativeSession, OperationalWarning,
-    PermissionTemplate, ServerUser, ServerUserRole, StorageSummary, UserDirectoryEntry, UserGroup,
-    UserGroupMember, VaultGrant, WritePdfAnnotationsRequest, WsTicket, WsTicketRequest,
+    HostedFileRevision, HostedFileState, HostedPdfAnnotations, HostedPresenceEntry,
+    HostedReferenceImpact, HostedRevisionContent, HostedSearchResult, HostedSnapshot,
+    HostedStructuralOperationPreview, HostedStructuralOperationResult,
+    HostedStructuralOperationType, HostedTextDocument, HostedVault, HostedVaultActivityEvent,
+    HostedVaultAdminDetail, HostedVaultImportResult, HostedVaultManifest, HostedVaultMember,
+    HostedVaultRole, HostedVaultStatus, HostedVaultStorage, HostedVaultSummary, Invitation,
+    LiveCollaborationMetrics, NativeSession, OperationalWarning, PermissionTemplate, ServerUser,
+    ServerUserRole, StorageSummary, UserDirectoryEntry, UserGroup, UserGroupMember, VaultGrant,
+    WritePdfAnnotationsRequest, WsTicket, WsTicketRequest,
 };
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -281,6 +282,15 @@ pub struct ChatQuery {
 pub struct SendChatMessageRequest {
     pub id: Uuid,
     pub content: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WritePresenceRequest {
+    pub active_file: Option<String>,
+    pub cursor_line: Option<i32>,
+    pub chat_typing_until: Option<u64>,
+    pub app_version: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1218,6 +1228,100 @@ pub async fn list_chat_messages(
     Ok(Json(DataResponse::new(
         load_chat_messages(&state.database, vault_id, limit, &request_id).await?,
     )))
+}
+
+pub async fn list_presence(
+    State(state): State<AppState>,
+    Extension(request_id): Extension<String>,
+    headers: HeaderMap,
+    Path(vault_id): Path<Uuid>,
+) -> Result<Json<DataResponse<Vec<HostedPresenceEntry>>>, ApiFailure> {
+    let actor = require_authenticated_user(&state, &headers, &request_id).await?;
+    require_capability(
+        &state.database,
+        vault_id,
+        user_uuid(&actor.user),
+        Capability::VaultRead,
+        &request_id,
+    )
+    .await?;
+    Ok(Json(DataResponse::new(
+        load_presence(&state.database, vault_id, &request_id).await?,
+    )))
+}
+
+pub async fn write_presence(
+    State(state): State<AppState>,
+    Extension(request_id): Extension<String>,
+    headers: HeaderMap,
+    Path(vault_id): Path<Uuid>,
+    Json(payload): Json<WritePresenceRequest>,
+) -> Result<StatusCode, ApiFailure> {
+    let actor = require_any_user(&state, &headers, &request_id).await?;
+    require_active_capability(
+        &state.database,
+        vault_id,
+        &actor.user,
+        Capability::VaultRead,
+        &request_id,
+    )
+    .await?;
+    let active_file = payload
+        .active_file
+        .map(|value| value.trim().to_owned())
+        .filter(|value| !value.is_empty());
+    if active_file.as_deref().map(str::len).unwrap_or(0) > 1024 {
+        return Err(ApiFailure::validation(
+            "Active presence file path is too long.",
+            request_id,
+        ));
+    }
+    let app_version = payload.app_version.unwrap_or_default();
+    if app_version.len() > 64 {
+        return Err(ApiFailure::validation(
+            "Presence app version is too long.",
+            request_id,
+        ));
+    }
+    sqlx::query(
+        r#"
+        INSERT INTO hosted_presence (vault_id, user_id, active_file, cursor_line, chat_typing_until, app_version, updated_at)
+        VALUES ($1, $2, $3, $4, $5, $6, NOW())
+        ON CONFLICT (vault_id, user_id)
+        DO UPDATE SET
+          active_file = EXCLUDED.active_file,
+          cursor_line = EXCLUDED.cursor_line,
+          chat_typing_until = EXCLUDED.chat_typing_until,
+          app_version = EXCLUDED.app_version,
+          updated_at = NOW()
+        "#,
+    )
+    .bind(vault_id)
+    .bind(user_uuid(&actor.user))
+    .bind(active_file)
+    .bind(payload.cursor_line)
+    .bind(payload.chat_typing_until.map(|value| value as i64))
+    .bind(app_version)
+    .execute(&state.database)
+    .await
+    .map_err(|_| ApiFailure::server(request_id.clone()))?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+pub async fn clear_presence(
+    State(state): State<AppState>,
+    Extension(request_id): Extension<String>,
+    headers: HeaderMap,
+    Path(vault_id): Path<Uuid>,
+) -> Result<StatusCode, ApiFailure> {
+    let actor = require_any_user(&state, &headers, &request_id).await?;
+    sqlx::query("DELETE FROM hosted_presence WHERE vault_id = $1 AND user_id = $2")
+        .bind(vault_id)
+        .bind(user_uuid(&actor.user))
+        .execute(&state.database)
+        .await
+        .map_err(|_| ApiFailure::server(request_id.clone()))?;
+    Ok(StatusCode::NO_CONTENT)
 }
 
 pub async fn send_chat_message(
@@ -3742,7 +3846,12 @@ pub async fn overview(
           (SELECT COUNT(*) FROM crdt_updates WHERE created_at >= NOW() - INTERVAL '60 seconds') AS updates_last_minute,
           (SELECT COUNT(*) FROM crdt_documents) AS compacted_documents,
           (SELECT COALESCE(SUM(octet_length(doc_state)), 0) FROM crdt_documents) AS compacted_state_bytes,
-          (SELECT MAX(updated_at) FROM crdt_documents) AS last_compaction_at
+          (SELECT MAX(updated_at) FROM crdt_documents) AS last_compaction_at,
+          (SELECT COUNT(*)
+             FROM hosted_presence p
+             JOIN users u ON u.id = p.user_id
+            WHERE p.updated_at >= NOW() - INTERVAL '30 seconds'
+              AND u.status = 'active') AS active_presence_users
         "#,
     )
     .fetch_one(&state.database)
@@ -3799,6 +3908,7 @@ pub async fn overview(
             active_connections: runtime_live_metrics.active_connections,
             loaded_rooms: runtime_live_metrics.loaded_rooms,
             active_awareness_states: runtime_live_metrics.active_awareness_states,
+            active_presence_users: persisted_live_metrics.get("active_presence_users"),
             pending_update_count: persisted_live_metrics.get("pending_update_count"),
             pending_update_bytes: persisted_live_metrics.get("pending_update_bytes"),
             updates_last_minute: persisted_live_metrics.get("updates_last_minute"),
@@ -6078,6 +6188,50 @@ async fn load_chat_messages(
     let mut messages = rows.iter().map(chat_message_from_row).collect::<Vec<_>>();
     messages.reverse();
     Ok(messages)
+}
+
+async fn load_presence(
+    pool: &PgPool,
+    vault_id: Uuid,
+    request_id: &str,
+) -> Result<Vec<HostedPresenceEntry>, ApiFailure> {
+    let rows = sqlx::query(
+        r#"
+        SELECT p.active_file, p.cursor_line, p.chat_typing_until, p.app_version, p.updated_at,
+               u.id AS user_id, u.display_name AS user_name
+        FROM hosted_presence p
+        JOIN users u ON u.id = p.user_id
+        WHERE p.vault_id = $1
+          AND u.status = 'active'
+          AND p.updated_at >= NOW() - INTERVAL '30 seconds'
+        ORDER BY p.updated_at DESC
+        "#,
+    )
+    .bind(vault_id)
+    .fetch_all(pool)
+    .await
+    .map_err(|_| ApiFailure::server(request_id.to_owned()))?;
+    Ok(rows.iter().map(presence_from_row).collect())
+}
+
+fn presence_from_row(row: &sqlx::postgres::PgRow) -> HostedPresenceEntry {
+    let user_id = row.get::<Uuid, _>("user_id").to_string();
+    let last_seen = row
+        .get::<chrono::DateTime<chrono::Utc>, _>("updated_at")
+        .timestamp_millis()
+        .max(0) as u64;
+    HostedPresenceEntry {
+        user_color: user_color_for_id(&user_id),
+        user_id,
+        user_name: row.get("user_name"),
+        active_file: row.get("active_file"),
+        cursor_line: row.get("cursor_line"),
+        chat_typing_until: row
+            .get::<Option<i64>, _>("chat_typing_until")
+            .map(|value| value.max(0) as u64),
+        last_seen,
+        app_version: row.get("app_version"),
+    }
 }
 
 async fn load_chat_message(
@@ -10319,6 +10473,58 @@ mod tests {
         );
         assert_eq!(listed_chat_body["data"][0]["userId"], member_id);
 
+        let wrote_presence = request(
+            &app,
+            "PUT",
+            &format!("/api/v1/vaults/{vault_id}/presence"),
+            json!({
+                "activeFile": "Notes/Imported.md",
+                "cursorLine": 7,
+                "chatTypingUntil": 123456,
+                "appVersion": "1.2.3"
+            }),
+            Some(&member_cookie),
+            Some(&member_csrf),
+        )
+        .await;
+        assert_eq!(wrote_presence.status(), StatusCode::NO_CONTENT);
+
+        let listed_presence = request(
+            &app,
+            "GET",
+            &format!("/api/v1/vaults/{vault_id}/presence"),
+            json!({}),
+            Some(&admin_cookie),
+            None,
+        )
+        .await;
+        assert_eq!(listed_presence.status(), StatusCode::OK);
+        let listed_presence_body = json_body(listed_presence).await;
+        let presence = listed_presence_body["data"].as_array().unwrap();
+        assert_eq!(presence.len(), 1);
+        assert_eq!(presence[0]["userId"], member_id);
+        assert_eq!(presence[0]["userName"], "Member User");
+        assert_eq!(presence[0]["activeFile"], "Notes/Imported.md");
+        assert_eq!(presence[0]["cursorLine"], 7);
+        assert_eq!(presence[0]["chatTypingUntil"], 123456);
+        assert_eq!(presence[0]["appVersion"], "1.2.3");
+        assert!(presence[0]["lastSeen"].as_u64().unwrap() > 0);
+
+        let presence_overview = request(
+            &app,
+            "GET",
+            "/api/v1/admin/overview",
+            json!({}),
+            Some(&admin_cookie),
+            None,
+        )
+        .await;
+        assert_eq!(presence_overview.status(), StatusCode::OK);
+        assert_eq!(
+            json_body(presence_overview).await["data"]["liveCollaboration"]["activePresenceUsers"],
+            1
+        );
+
         let empty_chat = request(
             &app,
             "POST",
@@ -10685,6 +10891,11 @@ mod tests {
             .is_some());
         assert!(
             overview_body["data"]["liveCollaboration"]["updatesLastMinute"]
+                .as_i64()
+                .is_some()
+        );
+        assert!(
+            overview_body["data"]["liveCollaboration"]["activePresenceUsers"]
                 .as_i64()
                 .is_some()
         );

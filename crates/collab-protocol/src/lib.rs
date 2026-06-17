@@ -527,6 +527,20 @@ pub struct HostedChatMessage {
     pub timestamp: u64,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct HostedPresenceEntry {
+    pub user_id: String,
+    pub user_name: String,
+    pub user_color: String,
+    pub active_file: Option<String>,
+    pub cursor_line: Option<i32>,
+    pub chat_typing_until: Option<u64>,
+    /// Milliseconds since the Unix epoch, matching the native presence DTO.
+    pub last_seen: u64,
+    pub app_version: String,
+}
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum HostedFileKind {
@@ -732,6 +746,7 @@ pub struct LiveCollaborationMetrics {
     pub active_connections: u64,
     pub loaded_rooms: u64,
     pub active_awareness_states: u64,
+    pub active_presence_users: i64,
     pub pending_update_count: i64,
     pub pending_update_bytes: i64,
     pub updates_last_minute: i64,

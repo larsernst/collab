@@ -310,7 +310,7 @@ function Dashboard() {
   const [error, setError] = useState('');
   const load = useCallback(() => serverApi.overview().then((data) => { setOverview(data); setError(''); }).catch((reason) => setError(String(reason))), []);
   useEffect(() => void load(), [load]);
-  useAutoRefresh(load);
+  useAutoRefresh(load, { intervalMs: 3_000 });
   return (
     <>
       <PageHeader eyebrow="OPERATIONS" title="Server dashboard" subtitle="A quiet overview of identities, sessions, and server activity." action={<IconButton label="Refresh dashboard" onClick={load}><RefreshCw size={16} /></IconButton>} />
@@ -329,6 +329,7 @@ function Dashboard() {
           <div className="storage-grid">
             <Metric icon={<Activity />} label="Live connections" value={overview.liveCollaboration.activeConnections} detail="Open WebSocket sessions" />
             <Metric icon={<Boxes />} label="Loaded rooms" value={overview.liveCollaboration.loadedRooms} detail={`${overview.liveCollaboration.activeAwarenessStates} awareness states`} />
+            <Metric icon={<Users />} label="Active presence" value={overview.liveCollaboration.activePresenceUsers} detail="Hosted users seen in the last 30 seconds" />
             <Metric icon={<Gauge />} label="Update rate" value={overview.liveCollaboration.updatesLastMinute} detail="Durable updates in the last minute" />
             <Metric icon={<Database />} label="CRDT update log" value={overview.liveCollaboration.pendingUpdateCount} detail={`${formatBytes(overview.liveCollaboration.pendingUpdateBytes)} pending compaction`} />
             <Metric

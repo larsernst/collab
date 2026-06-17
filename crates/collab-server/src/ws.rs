@@ -971,7 +971,27 @@ async fn handle_binary(
     if !subscriptions.contains_key(&file_id) {
         return;
     }
-    let Ok(room) = state.hub.join(file_id, access.vault_id).await else {
+    let Some(current_access) =
+        resolve_live_access(&state.database, access.vault_id, access.user_id).await
+    else {
+        send_error(
+            out_tx,
+            ErrorCode::VaultPermissionDenied,
+            "You no longer have access to this vault.",
+        )
+        .await;
+        return;
+    };
+    if !current_access.can_read {
+        send_error(
+            out_tx,
+            ErrorCode::VaultPermissionDenied,
+            "You no longer have permission to read this document.",
+        )
+        .await;
+        return;
+    }
+    let Ok(room) = state.hub.join(file_id, current_access.vault_id).await else {
         return;
     };
     match tag {
@@ -983,7 +1003,7 @@ async fn handle_binary(
             }
         }
         ws_message::SYNC_UPDATE => {
-            if !access.can_write || !access.active {
+            if !current_access.can_write || !current_access.active {
                 send_error(
                     out_tx,
                     ErrorCode::VaultPermissionDenied,
@@ -993,7 +1013,7 @@ async fn handle_binary(
                 return;
             }
             let _ = room
-                .apply_remote_update(&state.database, payload, access.user_id, session_id)
+                .apply_remote_update(&state.database, payload, current_access.user_id, session_id)
                 .await;
         }
         // Awareness is allowed for every subscribed reader, including viewers,
@@ -1520,6 +1540,54 @@ mod tests {
             .await
             .expect("compacted state is replayed");
         assert_eq!(read_text(&state_update), "compact me");
+    }
+
+    #[tokio::test]
+    async fn live_permissions_are_rechecked_after_role_changes() {
+        let Some((pool, _db_guard)) = test_pool().await else {
+            return;
+        };
+        let owner = insert_user(&pool, "dynamic-owner").await;
+        let editor = insert_user(&pool, "dynamic-editor").await;
+        let vault = insert_vault(&pool, owner).await;
+        insert_member(&pool, vault, editor, "editor").await;
+        let file = insert_document(&pool, vault, "dynamic.md").await;
+        insert_ticket(&pool, editor, vault, "dynamic-editor-t").await;
+
+        let (addr, _state) = serve(pool.clone()).await;
+        let mut client = TestClient::connect(&addr, vault, "dynamic-editor-t").await;
+        client.expect_ready().await;
+        client.subscribe(file).await;
+        let _ = client.next_binary(ws_message::SYNC_STEP1).await;
+
+        sqlx::query(
+            "UPDATE hosted_vault_memberships SET role = 'viewer' WHERE vault_id = $1 AND user_id = $2",
+        )
+        .bind(vault)
+        .bind(editor)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        client
+            .send_binary(
+                ws_message::SYNC_UPDATE,
+                file,
+                &text_update("not allowed anymore"),
+            )
+            .await;
+        let error = client.try_error().await;
+        assert!(
+            matches!(error, Some(WsServerControl::Error { code, .. }) if code == ErrorCode::VaultPermissionDenied),
+            "downgraded editor write should be denied: {error:?}"
+        );
+        let persisted: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM crdt_updates WHERE file_id = $1")
+                .bind(file)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(persisted, 0);
     }
 
     #[tokio::test]

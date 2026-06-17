@@ -161,8 +161,8 @@ export function ChatPanel() {
   if (vault && !supportsChat) {
     return (
       <div className="flex h-full flex-col items-center justify-center gap-2 px-6 text-center">
-        <p className="text-sm text-muted-foreground">Chat isn't available for hosted vaults yet.</p>
-        <p className="text-xs text-muted-foreground/70">Real-time hosted collaboration, including chat, is coming in a future update.</p>
+        <p className="text-sm text-muted-foreground">Chat is temporarily unavailable.</p>
+        <p className="text-xs text-muted-foreground/70">Reconnect to the vault server or reopen the vault to restore chat.</p>
       </div>
     );
   }

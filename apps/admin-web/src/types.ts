@@ -56,6 +56,7 @@ export interface AdminOverview {
     activeConnections: number;
     loadedRooms: number;
     activeAwarenessStates: number;
+    activePresenceUsers: number;
     pendingUpdateCount: number;
     pendingUpdateBytes: number;
     updatesLastMinute: number;

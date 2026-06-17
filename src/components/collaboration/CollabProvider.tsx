@@ -10,6 +10,7 @@ import { tauriCommands } from '../../lib/tauri';
 import { createCollabTransport, type CollabTransport } from '../../lib/collabTransport';
 import type { ChatMessage } from '../../types/collab';
 import { vaultKind } from '../../types/vault';
+import { useCollabIdentity } from '../../lib/collabIdentity';
 
 const CollabContext = createContext<CollabTransport | null>(null);
 
@@ -22,14 +23,12 @@ export function CollabProvider({ children }: { children: ReactNode }) {
   const { activeTabPath } = useEditorStore();
   const { isSidebarOpen, sidebarPanel, collabTab } = useUiStore();
   const {
-    myUserId,
-    myUserName,
-    myUserColor,
     setPeers,
     setChatMessages,
     appendChatMessage,
     chatTypingUntil,
   } = useCollabStore();
+  const identity = useCollabIdentity();
   const knownMessageIdsRef = useRef<Set<string>>(new Set());
   const isChatVisible = isSidebarOpen && sidebarPanel === 'collab' && collabTab === 'chat';
   const isChatVisibleRef = useRef(isChatVisible);
@@ -52,9 +51,9 @@ export function CollabProvider({ children }: { children: ReactNode }) {
     try {
       const version = await getAppVersion().catch(() => '0.0.0');
       await transportRef.current.broadcastPresence({
-        userId: myUserId,
-        userName: myUserName,
-        userColor: myUserColor,
+        userId: identity.userId,
+        userName: identity.userName,
+        userColor: identity.userColor,
         activeFile,
         cursorLine: null,
         chatTypingUntil,
@@ -68,33 +67,33 @@ export function CollabProvider({ children }: { children: ReactNode }) {
     if (!vault || !transportRef.current) return;
     try {
       const all = await transportRef.current.readPresence();
-      setPeers(all.filter((p) => p.userId !== myUserId));
+      setPeers(all.filter((p) => p.userId !== identity.userId));
     } catch {}
   };
 
   // Local identity metadata remains useful for presence, chat, and history labels.
   useEffect(() => {
     if (!vault || vaultKind(vault) !== 'local') return;
-    tauriCommands.registerKnownUser(vault.path, myUserId, myUserName, myUserColor).catch(() => {});
-  }, [vault, myUserId, myUserName, myUserColor]);
+    tauriCommands.registerKnownUser(vault.path, identity.userId, identity.userName, identity.userColor).catch(() => {});
+  }, [vault, identity.userId, identity.userName, identity.userColor]);
 
   // Broadcast presence when active tab changes
   useEffect(() => {
     if (!vault) return;
     broadcastPresence(activeTabPath);
-  }, [activeTabPath, vault?.path]);
+  }, [activeTabPath, vault?.path, identity.userId, identity.userName, identity.userColor]);
 
   useEffect(() => {
     if (!vault) return;
     broadcastPresence(activeTabPathRef.current);
-  }, [chatTypingUntil, vault?.path]);
+  }, [chatTypingUntil, vault?.path, identity.userId, identity.userName, identity.userColor]);
 
   const handleIncomingMessages = (msgs: ChatMessage[], mode: 'replace' | 'append') => {
     const newRemoteMessages: ChatMessage[] = [];
     for (const msg of msgs) {
       if (knownMessageIdsRef.current.has(msg.id)) continue;
       knownMessageIdsRef.current.add(msg.id);
-      if (msg.userId !== myUserId) {
+      if (msg.userId !== identity.userId) {
         newRemoteMessages.push(msg);
       }
     }
@@ -152,14 +151,14 @@ export function CollabProvider({ children }: { children: ReactNode }) {
       unsubChat();
       unsubChatMessage?.();
     };
-  }, [transport, vault?.path, myUserId]);
+  }, [transport, vault?.path, identity.userId]);
 
   useEffect(() => {
     if (!vault || !transportRef.current) return;
     return () => {
-      transportRef.current?.clearPresence(myUserId).catch(() => {});
+      transportRef.current?.clearPresence(identity.userId).catch(() => {});
     };
-  }, [vault?.path, myUserId]);
+  }, [vault?.path, identity.userId]);
 
   return (
     <CollabContext.Provider value={transport}>

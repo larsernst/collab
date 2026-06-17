@@ -1,5 +1,6 @@
 import { create } from 'zustand';
 import { tauriCommands, type ServerConnectionStatus } from '../lib/tauri';
+import { useVaultStore } from './vaultStore';
 import type { HostedVaultSummary } from '../types/vault';
 
 const SERVER_URL_KEY = 'collab-hosted-server-url';
@@ -159,6 +160,7 @@ export const useServerStore = create<ServerState>()((set, get) => ({
         'GET',
         '/api/v1/vaults',
       );
+      useVaultStore.getState().refreshHostedVaultMetadata(status.serverUrl, hostedVaults);
       set({ hostedVaults, isLoading: false });
     } catch (error) {
       set({ hostedVaults: [], isLoading: false, error: String(error) });

@@ -2,7 +2,7 @@ import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
 import { tauriCommands } from '../lib/tauri';
 import { createVaultClient, requireRuntimeCapability } from '../lib/vaultClient';
-import type { HostedVaultMeta, VaultMeta, NoteFile } from '../types/vault';
+import { hostedVaultMeta, type HostedVaultMeta, type HostedVaultSummary, type VaultMeta, type NoteFile } from '../types/vault';
 
 interface VaultState {
   vault: VaultMeta | null;
@@ -15,6 +15,7 @@ interface VaultState {
   openHostedVault: (vault: HostedVaultMeta) => Promise<void>;
   unlockVault: (password: string) => Promise<void>;
   refreshFileTree: () => Promise<void>;
+  refreshHostedVaultMetadata: (serverUrl: string, summaries: HostedVaultSummary[]) => void;
   closeVault: () => void;
   loadRecentVaults: () => Promise<void>;
   removeRecentVault: (path: string) => Promise<void>;
@@ -135,6 +136,22 @@ export const useVaultStore = create<VaultState>()(
         if (!vault) return;
         const fileTree = sortFileTreeAlphabetically(await createVaultClient(vault).listFiles());
         set({ fileTree });
+      },
+      refreshHostedVaultMetadata: (serverUrl, summaries) => {
+        const vault = get().vault;
+        if (!vault || vault.kind !== 'hosted' || vault.serverUrl !== serverUrl) return;
+        const summary = summaries.find((candidate) => candidate.id === vault.hostedVaultId);
+        if (!summary) return;
+        const next = hostedVaultMeta(serverUrl, summary);
+        set({
+          vault: {
+            ...vault,
+            name: next.name,
+            lastOpened: next.lastOpened,
+            role: next.role,
+            capabilities: next.capabilities,
+          },
+        });
       },
       closeVault: () => {
         const vault = get().vault;

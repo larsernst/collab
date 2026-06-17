@@ -117,6 +117,7 @@ describe('admin application', () => {
         activeConnections: 2,
         loadedRooms: 3,
         activeAwarenessStates: 1,
+        activePresenceUsers: 2,
         pendingUpdateCount: 5,
         pendingUpdateBytes: 2048,
         updatesLastMinute: 4,
@@ -184,6 +185,7 @@ describe('admin application', () => {
     expect(screen.getByText('Active users')).toBeTruthy();
     expect(screen.getByText('Live collaboration')).toBeTruthy();
     expect(screen.getByText('Live connections')).toBeTruthy();
+    expect(screen.getByText('Active presence')).toBeTruthy();
     expect(screen.getByText('CRDT update log')).toBeTruthy();
     expect(screen.getByText('v0.4.3')).toBeTruthy();
   });

@@ -22,6 +22,7 @@ import {
 } from '@xyflow/react';
 import {
   Layout,
+  Loader2,
 } from 'lucide-react';
 import { nodeTypes, type CanvasNodeData } from '../components/canvas/CanvasNodeTypes';
 import {
@@ -742,7 +743,7 @@ function CanvasBoard({ relativePath }: { relativePath: string | null }) {
     webPreviewsEnabled,
   ]);
 
-  const { liveSession } = useCanvasDocumentSession({
+  const { liveSession, isLoading: canvasLoading } = useCanvasDocumentSession({
     reactFlow,
     vault,
     relativePath,
@@ -1514,6 +1515,14 @@ function CanvasBoard({ relativePath }: { relativePath: string | null }) {
         }}
         onDrop={readOnly ? undefined : handleDropOnCanvas}
       >
+      {canvasLoading && (
+        <div className="absolute inset-0 z-20 flex items-center justify-center bg-background/45 backdrop-blur-[1px]">
+          <div className="flex items-center gap-2 rounded-full border border-border bg-card/90 px-3 py-2 text-sm text-muted-foreground shadow-lg">
+            <Loader2 size={16} className="animate-spin" />
+            Loading canvas…
+          </div>
+        </div>
+      )}
       <CanvasPickerDialog
         open={pickerMode !== null}
         mode={pickerMode}

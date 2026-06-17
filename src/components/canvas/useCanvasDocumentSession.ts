@@ -155,6 +155,7 @@ export function useCanvasDocumentSession({
   const restCanvasRef = useRef<CanvasData | null>(null);
   const [restLoadedPath, setRestLoadedPath] = useState<string | null>(null);
   const [loadRevision, setLoadRevision] = useState(0);
+  const [isLoading, setIsLoading] = useState(false);
   // Live co-editing session for hosted canvases; null = REST optimistic writes.
   const [liveSession, setLiveSession] = useState<LiveJsonSession | null>(null);
   const liveWriteTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
@@ -187,6 +188,7 @@ export function useCanvasDocumentSession({
 
   const loadCanvas = useCallback(async (isInitial = false) => {
     if (!client || !relativePath) return;
+    if (isInitial) setIsLoading(true);
 
     try {
       const { content, version } = await client.readDocument(relativePath);
@@ -237,6 +239,8 @@ export function useCanvasDocumentSession({
       setLoadRevision((prev) => prev + 1);
     } catch {
       setRestLoadedPath(relativePath);
+    } finally {
+      if (isMountedRef.current) setIsLoading(false);
     }
   }, [
     buildFlowNode,
@@ -504,5 +508,5 @@ export function useCanvasDocumentSession({
     };
   }, [edges, isDirtyRef, liveSession, markDirty, nodes, pauseAutosave, readOnly, relativePath, runExclusiveSave, saveCanvas, shouldSkipAutosave, vault, viewport]);
 
-  return { liveSession };
+  return { liveSession, isLoading };
 }
