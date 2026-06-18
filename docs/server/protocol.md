@@ -150,6 +150,7 @@ Vault management:
 - `GET|PATCH|DELETE /api/v1/vaults/{vaultId}`
 - `GET|POST /api/v1/vaults/{vaultId}/members`
 - `PATCH|DELETE /api/v1/vaults/{vaultId}/members/{userId}`
+- `GET /api/v1/vaults/{vaultId}/templates`
 - `GET /api/v1/vaults/{vaultId}/storage`
 - `POST /api/v1/vaults/{vaultId}/import`
 - `GET|POST /api/v1/vaults/{vaultId}/chat`
@@ -176,6 +177,19 @@ vaults where the authenticated user has a persisted membership. Vault
 administrators can rename vaults and manage viewer/editor memberships; only the
 owner can grant or remove administrators, archive a vault, or mark it pending
 deletion. Archived and pending-delete vaults reject membership mutations.
+
+`PATCH /api/v1/vaults/{vaultId}/members/{userId}` accepts one of `role`,
+`capabilities` (an explicit fine-grained override), `templateId` (a permission
+template assignment), or `resetToRoleDefault: true`. A `role` change requires
+`vault.manageMembers` and clears any override; capability/template/reset edits
+require `vault.managePermissions`. The member DTO carries the effective
+membership-level `capabilities`, the `customCapabilities` override (when set),
+and the assigned `templateId`/`templateName`. A non-owner administrator cannot
+remove their own `vault.manageMembers`/`vault.managePermissions` capabilities
+(self-lockout guard). `GET /api/v1/vaults/{vaultId}/templates` is readable with
+`vault.managePermissions` so vault administrators can assign templates from the
+native client; template CRUD and group grants remain server-admin-only under
+`/api/v1/admin`.
 
 Files and history:
 
@@ -206,6 +220,13 @@ The Phase 3 manifest and text-revision slice implements:
 Each successful create or text revision increments the vault manifest sequence
 and records vault activity. Text payloads use the content-addressed blob store.
 Viewer reads are allowed; mutations require editor access and an active vault.
+
+`GET /manifest/delta?since={sequence}` is viewer-readable and supports native
+offline replicas. It returns the current vault manifest sequence plus only file
+entries whose manifest-visible state changed after `since`; clients merge those
+entries by stable file ID into their cached manifest. Existing rows are marked
+conservatively at migration time, so an older replica may receive a one-time
+catch-up delta containing all known file entries.
 
 `GET /search?q={query}` is viewer-readable and searches the current active
 hosted note revisions. Results include stable file IDs, derived paths, titles,

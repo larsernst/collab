@@ -1,12 +1,37 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { Loader2, ShieldCheck, Trash2, UserPlus } from 'lucide-react';
+import { Loader2, ShieldCheck, SlidersHorizontal, Trash2, UserPlus } from 'lucide-react';
 import { toast } from 'sonner';
 
 import { createVaultClient, type VaultMembersCapability } from '../../lib/vaultClient';
+import { useCollabIdentity } from '../../lib/collabIdentity';
+import {
+  CAPABILITY_GROUPS,
+  MANAGEMENT_CAPABILITIES,
+  capabilityLabel,
+  sortCapabilityTokens,
+} from '../../lib/capabilities';
+import { useServerStore } from '../../store/serverStore';
 import { useVaultStore } from '../../store/vaultStore';
-import { vaultKind, type HostedVaultMeta, type HostedVaultMember, type MemberRole, type UserDirectoryEntry } from '../../types/vault';
+import {
+  vaultCan,
+  vaultKind,
+  type HostedVaultMember,
+  type MemberRole,
+  type PermissionTemplate,
+  type UserDirectoryEntry,
+} from '../../types/vault';
 import { Button } from '../ui/button';
+import { Checkbox } from '../ui/checkbox';
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from '../ui/dialog';
 import { Input } from '../ui/input';
+import { ScrollArea } from '../ui/scroll-area';
 import {
   Select,
   SelectContent,
@@ -20,6 +45,34 @@ const ROLE_OPTIONS: { value: MemberRole; label: string; hint: string }[] = [
   { value: 'editor', label: 'Editor', hint: 'Read and write content' },
   { value: 'admin', label: 'Admin', hint: 'Manage content and members' },
 ];
+
+/** The capability set a plain role confers, mirroring `capabilities_for_role`. */
+const ROLE_DEFAULT_CAPABILITIES: Record<MemberRole, string[]> = {
+  viewer: ['vault.read', 'vault.search', 'vault.viewHistory', 'vault.viewActivity'],
+  editor: [
+    'vault.read',
+    'vault.search',
+    'vault.viewHistory',
+    'vault.viewActivity',
+    'file.create',
+    'file.write',
+    'file.move',
+    'file.delete',
+    'file.uploadAsset',
+    'kanban.card.create',
+    'kanban.card.editContent',
+    'kanban.card.move',
+    'kanban.card.comment',
+    'kanban.card.delete',
+    'kanban.card.archive',
+    'kanban.column.manage',
+    'pdf.comment',
+    'pdf.annotate',
+    'note.edit',
+    'canvas.edit',
+  ],
+  admin: CAPABILITY_GROUPS.flatMap((group) => group.capabilities.map((capability) => capability.token)),
+};
 
 function initials(displayName: string): string {
   const parts = displayName.trim().split(/\s+/).filter(Boolean);
@@ -53,18 +106,289 @@ function RoleSelect({
   );
 }
 
+/** Renders a member's effective capabilities, summarized when the list is long. */
+function CapabilityBadges({ member }: { member: HostedVaultMember }) {
+  const tokens = member.owner
+    ? ['Full access']
+    : member.capabilities ?? ROLE_DEFAULT_CAPABILITIES[member.role];
+  const source = member.owner
+    ? null
+    : member.templateName
+      ? `Template: ${member.templateName}`
+      : member.customCapabilities
+        ? 'Custom'
+        : `Role: ${member.role}`;
+  const labels = member.owner ? ['Full access'] : tokens.map(capabilityLabel);
+  const shown = labels.slice(0, 6);
+  const extra = labels.length - shown.length;
+  return (
+    <div className="mt-1 flex flex-wrap items-center gap-1">
+      {source && (
+        <span className="rounded-full border border-primary/25 bg-primary/10 px-1.5 py-0.5 text-[10px] font-medium text-primary">
+          {source}
+        </span>
+      )}
+      {shown.map((label) => (
+        <span
+          key={label}
+          className="rounded-full border border-border/60 bg-muted/35 px-1.5 py-0.5 text-[10px] text-muted-foreground"
+        >
+          {label}
+        </span>
+      ))}
+      {extra > 0 && (
+        <span className="rounded-full border border-border/60 bg-muted/35 px-1.5 py-0.5 text-[10px] text-muted-foreground">
+          +{extra} more
+        </span>
+      )}
+    </div>
+  );
+}
+
+type EditorMode = 'role' | 'template' | 'custom';
+
+/**
+ * Fine-grained permission editor for a single member. Lets a permission manager
+ * pick the role default, a named template, or a custom capability set. When the
+ * editor targets the current user, the two management capabilities stay locked on
+ * so an admin cannot strip their own administrative permissions.
+ */
+function PermissionEditorDialog({
+  member,
+  members,
+  isSelf,
+  onClose,
+  onSaved,
+}: {
+  member: HostedVaultMember;
+  members: VaultMembersCapability;
+  isSelf: boolean;
+  onClose: () => void;
+  onSaved: (updated: HostedVaultMember, wasSelf: boolean) => void;
+}) {
+  const initialMode: EditorMode = member.templateId
+    ? 'template'
+    : member.customCapabilities
+      ? 'custom'
+      : 'role';
+  const [mode, setMode] = useState<EditorMode>(initialMode);
+  const [templates, setTemplates] = useState<PermissionTemplate[] | null>(null);
+  const [templateId, setTemplateId] = useState<string | null>(member.templateId ?? null);
+  const [selected, setSelected] = useState<Set<string>>(
+    () =>
+      new Set(
+        member.customCapabilities ??
+          member.capabilities ??
+          ROLE_DEFAULT_CAPABILITIES[member.role],
+      ),
+  );
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    members
+      .listTemplates()
+      .then((list) => {
+        if (!cancelled) setTemplates(list);
+      })
+      .catch(() => {
+        if (!cancelled) setTemplates([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [members]);
+
+  const toggle = (token: string) => {
+    // Self-lockout guard: the management capabilities cannot be removed from
+    // yourself (mirrors the server-side guard).
+    if (isSelf && MANAGEMENT_CAPABILITIES.includes(token as (typeof MANAGEMENT_CAPABILITIES)[number])) {
+      return;
+    }
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(token)) next.delete(token);
+      else next.add(token);
+      return next;
+    });
+  };
+
+  // For the role/template modes, the resulting capability set is what those
+  // grants confer; used to validate the self-lockout guard before saving.
+  const resultingTokens = useMemo<string[]>(() => {
+    if (mode === 'role') return ROLE_DEFAULT_CAPABILITIES[member.role];
+    if (mode === 'template') {
+      return templates?.find((template) => template.id === templateId)?.capabilities ?? [];
+    }
+    return sortCapabilityTokens(selected);
+  }, [mode, member.role, templates, templateId, selected]);
+
+  const selfLockoutBlocked =
+    isSelf && !MANAGEMENT_CAPABILITIES.every((token) => resultingTokens.includes(token));
+
+  const handleSave = async () => {
+    if (selfLockoutBlocked) return;
+    setSaving(true);
+    try {
+      let updated: HostedVaultMember;
+      if (mode === 'role') {
+        updated = await members.resetToRoleDefault(member.userId);
+      } else if (mode === 'template') {
+        if (!templateId) throw new Error('Select a template to assign.');
+        updated = await members.setTemplate(member.userId, templateId);
+      } else {
+        updated = await members.setCapabilities(member.userId, sortCapabilityTokens(selected));
+      }
+      onSaved(updated, isSelf);
+    } catch (e) {
+      toast.error(`Failed to update permissions: ${e}`);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <Dialog open onOpenChange={(open) => !open && onClose()}>
+      <DialogContent className="max-w-lg">
+        <DialogHeader>
+          <DialogTitle>Permissions — {member.displayName}</DialogTitle>
+          <DialogDescription>
+            Choose how this member&apos;s capabilities are granted. The server enforces the effective
+            capability tokens on every request.
+          </DialogDescription>
+        </DialogHeader>
+
+        <div className="flex gap-1.5">
+          {(
+            [
+              ['role', 'Role default'],
+              ['template', 'Template'],
+              ['custom', 'Custom'],
+            ] as [EditorMode, string][]
+          ).map(([value, label]) => (
+            <Button
+              key={value}
+              type="button"
+              size="sm"
+              variant={mode === value ? 'default' : 'outline'}
+              className="h-8 flex-1 text-xs"
+              onClick={() => setMode(value)}
+            >
+              {label}
+            </Button>
+          ))}
+        </div>
+
+        {mode === 'role' && (
+          <p className="rounded-md border border-border/50 bg-muted/20 p-3 text-xs text-muted-foreground">
+            Uses the built-in capability set for the member&apos;s <b>{member.role}</b> role. Any custom
+            override or template assignment is cleared.
+          </p>
+        )}
+
+        {mode === 'template' && (
+          <div className="space-y-2">
+            {templates === null ? (
+              <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                <Loader2 size={14} className="animate-spin" /> Loading templates…
+              </div>
+            ) : templates.length === 0 ? (
+              <p className="text-xs text-muted-foreground">No permission templates are available.</p>
+            ) : (
+              <Select value={templateId ?? ''} onValueChange={(value) => setTemplateId(value)}>
+                <SelectTrigger className="h-9 text-sm">
+                  <SelectValue placeholder="Select a template…" />
+                </SelectTrigger>
+                <SelectContent>
+                  {templates.map((template) => (
+                    <SelectItem key={template.id} value={template.id} className="text-sm">
+                      {template.name}
+                      {template.isBuiltin ? ' (built-in)' : ''}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            )}
+            {selfLockoutBlocked && (
+              <p className="text-xs text-destructive">
+                This template would remove your own management permissions.
+              </p>
+            )}
+          </div>
+        )}
+
+        {mode === 'custom' && (
+          <ScrollArea className="max-h-72 rounded-md border border-border/50 p-2">
+            <div className="space-y-3">
+              {CAPABILITY_GROUPS.map((group) => (
+                <div key={group.domain}>
+                  <p className="mb-1 text-[11px] font-semibold uppercase tracking-widest text-muted-foreground">
+                    {group.domain}
+                  </p>
+                  <div className="grid grid-cols-2 gap-1">
+                    {group.capabilities.map((capability) => {
+                      const locked =
+                        isSelf &&
+                        MANAGEMENT_CAPABILITIES.includes(
+                          capability.token as (typeof MANAGEMENT_CAPABILITIES)[number],
+                        );
+                      return (
+                        <label
+                          key={capability.token}
+                          className="flex items-center gap-2 rounded px-1.5 py-1 text-xs hover:bg-accent/40"
+                          title={locked ? 'You cannot remove your own management permissions.' : undefined}
+                        >
+                          <Checkbox
+                            checked={selected.has(capability.token)}
+                            disabled={locked}
+                            onCheckedChange={() => toggle(capability.token)}
+                            aria-label={capability.token}
+                          />
+                          <span className={locked ? 'text-muted-foreground' : ''}>{capability.label}</span>
+                        </label>
+                      );
+                    })}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </ScrollArea>
+        )}
+
+        <DialogFooter>
+          <Button type="button" variant="ghost" size="sm" onClick={onClose} disabled={saving}>
+            Cancel
+          </Button>
+          <Button
+            type="button"
+            size="sm"
+            onClick={() => void handleSave()}
+            disabled={saving || selfLockoutBlocked || (mode === 'template' && !templateId)}
+          >
+            {saving && <Loader2 size={13} className="mr-1.5 animate-spin" />}
+            Save permissions
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
 export function HostedMembersPanel() {
   const vault = useVaultStore((state) => state.vault);
+  const identity = useCollabIdentity();
+  const loadHostedVaults = useServerStore((state) => state.loadHostedVaults);
   const members = useMemo<VaultMembersCapability | null>(
     () => (vault && vaultKind(vault) === 'hosted' ? createVaultClient(vault).runtime.members ?? null : null),
     [vault],
   );
-  const myRole = vault && vaultKind(vault) === 'hosted' ? (vault as HostedVaultMeta).role : 'viewer';
-  const canManage = myRole === 'admin';
+  const canManageMembers = vaultCan(vault, 'vault.manageMembers');
+  const canManagePermissions = vaultCan(vault, 'vault.managePermissions');
 
   const [list, setList] = useState<HostedVaultMember[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busyUserId, setBusyUserId] = useState<string | null>(null);
+  const [editing, setEditing] = useState<HostedVaultMember | null>(null);
 
   const [query, setQuery] = useState('');
   const [results, setResults] = useState<UserDirectoryEntry[]>([]);
@@ -89,7 +413,7 @@ export function HostedMembersPanel() {
 
   // Debounced directory search for the add-member typeahead.
   useEffect(() => {
-    if (!canManage || !members) return;
+    if (!canManageMembers || !members) return;
     const term = query.trim();
     if (!term) {
       setResults([]);
@@ -110,12 +434,12 @@ export function HostedMembersPanel() {
       cancelled = true;
       window.clearTimeout(handle);
     };
-  }, [query, canManage, members]);
+  }, [query, canManageMembers, members]);
 
   const memberIds = useMemo(() => new Set((list ?? []).map((member) => member.userId)), [list]);
 
   const handleAdd = async () => {
-    if (!members || !selected) return;
+    if (!canManageMembers || !members || !selected) return;
     setAdding(true);
     try {
       await members.add(selected.userId, addRole);
@@ -131,21 +455,8 @@ export function HostedMembersPanel() {
     }
   };
 
-  const handleRoleChange = async (member: HostedVaultMember, role: MemberRole) => {
-    if (!members || role === member.role) return;
-    setBusyUserId(member.userId);
-    try {
-      await members.updateRole(member.userId, role);
-      await refresh();
-    } catch (e) {
-      toast.error(`Failed to update role: ${e}`);
-    } finally {
-      setBusyUserId(null);
-    }
-  };
-
   const handleRemove = async (member: HostedVaultMember) => {
-    if (!members) return;
+    if (!canManageMembers || !members) return;
     setBusyUserId(member.userId);
     try {
       await members.remove(member.userId);
@@ -156,6 +467,15 @@ export function HostedMembersPanel() {
     } finally {
       setBusyUserId(null);
     }
+  };
+
+  const handlePermissionsSaved = async (_updated: HostedVaultMember, wasSelf: boolean) => {
+    setEditing(null);
+    toast.success('Permissions updated');
+    // When the current user's own grant changed, refresh the open vault DTO so
+    // capability-gated UI reflects the new permissions immediately.
+    if (wasSelf) await loadHostedVaults().catch(() => {});
+    await refresh();
   };
 
   if (!members) {
@@ -173,15 +493,30 @@ export function HostedMembersPanel() {
           <ShieldCheck size={15} className="text-primary" />
         </div>
         <div>
-          <h3 className="text-sm font-medium text-foreground">Members</h3>
+          <h3 className="text-sm font-medium text-foreground">Members &amp; permissions</h3>
           <p className="text-xs text-muted-foreground">
-            Roles are authoritative on the connected server.
-            {!canManage && ' You need an admin role to make changes.'}
+            Hosted access is server-authoritative. Invites and role changes require{' '}
+            <span className="font-mono">vault.manageMembers</span>; fine-grained permissions require{' '}
+            <span className="font-mono">vault.managePermissions</span>.
           </p>
         </div>
       </div>
 
-      {canManage && (
+      <div className="rounded-lg border border-border/50 bg-muted/20 p-3 text-xs text-muted-foreground">
+        <p className="font-medium text-foreground">Permission grants</p>
+        <p className="mt-1">
+          A member&apos;s role provides a baseline capability set. Assign a permission template or a custom
+          capability set to override that baseline; the server enforces the effective tokens on every
+          request.
+        </p>
+        <p className="mt-1">
+          {canManagePermissions
+            ? 'You can edit fine-grained permissions for each member below.'
+            : 'You do not currently have vault.managePermissions, so fine-grained grants are read-only here.'}
+        </p>
+      </div>
+
+      {canManageMembers && (
         <div className="rounded-lg border border-border/50 p-3">
           <p className="mb-2 text-[11px] font-semibold uppercase tracking-widest text-muted-foreground">
             Add member
@@ -252,8 +587,14 @@ export function HostedMembersPanel() {
                   {initials(member.displayName)}
                 </div>
                 <div className="min-w-0 flex-1">
-                  <p className="truncate text-sm font-medium text-foreground">{member.displayName}</p>
+                  <p className="truncate text-sm font-medium text-foreground">
+                    {member.displayName}
+                    {member.userId === identity.userId && (
+                      <span className="ml-1 text-[10px] text-muted-foreground">(you)</span>
+                    )}
+                  </p>
                   <p className="truncate text-xs text-muted-foreground">@{member.username}</p>
+                  <CapabilityBadges member={member} />
                 </div>
                 {member.owner ? (
                   <span className="rounded-full border border-primary/30 bg-primary/10 px-2.5 py-1 text-[11px] font-medium text-primary">
@@ -261,12 +602,20 @@ export function HostedMembersPanel() {
                   </span>
                 ) : (
                   <>
-                    <RoleSelect
-                      value={member.role}
-                      disabled={!canManage || busyUserId === member.userId}
-                      onChange={(role) => void handleRoleChange(member, role)}
-                    />
-                    {canManage && (
+                    {canManagePermissions && (
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        className="size-8 text-muted-foreground hover:text-foreground"
+                        disabled={busyUserId === member.userId}
+                        onClick={() => setEditing(member)}
+                        aria-label={`Edit permissions for ${member.displayName}`}
+                        title="Edit permissions"
+                      >
+                        <SlidersHorizontal size={14} />
+                      </Button>
+                    )}
+                    {canManageMembers && (
                       <Button
                         variant="ghost"
                         size="icon"
@@ -285,6 +634,16 @@ export function HostedMembersPanel() {
           </ul>
         )}
       </div>
+
+      {editing && (
+        <PermissionEditorDialog
+          member={editing}
+          members={members}
+          isSelf={editing.userId === identity.userId}
+          onClose={() => setEditing(null)}
+          onSaved={(updated, wasSelf) => void handlePermissionsSaved(updated, wasSelf)}
+        />
+      )}
     </div>
   );
 }

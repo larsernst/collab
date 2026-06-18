@@ -179,6 +179,28 @@ export interface HostedVaultMember {
   role: MemberRole;
   owner: boolean;
   createdAt: string;
+  /**
+   * The member's effective capability tokens at the membership level (explicit
+   * override, else assigned template, else role default; canonical order). Group
+   * grants further restrict at runtime and are not reflected here.
+   */
+  capabilities?: string[];
+  /** Explicit per-member capability override; null/absent when from a template or role default. */
+  customCapabilities?: string[] | null;
+  /** Permission template assigned to this membership, if any. */
+  templateId?: string | null;
+  templateName?: string | null;
+}
+
+/** A reusable bundle of capabilities. Built-in templates (viewer/editor/admin) are read-only. */
+export interface PermissionTemplate {
+  id: string;
+  name: string;
+  description?: string | null;
+  isBuiltin: boolean;
+  capabilities: string[];
+  createdAt: string;
+  updatedAt: string;
 }
 
 /** Searchable user-directory entry used when adding hosted vault members. */

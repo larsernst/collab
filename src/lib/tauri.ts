@@ -340,6 +340,19 @@ export const tauriCommands = {
     operationId: string,
     status: PendingOpStatus,
   ) => invoke<void>('replica_update_operation_status', { serverUrl, vaultId, operationId, status }),
+  replicaRecordOperationFailure: (
+    serverUrl: string,
+    vaultId: string,
+    operationId: string,
+    failureCode: string,
+    failureMessage: string,
+  ) => invoke<void>('replica_record_operation_failure', {
+    serverUrl,
+    vaultId,
+    operationId,
+    failureCode,
+    failureMessage,
+  }),
   replicaRemoveOperation: (serverUrl: string, vaultId: string, operationId: string) =>
     invoke<void>('replica_remove_operation', { serverUrl, vaultId, operationId }),
   replicaRecordTombstone: (serverUrl: string, vaultId: string, tombstone: Tombstone) =>

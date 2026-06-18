@@ -12,6 +12,9 @@ const tauriCommandsMock = vi.hoisted(() => ({
   showOpenVaultDialog: vi.fn(),
   hostedVaultRequest: vi.fn(),
   replicaSeed: vi.fn(),
+  replicaReadManifest: vi.fn(),
+  replicaReadSyncState: vi.fn(),
+  replicaListPendingOperations: vi.fn(),
 }));
 
 vi.mock('../lib/tauri', () => ({
@@ -42,6 +45,13 @@ describe('vaultStore Flatpak reopen fallback', () => {
     tauriCommandsMock.unlockVault.mockResolvedValue(undefined);
     tauriCommandsMock.getRecentVaults.mockResolvedValue([]);
     tauriCommandsMock.removeRecentVault.mockResolvedValue(undefined);
+    tauriCommandsMock.replicaReadManifest.mockResolvedValue(null);
+    tauriCommandsMock.replicaReadSyncState.mockResolvedValue({
+      manifestSequence: 0,
+      lastSyncedAt: null,
+      status: 'idle',
+    });
+    tauriCommandsMock.replicaListPendingOperations.mockResolvedValue([]);
   });
 
   it('reauthorizes Flatpak recents when direct reopen loses access', async () => {
@@ -155,20 +165,36 @@ describe('vaultStore Flatpak reopen fallback', () => {
         isEncrypted: false,
       },
     });
-    tauriCommandsMock.hostedVaultRequest.mockResolvedValue([
-      {
-        id: 'file-1',
-        parentId: null,
-        name: 'Hosted.md',
-        relativePath: 'Hosted.md',
-        kind: 'document',
-        documentType: 'note',
-        state: 'active',
-        currentRevision: null,
-        createdAt: '2026-06-11T08:00:00Z',
-        updatedAt: '2026-06-11T08:00:00Z',
-      },
-    ]);
+    const manifest = {
+      vaultId: 'hosted-vault',
+      sequence: 1,
+      files: [
+        {
+          id: 'file-1',
+          parentId: null,
+          name: 'Hosted.md',
+          relativePath: 'Hosted.md',
+          kind: 'document',
+          documentType: 'note',
+          state: 'active',
+          currentRevision: null,
+          createdAt: '2026-06-11T08:00:00Z',
+          updatedAt: '2026-06-11T08:00:00Z',
+        },
+      ],
+    };
+    tauriCommandsMock.replicaReadManifest.mockResolvedValue(manifest);
+    tauriCommandsMock.replicaReadSyncState.mockResolvedValue({
+      manifestSequence: 1,
+      lastSyncedAt: '2026-06-17T00:00:00Z',
+      status: 'idle',
+    });
+    tauriCommandsMock.hostedVaultRequest.mockResolvedValue({
+      vaultId: 'hosted-vault',
+      baseSequence: 1,
+      sequence: 1,
+      changedFiles: [],
+    });
 
     await useVaultStore.getState().refreshFileTree();
     expect(useVaultStore.getState().fileTree).toEqual([
@@ -193,7 +219,19 @@ describe('vaultStore Flatpak reopen fallback', () => {
       lastOpened: 1,
       isEncrypted: false,
     };
-    tauriCommandsMock.hostedVaultRequest.mockResolvedValue([]);
+    const manifest = { vaultId: 'hosted-vault', sequence: 1, files: [] };
+    tauriCommandsMock.replicaReadManifest.mockResolvedValue(manifest);
+    tauriCommandsMock.replicaReadSyncState.mockResolvedValue({
+      manifestSequence: 1,
+      lastSyncedAt: '2026-06-17T00:00:00Z',
+      status: 'idle',
+    });
+    tauriCommandsMock.hostedVaultRequest.mockResolvedValue({
+      vaultId: 'hosted-vault',
+      baseSequence: 1,
+      sequence: 1,
+      changedFiles: [],
+    });
 
     await useVaultStore.getState().openHostedVault(hosted);
 
@@ -202,8 +240,7 @@ describe('vaultStore Flatpak reopen fallback', () => {
     expect(tauriCommandsMock.hostedVaultRequest).toHaveBeenCalledWith(
       'https://collab.example.test',
       'GET',
-      '/api/v1/vaults/hosted-vault/files',
-      undefined,
+      '/api/v1/vaults/hosted-vault/manifest/delta?since=1',
     );
     expect(tauriCommandsMock.openVault).not.toHaveBeenCalled();
     expect(tauriCommandsMock.watchVault).not.toHaveBeenCalled();
@@ -241,8 +278,20 @@ describe('vaultStore Flatpak reopen fallback', () => {
   });
 
   it('still opens a hosted vault when replica seeding fails', async () => {
+    const manifest = { vaultId: 'hosted-vault', sequence: 1, files: [] };
+    tauriCommandsMock.replicaReadManifest.mockResolvedValue(manifest);
+    tauriCommandsMock.replicaReadSyncState.mockResolvedValue({
+      manifestSequence: 1,
+      lastSyncedAt: '2026-06-17T00:00:00Z',
+      status: 'idle',
+    });
     tauriCommandsMock.hostedVaultRequest.mockImplementation((_url, _method, path) =>
-      path.endsWith('/manifest') ? Promise.reject(new Error('offline')) : Promise.resolve([]),
+      path.endsWith('/manifest') ? Promise.reject(new Error('offline')) : Promise.resolve({
+        vaultId: 'hosted-vault',
+        baseSequence: 1,
+        sequence: 1,
+        changedFiles: [],
+      }),
     );
 
     await useVaultStore.getState().openHostedVault(hostedVault);

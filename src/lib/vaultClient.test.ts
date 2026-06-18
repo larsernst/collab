@@ -42,6 +42,16 @@ vi.mock('./tauri', () => ({
     hostedVaultAssetDataUrl: vi.fn(),
     hostedUserDirectory: vi.fn(),
     replicaCacheDocument: vi.fn().mockResolvedValue(undefined),
+    replicaReadManifest: vi.fn(),
+    replicaReadSyncState: vi.fn(),
+    replicaSeed: vi.fn().mockResolvedValue(undefined),
+    replicaEnqueueOperation: vi.fn().mockResolvedValue(undefined),
+    replicaListPendingOperations: vi.fn().mockResolvedValue([]),
+    replicaUpdateOperationStatus: vi.fn().mockResolvedValue(undefined),
+    replicaRecordOperationFailure: vi.fn().mockResolvedValue(undefined),
+    replicaRemoveOperation: vi.fn().mockResolvedValue(undefined),
+    replicaCacheAsset: vi.fn().mockResolvedValue(undefined),
+    replicaReadCachedAsset: vi.fn(),
     watchVault: vi.fn(),
     unwatchVault: vi.fn(),
     unlockVault: vi.fn(),
@@ -50,6 +60,7 @@ vi.mock('./tauri', () => ({
     changeVaultPassword: vi.fn(),
     importAssetIntoVault: vi.fn(),
     exportVault: vi.fn(),
+    replicaReadCachedDocument: vi.fn(),
   },
 }));
 
@@ -235,10 +246,24 @@ describe('LocalVaultClient', () => {
 });
 
 describe('HostedVaultClient', () => {
-  beforeEach(() => vi.clearAllMocks());
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(tauriCommands.replicaListPendingOperations).mockResolvedValue([]);
+  });
 
   it('advertises online hosted capabilities and builds a nested file tree', async () => {
-    vi.mocked(tauriCommands.hostedVaultRequest).mockResolvedValue([rootFolder, hostedDocument]);
+    vi.mocked(tauriCommands.replicaReadManifest).mockResolvedValue(mockHostedManifest(8));
+    vi.mocked(tauriCommands.replicaReadSyncState).mockResolvedValue({
+      manifestSequence: 8,
+      lastSyncedAt: '2026-06-17T00:00:00Z',
+      status: 'idle',
+    });
+    vi.mocked(tauriCommands.hostedVaultRequest).mockResolvedValue({
+      vaultId: 'hosted-vault',
+      baseSequence: 8,
+      sequence: 8,
+      changedFiles: [],
+    });
     const client = new HostedVaultClient(hostedVault);
 
     expect(client.capabilities).toEqual(HOSTED_VAULT_CAPABILITIES);
@@ -246,17 +271,28 @@ describe('HostedVaultClient', () => {
       externalAssetImport: expect.any(Object),
       members: expect.any(Object),
     });
-    await expect(client.listFiles()).resolves.toEqual([
+    await expect(client.listFiles()).resolves.toEqual(expect.arrayContaining([
       expect.objectContaining({
         relativePath: 'Notes',
         isFolder: true,
         children: [expect.objectContaining({ relativePath: 'Notes/Test.md', size: 6 })],
       }),
-    ]);
+    ]));
   });
 
   it('derives a lightweight note index from the manifest documents', async () => {
-    vi.mocked(tauriCommands.hostedVaultRequest).mockResolvedValue([rootFolder, hostedDocument]);
+    vi.mocked(tauriCommands.replicaReadManifest).mockResolvedValue(mockHostedManifest(8));
+    vi.mocked(tauriCommands.replicaReadSyncState).mockResolvedValue({
+      manifestSequence: 8,
+      lastSyncedAt: '2026-06-17T00:00:00Z',
+      status: 'idle',
+    });
+    vi.mocked(tauriCommands.hostedVaultRequest).mockResolvedValue({
+      vaultId: 'hosted-vault',
+      baseSequence: 8,
+      sequence: 8,
+      changedFiles: [],
+    });
     const client = new HostedVaultClient(hostedVault);
 
     await expect(client.buildNoteIndex()).resolves.toEqual([
@@ -369,6 +405,173 @@ describe('HostedVaultClient', () => {
       'POST',
       '/api/v1/vaults/hosted-vault/operations',
       expect.objectContaining({ baseManifestSequence: 9, operationType: 'move', parentId: 'folder-2' }),
+    );
+  });
+
+  it('queues offline structural operations and updates the replica manifest optimistically', async () => {
+    vi.mocked(tauriCommands.hostedVaultRequest)
+      .mockRejectedValueOnce(new Error('NetworkError when attempting to fetch resource.'))
+      .mockRejectedValueOnce(new Error('NetworkError when attempting to fetch resource.'));
+    vi.mocked(tauriCommands.replicaReadManifest).mockResolvedValue(mockHostedManifest(8));
+    vi.mocked(tauriCommands.replicaReadSyncState).mockResolvedValue({
+      manifestSequence: 8,
+      lastSyncedAt: '2026-06-17T00:00:00Z',
+      status: 'idle',
+    });
+    vi.spyOn(crypto, 'randomUUID')
+      .mockReturnValueOnce('11111111-1111-4111-8111-111111111111')
+      .mockReturnValueOnce('22222222-2222-4222-8222-222222222222');
+    const client = new HostedVaultClient(hostedVault);
+
+    await client.renameMove('Notes/Test.md', 'Notes/Renamed.md');
+
+    expect(tauriCommands.replicaSeed).toHaveBeenCalledWith(
+      'https://collab.example.test',
+      'hosted-vault',
+      'Hosted vault',
+      expect.objectContaining({
+        sequence: 8,
+        files: expect.arrayContaining([
+          expect.objectContaining({ id: 'file-1', name: 'Renamed.md', relativePath: 'Notes/Renamed.md' }),
+        ]),
+      }),
+      expect.objectContaining({ manifestSequence: 8, status: 'offline' }),
+    );
+    expect(tauriCommands.replicaEnqueueOperation).toHaveBeenCalledWith(
+      'https://collab.example.test',
+      'hosted-vault',
+      expect.objectContaining({
+        id: '22222222-2222-4222-8222-222222222222',
+        kind: 'rename',
+        fileId: 'file-1',
+        relativePath: 'Notes/Test.md',
+        baseManifestSequence: 8,
+        status: 'pending',
+        payload: expect.objectContaining({
+          clientOperationId: '11111111-1111-4111-8111-111111111111',
+          operationType: 'rename',
+          targetFileId: 'file-1',
+          name: 'Renamed.md',
+        }),
+      }),
+    );
+  });
+
+  it('queues offline document creation with a temporary replica entry', async () => {
+    vi.mocked(tauriCommands.hostedVaultRequest)
+      .mockRejectedValueOnce(new Error('NetworkError when attempting to fetch resource.'))
+      .mockRejectedValueOnce(new Error('NetworkError when attempting to fetch resource.'));
+    vi.mocked(tauriCommands.replicaReadManifest).mockResolvedValue(mockHostedManifest(8));
+    vi.spyOn(crypto, 'randomUUID')
+      .mockReturnValueOnce('11111111-1111-4111-8111-111111111111')
+      .mockReturnValueOnce('22222222-2222-4222-8222-222222222222')
+      .mockReturnValueOnce('33333333-3333-4333-8333-333333333333');
+    const client = new HostedVaultClient(hostedVault);
+
+    await expect(client.createDocument('Notes/Draft.md')).resolves.toEqual(expect.objectContaining({
+      relativePath: 'Notes/Draft.md',
+      name: 'Draft.md',
+      extension: 'md',
+    }));
+
+    expect(tauriCommands.replicaCacheDocument).toHaveBeenCalledWith(
+      'https://collab.example.test',
+      'hosted-vault',
+      'offline-file-11111111-1111-4111-8111-111111111111',
+      '',
+    );
+    expect(tauriCommands.replicaSeed).toHaveBeenCalledWith(
+      'https://collab.example.test',
+      'hosted-vault',
+      'Hosted vault',
+      expect.objectContaining({
+        files: expect.arrayContaining([
+          expect.objectContaining({
+            id: 'offline-file-11111111-1111-4111-8111-111111111111',
+            parentId: 'folder-1',
+            relativePath: 'Notes/Draft.md',
+            state: 'active',
+          }),
+        ]),
+      }),
+      expect.objectContaining({ status: 'offline' }),
+    );
+    expect(tauriCommands.replicaEnqueueOperation).toHaveBeenCalledWith(
+      'https://collab.example.test',
+      'hosted-vault',
+      expect.objectContaining({
+        id: '33333333-3333-4333-8333-333333333333',
+        kind: 'create',
+        fileId: 'offline-file-11111111-1111-4111-8111-111111111111',
+        relativePath: 'Notes/Draft.md',
+        payload: expect.objectContaining({
+          parentId: 'folder-1',
+          name: 'Draft.md',
+          kind: 'document',
+          tempFileId: 'offline-file-11111111-1111-4111-8111-111111111111',
+        }),
+      }),
+    );
+  });
+
+  it('queues offline document edits and reads the cached document content', async () => {
+    vi.mocked(tauriCommands.hostedVaultRequest)
+      .mockResolvedValueOnce(mockHostedManifest(8))
+      .mockRejectedValueOnce(new Error('NetworkError when attempting to fetch resource.'))
+      .mockResolvedValueOnce(mockHostedManifest(8))
+      .mockRejectedValueOnce(new Error('NetworkError when attempting to fetch resource.'));
+    vi.mocked(tauriCommands.replicaReadCachedDocument).mockResolvedValue('# Offline edit');
+    vi.spyOn(crypto, 'randomUUID')
+      .mockReturnValueOnce('44444444-4444-4444-8444-444444444444')
+      .mockReturnValueOnce('55555555-5555-4555-8555-555555555555');
+    const client = new HostedVaultClient(hostedVault);
+
+    await expect(client.writeDocument('Notes/Test.md', '# Offline edit', '3')).resolves.toEqual({ version: '4' });
+    await expect(client.readDocument('Notes/Test.md')).resolves.toEqual({
+      relativePath: 'Notes/Test.md',
+      content: '# Offline edit',
+      version: '3',
+      modifiedAt: Date.parse('2026-06-11T08:00:00Z'),
+    });
+
+    expect(tauriCommands.replicaCacheDocument).toHaveBeenCalledWith(
+      'https://collab.example.test',
+      'hosted-vault',
+      'file-1',
+      '# Offline edit',
+    );
+    expect(tauriCommands.replicaSeed).toHaveBeenCalledWith(
+      'https://collab.example.test',
+      'hosted-vault',
+      'Hosted vault',
+      expect.objectContaining({
+        files: expect.arrayContaining([
+          expect.objectContaining({
+            id: 'file-1',
+            currentRevision: expect.objectContaining({ sequence: 4, contentHash: 'offline' }),
+          }),
+        ]),
+      }),
+      expect.objectContaining({ status: 'offline' }),
+    );
+    expect(tauriCommands.replicaEnqueueOperation).toHaveBeenCalledWith(
+      'https://collab.example.test',
+      'hosted-vault',
+      expect.objectContaining({
+        id: '55555555-5555-4555-8555-555555555555',
+        kind: 'edit',
+        fileId: 'file-1',
+        payload: {
+          targetFileId: 'file-1',
+          expectedRevisionSequence: 3,
+          content: '# Offline edit',
+        },
+      }),
+    );
+    expect(tauriCommands.replicaReadCachedDocument).toHaveBeenCalledWith(
+      'https://collab.example.test',
+      'hosted-vault',
+      'file-1',
     );
   });
 
@@ -600,6 +803,72 @@ describe('HostedVaultClient', () => {
     );
   });
 
+  it('queues interrupted hosted asset uploads with cached bytes for retry', async () => {
+    const pictures = { ...rootFolder, id: 'folder-pics', name: 'Pictures', relativePath: 'Pictures' };
+    vi.mocked(tauriCommands.readFileForUpload).mockResolvedValue({
+      name: 'diagram.png',
+      mediaType: 'image/png',
+      contentBase64: 'aW1n',
+      expectedHash: 'abc123',
+    });
+    vi.mocked(tauriCommands.hostedVaultRequest).mockReset();
+    vi.mocked(tauriCommands.hostedVaultRequest)
+      .mockResolvedValueOnce({ ...mockHostedManifest(), files: [rootFolder, pictures, hostedDocument] })
+      .mockRejectedValueOnce(new Error('NetworkError when attempting to fetch resource.'));
+    vi.mocked(tauriCommands.replicaReadManifest).mockResolvedValue({
+      ...mockHostedManifest(),
+      files: [rootFolder, pictures, hostedDocument],
+    });
+    vi.spyOn(crypto, 'randomUUID')
+      .mockReturnValueOnce('11111111-1111-4111-8111-111111111111')
+      .mockReturnValueOnce('22222222-2222-4222-8222-222222222222')
+      .mockReturnValueOnce('33333333-3333-4333-8333-333333333333');
+    const client = new HostedVaultClient(hostedVault);
+
+    await expect(client.runtime.externalAssetImport!.import('/tmp/diagram.png')).resolves.toBe('Pictures/diagram.png');
+
+    expect(tauriCommands.replicaCacheAsset).toHaveBeenCalledWith(
+      'https://collab.example.test',
+      'hosted-vault',
+      'offline-asset-11111111-1111-4111-8111-111111111111',
+      'aW1n',
+    );
+    expect(tauriCommands.replicaSeed).toHaveBeenCalledWith(
+      'https://collab.example.test',
+      'hosted-vault',
+      'Hosted vault',
+      expect.objectContaining({
+        files: expect.arrayContaining([
+          expect.objectContaining({
+            id: 'offline-asset-11111111-1111-4111-8111-111111111111',
+            parentId: 'folder-pics',
+            relativePath: 'Pictures/diagram.png',
+            kind: 'asset',
+            currentRevision: expect.objectContaining({ contentHash: 'abc123', sizeBytes: 3 }),
+          }),
+        ]),
+      }),
+      expect.objectContaining({ status: 'offline' }),
+    );
+    expect(tauriCommands.replicaEnqueueOperation).toHaveBeenCalledWith(
+      'https://collab.example.test',
+      'hosted-vault',
+      expect.objectContaining({
+        id: '33333333-3333-4333-8333-333333333333',
+        kind: 'assetUpload',
+        fileId: 'offline-asset-11111111-1111-4111-8111-111111111111',
+        relativePath: 'Pictures/diagram.png',
+        payload: {
+          parentId: 'folder-pics',
+          name: 'diagram.png',
+          mediaType: 'image/png',
+          expectedHash: 'abc123',
+          assetCacheId: 'offline-asset-11111111-1111-4111-8111-111111111111',
+        },
+      }),
+    );
+  });
+
   it('manages hosted members and resolves the user directory off the vault gateway', async () => {
     const member = {
       userId: 'user-9',
@@ -618,7 +887,10 @@ describe('HostedVaultClient', () => {
     vi.mocked(tauriCommands.hostedUserDirectory).mockResolvedValue([
       { userId: 'user-9', username: 'alice', displayName: 'Alice' },
     ]);
-    const members = new HostedVaultClient(hostedVault).runtime.members!;
+    const members = new HostedVaultClient({
+      ...hostedVault,
+      capabilities: ['vault.manageMembers'],
+    }).runtime.members!;
 
     await expect(members.list()).resolves.toEqual([member]);
     await expect(members.searchDirectory('al')).resolves.toEqual([
@@ -657,6 +929,81 @@ describe('HostedVaultClient', () => {
       '/api/v1/vaults/hosted-vault/members/user-9',
       undefined,
     );
+  });
+
+  it('fails closed when member mutations are missing manage-members capability', async () => {
+    const members = new HostedVaultClient({ ...hostedVault, capabilities: [] }).runtime.members!;
+
+    expect(() => members.searchDirectory('al')).toThrow('permission');
+    expect(() => members.add('user-9', 'editor')).toThrow('permission');
+    expect(() => members.updateRole('user-9', 'admin')).toThrow('permission');
+    expect(() => members.remove('user-9')).toThrow('permission');
+    expect(tauriCommands.hostedUserDirectory).not.toHaveBeenCalled();
+    expect(tauriCommands.hostedVaultRequest).not.toHaveBeenCalled();
+  });
+
+  it('edits fine-grained permissions through the member gateway', async () => {
+    const member = {
+      userId: 'user-9',
+      username: 'alice',
+      displayName: 'Alice',
+      role: 'editor' as const,
+      owner: false,
+      createdAt: '2026-06-11T08:00:00Z',
+    };
+    vi.mocked(tauriCommands.hostedVaultRequest).mockReset();
+    vi.mocked(tauriCommands.hostedVaultRequest).mockResolvedValue(member);
+    const members = new HostedVaultClient({
+      ...hostedVault,
+      capabilities: ['vault.managePermissions'],
+    }).runtime.members!;
+
+    await members.listTemplates();
+    await members.setCapabilities('user-9', ['vault.read', 'note.edit']);
+    await members.setTemplate('user-9', 'tpl-1');
+    await members.resetToRoleDefault('user-9');
+
+    expect(tauriCommands.hostedVaultRequest).toHaveBeenNthCalledWith(
+      1,
+      'https://collab.example.test',
+      'GET',
+      '/api/v1/vaults/hosted-vault/templates',
+      undefined,
+    );
+    expect(tauriCommands.hostedVaultRequest).toHaveBeenNthCalledWith(
+      2,
+      'https://collab.example.test',
+      'PATCH',
+      '/api/v1/vaults/hosted-vault/members/user-9',
+      { capabilities: ['vault.read', 'note.edit'] },
+    );
+    expect(tauriCommands.hostedVaultRequest).toHaveBeenNthCalledWith(
+      3,
+      'https://collab.example.test',
+      'PATCH',
+      '/api/v1/vaults/hosted-vault/members/user-9',
+      { templateId: 'tpl-1' },
+    );
+    expect(tauriCommands.hostedVaultRequest).toHaveBeenNthCalledWith(
+      4,
+      'https://collab.example.test',
+      'PATCH',
+      '/api/v1/vaults/hosted-vault/members/user-9',
+      { resetToRoleDefault: true },
+    );
+  });
+
+  it('fails closed when permission edits are missing manage-permissions capability', async () => {
+    const members = new HostedVaultClient({
+      ...hostedVault,
+      capabilities: ['vault.manageMembers'],
+    }).runtime.members!;
+
+    expect(() => members.listTemplates()).toThrow('permission');
+    expect(() => members.setCapabilities('user-9', ['vault.read'])).toThrow('permission');
+    expect(() => members.setTemplate('user-9', 'tpl-1')).toThrow('permission');
+    expect(() => members.resetToRoleDefault('user-9')).toThrow('permission');
+    expect(tauriCommands.hostedVaultRequest).not.toHaveBeenCalled();
   });
 });
 

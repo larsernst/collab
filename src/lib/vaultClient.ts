@@ -10,12 +10,22 @@ import type {
   MemberRole,
   NoteFile,
   PathChangePreview,
+  PermissionTemplate,
   TrashEntry,
   UserDirectoryEntry,
   VaultMeta,
 } from '../types/vault';
-import { vaultKind } from '../types/vault';
+import { vaultCan, vaultKind } from '../types/vault';
 import { tauriCommands } from './tauri';
+import {
+  enqueuePendingOperation,
+  isLikelyConnectivityError,
+  readCachedReplicaManifest,
+  syncReplicaManifestDelta,
+  writeOptimisticReplicaManifest,
+  type PendingOpKind,
+  type ReplicaManifest,
+} from './vaultReplica';
 
 export type VaultClientKind = 'local' | 'hosted';
 
@@ -62,6 +72,14 @@ export interface VaultMembersCapability {
   add(userId: string, role: MemberRole): Promise<HostedVaultMember>;
   updateRole(userId: string, role: MemberRole): Promise<HostedVaultMember>;
   remove(userId: string): Promise<void>;
+  /** Lists permission templates available for assignment (requires `vault.managePermissions`). */
+  listTemplates(): Promise<PermissionTemplate[]>;
+  /** Sets an explicit fine-grained capability override on a member (requires `vault.managePermissions`). */
+  setCapabilities(userId: string, capabilities: string[]): Promise<HostedVaultMember>;
+  /** Assigns a permission template to a member (requires `vault.managePermissions`). */
+  setTemplate(userId: string, templateId: string): Promise<HostedVaultMember>;
+  /** Clears any override so the member falls back to their role default (requires `vault.managePermissions`). */
+  resetToRoleDefault(userId: string): Promise<HostedVaultMember>;
 }
 
 export interface VaultRuntimeCapabilities {
@@ -366,6 +384,25 @@ function pathOperation(oldPath: string, newPath: string): PathChangePreview['ope
   return 'unchanged';
 }
 
+function asHostedManifest(manifest: ReplicaManifest): HostedManifest {
+  return manifest as unknown as HostedManifest;
+}
+
+function pendingKindForOperation(operationType: 'rename' | 'move' | 'trash' | 'restore' | 'purge'): PendingOpKind {
+  return operationType === 'purge' ? 'delete' : operationType;
+}
+
+function offlineId(prefix: string): string {
+  return `offline-${prefix}-${crypto.randomUUID()}`;
+}
+
+function base64ByteLength(contentBase64: string): number {
+  const normalized = contentBase64.replace(/\s/g, '');
+  if (!normalized) return 0;
+  const padding = normalized.endsWith('==') ? 2 : normalized.endsWith('=') ? 1 : 0;
+  return Math.max(0, Math.floor((normalized.length * 3) / 4) - padding);
+}
+
 export class HostedVaultClient implements VaultClient {
   readonly kind = 'hosted';
   readonly capabilities = HOSTED_VAULT_CAPABILITIES;
@@ -380,16 +417,46 @@ export class HostedVaultClient implements VaultClient {
       },
       members: {
         list: () => this.request<HostedVaultMember[]>('GET', '/members'),
-        searchDirectory: (query) =>
-          tauriCommands.hostedUserDirectory(this.vault.serverUrl, query),
-        add: (userId, role) =>
-          this.request<HostedVaultMember>('POST', '/members', { userId, role }),
-        updateRole: (userId, role) =>
-          this.request<HostedVaultMember>('PATCH', `/members/${encodeURIComponent(userId)}`, {
+        searchDirectory: (query) => {
+          this.requireMemberManagement();
+          return tauriCommands.hostedUserDirectory(this.vault.serverUrl, query);
+        },
+        add: (userId, role) => {
+          this.requireMemberManagement();
+          return this.request<HostedVaultMember>('POST', '/members', { userId, role });
+        },
+        updateRole: (userId, role) => {
+          this.requireMemberManagement();
+          return this.request<HostedVaultMember>('PATCH', `/members/${encodeURIComponent(userId)}`, {
             role,
-          }),
-        remove: (userId) =>
-          this.request<void>('DELETE', `/members/${encodeURIComponent(userId)}`).then(() => {}),
+          });
+        },
+        remove: (userId) => {
+          this.requireMemberManagement();
+          return this.request<void>('DELETE', `/members/${encodeURIComponent(userId)}`).then(() => {});
+        },
+        listTemplates: () => {
+          this.requireManagePermissions();
+          return this.request<PermissionTemplate[]>('GET', '/templates');
+        },
+        setCapabilities: (userId, capabilities) => {
+          this.requireManagePermissions();
+          return this.request<HostedVaultMember>('PATCH', `/members/${encodeURIComponent(userId)}`, {
+            capabilities,
+          });
+        },
+        setTemplate: (userId, templateId) => {
+          this.requireManagePermissions();
+          return this.request<HostedVaultMember>('PATCH', `/members/${encodeURIComponent(userId)}`, {
+            templateId,
+          });
+        },
+        resetToRoleDefault: (userId) => {
+          this.requireManagePermissions();
+          return this.request<HostedVaultMember>('PATCH', `/members/${encodeURIComponent(userId)}`, {
+            resetToRoleDefault: true,
+          });
+        },
       },
     };
     // Hosted ZIP export is server-authorized as a vault-admin operation; only
@@ -423,6 +490,37 @@ export class HostedVaultClient implements VaultClient {
     return this.request<HostedManifest>('GET', '/manifest');
   }
 
+  private requireMemberManagement(): void {
+    if (!vaultCan(this.vault, 'vault.manageMembers')) {
+      throw new Error('You do not have permission to manage hosted-vault members.');
+    }
+  }
+
+  private requireManagePermissions(): void {
+    if (!vaultCan(this.vault, 'vault.managePermissions')) {
+      throw new Error('You do not have permission to manage hosted-vault permissions.');
+    }
+  }
+
+  private async cachedManifest(): Promise<HostedManifest> {
+    const manifest = await readCachedReplicaManifest(this.vault);
+    if (!manifest) throw new Error('No cached hosted-vault manifest is available.');
+    return asHostedManifest(manifest);
+  }
+
+  private async onlineOrCachedManifest(): Promise<HostedManifest> {
+    return this.manifest().catch((error) => {
+      if (!isLikelyConnectivityError(error)) throw error;
+      return this.cachedManifest();
+    });
+  }
+
+  private async replicaSyncedManifest(): Promise<HostedManifest> {
+    const manifest = await syncReplicaManifestDelta(this.vault)
+      .catch(() => readCachedReplicaManifest(this.vault));
+    return manifest ? asHostedManifest(manifest) : this.manifest();
+  }
+
   private findByPath(manifest: HostedManifest, relativePath: string, state: HostedFileState = 'active') {
     const file = manifest.files.find((entry) => entry.relativePath === relativePath && entry.state === state);
     if (!file) throw new Error(`Hosted vault item not found: ${relativePath}`);
@@ -436,15 +534,17 @@ export class HostedVaultClient implements VaultClient {
     return parent.id;
   }
 
-  listFiles() {
-    return this.request<HostedFileEntry[]>('GET', '/files').then(buildFileTree);
+  async listFiles() {
+    const manifest = await this.replicaSyncedManifest();
+    return buildFileTree(manifest.files);
   }
 
   async buildNoteIndex(): Promise<NoteMetadata[]> {
     // Hosted vaults derive a lightweight index from the manifest. Content-derived
     // fields (wikilinks, tags, word count) are not populated here; hosted full-text
     // search is served separately by the server search endpoint.
-    const entries = await this.request<HostedFileEntry[]>('GET', '/files');
+    const manifest = await this.replicaSyncedManifest();
+    const entries = manifest.files;
     return entries
       .filter(
         (entry) =>
@@ -464,9 +564,14 @@ export class HostedVaultClient implements VaultClient {
   }
 
   async readDocument(relativePath: string): Promise<VaultDocument> {
-    const manifest = await this.manifest();
+    const manifest = await this.onlineOrCachedManifest();
     const file = this.findByPath(manifest, relativePath);
-    const document = await this.request<HostedTextDocument>('GET', `/files/${file.id}`);
+    const document = await this.request<HostedTextDocument>('GET', `/files/${file.id}`).catch(async (error) => {
+      if (!isLikelyConnectivityError(error)) throw error;
+      const cached = await tauriCommands.replicaReadCachedDocument(this.vault.serverUrl, this.vault.hostedVaultId, file.id);
+      if (cached === null) throw error;
+      return { file, content: cached };
+    });
     // Write through to the offline replica cache (best-effort; never blocks the
     // read, and a missing/unseeded replica is silently ignored).
     tauriCommands
@@ -496,43 +601,117 @@ export class HostedVaultClient implements VaultClient {
     expectedVersion?: string,
     _baseContent?: string,
   ): Promise<VaultWriteResult> {
-    const manifest = await this.manifest();
+    const manifest = await this.onlineOrCachedManifest();
     const file = this.findByPath(manifest, relativePath);
     const currentSequence = file.currentRevision?.sequence ?? 0;
     const expectedSequence = expectedVersion === undefined ? currentSequence : Number(expectedVersion);
     if (!Number.isInteger(expectedSequence) || expectedSequence < 0) {
       throw new Error('Hosted document versions must be revision sequence numbers.');
     }
+    const payload = { targetFileId: file.id, expectedRevisionSequence: expectedSequence, content };
     const document = await this.request<HostedTextDocument>('POST', `/files/${file.id}/revisions`, {
       expectedRevisionSequence: expectedSequence,
       content,
+    }).catch(async (error) => {
+      if (!isLikelyConnectivityError(error)) throw error;
+      const nextManifest = this.optimisticManifestForEdit(manifest, file, content, expectedSequence + 1);
+      await tauriCommands.replicaCacheDocument(this.vault.serverUrl, this.vault.hostedVaultId, file.id, content);
+      await writeOptimisticReplicaManifest(this.vault, nextManifest as unknown as ReplicaManifest);
+      await enqueuePendingOperation(this.vault, {
+        kind: 'edit',
+        fileId: file.id,
+        relativePath: file.relativePath,
+        baseManifestSequence: manifest.sequence,
+        payload,
+      });
+      return {
+        file: nextManifest.files.find((entry) => entry.id === file.id) ?? file,
+        content,
+      };
     });
     return { version: String(document.file.currentRevision?.sequence ?? expectedSequence + 1) };
   }
 
   async createDocument(relativePath: string): Promise<NoteFile> {
-    const manifest = await this.manifest();
+    const manifest = await this.onlineOrCachedManifest();
     const destination = splitDestination(relativePath);
-    const file = await this.request<HostedFileEntry>('POST', '/files', {
+    const payload = {
       parentId: this.parentId(manifest, destination.parentPath),
       name: destination.name,
       kind: 'document',
       documentType: documentTypeForPath(relativePath),
       content: '',
+    } as const;
+    const file = await this.request<HostedFileEntry>('POST', '/files', payload).catch(async (error) => {
+      if (!isLikelyConnectivityError(error)) throw error;
+      return this.queueOfflineCreate(manifest, relativePath, payload);
     });
     return toNoteFile(file);
   }
 
   async createFolder(relativePath: string): Promise<void> {
-    const manifest = await this.manifest();
+    const manifest = await this.onlineOrCachedManifest();
     const destination = splitDestination(relativePath);
-    await this.request<HostedFileEntry>('POST', '/files', {
+    const payload = {
       parentId: this.parentId(manifest, destination.parentPath),
       name: destination.name,
       kind: 'folder',
       documentType: null,
       content: '',
+    } as const;
+    await this.request<HostedFileEntry>('POST', '/files', payload).catch(async (error) => {
+      if (!isLikelyConnectivityError(error)) throw error;
+      await this.queueOfflineCreate(manifest, relativePath, payload);
     });
+  }
+
+  private async queueOfflineCreate(
+    manifest: HostedManifest,
+    relativePath: string,
+    payload: {
+      parentId: string | null;
+      name: string;
+      kind: 'document' | 'folder';
+      documentType: HostedDocumentType | null;
+      content: string;
+    },
+  ): Promise<HostedFileEntry> {
+    const now = new Date().toISOString();
+    const tempFileId = offlineId('file');
+    const entry: HostedFileEntry = {
+      id: tempFileId,
+      parentId: payload.parentId,
+      name: payload.name,
+      relativePath,
+      kind: payload.kind,
+      documentType: payload.documentType,
+      state: 'active',
+      currentRevision: payload.kind === 'document'
+        ? {
+          id: offlineId('revision'),
+          sequence: 0,
+          contentHash: 'offline',
+          sizeBytes: payload.content.length,
+          createdByDisplayName: null,
+          createdAt: now,
+        }
+        : null,
+      createdAt: now,
+      updatedAt: now,
+    };
+    const nextManifest = { ...manifest, files: [...manifest.files, entry] };
+    await writeOptimisticReplicaManifest(this.vault, nextManifest as unknown as ReplicaManifest);
+    if (payload.kind === 'document') {
+      await tauriCommands.replicaCacheDocument(this.vault.serverUrl, this.vault.hostedVaultId, tempFileId, payload.content);
+    }
+    await enqueuePendingOperation(this.vault, {
+      kind: 'create',
+      fileId: tempFileId,
+      relativePath,
+      baseManifestSequence: manifest.sequence,
+      payload: { ...payload, tempFileId },
+    });
+    return entry;
   }
 
   async previewRenameMove(oldPath: string, newPath: string): Promise<PathChangePreview> {
@@ -589,13 +768,13 @@ export class HostedVaultClient implements VaultClient {
     operationType: 'rename' | 'move' | 'trash' | 'restore' | 'purge',
     options: { name?: string; parentPath?: string; removeReferences?: boolean },
   ) {
-    const manifest = await this.manifest();
+    const manifest = await this.onlineOrCachedManifest();
     const target = this.findByPath(
       manifest,
       relativePath,
       operationType === 'restore' || operationType === 'purge' ? 'trashed' : 'active',
     );
-    return this.request('POST', '/operations', {
+    const payload = {
       clientOperationId: crypto.randomUUID(),
       baseManifestSequence: manifest.sequence,
       operationType,
@@ -603,11 +782,100 @@ export class HostedVaultClient implements VaultClient {
       name: options.name ?? null,
       parentId: options.parentPath === undefined ? null : this.parentId(manifest, options.parentPath),
       removeReferences: options.removeReferences ?? false,
-    });
+    };
+    try {
+      return await this.request('POST', '/operations', payload);
+    } catch (error) {
+      if (!isLikelyConnectivityError(error)) throw error;
+      const optimistic = this.optimisticManifestForOperation(manifest, target, operationType, {
+        name: payload.name,
+        parentId: payload.parentId,
+      });
+      await writeOptimisticReplicaManifest(this.vault, optimistic as unknown as ReplicaManifest);
+      await enqueuePendingOperation(this.vault, {
+        kind: pendingKindForOperation(operationType),
+        fileId: target.id,
+        relativePath: target.relativePath,
+        baseManifestSequence: manifest.sequence,
+        payload,
+      });
+      return undefined;
+    }
+  }
+
+  private optimisticManifestForOperation(
+    manifest: HostedManifest,
+    target: HostedFileEntry,
+    operationType: 'rename' | 'move' | 'trash' | 'restore' | 'purge',
+    options: { name: string | null; parentId: string | null },
+  ): HostedManifest {
+    const files = manifest.files.map((entry) => ({ ...entry }));
+    const targetEntry = files.find((entry) => entry.id === target.id);
+    if (!targetEntry) return { ...manifest, files };
+    if (operationType === 'rename' && options.name) {
+      targetEntry.name = options.name;
+    }
+    if (operationType === 'move') {
+      targetEntry.parentId = options.parentId;
+    }
+    const subtreeIds = new Set<string>();
+    const collectSubtree = (fileId: string) => {
+      subtreeIds.add(fileId);
+      for (const child of files.filter((entry) => entry.parentId === fileId)) collectSubtree(child.id);
+    };
+    collectSubtree(target.id);
+    if (operationType === 'trash') {
+      for (const entry of files) if (subtreeIds.has(entry.id)) entry.state = 'trashed';
+    }
+    if (operationType === 'restore') {
+      for (const entry of files) if (subtreeIds.has(entry.id)) entry.state = 'active';
+    }
+    if (operationType === 'purge') {
+      for (const entry of files) if (subtreeIds.has(entry.id)) entry.state = 'tombstoned';
+    }
+    const byId = new Map(files.map((entry) => [entry.id, entry]));
+    const computeRelativePath = (entry: HostedFileEntry): string => {
+      const names = [entry.name];
+      let current = entry;
+      for (let depth = 0; depth <= files.length; depth += 1) {
+        if (!current.parentId) return names.reverse().join('/');
+        const parent = byId.get(current.parentId);
+        if (!parent) return names.reverse().join('/');
+        names.push(parent.name);
+        current = parent;
+      }
+      return names.reverse().join('/');
+    };
+    for (const entry of files) entry.relativePath = computeRelativePath(entry);
+    return { ...manifest, files };
+  }
+
+  private optimisticManifestForEdit(
+    manifest: HostedManifest,
+    target: HostedFileEntry,
+    content: string,
+    sequence: number,
+  ): HostedManifest {
+    const now = new Date().toISOString();
+    const files = manifest.files.map((entry) => entry.id === target.id
+      ? {
+        ...entry,
+        currentRevision: {
+          id: offlineId('revision'),
+          sequence,
+          contentHash: 'offline',
+          sizeBytes: content.length,
+          createdByDisplayName: null,
+          createdAt: now,
+        },
+        updatedAt: now,
+      }
+      : { ...entry });
+    return { ...manifest, files };
   }
 
   async moveToTrash(relativePath: string, removeReferences?: boolean): Promise<TrashEntry> {
-    const manifest = await this.manifest();
+    const manifest = await this.onlineOrCachedManifest();
     const target = this.findByPath(manifest, relativePath);
     await this.applyOperation(relativePath, 'trash', { removeReferences });
     return {
@@ -627,13 +895,13 @@ export class HostedVaultClient implements VaultClient {
   }
 
   async listReferences(relativePath: string): Promise<FileReference[]> {
-    const manifest = await this.manifest();
+    const manifest = await this.onlineOrCachedManifest();
     const file = this.findByPath(manifest, relativePath);
     return this.request<HostedFileReference[]>('GET', `/files/${file.id}/references`);
   }
 
   async listTrash(): Promise<TrashEntry[]> {
-    const manifest = await this.manifest();
+    const manifest = await this.onlineOrCachedManifest();
     const trashedIds = new Set(
       manifest.files.filter((entry) => entry.state === 'trashed').map((entry) => entry.id),
     );
@@ -651,7 +919,7 @@ export class HostedVaultClient implements VaultClient {
   }
 
   async restoreTrash(entryId: string, targetRelativePath?: string): Promise<void> {
-    const manifest = await this.manifest();
+    const manifest = await this.onlineOrCachedManifest();
     const target = manifest.files.find((entry) => entry.id === entryId && entry.state === 'trashed');
     if (!target) throw new Error(`Hosted trashed item not found: ${entryId}`);
     if (targetRelativePath && targetRelativePath !== target.relativePath) {
@@ -661,7 +929,7 @@ export class HostedVaultClient implements VaultClient {
   }
 
   async purgeTrash(entryId: string, removeReferences?: boolean): Promise<void> {
-    const manifest = await this.manifest();
+    const manifest = await this.onlineOrCachedManifest();
     const target = manifest.files.find((entry) => entry.id === entryId && entry.state === 'trashed');
     if (!target) throw new Error(`Hosted trashed item not found: ${entryId}`);
     await this.applyOperation(target.relativePath, 'purge', { removeReferences });
@@ -832,23 +1100,92 @@ export class HostedVaultClient implements VaultClient {
     targetFolder: string,
   ): Promise<string> {
     const parentId = targetFolder ? await this.ensureFolder(targetFolder) : null;
-    const file = await this.request<HostedFileEntry>('POST', '/uploads', {
+    const payload = {
       parentId,
       name,
       mediaType,
       contentBase64,
       expectedHash,
+    };
+    const file = await this.request<HostedFileEntry>('POST', '/uploads', payload).catch(async (error) => {
+      if (!isLikelyConnectivityError(error)) throw error;
+      const manifest = await this.cachedManifest();
+      return this.queueOfflineAssetUpload(manifest, {
+        parentId,
+        name,
+        mediaType,
+        contentBase64,
+        expectedHash,
+        targetFolder,
+      });
     });
     return file.relativePath;
   }
 
+  private async queueOfflineAssetUpload(
+    manifest: HostedManifest,
+    payload: {
+      parentId: string | null;
+      name: string;
+      mediaType: string;
+      contentBase64: string;
+      expectedHash: string;
+      targetFolder: string;
+    },
+  ): Promise<HostedFileEntry> {
+    const now = new Date().toISOString();
+    const tempFileId = offlineId('asset');
+    const relativePath = [payload.targetFolder, payload.name].filter(Boolean).join('/');
+    const entry: HostedFileEntry = {
+      id: tempFileId,
+      parentId: payload.parentId,
+      name: payload.name,
+      relativePath,
+      kind: 'asset',
+      documentType: null,
+      state: 'active',
+      currentRevision: {
+        id: offlineId('revision'),
+        sequence: 0,
+        contentHash: payload.expectedHash,
+        sizeBytes: base64ByteLength(payload.contentBase64),
+        createdByDisplayName: null,
+        createdAt: now,
+      },
+      createdAt: now,
+      updatedAt: now,
+    };
+    const nextManifest = { ...manifest, files: [...manifest.files, entry] };
+    await tauriCommands.replicaCacheAsset(
+      this.vault.serverUrl,
+      this.vault.hostedVaultId,
+      tempFileId,
+      payload.contentBase64,
+    );
+    await writeOptimisticReplicaManifest(this.vault, nextManifest as unknown as ReplicaManifest);
+    await enqueuePendingOperation(this.vault, {
+      kind: 'assetUpload',
+      fileId: tempFileId,
+      relativePath,
+      baseManifestSequence: manifest.sequence,
+      payload: {
+        parentId: payload.parentId,
+        name: payload.name,
+        mediaType: payload.mediaType,
+        expectedHash: payload.expectedHash,
+        assetCacheId: tempFileId,
+      },
+    });
+    return entry;
+  }
+
   private async ensureFolder(relativePath: string): Promise<string> {
-    const existing = (await this.manifest()).files.find(
+    const existing = (await this.onlineOrCachedManifest()).files.find(
       (entry) => entry.relativePath === relativePath && entry.kind === 'folder' && entry.state === 'active',
     );
     if (existing) return existing.id;
     await this.createFolder(relativePath);
-    const created = (await this.manifest()).files.find(
+    const created = (await this.onlineOrCachedManifest()).files.find(
       (entry) => entry.relativePath === relativePath && entry.kind === 'folder' && entry.state === 'active',
     );
     if (!created) throw new Error(`Could not create hosted folder: ${relativePath}`);

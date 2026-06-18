@@ -102,6 +102,12 @@ pub struct PendingOperation {
     pub base_manifest_sequence: i64,
     pub created_at: String,
     pub status: PendingOpStatus,
+    /// Machine-readable failure category from the last replay attempt.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub failure_code: Option<String>,
+    /// Human-readable failure detail from the last replay attempt.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub failure_message: Option<String>,
 }
 
 /// A locally-known deletion. Tombstones let the replica distinguish an item the

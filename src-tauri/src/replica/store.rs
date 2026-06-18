@@ -192,6 +192,28 @@ impl ReplicaStore {
         self.write_pending_operations(&ops)
     }
 
+    pub fn record_operation_failure(
+        &self,
+        id: &str,
+        failure_code: &str,
+        failure_message: &str,
+    ) -> Result<(), String> {
+        let mut ops = self.list_pending_operations()?;
+        let mut found = false;
+        for op in ops.iter_mut() {
+            if op.id == id {
+                op.status = PendingOpStatus::Failed;
+                op.failure_code = Some(failure_code.to_string());
+                op.failure_message = Some(failure_message.to_string());
+                found = true;
+            }
+        }
+        if !found {
+            return Err(format!("Pending operation not found: {id}"));
+        }
+        self.write_pending_operations(&ops)
+    }
+
     pub fn remove_operation(&self, id: &str) -> Result<(), String> {
         let ops = self
             .list_pending_operations()?
@@ -422,6 +444,8 @@ mod tests {
             base_manifest_sequence: 1,
             created_at: "2026-06-17T00:00:00Z".into(),
             status: PendingOpStatus::Pending,
+            failure_code: None,
+            failure_message: None,
         }
     }
 
@@ -484,6 +508,17 @@ mod tests {
         let ops = store.list_pending_operations().unwrap();
         assert_eq!(ops[0].status, PendingOpStatus::InFlight);
         assert_eq!(ops[1].status, PendingOpStatus::Pending);
+
+        store
+            .record_operation_failure("a", "manifest_conflict", "The vault manifest changed.")
+            .unwrap();
+        let ops = store.list_pending_operations().unwrap();
+        assert_eq!(ops[0].status, PendingOpStatus::Failed);
+        assert_eq!(ops[0].failure_code.as_deref(), Some("manifest_conflict"));
+        assert_eq!(
+            ops[0].failure_message.as_deref(),
+            Some("The vault manifest changed.")
+        );
 
         store.remove_operation("a").unwrap();
         let ops = store.list_pending_operations().unwrap();

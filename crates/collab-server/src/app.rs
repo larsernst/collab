@@ -94,12 +94,20 @@ pub fn build_router(state: AppState) -> Router {
             patch(api::update_vault_member).delete(api::remove_vault_member),
         )
         .route(
+            "/api/v1/vaults/{vault_id}/templates",
+            get(api::list_vault_templates),
+        )
+        .route(
             "/api/v1/vaults/{vault_id}/activity",
             get(api::vault_activity),
         )
         .route(
             "/api/v1/vaults/{vault_id}/manifest",
             get(api::vault_manifest),
+        )
+        .route(
+            "/api/v1/vaults/{vault_id}/manifest/delta",
+            get(api::vault_manifest_delta),
         )
         .route(
             "/api/v1/vaults/{vault_id}/storage",

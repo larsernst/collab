@@ -23,11 +23,11 @@ use collab_protocol::{
     HostedReferenceImpact, HostedRevisionContent, HostedSearchResult, HostedSnapshot,
     HostedStructuralOperationPreview, HostedStructuralOperationResult,
     HostedStructuralOperationType, HostedTextDocument, HostedVault, HostedVaultActivityEvent,
-    HostedVaultAdminDetail, HostedVaultImportResult, HostedVaultManifest, HostedVaultMember,
-    HostedVaultRole, HostedVaultStatus, HostedVaultStorage, HostedVaultSummary, Invitation,
-    LiveCollaborationMetrics, NativeSession, OperationalWarning, PermissionTemplate, ServerUser,
-    ServerUserRole, StorageSummary, UserDirectoryEntry, UserGroup, UserGroupMember, VaultGrant,
-    WritePdfAnnotationsRequest, WsTicket, WsTicketRequest,
+    HostedVaultAdminDetail, HostedVaultImportResult, HostedVaultManifest, HostedVaultManifestDelta,
+    HostedVaultMember, HostedVaultRole, HostedVaultStatus, HostedVaultStorage, HostedVaultSummary,
+    Invitation, LiveCollaborationMetrics, NativeSession, OperationalWarning, PermissionTemplate,
+    ServerUser, ServerUserRole, StorageSummary, UserDirectoryEntry, UserGroup, UserGroupMember,
+    VaultGrant, WritePdfAnnotationsRequest, WsTicket, WsTicketRequest,
 };
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -152,10 +152,27 @@ pub struct AddVaultMemberRequest {
     pub role: HostedVaultRole,
 }
 
+/// Updates a hosted-vault membership. Exactly one intent is applied per request,
+/// checked in priority order:
+/// - `reset_to_role_default` clears any override so the role default applies
+///   (requires `vault.managePermissions`).
+/// - `capabilities` sets an explicit fine-grained override (requires
+///   `vault.managePermissions`).
+/// - `template_id` assigns a permission template (requires
+///   `vault.managePermissions`).
+/// - `role` changes the legacy role and clears any override (requires
+///   `vault.manageMembers`).
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct UpdateVaultMemberRequest {
-    pub role: HostedVaultRole,
+    #[serde(default)]
+    pub role: Option<HostedVaultRole>,
+    #[serde(default)]
+    pub capabilities: Option<Vec<String>>,
+    #[serde(default)]
+    pub template_id: Option<Uuid>,
+    #[serde(default)]
+    pub reset_to_role_default: Option<bool>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -291,6 +308,12 @@ pub struct WritePresenceRequest {
     pub cursor_line: Option<i32>,
     pub chat_typing_until: Option<u64>,
     pub app_version: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ManifestDeltaQuery {
+    pub since: i64,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1208,6 +1231,29 @@ pub async fn list_vault_members(
     )))
 }
 
+/// Lists permission templates for a vault admin so the native member editor can
+/// offer template assignment. Authorized by `vault.managePermissions`; template
+/// CRUD remains a server-admin-only operation under `/api/v1/admin/templates`.
+pub async fn list_vault_templates(
+    State(state): State<AppState>,
+    Extension(request_id): Extension<String>,
+    headers: HeaderMap,
+    Path(vault_id): Path<Uuid>,
+) -> Result<Json<DataResponse<Vec<PermissionTemplate>>>, ApiFailure> {
+    let actor = require_authenticated_user(&state, &headers, &request_id).await?;
+    require_capability(
+        &state.database,
+        vault_id,
+        user_uuid(&actor.user),
+        Capability::VaultManagePermissions,
+        &request_id,
+    )
+    .await?;
+    Ok(Json(DataResponse::new(
+        load_templates(&state.database, &request_id).await?,
+    )))
+}
+
 pub async fn list_chat_messages(
     State(state): State<AppState>,
     Extension(request_id): Extension<String>,
@@ -1422,6 +1468,18 @@ pub async fn add_vault_member(
     ))
 }
 
+/// The membership mutation a single update request resolves to.
+enum MemberUpdate {
+    /// Set the legacy role and clear any fine-grained override.
+    Role(HostedVaultRole),
+    /// Set an explicit, validated capability override (template cleared).
+    Capabilities(Vec<String>),
+    /// Assign a permission template (explicit override cleared).
+    Template(Uuid),
+    /// Clear any override so the role default applies.
+    ResetToRoleDefault,
+}
+
 pub async fn update_vault_member(
     State(state): State<AppState>,
     Extension(request_id): Extension<String>,
@@ -1430,30 +1488,120 @@ pub async fn update_vault_member(
     Json(payload): Json<UpdateVaultMemberRequest>,
 ) -> Result<Json<DataResponse<HostedVaultMember>>, ApiFailure> {
     let actor = require_any_user(&state, &headers, &request_id).await?;
-    let access =
-        require_active_vault_admin(&state.database, vault_id, &actor.user, &request_id).await?;
+    // Resolve the requested intent in priority order. Capability/template/reset
+    // edits require `vault.managePermissions`; a plain role change requires
+    // `vault.manageMembers` (the legacy member-management capability).
+    let update = if payload.reset_to_role_default == Some(true) {
+        MemberUpdate::ResetToRoleDefault
+    } else if let Some(tokens) = payload.capabilities.as_deref() {
+        MemberUpdate::Capabilities(validate_capability_tokens(tokens, &request_id)?)
+    } else if let Some(template_id) = payload.template_id {
+        MemberUpdate::Template(template_id)
+    } else if let Some(role) = payload.role {
+        MemberUpdate::Role(role)
+    } else {
+        return Err(ApiFailure::validation(
+            "A member update must change the role, capabilities, or template.",
+            request_id,
+        ));
+    };
+    let required_capability = match update {
+        MemberUpdate::Role(_) => Capability::VaultManageMembers,
+        _ => Capability::VaultManagePermissions,
+    };
+    let access = require_active_capability(
+        &state.database,
+        vault_id,
+        &actor.user,
+        required_capability,
+        &request_id,
+    )
+    .await?;
     let target = load_vault_member(&state.database, vault_id, user_id, &request_id).await?;
-    if target.owner
-        || (payload.role == HostedVaultRole::Admin && !access.owner)
-        || (target.role == HostedVaultRole::Admin && !access.owner)
-    {
+    // The owner membership is immutable; only the owner may promote to or modify
+    // an admin membership.
+    let touches_admin = matches!(update, MemberUpdate::Role(HostedVaultRole::Admin))
+        || target.role == HostedVaultRole::Admin;
+    if target.owner || (touches_admin && !access.owner && !access.server_admin) {
         return Err(ApiFailure::vault_permission_denied(request_id));
+    }
+    // Resolve the resulting membership-level capability set for the self-lockout
+    // guard and the template-existence check.
+    let template_caps = if let MemberUpdate::Template(template_id) = update {
+        Some(load_template(&state.database, template_id, &request_id).await?.capabilities)
+    } else {
+        None
+    };
+    let resulting_capabilities: Vec<String> = match &update {
+        MemberUpdate::Role(role) => capabilities_for_role(*role)
+            .into_iter()
+            .map(|capability| capability.as_token().to_owned())
+            .collect(),
+        MemberUpdate::Capabilities(tokens) => tokens.clone(),
+        MemberUpdate::Template(_) => template_caps.clone().unwrap_or_default(),
+        MemberUpdate::ResetToRoleDefault => capabilities_for_role(target.role)
+            .into_iter()
+            .map(|capability| capability.as_token().to_owned())
+            .collect(),
+    };
+    // Self-lockout guard: a non-owner administrator must not strip their own
+    // member/permission-management capabilities (enforced alongside the UI guard).
+    let editing_self = user_id == user_uuid(&actor.user);
+    if editing_self && !access.owner && !access.server_admin {
+        let retains_admin = resulting_capabilities
+            .iter()
+            .any(|token| token == Capability::VaultManagePermissions.as_token())
+            && resulting_capabilities
+                .iter()
+                .any(|token| token == Capability::VaultManageMembers.as_token());
+        if !retains_admin {
+            return Err(ApiFailure::validation(
+                "You cannot remove your own administrative permissions.",
+                request_id,
+            ));
+        }
     }
     let mut transaction = state
         .database
         .begin()
         .await
         .map_err(|_| ApiFailure::server(request_id.clone()))?;
-    sqlx::query("UPDATE hosted_vault_memberships SET role = $1::hosted_vault_role, updated_at = NOW() WHERE vault_id = $2 AND user_id = $3")
-        .bind(vault_role_name(payload.role)).bind(vault_id).bind(user_id).execute(&mut *transaction).await.map_err(|_| ApiFailure::server(request_id.clone()))?;
+    let (event_type, event_payload) = match &update {
+        MemberUpdate::Role(role) => {
+            sqlx::query("UPDATE hosted_vault_memberships SET role = $1::hosted_vault_role, template_id = NULL, capabilities = NULL, updated_at = NOW() WHERE vault_id = $2 AND user_id = $3")
+                .bind(vault_role_name(*role)).bind(vault_id).bind(user_id).execute(&mut *transaction).await.map_err(|_| ApiFailure::server(request_id.clone()))?;
+            (
+                "member.role_changed",
+                json!({"role": vault_role_name(*role)}),
+            )
+        }
+        MemberUpdate::Capabilities(tokens) => {
+            sqlx::query("UPDATE hosted_vault_memberships SET template_id = NULL, capabilities = $1, updated_at = NOW() WHERE vault_id = $2 AND user_id = $3")
+                .bind(tokens).bind(vault_id).bind(user_id).execute(&mut *transaction).await.map_err(|_| ApiFailure::server(request_id.clone()))?;
+            ("member.permissions_changed", json!({"capabilities": tokens}))
+        }
+        MemberUpdate::Template(template_id) => {
+            sqlx::query("UPDATE hosted_vault_memberships SET template_id = $1, capabilities = NULL, updated_at = NOW() WHERE vault_id = $2 AND user_id = $3")
+                .bind(template_id).bind(vault_id).bind(user_id).execute(&mut *transaction).await.map_err(|_| ApiFailure::server(request_id.clone()))?;
+            (
+                "member.permissions_changed",
+                json!({"templateId": template_id.to_string()}),
+            )
+        }
+        MemberUpdate::ResetToRoleDefault => {
+            sqlx::query("UPDATE hosted_vault_memberships SET template_id = NULL, capabilities = NULL, updated_at = NOW() WHERE vault_id = $1 AND user_id = $2")
+                .bind(vault_id).bind(user_id).execute(&mut *transaction).await.map_err(|_| ApiFailure::server(request_id.clone()))?;
+            ("member.permissions_changed", json!({"reset": true}))
+        }
+    };
     vault_activity_event(
         &mut transaction,
         vault_id,
         Some(user_uuid(&actor.user)),
-        "member.role_changed",
+        event_type,
         Some("user"),
         Some(&user_id.to_string()),
-        json!({"role": vault_role_name(payload.role)}),
+        event_payload,
         &request_id,
     )
     .await?;
@@ -1548,6 +1696,33 @@ pub async fn vault_manifest(
     .await?;
     Ok(Json(DataResponse::new(
         load_vault_manifest(&state.database, vault_id, &request_id).await?,
+    )))
+}
+
+pub async fn vault_manifest_delta(
+    State(state): State<AppState>,
+    Extension(request_id): Extension<String>,
+    headers: HeaderMap,
+    Path(vault_id): Path<Uuid>,
+    Query(query): Query<ManifestDeltaQuery>,
+) -> Result<Json<DataResponse<HostedVaultManifestDelta>>, ApiFailure> {
+    if query.since < 0 {
+        return Err(ApiFailure::validation(
+            "Manifest delta sequence cannot be negative.",
+            request_id,
+        ));
+    }
+    let actor = require_authenticated_user(&state, &headers, &request_id).await?;
+    require_capability(
+        &state.database,
+        vault_id,
+        user_uuid(&actor.user),
+        Capability::VaultRead,
+        &request_id,
+    )
+    .await?;
+    Ok(Json(DataResponse::new(
+        load_vault_manifest_delta(&state.database, vault_id, query.since, &request_id).await?,
     )))
 }
 
@@ -1742,7 +1917,15 @@ pub async fn create_vault_file(
             .await
             .map_err(|_| ApiFailure::server(request_id.clone()))?;
     }
-    increment_manifest(&mut transaction, vault_id, &request_id).await?;
+    let result_manifest = increment_manifest(&mut transaction, vault_id, &request_id).await?;
+    mark_manifest_file_changed(
+        &mut transaction,
+        vault_id,
+        file_id,
+        result_manifest,
+        &request_id,
+    )
+    .await?;
     vault_activity_event(
         &mut transaction,
         vault_id,
@@ -1924,7 +2107,15 @@ pub async fn restore_file_revision(
     .execute(&mut *transaction)
     .await
     .map_err(|_| ApiFailure::server(request_id.clone()))?;
-    increment_manifest(&mut transaction, vault_id, &request_id).await?;
+    let result_manifest = increment_manifest(&mut transaction, vault_id, &request_id).await?;
+    mark_manifest_file_changed(
+        &mut transaction,
+        vault_id,
+        file_id,
+        result_manifest,
+        &request_id,
+    )
+    .await?;
     vault_activity_event(
         &mut transaction,
         vault_id,
@@ -2143,7 +2334,15 @@ pub async fn restore_file_snapshot(
     .execute(&mut *transaction)
     .await
     .map_err(|_| ApiFailure::server(request_id.clone()))?;
-    increment_manifest(&mut transaction, vault_id, &request_id).await?;
+    let result_manifest = increment_manifest(&mut transaction, vault_id, &request_id).await?;
+    mark_manifest_file_changed(
+        &mut transaction,
+        vault_id,
+        file_id,
+        result_manifest,
+        &request_id,
+    )
+    .await?;
     vault_activity_event(
         &mut transaction,
         vault_id,
@@ -2272,7 +2471,15 @@ pub(crate) async fn persist_materialized_document(
     .execute(&mut *transaction)
     .await
     .map_err(|_| ApiFailure::server(request_id.clone()))?;
-    increment_manifest(&mut transaction, vault_id, &request_id).await?;
+    let result_manifest = increment_manifest(&mut transaction, vault_id, &request_id).await?;
+    mark_manifest_file_changed(
+        &mut transaction,
+        vault_id,
+        file_id,
+        result_manifest,
+        &request_id,
+    )
+    .await?;
     vault_activity_event(
         &mut transaction,
         vault_id,
@@ -2472,7 +2679,15 @@ pub async fn write_text_revision(
     .execute(&mut *transaction)
     .await
     .map_err(|_| ApiFailure::server(request_id.clone()))?;
-    increment_manifest(&mut transaction, vault_id, &request_id).await?;
+    let result_manifest = increment_manifest(&mut transaction, vault_id, &request_id).await?;
+    mark_manifest_file_changed(
+        &mut transaction,
+        vault_id,
+        file_id,
+        result_manifest,
+        &request_id,
+    )
+    .await?;
     vault_activity_event(
         &mut transaction,
         vault_id,
@@ -2754,7 +2969,15 @@ pub async fn upload_binary_asset(
         .execute(&mut *transaction)
         .await
         .map_err(|_| ApiFailure::server(request_id.clone()))?;
-    increment_manifest(&mut transaction, vault_id, &request_id).await?;
+    let result_manifest = increment_manifest(&mut transaction, vault_id, &request_id).await?;
+    mark_manifest_file_changed(
+        &mut transaction,
+        vault_id,
+        file_id,
+        result_manifest,
+        &request_id,
+    )
+    .await?;
     vault_activity_event(
         &mut transaction,
         vault_id,
@@ -3078,6 +3301,26 @@ pub async fn apply_structural_operation(
         rewritten_document_ids.push(file_id.to_string());
     }
     let result_manifest = increment_manifest(&mut transaction, vault_id, &request_id).await?;
+    mark_manifest_subtree_changed(
+        &mut transaction,
+        vault_id,
+        payload.target_file_id,
+        result_manifest,
+        &request_id,
+    )
+    .await?;
+    let rewritten_file_ids = planned_revisions
+        .iter()
+        .map(|(file_id, _, _, _)| *file_id)
+        .collect::<Vec<_>>();
+    mark_manifest_files_changed(
+        &mut transaction,
+        vault_id,
+        &rewritten_file_ids,
+        result_manifest,
+        &request_id,
+    )
+    .await?;
     sqlx::query(
         "INSERT INTO hosted_structural_operations (id, client_operation_id, vault_id, actor_user_id, base_manifest_sequence, result_manifest_sequence, operation_type, payload) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
     )
@@ -3552,6 +3795,15 @@ pub async fn import_vault_zip(
     }
     let result_manifest_sequence =
         increment_manifest(&mut transaction, vault_id, &request_id).await?;
+    let imported_file_ids = path_ids.values().copied().collect::<Vec<_>>();
+    mark_manifest_files_changed(
+        &mut transaction,
+        vault_id,
+        &imported_file_ids,
+        result_manifest_sequence,
+        &request_id,
+    )
+    .await?;
     let imported_folders = entries
         .iter()
         .filter(|entry| entry.kind == HostedFileKind::Folder)
@@ -5336,6 +5588,14 @@ pub async fn admin_update_vault_member(
     Json(payload): Json<UpdateVaultMemberRequest>,
 ) -> Result<Json<DataResponse<HostedVaultMember>>, ApiFailure> {
     let actor = require_admin_csrf(&state, &headers, &request_id).await?;
+    // The server-admin member endpoint only changes the legacy role; fine-grained
+    // capability/template assignment goes through the admin grant endpoints.
+    let role = payload.role.ok_or_else(|| {
+        ApiFailure::validation(
+            "A member role is required.",
+            request_id.clone(),
+        )
+    })?;
     require_vault_not_pending_delete(&state.database, vault_id, &request_id).await?;
     let target = load_vault_member(&state.database, vault_id, user_id, &request_id).await?;
     if target.owner {
@@ -5350,7 +5610,7 @@ pub async fn admin_update_vault_member(
         .await
         .map_err(|_| ApiFailure::server(request_id.clone()))?;
     sqlx::query("UPDATE hosted_vault_memberships SET role = $1::hosted_vault_role, updated_at = NOW() WHERE vault_id = $2 AND user_id = $3")
-        .bind(vault_role_name(payload.role))
+        .bind(vault_role_name(role))
         .bind(vault_id)
         .bind(user_id)
         .execute(&mut *transaction)
@@ -5363,7 +5623,7 @@ pub async fn admin_update_vault_member(
         "member.role_changed",
         Some("user"),
         Some(&user_id.to_string()),
-        json!({"role": vault_role_name(payload.role), "byServerAdmin": true}),
+        json!({"role": vault_role_name(role), "byServerAdmin": true}),
         &request_id,
     )
     .await?;
@@ -5375,7 +5635,7 @@ pub async fn admin_update_vault_member(
         Some(&vault_id.to_string()),
         "success",
         &request_id,
-        json!({"userId": user_id, "role": vault_role_name(payload.role)}),
+        json!({"userId": user_id, "role": vault_role_name(role)}),
     )
     .await?;
     transaction
@@ -6110,10 +6370,13 @@ async fn load_vault_members(
     let rows = sqlx::query(
         r#"
         SELECT u.id AS user_id, u.username, u.display_name, m.role::text AS role,
-               v.owner_user_id = u.id AS owner, m.created_at
+               v.owner_user_id = u.id AS owner, m.created_at,
+               m.template_id, t.name AS template_name,
+               m.capabilities AS explicit_caps, t.capabilities AS template_caps
         FROM hosted_vault_memberships m
         JOIN users u ON u.id = m.user_id
         JOIN hosted_vaults v ON v.id = m.vault_id
+        LEFT JOIN permission_templates t ON t.id = m.template_id
         WHERE m.vault_id = $1
         ORDER BY owner DESC, u.display_name ASC
         "#,
@@ -6134,10 +6397,13 @@ async fn load_vault_member(
     let row = sqlx::query(
         r#"
         SELECT u.id AS user_id, u.username, u.display_name, m.role::text AS role,
-               v.owner_user_id = u.id AS owner, m.created_at
+               v.owner_user_id = u.id AS owner, m.created_at,
+               m.template_id, t.name AS template_name,
+               m.capabilities AS explicit_caps, t.capabilities AS template_caps
         FROM hosted_vault_memberships m
         JOIN users u ON u.id = m.user_id
         JOIN hosted_vaults v ON v.id = m.vault_id
+        LEFT JOIN permission_templates t ON t.id = m.template_id
         WHERE m.vault_id = $1 AND m.user_id = $2
         "#,
     )
@@ -6151,15 +6417,39 @@ async fn load_vault_member(
 }
 
 fn vault_member_from_row(row: &sqlx::postgres::PgRow) -> HostedVaultMember {
+    let owner: bool = row.get("owner");
+    let role = parse_vault_role(row.get::<String, _>("role").as_str());
+    let explicit_caps: Option<Vec<String>> = row.get("explicit_caps");
+    let template_caps: Option<Vec<String>> = row.get("template_caps");
+    let template_id = row
+        .get::<Option<Uuid>, _>("template_id")
+        .map(|id| id.to_string());
+    let template_name: Option<String> = row.get("template_name");
+    // The owner implicitly holds every capability; otherwise resolve the
+    // membership-level effective set (explicit override, else template, else role
+    // default). Group grants further restrict at runtime and are not surfaced
+    // per-member here.
+    let capabilities = if owner {
+        Capability::ALL
+            .into_iter()
+            .map(|capability| capability.as_token().to_owned())
+            .collect()
+    } else {
+        resolve_grant_tokens(explicit_caps.clone(), template_caps, Some(role))
+    };
     HostedVaultMember {
         user_id: row.get::<Uuid, _>("user_id").to_string(),
         username: row.get("username"),
         display_name: row.get("display_name"),
-        role: parse_vault_role(row.get::<String, _>("role").as_str()),
-        owner: row.get("owner"),
+        role,
+        owner,
         created_at: row
             .get::<chrono::DateTime<chrono::Utc>, _>("created_at")
             .to_rfc3339(),
+        capabilities,
+        custom_capabilities: if owner { None } else { explicit_caps },
+        template_id: if owner { None } else { template_id },
+        template_name: if owner { None } else { template_name },
     }
 }
 
@@ -7075,6 +7365,78 @@ async fn increment_manifest(
     .map_err(|_| ApiFailure::server(request_id.to_owned()))
 }
 
+async fn mark_manifest_file_changed(
+    transaction: &mut Transaction<'_, Postgres>,
+    vault_id: Uuid,
+    file_id: Uuid,
+    manifest_sequence: i64,
+    request_id: &str,
+) -> Result<(), ApiFailure> {
+    sqlx::query(
+        "UPDATE hosted_file_entries SET manifest_sequence = $1 WHERE vault_id = $2 AND id = $3",
+    )
+    .bind(manifest_sequence)
+    .bind(vault_id)
+    .bind(file_id)
+    .execute(&mut **transaction)
+    .await
+    .map_err(|_| ApiFailure::server(request_id.to_owned()))?;
+    Ok(())
+}
+
+async fn mark_manifest_files_changed(
+    transaction: &mut Transaction<'_, Postgres>,
+    vault_id: Uuid,
+    file_ids: &[Uuid],
+    manifest_sequence: i64,
+    request_id: &str,
+) -> Result<(), ApiFailure> {
+    if file_ids.is_empty() {
+        return Ok(());
+    }
+    sqlx::query(
+        "UPDATE hosted_file_entries SET manifest_sequence = $1 WHERE vault_id = $2 AND id = ANY($3)",
+    )
+    .bind(manifest_sequence)
+    .bind(vault_id)
+    .bind(file_ids)
+    .execute(&mut **transaction)
+    .await
+    .map_err(|_| ApiFailure::server(request_id.to_owned()))?;
+    Ok(())
+}
+
+async fn mark_manifest_subtree_changed(
+    transaction: &mut Transaction<'_, Postgres>,
+    vault_id: Uuid,
+    root_file_id: Uuid,
+    manifest_sequence: i64,
+    request_id: &str,
+) -> Result<(), ApiFailure> {
+    sqlx::query(
+        r#"
+        WITH RECURSIVE affected AS (
+          SELECT id FROM hosted_file_entries WHERE vault_id = $1 AND id = $2
+          UNION ALL
+          SELECT child.id
+          FROM hosted_file_entries child
+          JOIN affected parent ON child.parent_id = parent.id
+          WHERE child.vault_id = $1
+        )
+        UPDATE hosted_file_entries
+        SET manifest_sequence = $3
+        WHERE vault_id = $1 AND id IN (SELECT id FROM affected)
+        "#,
+    )
+    .bind(vault_id)
+    .bind(root_file_id)
+    .bind(manifest_sequence)
+    .execute(&mut **transaction)
+    .await
+    .map_err(|_| ApiFailure::server(request_id.to_owned()))?;
+    Ok(())
+}
+
 async fn insert_blob_record(
     transaction: &mut Transaction<'_, Postgres>,
     digest: &str,
@@ -7167,6 +7529,39 @@ async fn load_vault_manifest(
         vault_id: vault_id.to_string(),
         sequence,
         files,
+    })
+}
+
+async fn load_vault_manifest_delta(
+    pool: &PgPool,
+    vault_id: Uuid,
+    since: i64,
+    request_id: &str,
+) -> Result<HostedVaultManifestDelta, ApiFailure> {
+    let manifest = load_vault_manifest(pool, vault_id, request_id).await?;
+    let rows = sqlx::query(
+        "SELECT id FROM hosted_file_entries WHERE vault_id = $1 AND manifest_sequence > $2",
+    )
+    .bind(vault_id)
+    .bind(since)
+    .fetch_all(pool)
+    .await
+    .map_err(|_| ApiFailure::server(request_id.to_owned()))?;
+    let changed_ids = rows
+        .iter()
+        .map(|row| row.get::<Uuid, _>("id").to_string())
+        .collect::<HashSet<_>>();
+    let changed_files = manifest
+        .files
+        .iter()
+        .filter(|file| changed_ids.contains(&file.id))
+        .cloned()
+        .collect();
+    Ok(HostedVaultManifestDelta {
+        vault_id: vault_id.to_string(),
+        base_sequence: since,
+        sequence: manifest.sequence,
+        changed_files,
     })
 }
 
@@ -9529,6 +9924,46 @@ mod tests {
         assert_eq!(manifest_body["data"]["sequence"], 3);
         assert_eq!(manifest_body["data"]["files"].as_array().unwrap().len(), 2);
 
+        let unchanged_delta = request(
+            &app,
+            "GET",
+            &format!("/api/v1/vaults/{vault_id}/manifest/delta?since=3"),
+            json!({}),
+            Some(&admin_cookie),
+            None,
+        )
+        .await;
+        assert_eq!(unchanged_delta.status(), StatusCode::OK);
+        let unchanged_delta_body = json_body(unchanged_delta).await;
+        assert_eq!(unchanged_delta_body["data"]["sequence"], 3);
+        assert_eq!(
+            unchanged_delta_body["data"]["changedFiles"]
+                .as_array()
+                .unwrap()
+                .len(),
+            0
+        );
+
+        let initial_delta = request(
+            &app,
+            "GET",
+            &format!("/api/v1/vaults/{vault_id}/manifest/delta?since=0"),
+            json!({}),
+            Some(&admin_cookie),
+            None,
+        )
+        .await;
+        assert_eq!(initial_delta.status(), StatusCode::OK);
+        let initial_delta_body = json_body(initial_delta).await;
+        assert_eq!(initial_delta_body["data"]["sequence"], 3);
+        assert_eq!(
+            initial_delta_body["data"]["changedFiles"]
+                .as_array()
+                .unwrap()
+                .len(),
+            2
+        );
+
         let revisions = request(
             &app,
             "GET",
@@ -10179,6 +10614,22 @@ mod tests {
             .find(|file| file["id"] == document_id)
             .unwrap();
         assert_eq!(moved_document["relativePath"], "Renamed.md");
+
+        let moved_delta = request(
+            &app,
+            "GET",
+            &format!("/api/v1/vaults/{vault_id}/manifest/delta?since=8"),
+            json!({}),
+            Some(&admin_cookie),
+            None,
+        )
+        .await;
+        assert_eq!(moved_delta.status(), StatusCode::OK);
+        let moved_delta_body = json_body(moved_delta).await;
+        let moved_delta_files = moved_delta_body["data"]["changedFiles"].as_array().unwrap();
+        assert!(moved_delta_files
+            .iter()
+            .any(|file| file["id"] == document_id && file["relativePath"] == "Renamed.md"));
 
         for (operation_type, sequence) in [("trash", 9), ("restore", 10)] {
             let response = request(
@@ -11307,5 +11758,248 @@ mod tests {
         )
         .await;
         assert_eq!(gone.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn native_vault_admin_manages_fine_grained_permissions() {
+        let Ok(url) = std::env::var("COLLAB_TEST_DATABASE_URL") else {
+            return;
+        };
+        let _db_guard = crate::database::db_test_guard().lock().await;
+        let pool = PgPoolOptions::new()
+            .max_connections(5)
+            .connect(&url)
+            .await
+            .unwrap();
+        database::migrate(&pool).await.unwrap();
+        sqlx::query(
+            "TRUNCATE audit_events, invitations, native_sessions, sessions, credentials, users, hosted_blobs RESTART IDENTITY CASCADE",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        reseed_builtin_templates(&pool).await;
+        let blobs = Arc::new(
+            FileSystemBlobStorage::new(tempfile::tempdir().unwrap().keep())
+                .await
+                .unwrap(),
+        );
+        let app = build_router(AppState::new(ServerConfig::default(), pool.clone(), blobs));
+
+        // Bootstrap the primary server admin; they will also own the test vault.
+        let bootstrap = request(
+            &app,
+            "POST",
+            "/api/v1/auth/bootstrap",
+            json!({"username": "owner", "displayName": "Owner", "password": "correct horse battery staple"}),
+            None,
+            None,
+        )
+        .await;
+        assert_eq!(bootstrap.status(), StatusCode::OK);
+        let (owner_cookie, owner_csrf) = session_cookies(&bootstrap);
+
+        // Create alice (a fine-grained permissions manager) and bob (a target).
+        let mut user_ids = std::collections::HashMap::new();
+        for (username, display) in [("alice", "Alice"), ("bob", "Bob")] {
+            let created = request(
+                &app,
+                "POST",
+                "/api/v1/admin/users",
+                json!({"username": username, "displayName": display, "password": "a password long enough to pass"}),
+                Some(&owner_cookie),
+                Some(&owner_csrf),
+            )
+            .await;
+            assert_eq!(created.status(), StatusCode::CREATED);
+            user_ids.insert(
+                username,
+                json_body(created).await["data"]["id"]
+                    .as_str()
+                    .unwrap()
+                    .to_owned(),
+            );
+        }
+        let alice_id = user_ids["alice"].clone();
+        let bob_id = user_ids["bob"].clone();
+
+        let alice_login = request(
+            &app,
+            "POST",
+            "/api/v1/auth/login",
+            json!({"username": "alice", "password": "a password long enough to pass"}),
+            None,
+            None,
+        )
+        .await;
+        let (alice_cookie, alice_csrf) = session_cookies(&alice_login);
+        let bob_login = request(
+            &app,
+            "POST",
+            "/api/v1/auth/login",
+            json!({"username": "bob", "password": "a password long enough to pass"}),
+            None,
+            None,
+        )
+        .await;
+        let (bob_cookie, bob_csrf) = session_cookies(&bob_login);
+
+        let vault = request(
+            &app,
+            "POST",
+            "/api/v1/vaults",
+            json!({"name": "Perm Vault"}),
+            Some(&owner_cookie),
+            Some(&owner_csrf),
+        )
+        .await;
+        let vault_id = json_body(vault).await["data"]["id"].as_str().unwrap().to_owned();
+
+        // Add bob as an editor member.
+        for (user, role) in [(&bob_id, "editor"), (&alice_id, "editor")] {
+            let added = request(
+                &app,
+                "POST",
+                &format!("/api/v1/vaults/{vault_id}/members"),
+                json!({"userId": user, "role": role}),
+                Some(&owner_cookie),
+                Some(&owner_csrf),
+            )
+            .await;
+            assert_eq!(added.status(), StatusCode::CREATED);
+        }
+        // The owner grants alice the management capabilities directly (so she can
+        // manage permissions without being a full "admin" role member).
+        let alice_grant = request(
+            &app,
+            "PATCH",
+            &format!("/api/v1/vaults/{vault_id}/members/{alice_id}"),
+            json!({"capabilities": ["vault.read", "vault.search", "vault.manageMembers", "vault.managePermissions"]}),
+            Some(&owner_cookie),
+            Some(&owner_csrf),
+        )
+        .await;
+        assert_eq!(alice_grant.status(), StatusCode::OK);
+
+        // Alice can read the vault's permission templates (vault.managePermissions).
+        let templates = request(
+            &app,
+            "GET",
+            &format!("/api/v1/vaults/{vault_id}/templates"),
+            json!({}),
+            Some(&alice_cookie),
+            None,
+        )
+        .await;
+        assert_eq!(templates.status(), StatusCode::OK);
+        let templates_body = json_body(templates).await;
+        let template_array = templates_body["data"].as_array().unwrap();
+        assert!(template_array.iter().any(|t| t["name"] == "viewer" && t["isBuiltin"] == true));
+        let editor_template_id = template_array
+            .iter()
+            .find(|t| t["name"] == "editor")
+            .unwrap()["id"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+
+        // Alice sets a fine-grained capability override on bob → persisted and
+        // reflected in the returned member DTO.
+        let set_caps = request(
+            &app,
+            "PATCH",
+            &format!("/api/v1/vaults/{vault_id}/members/{bob_id}"),
+            json!({"capabilities": ["vault.read", "note.edit"]}),
+            Some(&alice_cookie),
+            Some(&alice_csrf),
+        )
+        .await;
+        assert_eq!(set_caps.status(), StatusCode::OK);
+        let bob_member = json_body(set_caps).await;
+        assert_eq!(
+            capability_tokens(&bob_member["data"]),
+            vec!["vault.read".to_owned(), "note.edit".to_owned()]
+        );
+        assert_eq!(
+            bob_member["data"]["customCapabilities"],
+            json!(["vault.read", "note.edit"])
+        );
+
+        // Alice assigns bob a template instead → override cleared, template set.
+        let set_template = request(
+            &app,
+            "PATCH",
+            &format!("/api/v1/vaults/{vault_id}/members/{bob_id}"),
+            json!({"templateId": editor_template_id}),
+            Some(&alice_cookie),
+            Some(&alice_csrf),
+        )
+        .await;
+        assert_eq!(set_template.status(), StatusCode::OK);
+        let templated_bob = json_body(set_template).await;
+        assert_eq!(templated_bob["data"]["templateId"], editor_template_id);
+        assert!(templated_bob["data"]["customCapabilities"].is_null());
+
+        // Reset bob to the role default → both override fields cleared.
+        let reset = request(
+            &app,
+            "PATCH",
+            &format!("/api/v1/vaults/{vault_id}/members/{bob_id}"),
+            json!({"resetToRoleDefault": true}),
+            Some(&alice_cookie),
+            Some(&alice_csrf),
+        )
+        .await;
+        assert_eq!(reset.status(), StatusCode::OK);
+        let reset_bob = json_body(reset).await;
+        assert!(reset_bob["data"]["templateId"].is_null());
+        assert!(reset_bob["data"]["customCapabilities"].is_null());
+        assert!(capability_tokens(&reset_bob["data"]).contains(&"file.write".to_owned()));
+
+        // Self-lockout guard: alice cannot drop her own management capabilities.
+        let self_lock = request(
+            &app,
+            "PATCH",
+            &format!("/api/v1/vaults/{vault_id}/members/{alice_id}"),
+            json!({"capabilities": ["vault.read"]}),
+            Some(&alice_cookie),
+            Some(&alice_csrf),
+        )
+        .await;
+        assert_eq!(self_lock.status(), StatusCode::BAD_REQUEST);
+        // But she may edit her own permissions while retaining the management caps.
+        let self_ok = request(
+            &app,
+            "PATCH",
+            &format!("/api/v1/vaults/{vault_id}/members/{alice_id}"),
+            json!({"capabilities": ["vault.read", "vault.search", "vault.manageMembers", "vault.managePermissions", "note.edit"]}),
+            Some(&alice_cookie),
+            Some(&alice_csrf),
+        )
+        .await;
+        assert_eq!(self_ok.status(), StatusCode::OK);
+
+        // Bob (an editor without vault.managePermissions) cannot read templates or
+        // change anyone's permissions.
+        let bob_templates = request(
+            &app,
+            "GET",
+            &format!("/api/v1/vaults/{vault_id}/templates"),
+            json!({}),
+            Some(&bob_cookie),
+            None,
+        )
+        .await;
+        assert_eq!(bob_templates.status(), StatusCode::FORBIDDEN);
+        let bob_edit = request(
+            &app,
+            "PATCH",
+            &format!("/api/v1/vaults/{vault_id}/members/{alice_id}"),
+            json!({"capabilities": ["vault.read"]}),
+            Some(&bob_cookie),
+            Some(&bob_csrf),
+        )
+        .await;
+        assert_eq!(bob_edit.status(), StatusCode::FORBIDDEN);
     }
 }

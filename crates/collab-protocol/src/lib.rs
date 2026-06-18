@@ -492,6 +492,21 @@ pub struct HostedVaultMember {
     pub role: HostedVaultRole,
     pub owner: bool,
     pub created_at: String,
+    /// The member's effective capability tokens at the membership level
+    /// (explicit override, else assigned template, else role default; canonical
+    /// order). Group grants further restrict at runtime and are not reflected
+    /// here.
+    #[serde(default)]
+    pub capabilities: Vec<String>,
+    /// The explicit per-member capability override, if any. `None` when the
+    /// member uses a template or the plain role default.
+    #[serde(default)]
+    pub custom_capabilities: Option<Vec<String>>,
+    /// The permission template assigned to this membership, if any.
+    #[serde(default)]
+    pub template_id: Option<String>,
+    #[serde(default)]
+    pub template_name: Option<String>,
 }
 
 /// Read-only directory entry exposed to any authenticated user so vault admins
@@ -599,6 +614,15 @@ pub struct HostedVaultManifest {
     pub vault_id: String,
     pub sequence: i64,
     pub files: Vec<HostedFileEntry>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct HostedVaultManifestDelta {
+    pub vault_id: String,
+    pub base_sequence: i64,
+    pub sequence: i64,
+    pub changed_files: Vec<HostedFileEntry>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

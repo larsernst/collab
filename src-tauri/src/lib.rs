@@ -215,6 +215,7 @@ pub fn run() {
             commands::replica::replica_enqueue_operation,
             commands::replica::replica_list_pending_operations,
             commands::replica::replica_update_operation_status,
+            commands::replica::replica_record_operation_failure,
             commands::replica::replica_remove_operation,
             commands::replica::replica_record_tombstone,
             commands::replica::replica_list_tombstones,

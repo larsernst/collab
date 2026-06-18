@@ -92,6 +92,21 @@ pub fn replica_update_operation_status(
 }
 
 #[tauri::command]
+pub fn replica_record_operation_failure(
+    server_url: String,
+    vault_id: String,
+    operation_id: String,
+    failure_code: String,
+    failure_message: String,
+) -> Result<(), String> {
+    existing(&server_url, &vault_id)?.record_operation_failure(
+        &operation_id,
+        &failure_code,
+        &failure_message,
+    )
+}
+
+#[tauri::command]
 pub fn replica_remove_operation(
     server_url: String,
     vault_id: String,
