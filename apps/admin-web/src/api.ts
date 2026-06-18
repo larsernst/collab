@@ -1,5 +1,8 @@
 import type {
   AdminOverview,
+  AdminBackupCommandResult,
+  AdminBackupOverview,
+  AdminBackupVerification,
   AuditEvent,
   CreatedInvitation,
   HostedVaultActivityEvent,
@@ -96,6 +99,17 @@ export const serverApi = {
   avatarUrl: (userId: string, updatedAt?: string | null) =>
     `/api/v1/users/${userId}/avatar${updatedAt ? `?v=${encodeURIComponent(updatedAt)}` : ''}`,
   overview: () => api<AdminOverview>('/api/v1/admin/overview'),
+  backups: () => api<AdminBackupOverview>('/api/v1/admin/backups'),
+  runBackup: () => api<AdminBackupCommandResult>('/api/v1/admin/backups', { method: 'POST' }),
+  verifyBackup: (name: string) =>
+    api<AdminBackupVerification>(`/api/v1/admin/backups/${encodeURIComponent(name)}/verify`, { method: 'POST' }),
+  restoreBackup: (name: string) =>
+    api<AdminBackupCommandResult>(`/api/v1/admin/backups/${encodeURIComponent(name)}/restore`, {
+      method: 'POST',
+      body: JSON.stringify({ confirmation: 'restore' }),
+    }),
+  deleteBackup: (name: string) =>
+    api<void>(`/api/v1/admin/backups/${encodeURIComponent(name)}`, { method: 'DELETE' }),
   users: () => api<ServerUser[]>('/api/v1/admin/users'),
   createUser: (payload: Record<string, unknown>) =>
     api<ServerUser>('/api/v1/admin/users', { method: 'POST', body: JSON.stringify(payload) }),

@@ -1,5 +1,6 @@
 import {
   Activity,
+  Archive,
   Boxes,
   CircleAlert,
   ChevronDown,
@@ -31,6 +32,8 @@ import { serverApi } from './api';
 import { useAutoRefresh } from './useAutoRefresh';
 import { useAdminAppearance, type AdminAccent, type AdminTheme } from './theme';
 import type {
+  AdminBackupOverview,
+  AdminBackupVerification,
   AdminOverview,
   AuditEvent,
   GrantSubjectType,
@@ -52,7 +55,7 @@ import type {
 import { ALL_CAPABILITIES, CAPABILITY_GROUPS, capabilityLabel } from './types';
 import { Badge, Button, Card, Checkbox, ConfirmDialog, DialogShell, Input, PromptDialog, SelectMenu, Separator, Switch } from './ui';
 
-type View = 'dashboard' | 'users' | 'vaults' | 'permissions' | 'audit' | 'settings';
+type View = 'dashboard' | 'users' | 'vaults' | 'permissions' | 'backups' | 'audit' | 'settings';
 
 export function isSelectedFile(value: FormDataEntryValue | null): value is File {
   return value instanceof globalThis.File && value.size > 0;
@@ -221,6 +224,7 @@ function AdminShell({ me, onMeChange, onLogout }: { me: ServerUser; onMeChange: 
           <NavButton active={view === 'users'} icon={<Users />} label="Users" onClick={() => setView('users')} />
           <NavButton active={view === 'vaults'} icon={<Boxes />} label="Vaults" onClick={() => setView('vaults')} />
           <NavButton active={view === 'permissions'} icon={<ShieldCheck />} label="Permissions" onClick={() => setView('permissions')} />
+          <NavButton active={view === 'backups'} icon={<Archive />} label="Backups" onClick={() => setView('backups')} />
           <NavButton active={view === 'audit'} icon={<Activity />} label="Audit log" onClick={() => setView('audit')} />
           <NavButton active={view === 'settings'} icon={<Settings />} label="Settings" onClick={() => setView('settings')} />
         </nav>
@@ -237,6 +241,7 @@ function AdminShell({ me, onMeChange, onLogout }: { me: ServerUser; onMeChange: 
         {view === 'users' && <UsersPage currentUser={me} />}
         {view === 'vaults' && <VaultsPage />}
         {view === 'permissions' && <PermissionsPage />}
+        {view === 'backups' && <BackupsPage />}
         {view === 'audit' && <AuditPage />}
         {view === 'settings' && <SettingsPage appearance={appearance} onChange={persistAppearance} />}
       </main>
@@ -343,6 +348,162 @@ function Dashboard() {
         {overview.operationalWarnings.length > 0 && <Panel title="Operational warnings" icon={<CircleAlert size={17} />}><div className="warning-list">{overview.operationalWarnings.map((warning) => <div className="warning-row" key={warning.code}><CircleAlert size={16} /><div><strong>{warning.code.replaceAll('_', ' ')}</strong><small>{warning.message}</small></div></div>)}</div></Panel>}
         <Panel title="Recent activity" icon={<Activity size={17} />}><AuditTable events={overview.recentAuditEvents} /></Panel>
       </>}
+    </>
+  );
+}
+
+function BackupsPage() {
+  const [overview, setOverview] = useState<AdminBackupOverview | null>(null);
+  const [verification, setVerification] = useState<Record<string, AdminBackupVerification>>({});
+  const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
+  const [confirmRestore, setConfirmRestore] = useState<string | null>(null);
+  const [message, setMessage] = useState('');
+  const [error, setError] = useState('');
+  const [busy, setBusy] = useState('');
+  const load = useCallback(() => serverApi.backups().then((data) => { setOverview(data); setError(''); }).catch((reason) => setError(String(reason))), []);
+  useEffect(() => void load(), [load]);
+  useAutoRefresh(load, { intervalMs: 10_000 });
+
+  async function runBackup() {
+    setBusy('run');
+    setMessage('');
+    setError('');
+    try {
+      const result = await serverApi.runBackup();
+      setMessage(result.output ? `${result.message} ${result.output}` : result.message);
+      await load();
+    } catch (reason) {
+      setError(String(reason));
+    } finally {
+      setBusy('');
+    }
+  }
+
+  async function verify(name: string) {
+    setBusy(`verify:${name}`);
+    setError('');
+    try {
+      const result = await serverApi.verifyBackup(name);
+      setVerification((current) => ({ ...current, [name]: result }));
+    } catch (reason) {
+      setError(String(reason));
+    } finally {
+      setBusy('');
+    }
+  }
+
+  async function restore(name: string) {
+    setBusy(`restore:${name}`);
+    setMessage('');
+    setError('');
+    try {
+      const result = await serverApi.restoreBackup(name);
+      setMessage(result.output ? `${result.message} ${result.output}` : result.message);
+      setConfirmRestore(null);
+      await load();
+    } catch (reason) {
+      setError(String(reason));
+    } finally {
+      setBusy('');
+    }
+  }
+
+  async function deleteBackup(name: string) {
+    setBusy(`delete:${name}`);
+    setError('');
+    try {
+      await serverApi.deleteBackup(name);
+      setConfirmDelete(null);
+      setVerification((current) => {
+        const next = { ...current };
+        delete next[name];
+        return next;
+      });
+      await load();
+    } catch (reason) {
+      setError(String(reason));
+    } finally {
+      setBusy('');
+    }
+  }
+
+  return (
+    <>
+      <PageHeader
+        eyebrow="RECOVERY"
+        title="Backups"
+        subtitle="Inspect, verify, and manage deployment backups visible to the server."
+        action={<div className="actions"><Button variant="outline" size="sm" onClick={load}><RefreshCw size={16} />Refresh</Button><Button size="sm" disabled={!overview?.backupCommandConfigured || busy === 'run'} onClick={runBackup}><Archive size={16} />Run backup</Button></div>}
+      />
+      {error && <div className="error-banner"><CircleAlert size={16} />{error}</div>}
+      {message && <div className="success-banner" role="status"><ShieldCheck size={16} />{message}</div>}
+      {!overview ? <Loading /> : <>
+        <div className="metric-grid">
+          <Metric icon={<Archive />} label="Backups" value={overview.backups.length} detail={overview.backupDir} />
+          <Metric icon={<Server />} label="Run command" value={overview.backupCommandConfigured ? 'Configured' : 'Disabled'} detail="Optional operator hook" />
+          <Metric icon={<RotateCcw />} label="Restore command" value={overview.restoreCommandConfigured ? 'Configured' : 'Disabled'} detail="Requires explicit confirmation" />
+        </div>
+        {!overview.backupCommandConfigured && (
+          <Panel title="Operator hook required" icon={<CircleAlert size={17} />}>
+            <p className="subtle">The server can list, verify, and delete backup artifacts. Running or restoring backups from the web UI is disabled until `COLLAB_BACKUP_COMMAND` or `COLLAB_RESTORE_COMMAND` is configured by the operator.</p>
+          </Panel>
+        )}
+        <Panel title="Backup artifacts" icon={<Database size={17} />}>
+          {overview.backups.length === 0 ? <p className="subtle">No backups found in {overview.backupDir}.</p> : (
+            <div className="audit-list">
+              {overview.backups.map((backup) => {
+                const result = verification[backup.name];
+                const complete = backup.hasPostgresDump && backup.hasBlobArchive && backup.hasManifest && backup.hasChecksums;
+                return (
+                  <div className="backup-row" key={backup.name}>
+                    <div className="grow">
+                      <strong>{backup.name}</strong>
+                      <small>{backup.createdAt ? new Date(backup.createdAt).toLocaleString() : 'Unknown creation time'} · {formatBytes(backup.sizeBytes)}</small>
+                      <div className="capability-chips">
+                        <Badge variant={complete ? 'success' : 'destructive'}>{complete ? 'Complete' : 'Incomplete'}</Badge>
+                        {backup.hasConfig && <span className="request-chip">config</span>}
+                        {result && <Badge variant={result.ok ? 'success' : 'destructive'}>{result.ok ? 'Verified' : 'Failed verification'}</Badge>}
+                      </div>
+                      {result && (
+                        <div className="backup-artifacts">
+                          {result.artifacts.map((artifact) => (
+                            <span className={`request-chip ${artifact.ok ? '' : 'danger'}`} key={artifact.path}>{artifact.path}: {artifact.ok ? 'ok' : artifact.error ?? 'failed'}</span>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                    <div className="actions">
+                      <Button variant="outline" size="sm" disabled={busy === `verify:${backup.name}`} onClick={() => void verify(backup.name)}>Verify</Button>
+                      <Button variant="outline" size="sm" disabled={!overview.restoreCommandConfigured || busy === `restore:${backup.name}`} onClick={() => setConfirmRestore(backup.name)}>Restore</Button>
+                      <Button variant="destructive" size="sm" disabled={busy === `delete:${backup.name}`} onClick={() => setConfirmDelete(backup.name)}>Delete</Button>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </Panel>
+      </>}
+      {confirmDelete && (
+        <ConfirmDialog
+          title="Delete backup?"
+          description={`Delete ${confirmDelete} from the server backup volume. This cannot be undone.`}
+          confirmLabel="Delete backup"
+          destructive
+          onCancel={() => setConfirmDelete(null)}
+          onConfirm={() => void deleteBackup(confirmDelete)}
+        />
+      )}
+      {confirmRestore && (
+        <ConfirmDialog
+          title="Restore backup?"
+          description={`Run the configured restore command for ${confirmRestore}. This is destructive and should only be used with an operator-controlled restore wrapper.`}
+          confirmLabel="Restore backup"
+          destructive
+          onCancel={() => setConfirmRestore(null)}
+          onConfirm={() => void restore(confirmRestore)}
+        />
+      )}
     </>
   );
 }

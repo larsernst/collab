@@ -17,6 +17,11 @@ vi.mock('./api', () => ({
     deleteOwnAvatar: vi.fn(),
     avatarUrl: vi.fn((id: string) => `/api/v1/users/${id}/avatar`),
     overview: vi.fn(),
+    backups: vi.fn(),
+    runBackup: vi.fn(),
+    verifyBackup: vi.fn(),
+    restoreBackup: vi.fn(),
+    deleteBackup: vi.fn(),
     users: vi.fn(),
     createUser: vi.fn(),
     updateUser: vi.fn(),
@@ -129,6 +134,12 @@ describe('admin application', () => {
       recentAuditEvents: [],
     });
     vi.mocked(serverApi.invitations).mockResolvedValue([]);
+    vi.mocked(serverApi.backups).mockResolvedValue({
+      backupDir: '/backups',
+      backupCommandConfigured: false,
+      restoreCommandConfigured: false,
+      backups: [],
+    });
     vi.mocked(serverApi.vaults).mockResolvedValue([]);
     vi.mocked(serverApi.vaultStorage).mockResolvedValue({
       activeBytes: 0,
@@ -188,6 +199,49 @@ describe('admin application', () => {
     expect(screen.getByText('Active presence')).toBeTruthy();
     expect(screen.getByText('CRDT update log')).toBeTruthy();
     expect(screen.getByText('v0.4.3')).toBeTruthy();
+  });
+
+  it('manages backup artifacts from the administration UI', async () => {
+    vi.mocked(serverApi.bootstrapStatus).mockResolvedValue({ required: false });
+    vi.mocked(serverApi.me).mockResolvedValue(admin);
+    vi.mocked(serverApi.backups).mockResolvedValue({
+      backupDir: '/backups',
+      backupCommandConfigured: false,
+      restoreCommandConfigured: false,
+      backups: [{
+        name: 'collab-backup-20260618T111501Z',
+        createdAt: '2026-06-18T11:15:01Z',
+        sizeBytes: 2048,
+        hasPostgresDump: true,
+        hasBlobArchive: true,
+        hasManifest: true,
+        hasConfig: true,
+        hasChecksums: true,
+      }],
+    });
+    vi.mocked(serverApi.verifyBackup).mockResolvedValue({
+      name: 'collab-backup-20260618T111501Z',
+      ok: true,
+      checkedAt: '2026-06-18T11:16:00Z',
+      artifacts: [
+        { path: 'postgres.dump', expectedSha256: 'a'.repeat(64), actualSha256: 'a'.repeat(64), ok: true, error: null },
+      ],
+    });
+    vi.mocked(serverApi.deleteBackup).mockResolvedValue(undefined);
+
+    render(<App />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Backups' }));
+    expect(await screen.findByRole('heading', { name: 'Backups' })).toBeTruthy();
+    expect(screen.getByText('collab-backup-20260618T111501Z')).toBeTruthy();
+    expect((screen.getByRole('button', { name: 'Run backup' }) as HTMLButtonElement).disabled).toBe(true);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Verify' }));
+    await waitFor(() => expect(serverApi.verifyBackup).toHaveBeenCalledWith('collab-backup-20260618T111501Z'));
+    expect(await screen.findByText('Verified')).toBeTruthy();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Delete' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Delete backup' }));
+    await waitFor(() => expect(serverApi.deleteBackup).toHaveBeenCalledWith('collab-backup-20260618T111501Z'));
   });
 
   it('does not render administration pages for a non-admin user', async () => {

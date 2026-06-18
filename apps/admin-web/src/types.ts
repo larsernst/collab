@@ -74,6 +74,45 @@ export interface OperationalWarning {
   severity: string;
 }
 
+export interface AdminBackupOverview {
+  backupDir: string;
+  backupCommandConfigured: boolean;
+  restoreCommandConfigured: boolean;
+  backups: AdminBackupSummary[];
+}
+
+export interface AdminBackupSummary {
+  name: string;
+  createdAt: string | null;
+  sizeBytes: number;
+  hasPostgresDump: boolean;
+  hasBlobArchive: boolean;
+  hasManifest: boolean;
+  hasConfig: boolean;
+  hasChecksums: boolean;
+}
+
+export interface AdminBackupVerification {
+  name: string;
+  ok: boolean;
+  checkedAt: string;
+  artifacts: AdminBackupArtifactVerification[];
+}
+
+export interface AdminBackupArtifactVerification {
+  path: string;
+  expectedSha256: string;
+  actualSha256: string | null;
+  ok: boolean;
+  error: string | null;
+}
+
+export interface AdminBackupCommandResult {
+  status: string;
+  message: string;
+  output: string | null;
+}
+
 export interface Invitation {
   id: string;
   username: string;

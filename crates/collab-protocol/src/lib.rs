@@ -174,6 +174,55 @@ pub struct OperationalWarning {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
+pub struct AdminBackupOverview {
+    pub backup_dir: String,
+    pub backup_command_configured: bool,
+    pub restore_command_configured: bool,
+    pub backups: Vec<AdminBackupSummary>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct AdminBackupSummary {
+    pub name: String,
+    pub created_at: Option<String>,
+    pub size_bytes: u64,
+    pub has_postgres_dump: bool,
+    pub has_blob_archive: bool,
+    pub has_manifest: bool,
+    pub has_config: bool,
+    pub has_checksums: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct AdminBackupVerification {
+    pub name: String,
+    pub ok: bool,
+    pub checked_at: String,
+    pub artifacts: Vec<AdminBackupArtifactVerification>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct AdminBackupArtifactVerification {
+    pub path: String,
+    pub expected_sha256: String,
+    pub actual_sha256: Option<String>,
+    pub ok: bool,
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct AdminBackupCommandResult {
+    pub status: String,
+    pub message: String,
+    pub output: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
 pub struct HostedVaultSummary {
     pub id: String,
     pub name: String,

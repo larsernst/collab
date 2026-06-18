@@ -57,6 +57,7 @@ cargo check --workspace
 docker compose config
 docker compose up --build --wait
 ./scripts/server-smoke.sh
+./scripts/server-backup-restore-smoke.sh
 ```
 
 `Dockerfile.server` uses `cargo-chef` to cache compiled dependencies separately

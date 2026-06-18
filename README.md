@@ -380,6 +380,7 @@ not point it at a database containing valuable data.
 - [COLLAB_SERVER_PLAN.md](./COLLAB_SERVER_PLAN.md) - phased server implementation tracker
 - [Server architecture index](./docs/server/README.md) - entry point for server architecture documents
 - [Server development and Compose](./docs/server/development.md) - local operation, configuration, and verification
+- [Server backups](./docs/server/backups.md) - Compose backup worker, manual backup, retention, and artifact layout
 - [Admin web interface](./docs/server/admin-web.md) - scope, security model, and testing expectations
 - [REST and WebSocket protocol](./docs/server/protocol.md) - versioned API and synchronization contracts
 - [Hosted vault domain model](./docs/server/hosted-vault-domain.md) - identities, permissions, revisions, and vault structure

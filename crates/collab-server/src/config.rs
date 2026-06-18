@@ -28,6 +28,9 @@ pub struct ServerConfig {
     pub max_file_bytes: usize,
     pub max_import_bytes: usize,
     pub max_import_expanded_bytes: usize,
+    pub backup_dir: PathBuf,
+    pub backup_command: Option<String>,
+    pub restore_command: Option<String>,
     pub log_filter: String,
     pub log_format: LogFormat,
 }
@@ -48,6 +51,9 @@ impl Default for ServerConfig {
             max_file_bytes: 256 * 1024 * 1024,
             max_import_bytes: 512 * 1024 * 1024,
             max_import_expanded_bytes: 2 * 1024 * 1024 * 1024,
+            backup_dir: PathBuf::from("server-data/backups"),
+            backup_command: None,
+            restore_command: None,
             log_filter: "collab_server=info,tower_http=info".into(),
             log_format: LogFormat::Pretty,
         }
@@ -144,6 +150,17 @@ impl ServerConfig {
                 .parse()
                 .map_err(|_| ConfigError::Invalid("COLLAB_MAX_IMPORT_EXPANDED_BYTES"))?;
         }
+        if let Ok(value) = env::var("COLLAB_BACKUP_DIR") {
+            self.backup_dir = value.into();
+        }
+        if let Ok(value) = env::var("COLLAB_BACKUP_COMMAND") {
+            let trimmed = value.trim();
+            self.backup_command = (!trimmed.is_empty()).then(|| trimmed.to_owned());
+        }
+        if let Ok(value) = env::var("COLLAB_RESTORE_COMMAND") {
+            let trimmed = value.trim();
+            self.restore_command = (!trimmed.is_empty()).then(|| trimmed.to_owned());
+        }
         if let Ok(value) = env::var("COLLAB_LOG") {
             self.log_filter = value;
         }
@@ -171,6 +188,9 @@ impl ServerConfig {
         }
         if self.admin_web_dir.as_os_str().is_empty() {
             return Err(ConfigError::Invalid("COLLAB_ADMIN_WEB_DIR"));
+        }
+        if self.backup_dir.as_os_str().is_empty() {
+            return Err(ConfigError::Invalid("COLLAB_BACKUP_DIR"));
         }
         if self.session_ttl_hours <= 0 || self.session_ttl_hours > 24 * 30 {
             return Err(ConfigError::Invalid("COLLAB_SESSION_TTL_HOURS"));
@@ -228,6 +248,9 @@ mod tests {
         assert_eq!(config.max_file_bytes, 256 * 1024 * 1024);
         assert_eq!(config.max_import_bytes, 512 * 1024 * 1024);
         assert_eq!(config.max_import_expanded_bytes, 2 * 1024 * 1024 * 1024);
+        assert_eq!(config.backup_dir, PathBuf::from("server-data/backups"));
+        assert_eq!(config.backup_command, None);
+        assert_eq!(config.restore_command, None);
         assert_eq!(config.log_format, LogFormat::Pretty);
         config.validate().unwrap();
     }

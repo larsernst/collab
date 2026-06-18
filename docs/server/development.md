@@ -38,8 +38,54 @@ Persistent named volumes:
 
 - `postgres-data`: PostgreSQL database
 - `blob-data`: content-addressed file blobs
-- `backups`: future database and blob backups
+- `backups`: database and blob backup artifacts
 - `caddy-data` and `caddy-config`: gateway state
+
+Start the optional automated backup worker:
+
+```bash
+pnpm server:backup:schedule
+```
+
+Equivalent Compose command:
+
+```bash
+docker compose --profile backup up -d backup
+```
+
+Run one backup immediately:
+
+```bash
+pnpm server:backup
+```
+
+Equivalent script:
+
+```bash
+./scripts/server-backup.sh
+```
+
+Restore a backup into the Compose deployment:
+
+```bash
+pnpm server:restore collab-backup-YYYYMMDDTHHMMSSZ
+```
+
+The simple command prompts for confirmation. For non-interactive operator
+flows, keep using the lower-level script:
+
+```bash
+COLLAB_RESTORE_CONFIRM=restore ./scripts/server-restore.sh collab-backup-YYYYMMDDTHHMMSSZ
+```
+
+Backups are written to the `backups` volume. See
+[Server backups](./backups.md) for artifact layout, schedule, retention, and
+restore procedures.
+
+The default Compose deployment also enables the admin web Backups page to run
+and restore backups. Set `COLLAB_BACKUP_COMMAND=` and
+`COLLAB_RESTORE_COMMAND=` in `.env` to disable those buttons while keeping
+listing, verification, and deletion available.
 
 Stop containers without deleting data:
 
@@ -83,6 +129,17 @@ Supported environment variables:
   512 MiB.
 - `COLLAB_MAX_IMPORT_EXPANDED_BYTES`: maximum total expanded ZIP content;
   defaults to 2 GiB.
+- `COLLAB_BACKUP_INTERVAL_SECONDS`: interval for the optional Compose backup
+  worker; defaults to 24 hours.
+- `COLLAB_BACKUP_RETENTION_DAYS`: backup directories older than this are
+  pruned by the optional backup worker; defaults to 14 days, set to `0` to
+  disable pruning.
+- `COLLAB_BACKUP_COMMAND`: optional server-admin UI command hook for running a
+  backup. Leave empty unless the container has been explicitly granted a safe
+  orchestration path.
+- `COLLAB_RESTORE_COMMAND`: optional server-admin UI command hook for restoring
+  the backup named in `COLLAB_RESTORE_BACKUP`. Leave empty unless the restore
+  workflow is handled by a trusted operator-controlled wrapper.
 
 The server automatically allows the larger JSON request body required by
 base64 encoding. The current ZIP importer validates in memory, so operators
@@ -103,6 +160,7 @@ pnpm admin:test
 pnpm admin:build
 docker compose config
 ./scripts/server-smoke.sh
+./scripts/server-backup-restore-smoke.sh
 ```
 
 PostgreSQL migration tests run when `COLLAB_TEST_DATABASE_URL` is set:

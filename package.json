@@ -1,7 +1,7 @@
 {
   "name": "collab",
   "private": true,
-  "version": "0.4.7",
+  "version": "0.4.8",
   "packageManager": "pnpm@10.33.0",
   "type": "module",
   "scripts": {
@@ -13,7 +13,13 @@
     "admin:test": "vitest run --config apps/admin-web/vite.config.ts",
     "admin:dev": "vite --config apps/admin-web/vite.config.ts",
     "test:watch": "vitest",
-    "tauri": "tauri"
+    "server:backup": "./scripts/server-backups.sh backup",
+    "server:backups": "./scripts/server-backups.sh",
+    "server:backup:schedule": "./scripts/server-backups.sh schedule",
+    "server:backup:list": "./scripts/server-backups.sh list",
+    "server:backup:smoke": "./scripts/server-backups.sh smoke-test",
+    "server:restore": "./scripts/server-backups.sh restore",
+    "tauri": "node scripts/tauri-command.mjs"
   },
   "dependencies": {
     "@azurity/pure-nerd-font": "^3.0.5",

@@ -16,12 +16,13 @@ use axum::{
 use base64::{engine::general_purpose::STANDARD, Engine};
 use collab_protocol::GrantSubjectType;
 use collab_protocol::{
-    capabilities_for_role, AdminOverview, ApiError, AuditEvent, BootstrapStatus, BrowserSession,
-    Capability, CreatedInvitation, DataResponse, ErrorCode, ErrorResponse, HealthState,
-    HostedChatMessage, HostedDocumentType, HostedFileEntry, HostedFileKind, HostedFileReference,
-    HostedFileRevision, HostedFileState, HostedPdfAnnotations, HostedPresenceEntry,
-    HostedReferenceImpact, HostedRevisionContent, HostedSearchResult, HostedSnapshot,
-    HostedStructuralOperationPreview, HostedStructuralOperationResult,
+    capabilities_for_role, AdminBackupArtifactVerification, AdminBackupCommandResult,
+    AdminBackupOverview, AdminBackupSummary, AdminBackupVerification, AdminOverview, ApiError,
+    AuditEvent, BootstrapStatus, BrowserSession, Capability, CreatedInvitation, DataResponse,
+    ErrorCode, ErrorResponse, HealthState, HostedChatMessage, HostedDocumentType, HostedFileEntry,
+    HostedFileKind, HostedFileReference, HostedFileRevision, HostedFileState, HostedPdfAnnotations,
+    HostedPresenceEntry, HostedReferenceImpact, HostedRevisionContent, HostedSearchResult,
+    HostedSnapshot, HostedStructuralOperationPreview, HostedStructuralOperationResult,
     HostedStructuralOperationType, HostedTextDocument, HostedVault, HostedVaultActivityEvent,
     HostedVaultAdminDetail, HostedVaultImportResult, HostedVaultManifest, HostedVaultManifestDelta,
     HostedVaultMember, HostedVaultRole, HostedVaultStatus, HostedVaultStorage, HostedVaultSummary,
@@ -31,11 +32,17 @@ use collab_protocol::{
 };
 use serde::Deserialize;
 use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
 use sqlx::{PgPool, Postgres, Row, Transaction};
 use std::{
     collections::{HashMap, HashSet},
+    fs,
     io::{Cursor, Read, Write},
+    path::{Path as FsPath, PathBuf},
+    process::Stdio,
+    time::Duration,
 };
+use tokio::{process::Command, time::timeout};
 use uuid::Uuid;
 
 #[derive(Debug, Deserialize)]
@@ -320,6 +327,12 @@ pub struct ManifestDeltaQuery {
 #[serde(rename_all = "camelCase")]
 pub struct ImportVaultZipRequest {
     pub archive_base64: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RestoreBackupRequest {
+    pub confirmation: String,
 }
 
 pub async fn bootstrap_status(
@@ -4175,6 +4188,139 @@ pub async fn overview(
     })))
 }
 
+pub async fn admin_backups(
+    State(state): State<AppState>,
+    Extension(request_id): Extension<String>,
+    headers: HeaderMap,
+) -> Result<Json<DataResponse<AdminBackupOverview>>, ApiFailure> {
+    require_admin(&state, &headers, &request_id).await?;
+    Ok(Json(DataResponse::new(load_backup_overview(&state))))
+}
+
+pub async fn admin_verify_backup(
+    State(state): State<AppState>,
+    Extension(request_id): Extension<String>,
+    headers: HeaderMap,
+    Path(backup_name): Path<String>,
+) -> Result<Json<DataResponse<AdminBackupVerification>>, ApiFailure> {
+    require_admin(&state, &headers, &request_id).await?;
+    let backup_dir = resolve_backup_dir(&state.config.backup_dir, &backup_name, &request_id)?;
+    Ok(Json(DataResponse::new(verify_backup(
+        &backup_name,
+        &backup_dir,
+        &request_id,
+    )?)))
+}
+
+pub async fn admin_run_backup(
+    State(state): State<AppState>,
+    Extension(request_id): Extension<String>,
+    headers: HeaderMap,
+) -> Result<Json<DataResponse<AdminBackupCommandResult>>, ApiFailure> {
+    let actor = require_admin_csrf(&state, &headers, &request_id).await?;
+    let Some(command) = state.config.backup_command.clone() else {
+        return Err(ApiFailure::validation(
+            "Backup execution is not configured on this server.",
+            request_id,
+        ));
+    };
+    let result = run_operator_command(
+        &command,
+        &state.config.backup_dir,
+        None,
+        Duration::from_secs(30 * 60),
+        &request_id,
+    )
+    .await;
+    let audit_result = if result.is_ok() { "success" } else { "failure" };
+    record_audit(
+        &state.database,
+        Some(&actor.user.id),
+        "admin.backup.run",
+        Some("backup"),
+        None,
+        audit_result,
+        &request_id,
+        json!({"configured": true}),
+    )
+    .await?;
+    Ok(Json(DataResponse::new(result?)))
+}
+
+pub async fn admin_restore_backup(
+    State(state): State<AppState>,
+    Extension(request_id): Extension<String>,
+    headers: HeaderMap,
+    Path(backup_name): Path<String>,
+    Json(payload): Json<RestoreBackupRequest>,
+) -> Result<Json<DataResponse<AdminBackupCommandResult>>, ApiFailure> {
+    let actor = require_admin_csrf(&state, &headers, &request_id).await?;
+    if payload.confirmation != "restore" {
+        return Err(ApiFailure::validation(
+            "Type restore to confirm this destructive operation.",
+            request_id,
+        ));
+    }
+    let Some(command) = state.config.restore_command.clone() else {
+        return Err(ApiFailure::validation(
+            "Backup restore is not configured on this server.",
+            request_id,
+        ));
+    };
+    let backup_dir = resolve_backup_dir(&state.config.backup_dir, &backup_name, &request_id)?;
+    let verification = verify_backup(&backup_name, &backup_dir, &request_id)?;
+    if !verification.ok {
+        return Err(ApiFailure::validation(
+            "Backup checksum verification failed; refusing restore.",
+            request_id,
+        ));
+    }
+    let result = run_operator_command(
+        &command,
+        &state.config.backup_dir,
+        Some(&backup_name),
+        Duration::from_secs(60 * 60),
+        &request_id,
+    )
+    .await;
+    let audit_result = if result.is_ok() { "success" } else { "failure" };
+    record_audit(
+        &state.database,
+        Some(&actor.user.id),
+        "admin.backup.restore",
+        Some("backup"),
+        Some(&backup_name),
+        audit_result,
+        &request_id,
+        json!({"configured": true}),
+    )
+    .await?;
+    Ok(Json(DataResponse::new(result?)))
+}
+
+pub async fn admin_delete_backup(
+    State(state): State<AppState>,
+    Extension(request_id): Extension<String>,
+    headers: HeaderMap,
+    Path(backup_name): Path<String>,
+) -> Result<StatusCode, ApiFailure> {
+    let actor = require_admin_csrf(&state, &headers, &request_id).await?;
+    let backup_dir = resolve_backup_dir(&state.config.backup_dir, &backup_name, &request_id)?;
+    fs::remove_dir_all(&backup_dir).map_err(|_| ApiFailure::server(request_id.clone()))?;
+    record_audit(
+        &state.database,
+        Some(&actor.user.id),
+        "admin.backup.delete",
+        Some("backup"),
+        Some(&backup_name),
+        "success",
+        &request_id,
+        json!({}),
+    )
+    .await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
 pub async fn list_users(
     State(state): State<AppState>,
     Extension(request_id): Extension<String>,
@@ -5793,6 +5939,227 @@ async fn load_admin_vault_detail(
         // Populated by the caller from the capability resolver.
         capabilities: Vec::new(),
     })
+}
+
+fn load_backup_overview(state: &AppState) -> AdminBackupOverview {
+    let mut backups = Vec::new();
+    if let Ok(entries) = fs::read_dir(&state.config.backup_dir) {
+        for entry in entries.flatten() {
+            let Ok(file_type) = entry.file_type() else {
+                continue;
+            };
+            if !file_type.is_dir() {
+                continue;
+            }
+            let name = entry.file_name().to_string_lossy().to_string();
+            if !is_safe_backup_name(&name) {
+                continue;
+            }
+            backups.push(backup_summary(&name, &entry.path()));
+        }
+    }
+    backups.sort_by(|left, right| right.name.cmp(&left.name));
+    AdminBackupOverview {
+        backup_dir: state.config.backup_dir.display().to_string(),
+        backup_command_configured: state.config.backup_command.is_some(),
+        restore_command_configured: state.config.restore_command.is_some(),
+        backups,
+    }
+}
+
+fn backup_summary(name: &str, dir: &FsPath) -> AdminBackupSummary {
+    AdminBackupSummary {
+        name: name.to_owned(),
+        created_at: read_backup_created_at(dir)
+            .or_else(|| dir.metadata().ok()?.modified().ok().map(system_time_to_rfc3339)),
+        size_bytes: directory_size(dir),
+        has_postgres_dump: dir.join("postgres.dump").is_file(),
+        has_blob_archive: dir.join("blobs.tar.gz").is_file(),
+        has_manifest: dir.join("manifest.txt").is_file(),
+        has_config: dir.join("config.env").is_file(),
+        has_checksums: dir.join("checksums.sha256").is_file(),
+    }
+}
+
+fn read_backup_created_at(dir: &FsPath) -> Option<String> {
+    let manifest = fs::read_to_string(dir.join("manifest.txt")).ok()?;
+    manifest.lines().find_map(|line| {
+        line.strip_prefix("created_at=")
+            .filter(|value| !value.trim().is_empty())
+            .map(|value| value.trim().to_owned())
+    })
+}
+
+fn directory_size(path: &FsPath) -> u64 {
+    let Ok(metadata) = path.metadata() else {
+        return 0;
+    };
+    if metadata.is_file() {
+        return metadata.len();
+    }
+    let Ok(entries) = fs::read_dir(path) else {
+        return 0;
+    };
+    entries
+        .flatten()
+        .map(|entry| directory_size(&entry.path()))
+        .sum()
+}
+
+fn system_time_to_rfc3339(value: std::time::SystemTime) -> String {
+    chrono::DateTime::<chrono::Utc>::from(value).to_rfc3339()
+}
+
+fn resolve_backup_dir(
+    root: &FsPath,
+    name: &str,
+    request_id: &str,
+) -> Result<PathBuf, ApiFailure> {
+    if !is_safe_backup_name(name) {
+        return Err(ApiFailure::validation(
+            "Backup name is not valid.",
+            request_id.to_owned(),
+        ));
+    }
+    let dir = root.join(name);
+    if !dir.is_dir() {
+        return Err(ApiFailure::not_found(request_id.to_owned()));
+    }
+    Ok(dir)
+}
+
+fn is_safe_backup_name(name: &str) -> bool {
+    name.starts_with("collab-backup-")
+        && name.len() <= 96
+        && name
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'))
+}
+
+fn verify_backup(
+    name: &str,
+    dir: &FsPath,
+    request_id: &str,
+) -> Result<AdminBackupVerification, ApiFailure> {
+    let checksum_path = dir.join("checksums.sha256");
+    let checksums = fs::read_to_string(&checksum_path)
+        .map_err(|_| ApiFailure::validation("Backup checksums are missing.", request_id.to_owned()))?;
+    let mut artifacts = Vec::new();
+    for line in checksums.lines().filter(|line| !line.trim().is_empty()) {
+        let Some((expected, path)) = parse_checksum_line(line) else {
+            artifacts.push(AdminBackupArtifactVerification {
+                path: line.to_owned(),
+                expected_sha256: String::new(),
+                actual_sha256: None,
+                ok: false,
+                error: Some("Malformed checksum line.".into()),
+            });
+            continue;
+        };
+        let artifact_path = dir.join(&path);
+        if path.contains('/') || path.contains('\\') || path == "." || path.contains("..") {
+            artifacts.push(AdminBackupArtifactVerification {
+                path,
+                expected_sha256: expected,
+                actual_sha256: None,
+                ok: false,
+                error: Some("Unsafe artifact path.".into()),
+            });
+            continue;
+        }
+        match sha256_file(&artifact_path) {
+            Ok(actual) => {
+                let ok = actual.eq_ignore_ascii_case(&expected);
+                artifacts.push(AdminBackupArtifactVerification {
+                    path,
+                    expected_sha256: expected,
+                    actual_sha256: Some(actual),
+                    ok,
+                    error: (!ok).then(|| "Checksum mismatch.".into()),
+                });
+            }
+            Err(_) => artifacts.push(AdminBackupArtifactVerification {
+                path,
+                expected_sha256: expected,
+                actual_sha256: None,
+                ok: false,
+                error: Some("Artifact could not be read.".into()),
+            }),
+        }
+    }
+    let ok = !artifacts.is_empty() && artifacts.iter().all(|artifact| artifact.ok);
+    Ok(AdminBackupVerification {
+        name: name.to_owned(),
+        ok,
+        checked_at: chrono::Utc::now().to_rfc3339(),
+        artifacts,
+    })
+}
+
+fn parse_checksum_line(line: &str) -> Option<(String, String)> {
+    let trimmed = line.trim();
+    let (expected, rest) = trimmed.split_once(char::is_whitespace)?;
+    if expected.len() != 64 || !expected.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return None;
+    }
+    let path = rest.trim().trim_start_matches('*').trim();
+    if path.is_empty() {
+        return None;
+    }
+    Some((expected.to_ascii_lowercase(), path.to_owned()))
+}
+
+fn sha256_file(path: &FsPath) -> std::io::Result<String> {
+    let bytes = fs::read(path)?;
+    let digest = Sha256::digest(&bytes);
+    Ok(format!("{digest:x}"))
+}
+
+async fn run_operator_command(
+    command: &str,
+    backup_dir: &FsPath,
+    backup_name: Option<&str>,
+    max_duration: Duration,
+    request_id: &str,
+) -> Result<AdminBackupCommandResult, ApiFailure> {
+    let mut process = Command::new("/bin/sh");
+    process
+        .arg("-c")
+        .arg(command)
+        .env("COLLAB_BACKUP_DIR", backup_dir)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    if let Some(backup_name) = backup_name {
+        process.env("COLLAB_RESTORE_BACKUP", backup_name);
+    }
+    let output = timeout(max_duration, process.output())
+        .await
+        .map_err(|_| ApiFailure::validation("The backup command timed out.", request_id.to_owned()))?
+        .map_err(|_| ApiFailure::server(request_id.to_owned()))?;
+    let combined = truncate_command_output(&format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    ));
+    if !output.status.success() {
+        return Err(ApiFailure::validation(
+            "The backup command failed.",
+            request_id.to_owned(),
+        ));
+    }
+    Ok(AdminBackupCommandResult {
+        status: "ok".into(),
+        message: "Command completed successfully.".into(),
+        output: (!combined.trim().is_empty()).then_some(combined),
+    })
+}
+
+fn truncate_command_output(value: &str) -> String {
+    const MAX_OUTPUT: usize = 8 * 1024;
+    if value.len() <= MAX_OUTPUT {
+        return value.to_owned();
+    }
+    format!("{}…", &value[..MAX_OUTPUT])
 }
 
 async fn authenticate_password(
@@ -8692,8 +9059,8 @@ impl IntoResponse for ApiFailure {
 #[cfg(test)]
 mod tests {
     use super::{
-        cookie, indexed_note_tags, indexed_note_title, parse_vault_zip, search_excerpt, Capability,
-        STANDARD,
+        cookie, indexed_note_tags, indexed_note_title, is_safe_backup_name, parse_vault_zip,
+        search_excerpt, sha256_file, verify_backup, Capability, STANDARD,
     };
     use crate::auth::hash_secret;
     use crate::{
@@ -8727,6 +9094,38 @@ mod tests {
         );
         assert_eq!(cookie(&headers, "collab_session"), Some("secret"));
         assert_eq!(cookie(&headers, "session"), None);
+    }
+
+    #[test]
+    fn backup_verifier_checks_artifact_hashes_and_rejects_unsafe_names() {
+        assert!(is_safe_backup_name("collab-backup-20260618T111501Z"));
+        assert!(!is_safe_backup_name("../collab-backup-20260618T111501Z"));
+        let temp = tempfile::tempdir().unwrap();
+        let backup_dir = temp.path().join("collab-backup-20260618T111501Z");
+        std::fs::create_dir(&backup_dir).unwrap();
+        std::fs::write(backup_dir.join("postgres.dump"), b"database").unwrap();
+        std::fs::write(backup_dir.join("blobs.tar.gz"), b"blobs").unwrap();
+        std::fs::write(backup_dir.join("manifest.txt"), b"created_at=20260618T111501Z\n").unwrap();
+        let pg_hash = sha256_file(&backup_dir.join("postgres.dump")).unwrap();
+        let blob_hash = sha256_file(&backup_dir.join("blobs.tar.gz")).unwrap();
+        let manifest_hash = sha256_file(&backup_dir.join("manifest.txt")).unwrap();
+        std::fs::write(
+            backup_dir.join("checksums.sha256"),
+            format!(
+                "{pg_hash}  postgres.dump\n{blob_hash}  blobs.tar.gz\n{manifest_hash}  manifest.txt\n"
+            ),
+        )
+        .unwrap();
+
+        let ok = verify_backup("collab-backup-20260618T111501Z", &backup_dir, "request").unwrap();
+        assert!(ok.ok);
+        assert_eq!(ok.artifacts.len(), 3);
+
+        std::fs::write(backup_dir.join("blobs.tar.gz"), b"changed").unwrap();
+        let failed =
+            verify_backup("collab-backup-20260618T111501Z", &backup_dir, "request").unwrap();
+        assert!(!failed.ok);
+        assert!(failed.artifacts.iter().any(|artifact| artifact.path == "blobs.tar.gz" && !artifact.ok));
     }
 
     #[test]

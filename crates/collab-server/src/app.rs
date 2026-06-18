@@ -185,6 +185,22 @@ pub fn build_router(state: AppState) -> Router {
                 .delete(api::clear_presence),
         )
         .route("/api/v1/admin/overview", get(api::overview))
+        .route(
+            "/api/v1/admin/backups",
+            get(api::admin_backups).post(api::admin_run_backup),
+        )
+        .route(
+            "/api/v1/admin/backups/{backup_name}/verify",
+            post(api::admin_verify_backup),
+        )
+        .route(
+            "/api/v1/admin/backups/{backup_name}/restore",
+            post(api::admin_restore_backup),
+        )
+        .route(
+            "/api/v1/admin/backups/{backup_name}",
+            axum::routing::delete(api::admin_delete_backup),
+        )
         .route("/api/v1/admin/users", get(api::list_users).post(api::create_user))
         .route(
             "/api/v1/admin/users/{user_id}",

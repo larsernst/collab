@@ -29,7 +29,7 @@ RUN pnpm install --frozen-lockfile
 COPY apps/admin-web ./apps/admin-web
 RUN pnpm admin:build
 
-FROM debian:bookworm-slim AS runtime
+FROM postgres:17-bookworm AS runtime
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates curl \

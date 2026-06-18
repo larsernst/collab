@@ -14,7 +14,6 @@ services:
       retries: 20
     volumes:
       - postgres-data:/var/lib/postgresql/data
-      - backups:/backups
     restart: unless-stopped
 
   collab-server:
@@ -24,6 +23,10 @@ services:
     environment:
       COLLAB_HOST: 0.0.0.0
       COLLAB_PORT: 8787
+      POSTGRES_DB: ${POSTGRES_DB:-collab}
+      POSTGRES_USER: ${POSTGRES_USER:-collab}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-collab-development-only}
+      POSTGRES_HOST: postgres
       COLLAB_DATABASE_URL: postgres://${POSTGRES_USER:-collab}:${POSTGRES_PASSWORD:-collab-development-only}@postgres:5432/${POSTGRES_DB:-collab}
       COLLAB_BLOB_DIR: /data/blobs
       COLLAB_ADMIN_WEB_DIR: /app/admin-web
@@ -34,6 +37,9 @@ services:
       COLLAB_MAX_FILE_BYTES: ${COLLAB_MAX_FILE_BYTES:-268435456}
       COLLAB_MAX_IMPORT_BYTES: ${COLLAB_MAX_IMPORT_BYTES:-536870912}
       COLLAB_MAX_IMPORT_EXPANDED_BYTES: ${COLLAB_MAX_IMPORT_EXPANDED_BYTES:-2147483648}
+      COLLAB_BACKUP_DIR: /backups
+      COLLAB_BACKUP_COMMAND: ${COLLAB_BACKUP_COMMAND-/usr/local/bin/collab-backup}
+      COLLAB_RESTORE_COMMAND: ${COLLAB_RESTORE_COMMAND-/usr/local/bin/collab-admin-restore}
       COLLAB_LOG_FORMAT: ${COLLAB_LOG_FORMAT:-json}
       COLLAB_LOG: ${COLLAB_LOG:-collab_server=info,tower_http=info}
     depends_on:
@@ -47,6 +53,9 @@ services:
     volumes:
       - blob-data:/data/blobs
       - backups:/backups
+      - ./scripts/server-backup-container.sh:/usr/local/bin/collab-backup:ro
+      - ./scripts/server-restore-container.sh:/usr/local/bin/collab-restore:ro
+      - ./scripts/server-admin-restore-container.sh:/usr/local/bin/collab-admin-restore:ro
     restart: unless-stopped
 
   gateway:
@@ -61,6 +70,62 @@ services:
       - caddy-data:/data
       - caddy-config:/config
     restart: unless-stopped
+
+  backup:
+    image: postgres:17-alpine
+    profiles: ["backup"]
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-collab}
+      POSTGRES_USER: ${POSTGRES_USER:-collab}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-collab-development-only}
+      POSTGRES_HOST: postgres
+      COLLAB_BACKUP_INTERVAL_SECONDS: ${COLLAB_BACKUP_INTERVAL_SECONDS:-86400}
+      COLLAB_BACKUP_RETENTION_DAYS: ${COLLAB_BACKUP_RETENTION_DAYS:-14}
+      COLLAB_HTTP_BIND: ${COLLAB_HTTP_BIND:-0.0.0.0}
+      COLLAB_HTTP_PORT: ${COLLAB_HTTP_PORT:-8788}
+      COLLAB_BROWSER_SECURE_COOKIES: ${COLLAB_BROWSER_SECURE_COOKIES:-false}
+      COLLAB_NATIVE_ACCESS_TTL_MINUTES: ${COLLAB_NATIVE_ACCESS_TTL_MINUTES:-15}
+      COLLAB_NATIVE_REFRESH_TTL_DAYS: ${COLLAB_NATIVE_REFRESH_TTL_DAYS:-30}
+      COLLAB_MAX_FILE_BYTES: ${COLLAB_MAX_FILE_BYTES:-268435456}
+      COLLAB_MAX_IMPORT_BYTES: ${COLLAB_MAX_IMPORT_BYTES:-536870912}
+      COLLAB_MAX_IMPORT_EXPANDED_BYTES: ${COLLAB_MAX_IMPORT_EXPANDED_BYTES:-2147483648}
+      COLLAB_LOG_FORMAT: ${COLLAB_LOG_FORMAT:-json}
+      COLLAB_LOG: ${COLLAB_LOG:-collab_server=info,tower_http=info}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - backups:/backups
+      - blob-data:/data/blobs:ro
+      - ./scripts/server-backup-container.sh:/usr/local/bin/collab-backup:ro
+    command:
+      - /bin/sh
+      - -c
+      - |
+        set -eu
+        while true; do
+          /usr/local/bin/collab-backup
+          sleep "$${COLLAB_BACKUP_INTERVAL_SECONDS}"
+        done
+    restart: unless-stopped
+
+  restore:
+    image: postgres:17-alpine
+    profiles: ["restore"]
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-collab}
+      POSTGRES_USER: ${POSTGRES_USER:-collab}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-collab-development-only}
+      POSTGRES_HOST: postgres
+      COLLAB_BLOB_DIR: /data/blobs
+      COLLAB_RESTORE_CONFIRM: ${COLLAB_RESTORE_CONFIRM:-}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - backups:/backups
+      - blob-data:/data/blobs
+      - ./scripts/server-restore-container.sh:/usr/local/bin/collab-restore:ro
 
 volumes:
   postgres-data:
