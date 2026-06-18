@@ -59,6 +59,15 @@ export interface LiveDocumentHandle {
   readonly awareness: Awareness;
   getStatus(): LiveStatus;
   onStatus(cb: (status: LiveStatus) => void): () => void;
+  /**
+   * Discard the offline replica's persisted CRDT state for this document and
+   * stop persisting it: the current (in-memory) state is not flushed on
+   * {@link destroy}, and the cached state is cleared so the next session reseeds
+   * from the server. Used when a seeded structured-document session is rejected
+   * as degenerate so a corrupt cache cannot persist. No-op without offline
+   * replication.
+   */
+  discardOfflineState(): void;
   destroy(): void;
 }
 
@@ -130,6 +139,9 @@ export class WebSocketYProvider {
   private initialSyncPending = false;
   private subscribedCallback: ((ok: boolean) => void) | undefined;
   private persistTimer: ReturnType<typeof setTimeout> | null = null;
+  // When set, the offline replica state for this document has been discarded as
+  // degenerate: stop persisting and do not flush on destroy.
+  private offlineDiscarded = false;
 
   /**
    * @param offlineReplica when true, the merged CRDT state is persisted to the
@@ -172,9 +184,28 @@ export class WebSocketYProvider {
   private handlePersistUpdate = (_update: Uint8Array, origin: unknown) => {
     // Seeded state came from the cache; everything else (local edits and merged
     // remote updates) is persisted so the replica reflects the converged state.
-    if (origin === SEED_ORIGIN) return;
+    if (origin === SEED_ORIGIN || this.offlineDiscarded) return;
     this.schedulePersist();
   };
+
+  /**
+   * Discard the offline replica's persisted CRDT state and stop persisting. Used
+   * when a structured-document seed is rejected as degenerate so the corrupt
+   * cache cannot persist and re-poison the next session.
+   */
+  discardOfflineState() {
+    this.offlineDiscarded = true;
+    if (this.persistTimer) {
+      clearTimeout(this.persistTimer);
+      this.persistTimer = null;
+    }
+    if (!this.offlineReplica) return;
+    void tauriCommands
+      .replicaClearCrdtState(this.target.serverUrl, this.target.vaultId, this.target.fileId)
+      .catch(() => {
+        // Best-effort: a clear failure leaves the next session to re-evaluate.
+      });
+  }
 
   private schedulePersist() {
     if (this.persistTimer) clearTimeout(this.persistTimer);
@@ -206,6 +237,7 @@ export class WebSocketYProvider {
       awareness: this.awareness,
       getStatus: () => this.getStatus(),
       onStatus: (cb) => this.onStatus(cb),
+      discardOfflineState: () => this.discardOfflineState(),
       destroy: () => this.destroy(),
     };
   }
@@ -460,13 +492,14 @@ export class WebSocketYProvider {
     }
     if (this.offlineReplica) {
       // Flush the latest merged state before tearing down so the next session
-      // (or app launch) seeds from the most recent edit.
+      // (or app launch) seeds from the most recent edit — unless the offline
+      // state was discarded as degenerate, in which case it must not be re-saved.
       if (this.persistTimer) {
         clearTimeout(this.persistTimer);
         this.persistTimer = null;
       }
       this.doc.off('update', this.handlePersistUpdate);
-      void this.persistNow();
+      if (!this.offlineDiscarded) void this.persistNow();
     }
     this.doc.off('update', this.handleLocalUpdate);
     // Broadcast a final removal update when destruction is graceful. Unexpected
@@ -498,9 +531,10 @@ export interface ConnectLiveOptions {
   /**
    * Persist the merged CRDT state to the native offline replica and seed the
    * document from it before connecting, so edits survive across sessions and
-   * reconcile via the reconnect state-vector handshake. Enabled for notes; left
-   * off for structured (Kanban/canvas) documents whose hydration guards must
-   * not see replica-seeded state.
+   * reconcile via the reconnect state-vector handshake. Enabled for notes and
+   * for structured (Kanban/canvas) documents; the structured open guards reject
+   * a degenerate seed (empty or node-losing) and call `discardOfflineState()`
+   * so a corrupt cached state cannot persist.
    */
   offlineReplica?: boolean;
 }

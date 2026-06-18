@@ -15,6 +15,7 @@ const tauriCommandsMock = vi.hoisted(() => ({
   replicaReadManifest: vi.fn(),
   replicaReadSyncState: vi.fn(),
   replicaListPendingOperations: vi.fn(),
+  replicaCleanup: vi.fn().mockResolvedValue({ removedFiles: 0, freedBytes: 0, remainingBytes: 0 }),
 }));
 
 vi.mock('../lib/tauri', () => ({

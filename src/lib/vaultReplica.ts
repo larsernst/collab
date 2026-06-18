@@ -10,6 +10,32 @@
 import { tauriCommands } from './tauri';
 import type { HostedVaultMeta } from '../types/vault';
 
+/**
+ * Lightweight change notification for the replica's local state (pending-op
+ * queue, sync state, cached manifest). The sync UI subscribes so it can refresh
+ * immediately after an edit is queued, a replay runs, or a manual sync completes
+ * — without waiting for the background poll.
+ */
+type ReplicaMutationListener = () => void;
+const replicaMutationListeners = new Set<ReplicaMutationListener>();
+
+export function onReplicaMutated(listener: ReplicaMutationListener): () => void {
+  replicaMutationListeners.add(listener);
+  return () => {
+    replicaMutationListeners.delete(listener);
+  };
+}
+
+export function emitReplicaMutated(): void {
+  for (const listener of replicaMutationListeners) {
+    try {
+      listener();
+    } catch {
+      // A listener failure must never break a replica mutation.
+    }
+  }
+}
+
 export type SyncStatus = 'idle' | 'syncing' | 'offline' | 'error';
 
 export interface ReplicaSyncState {
@@ -56,6 +82,20 @@ export interface ReplicaIntegrityReport {
   ok: boolean;
   corruptFiles: string[];
 }
+
+export interface CacheCleanupReport {
+  removedFiles: number;
+  freedBytes: number;
+  remainingBytes: number;
+}
+
+/**
+ * Default byte budget for a single vault's cached document/asset/CRDT content.
+ * Cached content is re-fetchable from the server, so the cleanup pass evicts the
+ * least-recently-used entries above this budget while never touching content
+ * referenced by a pending (unsynced) operation.
+ */
+export const REPLICA_CACHE_BUDGET_BYTES = 512 * 1024 * 1024;
 
 /**
  * The server manifest shape persisted verbatim in the replica. Only the fields
@@ -157,6 +197,61 @@ export interface PendingOperationRecovery {
   recommendedAction: 'retry-after-refresh' | 'restore-manually' | 'reconnect-account' | 'discard-or-contact-admin';
 }
 
+/**
+ * Whether the connected user can still sync this hosted vault. `revoked` means
+ * the user's access was removed; `unavailable` means the vault no longer exists
+ * for them (deleted or archived) on the server. In either case the local replica
+ * (and any unsynced changes) is retained until the user explicitly removes it —
+ * access loss must never silently discard local data.
+ */
+export type VaultAccessState = 'ok' | 'revoked' | 'unavailable';
+
+/**
+ * Classify a server error encountered while syncing as a vault-access change, or
+ * `null` when it is an ordinary (connectivity/validation/conflict) error. A
+ * removed membership and a deleted vault both surface as `not_found`; archived
+ * vaults reject mutations with `vault_archived` — all map to a non-`ok` state.
+ */
+export function classifyVaultAccessError(error: unknown): Exclude<VaultAccessState, 'ok'> | null {
+  const lower = String(error instanceof Error ? error.message : error).toLowerCase();
+  if (
+    lower.includes('permission') ||
+    lower.includes('forbidden') ||
+    lower.includes('unauthorized') ||
+    lower.includes('vault_permission_denied')
+  ) {
+    return 'revoked';
+  }
+  if (
+    lower.includes('not found') ||
+    lower.includes('not_found') ||
+    lower.includes('resource_not_found') ||
+    lower.includes('archived') ||
+    lower.includes('pending deletion') ||
+    lower.includes('vault_archived') ||
+    lower.includes('vault_unavailable')
+  ) {
+    return 'unavailable';
+  }
+  return null;
+}
+
+/**
+ * Derive the vault-access state from recorded pending-operation failures (no
+ * network call). Replay records `permission_revoked` / `vault_unavailable` codes
+ * when the server rejects queued operations, so a reconnect that lost access is
+ * reflected without an extra probe.
+ */
+export function deriveVaultAccess(recoveries: PendingOperationRecovery[]): VaultAccessState {
+  if (recoveries.some((recovery) => recovery.failure.code === 'permission_revoked')) {
+    return 'revoked';
+  }
+  if (recoveries.some((recovery) => recovery.failure.code === 'vault_unavailable')) {
+    return 'unavailable';
+  }
+  return 'ok';
+}
+
 export function classifyPendingOperationFailure(error: unknown): PendingOperationFailure {
   const message = String(error instanceof Error ? error.message : error);
   const lower = message.toLowerCase();
@@ -193,6 +288,7 @@ export async function writeOptimisticReplicaManifest(
     manifest,
     offlineSyncState(manifest.sequence),
   );
+  emitReplicaMutated();
 }
 
 export async function enqueuePendingOperation(
@@ -210,6 +306,7 @@ export async function enqueuePendingOperation(
     status: 'pending',
   };
   await tauriCommands.replicaEnqueueOperation(vault.serverUrl, vault.hostedVaultId, operation);
+  emitReplicaMutated();
   return operation;
 }
 
@@ -235,10 +332,12 @@ export async function listPendingOperationRecoveries(
 
 export async function retryPendingOperation(vault: HostedVaultMeta, operationId: string): Promise<void> {
   await tauriCommands.replicaUpdateOperationStatus(vault.serverUrl, vault.hostedVaultId, operationId, 'pending');
+  emitReplicaMutated();
 }
 
 export async function discardPendingOperation(vault: HostedVaultMeta, operationId: string): Promise<void> {
   await tauriCommands.replicaRemoveOperation(vault.serverUrl, vault.hostedVaultId, operationId);
+  emitReplicaMutated();
 }
 
 function recoveryActionForFailure(
@@ -364,6 +463,7 @@ export async function replayPendingOperations(vault: HostedVaultMeta): Promise<v
     }
   }
   if (!stoppedForFailure) await seedReplicaFromManifest(vault);
+  emitReplicaMutated();
 }
 
 /**
@@ -371,6 +471,19 @@ export async function replayPendingOperations(vault: HostedVaultMeta): Promise<v
  * server manifest. Best-effort: callers should not let a failure here block
  * opening the vault.
  */
+/**
+ * Run a bounded cache-cleanup pass over the vault's replica, keeping cached
+ * document/asset/CRDT content within {@link REPLICA_CACHE_BUDGET_BYTES} and
+ * dropping orphaned/stray entries. Content referenced by pending operations is
+ * never evicted. Best-effort: a missing or unseeded replica is a no-op.
+ */
+export async function cleanupReplicaCache(
+  vault: HostedVaultMeta,
+  budgetBytes: number = REPLICA_CACHE_BUDGET_BYTES,
+): Promise<CacheCleanupReport> {
+  return tauriCommands.replicaCleanup(vault.serverUrl, vault.hostedVaultId, budgetBytes);
+}
+
 export async function seedReplicaFromManifest(vault: HostedVaultMeta): Promise<void> {
   const manifest = await tauriCommands.hostedVaultRequest<ReplicaManifest>(
     vault.serverUrl,
@@ -384,6 +497,7 @@ export async function seedReplicaFromManifest(vault: HostedVaultMeta): Promise<v
     manifest,
     initialSyncState(manifest.sequence),
   );
+  emitReplicaMutated();
 }
 
 export async function syncReplicaManifestDelta(vault: HostedVaultMeta): Promise<ReplicaManifest> {
@@ -430,5 +544,6 @@ export async function syncReplicaManifestDelta(vault: HostedVaultMeta): Promise<
     nextManifest,
     initialSyncState(delta.sequence),
   );
+  emitReplicaMutated();
   return nextManifest;
 }

@@ -5,8 +5,8 @@
 
 use super::app_config_dir;
 use crate::replica::{
-    PendingOpStatus, PendingOperation, ReplicaIntegrityReport, ReplicaStore, ReplicaSyncState,
-    Tombstone,
+    CacheCleanupReport, PendingOpStatus, PendingOperation, ReplicaIntegrityReport, ReplicaStore,
+    ReplicaSyncState, Tombstone,
 };
 use collab_protocol::HostedVaultManifest;
 
@@ -223,6 +223,18 @@ pub fn replica_read_crdt_state(
 }
 
 #[tauri::command]
+pub fn replica_clear_crdt_state(
+    server_url: String,
+    vault_id: String,
+    file_id: String,
+) -> Result<(), String> {
+    match ReplicaStore::open_existing(&app_config_dir()?, &server_url, &vault_id) {
+        Some(store) => store.clear_cached_crdt_state(&file_id),
+        None => Ok(()),
+    }
+}
+
+#[tauri::command]
 pub fn replica_verify(
     server_url: String,
     vault_id: String,
@@ -246,6 +258,22 @@ pub fn replica_rebuild(
         None => Ok(ReplicaIntegrityReport {
             ok: true,
             corrupt_files: Vec::new(),
+        }),
+    }
+}
+
+#[tauri::command]
+pub fn replica_cleanup(
+    server_url: String,
+    vault_id: String,
+    budget_bytes: u64,
+) -> Result<CacheCleanupReport, String> {
+    match ReplicaStore::open_existing(&app_config_dir()?, &server_url, &vault_id) {
+        Some(store) => store.cleanup(budget_bytes),
+        None => Ok(CacheCleanupReport {
+            removed_files: 0,
+            freed_bytes: 0,
+            remaining_bytes: 0,
         }),
     }
 }

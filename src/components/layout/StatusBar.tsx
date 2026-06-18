@@ -5,6 +5,7 @@ import { useUiStore } from '../../store/uiStore';
 import { useUpdateStore } from '../../store/updateStore';
 import PresenceBar from '../collaboration/PresenceBar';
 import HostedConnectionStatus from './HostedConnectionStatus';
+import SyncStatusIndicator from './SyncStatusIndicator';
 import { Progress } from '../ui/progress';
 import { BookOpen, Hash, Download, RefreshCw } from 'lucide-react';
 import { cn } from '../../lib/utils';
@@ -86,6 +87,7 @@ export default function StatusBar() {
             {activeMeta.wordCount.toLocaleString()} words
           </span>
         )}
+        <SyncStatusIndicator />
         <HostedConnectionStatus />
         <PresenceBar />
       </div>

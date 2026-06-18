@@ -3,12 +3,14 @@ import type { HostedVaultMeta } from '../types/vault';
 import { tauriCommands } from './tauri';
 import {
   classifyPendingOperationFailure,
+  cleanupReplicaCache,
   discardPendingOperation,
   enqueuePendingOperation,
   initialSyncState,
   isLikelyConnectivityError,
   listPendingOperationRecoveries,
   replayPendingOperations,
+  REPLICA_CACHE_BUDGET_BYTES,
   retryPendingOperation,
   seedReplicaFromManifest,
   syncReplicaManifestDelta,
@@ -26,6 +28,7 @@ vi.mock('./tauri', () => ({
     replicaRecordOperationFailure: vi.fn().mockResolvedValue(undefined),
     replicaRemoveOperation: vi.fn().mockResolvedValue(undefined),
     replicaReadCachedAsset: vi.fn(),
+    replicaCleanup: vi.fn().mockResolvedValue({ removedFiles: 2, freedBytes: 10, remainingBytes: 5 }),
   },
 }));
 
@@ -51,6 +54,25 @@ describe('vaultReplica', () => {
     expect(state.manifestSequence).toBe(12);
     expect(state.status).toBe('idle');
     expect(state.lastSyncedAt).not.toBeNull();
+  });
+
+  it('runs a bounded cache cleanup pass with the default budget', async () => {
+    const report = await cleanupReplicaCache(hostedVault);
+    expect(tauriCommands.replicaCleanup).toHaveBeenCalledWith(
+      'https://collab.example.test',
+      'hosted-vault',
+      REPLICA_CACHE_BUDGET_BYTES,
+    );
+    expect(report.removedFiles).toBe(2);
+  });
+
+  it('forwards an explicit cleanup budget', async () => {
+    await cleanupReplicaCache(hostedVault, 1024);
+    expect(tauriCommands.replicaCleanup).toHaveBeenCalledWith(
+      'https://collab.example.test',
+      'hosted-vault',
+      1024,
+    );
   });
 
   it('detects connectivity-shaped errors without swallowing validation failures', () => {

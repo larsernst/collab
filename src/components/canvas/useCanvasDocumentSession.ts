@@ -298,7 +298,10 @@ export function useCanvasDocumentSession({
             // A live room must not replace the current canonical revision with a
             // suspiciously sparse state. This recovers rooms damaged by the
             // early structured-live startup/bigint regressions without
-            // automatically writing or guessing at the missing content.
+            // automatically writing or guessing at the missing content. Discard
+            // the offline replica seed too so a degenerate cached state cannot
+            // persist and re-trigger this on the next open.
+            session.discardOfflineState();
             session.destroy();
             opened = null;
             return;
@@ -308,7 +311,9 @@ export function useCanvasDocumentSession({
           // The server owns seeding from the current REST revision. An empty
           // root means it could not provide a valid live canvas; keep the REST
           // document visible instead of seeding from potentially stale React
-          // state (which may still be the initial empty canvas).
+          // state (which may still be the initial empty canvas). Discard the
+          // (empty) offline seed so it is not persisted back.
+          session.discardOfflineState();
           session.destroy();
           opened = null;
           return;

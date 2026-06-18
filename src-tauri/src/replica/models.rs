@@ -128,3 +128,15 @@ pub struct ReplicaIntegrityReport {
     /// Tracked JSON files whose contents no longer match their recorded checksum.
     pub corrupt_files: Vec<String>,
 }
+
+/// The result of a bounded cache-cleanup pass over a replica's cached content.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct CacheCleanupReport {
+    /// Number of cached document/asset/CRDT files removed.
+    pub removed_files: u64,
+    /// Total bytes reclaimed by the cleanup pass.
+    pub freed_bytes: u64,
+    /// Total cached content bytes remaining after cleanup.
+    pub remaining_bytes: u64,
+}

@@ -275,7 +275,8 @@ export default function KanbanPage({ relativePath }: { relativePath: string | nu
         } else {
           // The server owns seeding from the current REST revision. Do not seed
           // an empty live root from React state that may still be the initial
-          // blank board.
+          // blank board. Discard the (empty) offline seed so it is not persisted.
+          session.discardOfflineState();
           session.destroy();
           opened = null;
           return;

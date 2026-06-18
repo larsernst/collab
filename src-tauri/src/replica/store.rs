@@ -7,8 +7,8 @@
 //! recorded in `integrity.json`.
 
 use super::models::{
-    PendingOpStatus, PendingOperation, ReplicaIntegrityReport, ReplicaMeta, ReplicaSyncState,
-    Tombstone, REPLICA_SCHEMA_VERSION,
+    CacheCleanupReport, PendingOpStatus, PendingOperation, ReplicaIntegrityReport, ReplicaMeta,
+    ReplicaSyncState, Tombstone, REPLICA_SCHEMA_VERSION,
 };
 use collab_protocol::HostedVaultManifest;
 use serde::de::DeserializeOwned;
@@ -69,6 +69,15 @@ fn now_iso() -> String {
 /// A managed on-disk replica of a single hosted vault.
 pub struct ReplicaStore {
     root: PathBuf,
+}
+
+/// A single cached-content file considered during bounded cache cleanup.
+struct CacheEntry {
+    path: PathBuf,
+    id: String,
+    size: u64,
+    modified: std::time::SystemTime,
+    protected: bool,
 }
 
 impl ReplicaStore {
@@ -301,6 +310,19 @@ impl ReplicaStore {
         }
     }
 
+    /// Drop the cached CRDT state for a file so the next live session reseeds it
+    /// from the server. Used when a structured-document seed is rejected as
+    /// degenerate (e.g. it would lose nodes), so a corrupt cache cannot persist.
+    /// A missing file is treated as success.
+    pub fn clear_cached_crdt_state(&self, file_id: &str) -> Result<(), String> {
+        let path = self.crdt_path(file_id)?;
+        match std::fs::remove_file(&path) {
+            Ok(()) => Ok(()),
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(err) => Err(err.to_string()),
+        }
+    }
+
     fn crdt_path(&self, file_id: &str) -> Result<PathBuf, String> {
         Ok(self
             .root
@@ -349,6 +371,170 @@ impl ReplicaStore {
         }
         self.write_integrity(&integrity)?;
         self.verify()
+    }
+
+    // ---- bounded cache cleanup -----------------------------------------
+
+    /// Evict cached document/asset/CRDT content to keep the replica bounded.
+    ///
+    /// Two passes run in order, and both protect any file referenced by a pending
+    /// operation (whose cached bytes are the only local copy of unsynced data):
+    ///
+    /// 1. **Orphan eviction** drops cached content whose file id is neither active
+    ///    in the cached manifest nor protected (e.g. trashed/removed files).
+    /// 2. **Budget eviction** removes the least-recently-modified non-protected
+    ///    entries until the remaining cached bytes fit within `budget_bytes`.
+    ///
+    /// Stray atomic-write temp files are always removed. Cached content is
+    /// re-fetchable from the server, so eviction is safe; protected (unsynced)
+    /// content is never removed even if that leaves the cache above budget.
+    pub fn cleanup(&self, budget_bytes: u64) -> Result<CacheCleanupReport, String> {
+        let mut removed_files = 0u64;
+        let mut freed_bytes = 0u64;
+
+        // Always sweep stray `*.tmp` files left behind by an interrupted atomic
+        // write before accounting for the real cache.
+        for (path, size) in self.collect_stray_tmp_files()? {
+            if std::fs::remove_file(&path).is_ok() {
+                removed_files += 1;
+                freed_bytes += size;
+            }
+        }
+
+        let protected = self.protected_file_ids()?;
+        let active = match self.read_manifest()? {
+            Some(manifest) => manifest
+                .files
+                .iter()
+                .filter(|file| file.state == collab_protocol::HostedFileState::Active)
+                .map(|file| file.id.clone())
+                .collect::<std::collections::HashSet<_>>(),
+            None => std::collections::HashSet::new(),
+        };
+
+        let mut entries = self.collect_cache_entries(&protected)?;
+
+        // Orphan pass: keep protected and active entries; remove the rest.
+        entries.retain(|entry| {
+            if entry.protected || active.contains(&entry.id) {
+                return true;
+            }
+            if std::fs::remove_file(&entry.path).is_ok() {
+                removed_files += 1;
+                freed_bytes += entry.size;
+            }
+            false
+        });
+
+        // Budget pass: evict the oldest non-protected entries until under budget.
+        let mut remaining_bytes: u64 = entries.iter().map(|entry| entry.size).sum();
+        if remaining_bytes > budget_bytes {
+            let mut evictable = entries
+                .iter()
+                .filter(|entry| !entry.protected)
+                .collect::<Vec<_>>();
+            evictable.sort_by_key(|entry| entry.modified);
+            for entry in evictable {
+                if remaining_bytes <= budget_bytes {
+                    break;
+                }
+                if std::fs::remove_file(&entry.path).is_ok() {
+                    removed_files += 1;
+                    freed_bytes += entry.size;
+                    remaining_bytes = remaining_bytes.saturating_sub(entry.size);
+                }
+            }
+        }
+
+        Ok(CacheCleanupReport {
+            removed_files,
+            freed_bytes,
+            remaining_bytes,
+        })
+    }
+
+    /// File ids whose cached content holds the only local copy of unsynced data
+    /// (anything a pending operation references) and must never be evicted.
+    fn protected_file_ids(&self) -> Result<std::collections::HashSet<String>, String> {
+        let mut ids = std::collections::HashSet::new();
+        for op in self.list_pending_operations()? {
+            if let Some(id) = op.file_id {
+                ids.insert(id);
+            }
+            if let Some(object) = op.payload.as_object() {
+                for key in ["tempFileId", "assetCacheId", "targetFileId"] {
+                    if let Some(value) = object.get(key).and_then(|value| value.as_str()) {
+                        ids.insert(value.to_string());
+                    }
+                }
+            }
+        }
+        Ok(ids)
+    }
+
+    /// Enumerate the cached content files across the document/asset/CRDT dirs.
+    fn collect_cache_entries(
+        &self,
+        protected: &std::collections::HashSet<String>,
+    ) -> Result<Vec<CacheEntry>, String> {
+        let mut entries = Vec::new();
+        for (dir, strip_bin) in [
+            (DOCUMENTS_DIR, false),
+            (ASSETS_DIR, false),
+            (CRDT_DIR, true),
+        ] {
+            let read = match std::fs::read_dir(self.root.join(dir)) {
+                Ok(read) => read,
+                Err(err) if err.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(err) => return Err(err.to_string()),
+            };
+            for entry in read {
+                let entry = entry.map_err(|e| e.to_string())?;
+                let metadata = entry.metadata().map_err(|e| e.to_string())?;
+                if !metadata.is_file() {
+                    continue;
+                }
+                let name = entry.file_name().to_string_lossy().to_string();
+                if name.ends_with(".tmp") {
+                    continue; // handled by the stray-tmp sweep
+                }
+                let id = if strip_bin {
+                    name.strip_suffix(".bin").unwrap_or(&name).to_string()
+                } else {
+                    name
+                };
+                entries.push(CacheEntry {
+                    protected: protected.contains(&id),
+                    id,
+                    path: entry.path(),
+                    size: metadata.len(),
+                    modified: metadata
+                        .modified()
+                        .unwrap_or(std::time::SystemTime::UNIX_EPOCH),
+                });
+            }
+        }
+        Ok(entries)
+    }
+
+    /// Stray `*.tmp` files left in the cache dirs by an interrupted atomic write.
+    fn collect_stray_tmp_files(&self) -> Result<Vec<(PathBuf, u64)>, String> {
+        let mut stray = Vec::new();
+        for dir in [DOCUMENTS_DIR, ASSETS_DIR, CRDT_DIR] {
+            let read = match std::fs::read_dir(self.root.join(dir)) {
+                Ok(read) => read,
+                Err(err) if err.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(err) => return Err(err.to_string()),
+            };
+            for entry in read {
+                let entry = entry.map_err(|e| e.to_string())?;
+                let metadata = entry.metadata().map_err(|e| e.to_string())?;
+                if metadata.is_file() && entry.file_name().to_string_lossy().ends_with(".tmp") {
+                    stray.push((entry.path(), metadata.len()));
+                }
+            }
+        }
+        Ok(stray)
     }
 
     /// Permanently remove the entire replica directory. Used when access is
@@ -443,6 +629,21 @@ mod tests {
             payload: json!({ "content": "hi" }),
             base_manifest_sequence: 1,
             created_at: "2026-06-17T00:00:00Z".into(),
+            status: PendingOpStatus::Pending,
+            failure_code: None,
+            failure_message: None,
+        }
+    }
+
+    fn pending_op_for(id: &str, file_id: &str) -> PendingOperation {
+        PendingOperation {
+            id: id.into(),
+            kind: PendingOpKind::Edit,
+            file_id: Some(file_id.into()),
+            relative_path: Some("Notes/a.md".into()),
+            payload: json!({ "content": "hi" }),
+            base_manifest_sequence: 1,
+            created_at: "2026-06-18T00:00:00Z".into(),
             status: PendingOpStatus::Pending,
             failure_code: None,
             failure_message: None,
@@ -581,6 +782,17 @@ mod tests {
     }
 
     #[test]
+    fn clear_cached_crdt_state_removes_and_tolerates_missing() {
+        let dir = TempDir::new().unwrap();
+        let store = open(&dir);
+        store.cache_crdt_state("file-1", &[1, 2, 3]).unwrap();
+        store.clear_cached_crdt_state("file-1").unwrap();
+        assert!(store.read_cached_crdt_state("file-1").unwrap().is_none());
+        // Clearing an already-absent file is a no-op success.
+        store.clear_cached_crdt_state("file-1").unwrap();
+    }
+
+    #[test]
     fn verify_detects_corruption_and_rebuild_recovers() {
         let dir = TempDir::new().unwrap();
         let store = open(&dir);
@@ -597,6 +809,91 @@ mod tests {
         assert!(rebuilt.ok);
         // The corrupt manifest is dropped so it reseeds; the cache is untouched.
         assert!(store.read_manifest().unwrap().is_none());
+    }
+
+    fn manifest_with_active(ids: &[&str]) -> HostedVaultManifest {
+        use collab_protocol::{HostedFileEntry, HostedFileKind, HostedFileState};
+        HostedVaultManifest {
+            vault_id: "vault-1".into(),
+            sequence: 1,
+            files: ids
+                .iter()
+                .map(|id| HostedFileEntry {
+                    id: (*id).into(),
+                    parent_id: None,
+                    name: format!("{id}.md"),
+                    relative_path: format!("{id}.md"),
+                    kind: HostedFileKind::Document,
+                    document_type: None,
+                    state: HostedFileState::Active,
+                    current_revision: None,
+                    trashed_by_display_name: None,
+                    trashed_at: None,
+                    created_at: "t".into(),
+                    updated_at: "t".into(),
+                })
+                .collect(),
+        }
+    }
+
+    #[test]
+    fn cleanup_evicts_orphans_but_keeps_active_and_pending_referenced_content() {
+        let dir = TempDir::new().unwrap();
+        let store = open(&dir);
+        // active-1 is active in the manifest; orphan-1 is not; pending-1 is
+        // referenced by a queued operation (its bytes are the only local copy).
+        store.write_manifest(&manifest_with_active(&["active-1"])).unwrap();
+        store.cache_document("active-1", "keep").unwrap();
+        store.cache_document("orphan-1", "drop").unwrap();
+        store.cache_document("pending-1", "queued edit").unwrap();
+        store
+            .enqueue_operation(&pending_op_for("op-1", "pending-1"))
+            .unwrap();
+
+        let report = store.cleanup(u64::MAX).unwrap();
+
+        assert_eq!(report.removed_files, 1);
+        assert!(store.read_cached_document("active-1").unwrap().is_some());
+        assert!(store.read_cached_document("pending-1").unwrap().is_some());
+        assert!(store.read_cached_document("orphan-1").unwrap().is_none());
+    }
+
+    #[test]
+    fn cleanup_enforces_budget_by_evicting_oldest_but_never_pending() {
+        let dir = TempDir::new().unwrap();
+        let store = open(&dir);
+        store
+            .write_manifest(&manifest_with_active(&["old", "new", "pending"]))
+            .unwrap();
+        // Each document is 100 bytes; budget allows ~one file.
+        store.cache_document("old", &"a".repeat(100)).unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        store.cache_document("new", &"b".repeat(100)).unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        store.cache_document("pending", &"c".repeat(100)).unwrap();
+        store
+            .enqueue_operation(&pending_op_for("op-1", "pending"))
+            .unwrap();
+
+        // Budget of 250 bytes (3×100 = 300 cached): evict the single oldest
+        // non-protected entry ("old"); "pending" is protected and never evicted.
+        let report = store.cleanup(250).unwrap();
+
+        assert_eq!(report.removed_files, 1);
+        assert!(store.read_cached_document("pending").unwrap().is_some());
+        assert!(store.read_cached_document("old").unwrap().is_none());
+        assert!(store.read_cached_document("new").unwrap().is_some());
+        assert_eq!(report.remaining_bytes, 200);
+    }
+
+    #[test]
+    fn cleanup_removes_stray_temp_files() {
+        let dir = TempDir::new().unwrap();
+        let store = open(&dir);
+        std::fs::write(store.root().join(DOCUMENTS_DIR).join("ghost.tmp"), b"junk").unwrap();
+        let report = store.cleanup(u64::MAX).unwrap();
+        assert_eq!(report.removed_files, 1);
+        assert!(!store.root().join(DOCUMENTS_DIR).join("ghost.tmp").exists());
     }
 
     #[test]

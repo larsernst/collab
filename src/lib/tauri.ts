@@ -23,6 +23,7 @@ import type { NoteSnippet, NoteSnippetDraft, NoteSnippetScope } from '../types/n
 import type { PdfSidecarState } from '../types/pdf';
 import type { UpdateInfo } from '../store/updateStore';
 import type {
+  CacheCleanupReport,
   PendingOperation,
   PendingOpStatus,
   ReplicaIntegrityReport,
@@ -373,10 +374,14 @@ export const tauriCommands = {
     invoke<void>('replica_cache_crdt_state', { serverUrl, vaultId, fileId, base64Content }),
   replicaReadCrdtState: (serverUrl: string, vaultId: string, fileId: string) =>
     invoke<string | null>('replica_read_crdt_state', { serverUrl, vaultId, fileId }),
+  replicaClearCrdtState: (serverUrl: string, vaultId: string, fileId: string) =>
+    invoke<void>('replica_clear_crdt_state', { serverUrl, vaultId, fileId }),
   replicaVerify: (serverUrl: string, vaultId: string) =>
     invoke<ReplicaIntegrityReport>('replica_verify', { serverUrl, vaultId }),
   replicaRebuild: (serverUrl: string, vaultId: string) =>
     invoke<ReplicaIntegrityReport>('replica_rebuild', { serverUrl, vaultId }),
+  replicaCleanup: (serverUrl: string, vaultId: string, budgetBytes: number) =>
+    invoke<CacheCleanupReport>('replica_cleanup', { serverUrl, vaultId, budgetBytes }),
   replicaDelete: (serverUrl: string, vaultId: string) =>
     invoke<void>('replica_delete', { serverUrl, vaultId }),
 

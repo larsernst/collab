@@ -12002,4 +12002,139 @@ mod tests {
         .await;
         assert_eq!(bob_edit.status(), StatusCode::FORBIDDEN);
     }
+
+    #[tokio::test]
+    async fn revoked_member_cannot_upload_operations_after_removal() {
+        let Ok(url) = std::env::var("COLLAB_TEST_DATABASE_URL") else {
+            return;
+        };
+        let _db_guard = crate::database::db_test_guard().lock().await;
+        let pool = PgPoolOptions::new()
+            .max_connections(5)
+            .connect(&url)
+            .await
+            .unwrap();
+        database::migrate(&pool).await.unwrap();
+        sqlx::query(
+            "TRUNCATE audit_events, invitations, native_sessions, sessions, credentials, users, hosted_blobs RESTART IDENTITY CASCADE",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        reseed_builtin_templates(&pool).await;
+        let blobs = Arc::new(
+            FileSystemBlobStorage::new(tempfile::tempdir().unwrap().keep())
+                .await
+                .unwrap(),
+        );
+        let app = build_router(AppState::new(ServerConfig::default(), pool.clone(), blobs));
+
+        let bootstrap = request(
+            &app,
+            "POST",
+            "/api/v1/auth/bootstrap",
+            json!({"username": "owner", "displayName": "Owner", "password": "correct horse battery staple"}),
+            None,
+            None,
+        )
+        .await;
+        let (owner_cookie, owner_csrf) = session_cookies(&bootstrap);
+
+        let member = request(
+            &app,
+            "POST",
+            "/api/v1/admin/users",
+            json!({"username": "mallory", "displayName": "Mallory", "password": "a password long enough to pass"}),
+            Some(&owner_cookie),
+            Some(&owner_csrf),
+        )
+        .await;
+        let member_id = json_body(member).await["data"]["id"].as_str().unwrap().to_owned();
+        let member_login = request(
+            &app,
+            "POST",
+            "/api/v1/auth/login",
+            json!({"username": "mallory", "password": "a password long enough to pass"}),
+            None,
+            None,
+        )
+        .await;
+        let (member_cookie, member_csrf) = session_cookies(&member_login);
+
+        let vault = request(
+            &app,
+            "POST",
+            "/api/v1/vaults",
+            json!({"name": "Shared Vault"}),
+            Some(&owner_cookie),
+            Some(&owner_csrf),
+        )
+        .await;
+        let vault_id = json_body(vault).await["data"]["id"].as_str().unwrap().to_owned();
+        let added = request(
+            &app,
+            "POST",
+            &format!("/api/v1/vaults/{vault_id}/members"),
+            json!({"userId": member_id, "role": "editor"}),
+            Some(&owner_cookie),
+            Some(&owner_csrf),
+        )
+        .await;
+        assert_eq!(added.status(), StatusCode::CREATED);
+
+        // While a member, the editor can upload (create a file).
+        let create_while_member = request(
+            &app,
+            "POST",
+            &format!("/api/v1/vaults/{vault_id}/files"),
+            json!({"name": "Note.md", "kind": "document", "documentType": "note", "content": "hi"}),
+            Some(&member_cookie),
+            Some(&member_csrf),
+        )
+        .await;
+        assert_eq!(create_while_member.status(), StatusCode::CREATED);
+
+        // The owner revokes access.
+        let removed = request(
+            &app,
+            "DELETE",
+            &format!("/api/v1/vaults/{vault_id}/members/{member_id}"),
+            json!({}),
+            Some(&owner_cookie),
+            Some(&owner_csrf),
+        )
+        .await;
+        assert_eq!(removed.status(), StatusCode::NO_CONTENT);
+
+        // After revocation the client cannot upload new content; the vault is no
+        // longer visible to them at all (not_found), so queued offline operations
+        // are rejected on reconnect rather than silently accepted.
+        let create_after_revoke = request(
+            &app,
+            "POST",
+            &format!("/api/v1/vaults/{vault_id}/files"),
+            json!({"name": "Sneaky.md", "kind": "document", "documentType": "note", "content": "no"}),
+            Some(&member_cookie),
+            Some(&member_csrf),
+        )
+        .await;
+        assert_eq!(create_after_revoke.status(), StatusCode::NOT_FOUND);
+
+        // A structural operation is likewise rejected.
+        let operation_after_revoke = request(
+            &app,
+            "POST",
+            &format!("/api/v1/vaults/{vault_id}/operations"),
+            json!({
+                "clientOperationId": Uuid::now_v7(),
+                "baseManifestSequence": 1,
+                "operationType": "trash",
+                "targetFileId": Uuid::now_v7(),
+            }),
+            Some(&member_cookie),
+            Some(&member_csrf),
+        )
+        .await;
+        assert_eq!(operation_after_revoke.status(), StatusCode::NOT_FOUND);
+    }
 }

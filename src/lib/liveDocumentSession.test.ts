@@ -3,6 +3,7 @@ import * as Y from 'yjs';
 import { Awareness, encodeAwarenessUpdate } from 'y-protocols/awareness';
 import { tauriCommands } from './tauri';
 import { openLiveNoteSession } from './liveDocumentSession';
+import { openLiveJsonSession, toShared, type JsonObject } from './liveJsonDocument';
 import type { VaultClient } from './vaultClient';
 
 vi.mock('./tauri', () => ({
@@ -10,6 +11,7 @@ vi.mock('./tauri', () => ({
     hostedWsTicket: vi.fn(),
     replicaReadCrdtState: vi.fn().mockResolvedValue(null),
     replicaCacheCrdtState: vi.fn().mockResolvedValue(undefined),
+    replicaClearCrdtState: vi.fn().mockResolvedValue(undefined),
   },
 }));
 
@@ -17,7 +19,20 @@ vi.mock('./tauri', () => ({
 function seedBase64(value: string): string {
   const doc = new Y.Doc();
   doc.getText('content').insert(0, value);
-  const update = Y.encodeStateAsUpdate(doc);
+  return updateToBase64(Y.encodeStateAsUpdate(doc));
+}
+
+/** Encode a Y.Doc whose `doc` map holds `value`, as the structured replica would cache it. */
+function seedJsonBase64(value: JsonObject): string {
+  const doc = new Y.Doc();
+  const root = doc.getMap<unknown>('doc');
+  doc.transact(() => {
+    for (const [key, child] of Object.entries(value)) root.set(key, toShared(child));
+  });
+  return updateToBase64(Y.encodeStateAsUpdate(doc));
+}
+
+function updateToBase64(update: Uint8Array): string {
   let binary = '';
   for (let i = 0; i < update.length; i += 1) binary += String.fromCharCode(update[i]);
   return btoa(binary);
@@ -290,6 +305,55 @@ describe('openLiveNoteSession', () => {
     session.text.insert(0, 'still live');
     expect(socket.sent.some((data) => data instanceof Uint8Array && data[0] === SYNC_UPDATE)).toBe(true);
     session.destroy();
+  });
+});
+
+/** Drives the handshake to a connected structured (JSON) session. */
+async function connectJsonSession() {
+  vi.mocked(tauriCommands.hostedWsTicket).mockResolvedValue({
+    ticket: 'ticket-1',
+    websocketUrl: 'ws://server/ws/v1/vaults/v',
+    protocolVersion: 1,
+  });
+  const client = hostedClient({ serverUrl: 'https://server', vaultId: 'v', fileId: FILE_ID });
+  const promise = openLiveJsonSession(client, 'Boards/test.kanban');
+
+  await vi.waitFor(() => expect(MockWebSocket.instances.length).toBe(1));
+  const socket = MockWebSocket.instances[0];
+  socket.open();
+  socket.emit(JSON.stringify({ type: 'ready', manifestSequence: 0, protocolVersion: 1, role: 'editor' }));
+  socket.emit(JSON.stringify({ type: 'document.subscribed', fileId: FILE_ID }));
+  socket.emit(frame(SYNC_UPDATE, new Uint8Array([0, 0])));
+
+  const session = await promise;
+  expect(session).not.toBeNull();
+  return { session: session!, socket };
+}
+
+describe('openLiveJsonSession offline replica reconnect sync', () => {
+  it('seeds the structured document from the replica before connecting', async () => {
+    vi.mocked(tauriCommands.replicaReadCrdtState).mockResolvedValue(
+      seedJsonBase64({ columns: [{ id: 'c1', name: 'To Do', cards: [] }] }),
+    );
+    const { session } = await connectJsonSession();
+    // The seeded offline board survives the empty server handshake update.
+    expect(session.readJson()).toEqual({ columns: [{ id: 'c1', name: 'To Do', cards: [] }] });
+    session.destroy();
+  });
+
+  it('discards the offline state and skips persist-on-destroy when rejected', async () => {
+    vi.mocked(tauriCommands.replicaReadCrdtState).mockResolvedValue(
+      seedJsonBase64({ columns: [{ id: 'c1', name: 'Stale', cards: [] }] }),
+    );
+    const { session } = await connectJsonSession();
+
+    session.discardOfflineState();
+    expect(tauriCommands.replicaClearCrdtState).toHaveBeenCalledWith('https://server', 'v', FILE_ID);
+
+    vi.mocked(tauriCommands.replicaCacheCrdtState).mockClear();
+    session.destroy();
+    // A discarded (degenerate) seed must not be flushed back to the replica.
+    expect(tauriCommands.replicaCacheCrdtState).not.toHaveBeenCalled();
   });
 });
 

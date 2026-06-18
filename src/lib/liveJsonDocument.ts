@@ -178,7 +178,12 @@ export async function openLiveJsonSession(
   client: VaultClient,
   relativePath: string,
 ): Promise<LiveJsonSession | null> {
-  const provider = await connectLiveProvider(client, relativePath);
+  // Persist + seed the structured CRDT state through the offline replica, like
+  // notes, so unflushed live edits survive an app restart and reconcile via the
+  // reconnect state-vector handshake. The Kanban/canvas open guards reject a
+  // degenerate seed and call `discardOfflineState()` so a corrupt cache cannot
+  // persist.
+  const provider = await connectLiveProvider(client, relativePath, { offlineReplica: true });
   if (!provider) return null;
 
   const doc = provider.doc;

@@ -226,8 +226,10 @@ pub fn run() {
             commands::replica::replica_read_cached_asset,
             commands::replica::replica_cache_crdt_state,
             commands::replica::replica_read_crdt_state,
+            commands::replica::replica_clear_crdt_state,
             commands::replica::replica_verify,
             commands::replica::replica_rebuild,
+            commands::replica::replica_cleanup,
             commands::replica::replica_delete,
         ])
         .run(tauri::generate_context!())
