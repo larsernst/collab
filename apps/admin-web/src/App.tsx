@@ -47,6 +47,7 @@ import type {
   HostedVaultStorage,
   HostedVaultSummary,
   Invitation,
+  MaintenanceReport,
   PermissionTemplate,
   ServerUser,
   UserGroup,
@@ -333,6 +334,8 @@ function ServerConfigurationPanel() {
   const [message, setMessage] = useState('');
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
+  const [maintenance, setMaintenance] = useState<MaintenanceReport | null>(null);
+  const [maintenanceBusy, setMaintenanceBusy] = useState(false);
   const applySettings = useCallback((next: AdminServerSettings) => {
     setSettings(next);
     setDraft({
@@ -390,6 +393,21 @@ function ServerConfigurationPanel() {
     }
   }
 
+  async function runMaintenance() {
+    setMaintenanceBusy(true);
+    setError('');
+    setMessage('');
+    try {
+      const report = await serverApi.runMaintenance();
+      setMaintenance(report);
+      setMessage('Maintenance pass complete.');
+    } catch (reason) {
+      setError(String(reason));
+    } finally {
+      setMaintenanceBusy(false);
+    }
+  }
+
   if (!settings) {
     return <Panel title="Server configuration" icon={<Server size={17} />}><Loading /></Panel>;
   }
@@ -430,6 +448,18 @@ function ServerConfigurationPanel() {
         </div>
         <div className="actions"><Button type="submit" size="sm" disabled={busy}>Save server settings</Button></div>
       </form>
+      <Separator />
+      <div className="settings-stack">
+        <p className="subtle">Retention and compaction runs automatically on a schedule. Run it now to immediately clear expired sessions/tickets, prune logs beyond their retention window, compact document revision history, and reclaim orphaned blob storage.</p>
+        <div className="actions"><Button type="button" variant="outline" size="sm" disabled={maintenanceBusy} onClick={runMaintenance}>Run maintenance now</Button></div>
+        {maintenance && (
+          <p className="subtle">
+            Reclaimed {maintenance.prunedRevisions} revision(s) and {formatBytes(maintenance.reclaimedBlobBytes)} across {maintenance.reclaimedBlobs} blob(s);
+            cleared {maintenance.expiredWsTickets} ticket(s), {maintenance.expiredSessions} session(s), {maintenance.stalePresence} presence row(s);
+            pruned {maintenance.prunedAuditEvents + maintenance.prunedActivityEvents} log event(s).
+          </p>
+        )}
+      </div>
     </Panel>
   );
 }

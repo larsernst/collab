@@ -19,6 +19,7 @@ vi.mock('./api', () => ({
     overview: vi.fn(),
     settings: vi.fn(),
     updateSettings: vi.fn(),
+    runMaintenance: vi.fn(),
     backups: vi.fn(),
     updateBackupSettings: vi.fn(),
     runBackup: vi.fn(),
@@ -900,6 +901,21 @@ describe('admin application', () => {
     await waitFor(() => expect(serverApi.updateSettings).toHaveBeenCalledWith(expect.objectContaining({
       runtime: expect.objectContaining({ sessionTtlHours: 24, storageQuotaBytes: '12 GiB', maxFileBytes: '256 MiB' }),
     })));
+
+    // Running maintenance on demand reports the reclaimed counts.
+    vi.mocked(serverApi.runMaintenance).mockResolvedValue({
+      expiredWsTickets: 2,
+      expiredSessions: 1,
+      stalePresence: 0,
+      prunedAuditEvents: 3,
+      prunedActivityEvents: 1,
+      prunedRevisions: 5,
+      reclaimedBlobs: 4,
+      reclaimedBlobBytes: 2048,
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Run maintenance now' }));
+    expect(await screen.findByText(/Reclaimed 5 revision\(s\)/)).toBeTruthy();
+    expect(serverApi.runMaintenance).toHaveBeenCalled();
   });
 
   it('renders the permissions overview tree and filters by search', async () => {

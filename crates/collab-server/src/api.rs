@@ -28,7 +28,8 @@ use collab_protocol::{
     HostedStructuralOperationType, HostedTextDocument, HostedVault, HostedVaultActivityEvent,
     HostedVaultAdminDetail, HostedVaultImportResult, HostedVaultManifest, HostedVaultManifestDelta,
     HostedVaultMember, HostedVaultRole, HostedVaultStatus, HostedVaultStorage, HostedVaultSummary,
-    Invitation, LiveCollaborationMetrics, NativeSession, OperationalWarning, PermissionTemplate,
+    Invitation, LiveCollaborationMetrics, MaintenanceReport, NativeSession, OperationalWarning,
+    PermissionTemplate,
     ServerUser, ServerUserRole, StorageSummary, UserDirectoryEntry, UserGroup, UserGroupMember,
     VaultGrant, WritePdfAnnotationsRequest, WsTicket, WsTicketRequest,
 };
@@ -4427,6 +4428,36 @@ pub async fn admin_settings(
 ) -> Result<Json<DataResponse<AdminServerSettings>>, ApiFailure> {
     require_admin(&state, &headers, &request_id).await?;
     Ok(Json(DataResponse::new(load_server_settings(&state.config))))
+}
+
+/// Runs a retention/compaction maintenance pass on demand (the same work the
+/// scheduled worker performs) and returns the reclaimed-record counts.
+pub async fn admin_run_maintenance(
+    State(state): State<AppState>,
+    Extension(request_id): Extension<String>,
+    headers: HeaderMap,
+) -> Result<Json<DataResponse<MaintenanceReport>>, ApiFailure> {
+    let actor = require_admin_csrf(&state, &headers, &request_id).await?;
+    let policy = crate::retention::MaintenancePolicy::from_config(&state.config);
+    let report =
+        crate::retention::run_maintenance(&state.database, state.blobs.as_ref(), policy).await;
+    record_audit(
+        &state.database,
+        Some(&actor.user.id),
+        "admin.maintenance.run",
+        Some("maintenance"),
+        None,
+        "success",
+        &request_id,
+        json!({
+            "prunedRevisions": report.pruned_revisions,
+            "reclaimedBlobs": report.reclaimed_blobs,
+            "reclaimedBlobBytes": report.reclaimed_blob_bytes,
+            "prunedAuditEvents": report.pruned_audit_events,
+        }),
+    )
+    .await?;
+    Ok(Json(DataResponse::new(report)))
 }
 
 pub async fn admin_update_settings(

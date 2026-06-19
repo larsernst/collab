@@ -171,6 +171,20 @@ pub struct StorageSummary {
     pub quota_bytes: u64,
 }
 
+/// Counts of records reclaimed by a single retention/compaction maintenance run.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct MaintenanceReport {
+    pub expired_ws_tickets: u64,
+    pub expired_sessions: u64,
+    pub stale_presence: u64,
+    pub pruned_audit_events: u64,
+    pub pruned_activity_events: u64,
+    pub pruned_revisions: u64,
+    pub reclaimed_blobs: u64,
+    pub reclaimed_blob_bytes: u64,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct OperationalWarning {

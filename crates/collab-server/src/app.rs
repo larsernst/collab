@@ -195,6 +195,10 @@ pub fn build_router(state: AppState) -> Router {
             get(api::admin_settings).patch(api::admin_update_settings),
         )
         .route(
+            "/api/v1/admin/maintenance",
+            post(api::admin_run_maintenance),
+        )
+        .route(
             "/api/v1/admin/backups",
             get(api::admin_backups).post(api::admin_run_backup),
         )
@@ -348,6 +352,34 @@ pub fn spawn_backup_scheduler(state: AppState) {
                 Ok(result) => tracing::info!(output = ?result.output, "scheduled backup completed"),
                 Err(error) => tracing::warn!(?error, "scheduled backup failed"),
             }
+        }
+    });
+}
+
+/// Spawns the periodic retention/compaction maintenance worker. It runs an
+/// initial pass shortly after startup and then once per configured interval.
+pub fn spawn_maintenance_worker(state: AppState) {
+    let interval = Duration::from_secs(state.config.maintenance_interval_seconds.max(60));
+    tokio::spawn(async move {
+        // A short initial delay lets startup settle before the first sweep.
+        sleep(Duration::from_secs(30)).await;
+        loop {
+            let policy = crate::retention::MaintenancePolicy::from_config(&state.config);
+            let report =
+                crate::retention::run_maintenance(&state.database, state.blobs.as_ref(), policy)
+                    .await;
+            tracing::info!(
+                expired_ws_tickets = report.expired_ws_tickets,
+                expired_sessions = report.expired_sessions,
+                stale_presence = report.stale_presence,
+                pruned_audit_events = report.pruned_audit_events,
+                pruned_activity_events = report.pruned_activity_events,
+                pruned_revisions = report.pruned_revisions,
+                reclaimed_blobs = report.reclaimed_blobs,
+                reclaimed_blob_bytes = report.reclaimed_blob_bytes,
+                "maintenance pass complete"
+            );
+            sleep(interval).await;
         }
     });
 }

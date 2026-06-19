@@ -1,7 +1,9 @@
 use anyhow::Context;
 use collab_server::{
-    app::spawn_backup_scheduler, build_router, database, storage::FileSystemBlobStorage, AppState,
-    ServerConfig,
+    app::{spawn_backup_scheduler, spawn_maintenance_worker},
+    build_router, database,
+    storage::FileSystemBlobStorage,
+    AppState, ServerConfig,
 };
 use std::sync::Arc;
 use tokio::net::TcpListener;
@@ -22,6 +24,7 @@ async fn main() -> anyhow::Result<()> {
     );
     let state = AppState::new(config.clone(), pool, blob_storage);
     spawn_backup_scheduler(state.clone());
+    spawn_maintenance_worker(state.clone());
     let listener = TcpListener::bind(config.bind_address())
         .await
         .with_context(|| format!("failed to bind {}", config.bind_address()))?;

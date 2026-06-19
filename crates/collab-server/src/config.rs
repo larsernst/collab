@@ -32,6 +32,9 @@ pub struct ServerConfig {
     pub storage_quota_bytes: u64,
     pub rest_rate_limit_per_minute: u32,
     pub ws_rate_limit_per_minute: u32,
+    pub maintenance_interval_seconds: u64,
+    pub audit_retention_days: u64,
+    pub revision_history_limit: u32,
     pub backup_dir: PathBuf,
     pub backup_command: Option<String>,
     pub restore_command: Option<String>,
@@ -63,6 +66,9 @@ impl Default for ServerConfig {
             storage_quota_bytes: 0,
             rest_rate_limit_per_minute: 1200,
             ws_rate_limit_per_minute: 120,
+            maintenance_interval_seconds: 3600,
+            audit_retention_days: 0,
+            revision_history_limit: 0,
             backup_dir: PathBuf::from("server-data/backups"),
             backup_command: None,
             restore_command: None,
@@ -220,6 +226,21 @@ impl ServerConfig {
                 .parse()
                 .map_err(|_| ConfigError::Invalid("COLLAB_WS_RATE_LIMIT_PER_MINUTE"))?;
         }
+        if let Ok(value) = env::var("COLLAB_MAINTENANCE_INTERVAL_SECONDS") {
+            self.maintenance_interval_seconds = value
+                .parse()
+                .map_err(|_| ConfigError::Invalid("COLLAB_MAINTENANCE_INTERVAL_SECONDS"))?;
+        }
+        if let Ok(value) = env::var("COLLAB_AUDIT_RETENTION_DAYS") {
+            self.audit_retention_days = value
+                .parse()
+                .map_err(|_| ConfigError::Invalid("COLLAB_AUDIT_RETENTION_DAYS"))?;
+        }
+        if let Ok(value) = env::var("COLLAB_REVISION_HISTORY_LIMIT") {
+            self.revision_history_limit = value
+                .parse()
+                .map_err(|_| ConfigError::Invalid("COLLAB_REVISION_HISTORY_LIMIT"))?;
+        }
         if let Ok(value) = env::var("COLLAB_BACKUP_DIR") {
             self.backup_dir = value.into();
         }
@@ -321,6 +342,16 @@ impl ServerConfig {
         if self.ws_rate_limit_per_minute > 1_000_000 {
             return Err(ConfigError::Invalid("COLLAB_WS_RATE_LIMIT_PER_MINUTE"));
         }
+        if self.maintenance_interval_seconds == 0 {
+            return Err(ConfigError::Invalid("COLLAB_MAINTENANCE_INTERVAL_SECONDS"));
+        }
+        // `0` disables the policy; otherwise bound to catch obvious misconfiguration.
+        if self.audit_retention_days > 100_000 {
+            return Err(ConfigError::Invalid("COLLAB_AUDIT_RETENTION_DAYS"));
+        }
+        if self.revision_history_limit > 1_000_000 {
+            return Err(ConfigError::Invalid("COLLAB_REVISION_HISTORY_LIMIT"));
+        }
         Ok(())
     }
 }
@@ -383,6 +414,9 @@ mod tests {
         assert_eq!(config.storage_quota_bytes, 0);
         assert_eq!(config.rest_rate_limit_per_minute, 1200);
         assert_eq!(config.ws_rate_limit_per_minute, 120);
+        assert_eq!(config.maintenance_interval_seconds, 3600);
+        assert_eq!(config.audit_retention_days, 0);
+        assert_eq!(config.revision_history_limit, 0);
         assert_eq!(config.backup_dir, PathBuf::from("server-data/backups"));
         assert_eq!(config.backup_command, None);
         assert_eq!(config.restore_command, None);

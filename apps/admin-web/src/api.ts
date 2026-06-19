@@ -17,6 +17,7 @@ import type {
   HostedVaultManifest,
   HostedVaultSummary,
   Invitation,
+  MaintenanceReport,
   PermissionTemplate,
   ServerUser,
   UserGroup,
@@ -103,6 +104,7 @@ export const serverApi = {
   settings: () => api<AdminServerSettings>('/api/v1/admin/settings'),
   updateSettings: (payload: Record<string, unknown>) =>
     api<AdminServerSettings>('/api/v1/admin/settings', { method: 'PATCH', body: JSON.stringify(payload) }),
+  runMaintenance: () => api<MaintenanceReport>('/api/v1/admin/maintenance', { method: 'POST' }),
   backups: () => api<AdminBackupOverview>('/api/v1/admin/backups'),
   updateBackupSettings: (payload: Record<string, unknown>) =>
     api<AdminBackupOverview>('/api/v1/admin/backups/settings', { method: 'PATCH', body: JSON.stringify(payload) }),

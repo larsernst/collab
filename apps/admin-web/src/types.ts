@@ -121,6 +121,17 @@ export interface AdminRuntimeSetting<T> {
   source: 'default' | 'gui' | 'env' | string;
 }
 
+export interface MaintenanceReport {
+  expiredWsTickets: number;
+  expiredSessions: number;
+  stalePresence: number;
+  prunedAuditEvents: number;
+  prunedActivityEvents: number;
+  prunedRevisions: number;
+  reclaimedBlobs: number;
+  reclaimedBlobBytes: number;
+}
+
 export interface AdminServerSettings {
   runtime: {
     browserSecureCookies: AdminRuntimeSetting<boolean>;

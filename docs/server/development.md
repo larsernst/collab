@@ -163,6 +163,18 @@ are 1024-based and case-insensitive. The same string forms are accepted by the
   established socket additionally has a generous per-connection inbound message
   flood guard that disconnects a runaway client (which then reconnects and
   re-syncs).
+- `COLLAB_MAINTENANCE_INTERVAL_SECONDS`: how often the retention/compaction
+  maintenance worker runs (default `3600`, minimum 60). It always clears expired
+  WebSocket tickets, expired browser/native sessions, stale presence, and
+  orphaned blobs; the policies below are additional opt-in passes.
+- `COLLAB_AUDIT_RETENTION_DAYS`: delete audit and vault-activity events older than
+  this many days. `0` (default) keeps them forever.
+- `COLLAB_REVISION_HISTORY_LIMIT`: keep at most this many revisions per document
+  (the current revision and any snapshot-pinned revision are always kept); older
+  revisions are compacted away and their blobs garbage-collected. `0` (default)
+  keeps all history. Revisions of already-purged (tombstoned) files are always
+  reclaimed regardless of this setting. Administrators can also trigger a pass on
+  demand from `/admin/settings` (`POST /api/v1/admin/maintenance`).
 - `COLLAB_BACKUP_INTERVAL_SECONDS`: interval for the optional Compose backup
   worker and the server-managed scheduler.
 - `COLLAB_BACKUP_RETENTION_DAYS`: backup directories older than this are
