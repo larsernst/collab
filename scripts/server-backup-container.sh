@@ -3,6 +3,7 @@ set -eu
 
 backup_root="${COLLAB_BACKUP_DIR:-/backups}"
 blob_dir="${COLLAB_BLOB_DIR:-/data/blobs}"
+export_dir="${COLLAB_BACKUP_EXPORT_DIR:-}"
 timestamp="$(date -u +%Y%m%dT%H%M%SZ)"
 backup_dir="${backup_root}/collab-backup-${timestamp}"
 retention_days="${COLLAB_BACKUP_RETENTION_DAYS:-14}"
@@ -64,6 +65,18 @@ EOF
 
 if [ "${retention_days}" -gt 0 ] 2>/dev/null; then
   find "${backup_root}" -maxdepth 1 -type d -name 'collab-backup-*' -mtime "+${retention_days}" -exec rm -rf {} +
+fi
+
+if [ -n "${export_dir}" ]; then
+  if [ ! -d "${export_dir}" ] || [ ! -w "${export_dir}" ]; then
+    echo "External backup export target is not writable: ${export_dir}" >&2
+    exit 67
+  fi
+  cp -a "${backup_dir}" "${export_dir}/"
+  if [ "${retention_days}" -gt 0 ] 2>/dev/null; then
+    find "${export_dir}" -maxdepth 1 -type d -name 'collab-backup-*' -mtime "+${retention_days}" -exec rm -rf {} +
+  fi
+  echo "Exported backup ${export_dir}/collab-backup-${timestamp}"
 fi
 
 echo "Created backup ${backup_dir}"

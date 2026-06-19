@@ -14,7 +14,7 @@ use std::{
     sync::Arc,
     time::{Duration, Instant},
 };
-use tokio::sync::Mutex;
+use tokio::{sync::Mutex, time::sleep};
 use tower_http::{
     services::{ServeDir, ServeFile},
     set_header::SetResponseHeaderLayer,
@@ -190,6 +190,10 @@ pub fn build_router(state: AppState) -> Router {
             get(api::admin_backups).post(api::admin_run_backup),
         )
         .route(
+            "/api/v1/admin/backups/settings",
+            patch(api::admin_update_backup_settings),
+        )
+        .route(
             "/api/v1/admin/backups/{backup_name}/verify",
             post(api::admin_verify_backup),
         )
@@ -293,6 +297,49 @@ pub fn build_router(state: AppState) -> Router {
         .layer(middleware::from_fn(request_id))
         .layer(TraceLayer::new_for_http())
         .with_state(state)
+}
+
+pub fn spawn_backup_scheduler(state: AppState) {
+    let Some(command) = state.config.backup_command.clone() else {
+        tracing::warn!("backup schedule is enabled but no backup command is configured");
+        return;
+    };
+    let backup_dir = state.config.backup_dir.clone();
+    tokio::spawn(async move {
+        loop {
+            let settings = crate::api::load_backup_runtime_settings(&state.config);
+            if !settings.schedule_enabled {
+                sleep(Duration::from_secs(60)).await;
+                continue;
+            }
+            let interval = Duration::from_secs(settings.interval_seconds.max(60));
+            tracing::debug!(
+                interval_seconds = settings.interval_seconds,
+                retention_days = settings.retention_days,
+                export_dir = ?settings.export_dir,
+                "backup scheduler sleeping"
+            );
+            sleep(interval).await;
+            let settings = crate::api::load_backup_runtime_settings(&state.config);
+            if !settings.schedule_enabled {
+                continue;
+            }
+            let request_id = format!("scheduled-backup-{}", chrono::Utc::now().timestamp());
+            match crate::api::run_operator_command(
+                &command,
+                &backup_dir,
+                None,
+                &settings,
+                Duration::from_secs(30 * 60),
+                &request_id,
+            )
+            .await
+            {
+                Ok(result) => tracing::info!(output = ?result.output, "scheduled backup completed"),
+                Err(error) => tracing::warn!(?error, "scheduled backup failed"),
+            }
+        }
+    });
 }
 
 #[derive(Debug, Clone, Default)]

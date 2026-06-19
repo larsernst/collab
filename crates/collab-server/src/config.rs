@@ -31,6 +31,10 @@ pub struct ServerConfig {
     pub backup_dir: PathBuf,
     pub backup_command: Option<String>,
     pub restore_command: Option<String>,
+    pub backup_schedule_enabled: bool,
+    pub backup_interval_seconds: u64,
+    pub backup_retention_days: u64,
+    pub backup_export_dir: Option<PathBuf>,
     pub log_filter: String,
     pub log_format: LogFormat,
 }
@@ -54,6 +58,10 @@ impl Default for ServerConfig {
             backup_dir: PathBuf::from("server-data/backups"),
             backup_command: None,
             restore_command: None,
+            backup_schedule_enabled: false,
+            backup_interval_seconds: 24 * 60 * 60,
+            backup_retention_days: 14,
+            backup_export_dir: None,
             log_filter: "collab_server=info,tower_http=info".into(),
             log_format: LogFormat::Pretty,
         }
@@ -161,6 +169,25 @@ impl ServerConfig {
             let trimmed = value.trim();
             self.restore_command = (!trimmed.is_empty()).then(|| trimmed.to_owned());
         }
+        if let Ok(value) = env::var("COLLAB_BACKUP_SCHEDULE_ENABLED") {
+            self.backup_schedule_enabled = value
+                .parse()
+                .map_err(|_| ConfigError::Invalid("COLLAB_BACKUP_SCHEDULE_ENABLED"))?;
+        }
+        if let Ok(value) = env::var("COLLAB_BACKUP_INTERVAL_SECONDS") {
+            self.backup_interval_seconds = value
+                .parse()
+                .map_err(|_| ConfigError::Invalid("COLLAB_BACKUP_INTERVAL_SECONDS"))?;
+        }
+        if let Ok(value) = env::var("COLLAB_BACKUP_RETENTION_DAYS") {
+            self.backup_retention_days = value
+                .parse()
+                .map_err(|_| ConfigError::Invalid("COLLAB_BACKUP_RETENTION_DAYS"))?;
+        }
+        if let Ok(value) = env::var("COLLAB_BACKUP_EXPORT_DIR") {
+            let trimmed = value.trim();
+            self.backup_export_dir = (!trimmed.is_empty()).then(|| PathBuf::from(trimmed));
+        }
         if let Ok(value) = env::var("COLLAB_LOG") {
             self.log_filter = value;
         }
@@ -191,6 +218,9 @@ impl ServerConfig {
         }
         if self.backup_dir.as_os_str().is_empty() {
             return Err(ConfigError::Invalid("COLLAB_BACKUP_DIR"));
+        }
+        if self.backup_schedule_enabled && self.backup_interval_seconds == 0 {
+            return Err(ConfigError::Invalid("COLLAB_BACKUP_INTERVAL_SECONDS"));
         }
         if self.session_ttl_hours <= 0 || self.session_ttl_hours > 24 * 30 {
             return Err(ConfigError::Invalid("COLLAB_SESSION_TTL_HOURS"));
@@ -251,6 +281,10 @@ mod tests {
         assert_eq!(config.backup_dir, PathBuf::from("server-data/backups"));
         assert_eq!(config.backup_command, None);
         assert_eq!(config.restore_command, None);
+        assert_eq!(config.backup_schedule_enabled, false);
+        assert_eq!(config.backup_interval_seconds, 24 * 60 * 60);
+        assert_eq!(config.backup_retention_days, 14);
+        assert_eq!(config.backup_export_dir, None);
         assert_eq!(config.log_format, LogFormat::Pretty);
         config.validate().unwrap();
     }

@@ -78,7 +78,31 @@ export interface AdminBackupOverview {
   backupDir: string;
   backupCommandConfigured: boolean;
   restoreCommandConfigured: boolean;
+  schedule: AdminBackupSchedule;
+  exportTarget: AdminBackupExportTarget;
+  settings: AdminBackupSettings;
   backups: AdminBackupSummary[];
+}
+
+export interface AdminBackupSchedule {
+  enabled: boolean;
+  intervalSeconds: number;
+  retentionDays: number;
+  mode: string;
+}
+
+export interface AdminBackupExportTarget {
+  configured: boolean;
+  path: string | null;
+  writable: boolean;
+  message: string;
+}
+
+export interface AdminBackupSettings {
+  scheduleEnabled: boolean;
+  intervalSeconds: number;
+  retentionDays: number;
+  exportDir: string | null;
 }
 
 export interface AdminBackupSummary {

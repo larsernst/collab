@@ -357,10 +357,25 @@ function BackupsPage() {
   const [verification, setVerification] = useState<Record<string, AdminBackupVerification>>({});
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
   const [confirmRestore, setConfirmRestore] = useState<string | null>(null);
+  const [settingsDraft, setSettingsDraft] = useState({
+    scheduleEnabled: false,
+    intervalSeconds: 86_400,
+    retentionDays: 14,
+    exportDir: '',
+  });
   const [message, setMessage] = useState('');
   const [error, setError] = useState('');
   const [busy, setBusy] = useState('');
-  const load = useCallback(() => serverApi.backups().then((data) => { setOverview(data); setError(''); }).catch((reason) => setError(String(reason))), []);
+  const applyOverview = useCallback((data: AdminBackupOverview) => {
+    setOverview(data);
+    setSettingsDraft({
+      scheduleEnabled: data.settings.scheduleEnabled,
+      intervalSeconds: data.settings.intervalSeconds,
+      retentionDays: data.settings.retentionDays,
+      exportDir: data.settings.exportDir ?? '',
+    });
+  }, []);
+  const load = useCallback(() => serverApi.backups().then((data) => { applyOverview(data); setError(''); }).catch((reason) => setError(String(reason))), [applyOverview]);
   useEffect(() => void load(), [load]);
   useAutoRefresh(load, { intervalMs: 10_000 });
 
@@ -427,6 +442,27 @@ function BackupsPage() {
     }
   }
 
+  async function saveSettings(event: FormEvent) {
+    event.preventDefault();
+    setBusy('settings');
+    setMessage('');
+    setError('');
+    try {
+      const next = await serverApi.updateBackupSettings({
+        scheduleEnabled: settingsDraft.scheduleEnabled,
+        intervalSeconds: settingsDraft.intervalSeconds,
+        retentionDays: settingsDraft.retentionDays,
+        exportDir: settingsDraft.exportDir.trim() || null,
+      });
+      applyOverview(next);
+      setMessage('Backup settings saved.');
+    } catch (reason) {
+      setError(String(reason));
+    } finally {
+      setBusy('');
+    }
+  }
+
   return (
     <>
       <PageHeader
@@ -442,7 +478,32 @@ function BackupsPage() {
           <Metric icon={<Archive />} label="Backups" value={overview.backups.length} detail={overview.backupDir} />
           <Metric icon={<Server />} label="Run command" value={overview.backupCommandConfigured ? 'Configured' : 'Disabled'} detail="Optional operator hook" />
           <Metric icon={<RotateCcw />} label="Restore command" value={overview.restoreCommandConfigured ? 'Configured' : 'Disabled'} detail="Requires explicit confirmation" />
+          <Metric icon={<History />} label="Schedule" value={overview.schedule.enabled ? 'Enabled' : 'Disabled'} detail={`${formatDuration(overview.schedule.intervalSeconds)} interval · ${overview.schedule.retentionDays === 0 ? 'no pruning' : `${overview.schedule.retentionDays}d retention`}`} />
+          <Metric icon={<Download />} label="External export" value={!overview.exportTarget.configured ? 'Not set' : overview.exportTarget.writable ? 'Ready' : 'Needs attention'} detail={overview.exportTarget.path ?? 'Mount SMB/NFS/USB and set export path'} />
         </div>
+        <Panel title="Schedule and export" icon={<History size={17} />}>
+          <form className="settings-grid" onSubmit={saveSettings}>
+            <div>
+              <label>Scheduler</label>
+              <p className="subtle">{overview.schedule.enabled ? `Server-managed backups run every ${formatDuration(overview.schedule.intervalSeconds)}.` : 'Scheduled backups are disabled. Enable them here to let the server run backups automatically.'}</p>
+              <label className="toggle-row"><input type="checkbox" checked={settingsDraft.scheduleEnabled} onChange={(event) => setSettingsDraft((current) => ({ ...current, scheduleEnabled: event.target.checked }))} /> Enable scheduled backups</label>
+            </div>
+            <div>
+              <label>Retention</label>
+              <p className="subtle">{overview.schedule.retentionDays === 0 ? 'Automatic pruning is disabled.' : `Backups older than ${overview.schedule.retentionDays} days are pruned.`}</p>
+              <div className="inline-fields">
+                <Field label="Interval seconds" type="number" min={60} step={60} value={settingsDraft.intervalSeconds} onChange={(event) => setSettingsDraft((current) => ({ ...current, intervalSeconds: Number(event.target.value) || 60 }))} />
+                <Field label="Retention days" type="number" min={0} value={settingsDraft.retentionDays} onChange={(event) => setSettingsDraft((current) => ({ ...current, retentionDays: Number(event.target.value) || 0 }))} />
+              </div>
+            </div>
+            <div>
+              <label>External export target</label>
+              <p className="subtle">{overview.exportTarget.message}</p>
+              <Field label="Container export path" placeholder="/backup-export" value={settingsDraft.exportDir} onChange={(event) => setSettingsDraft((current) => ({ ...current, exportDir: event.target.value }))} />
+            </div>
+            <div className="actions"><Button type="submit" size="sm" disabled={busy === 'settings'}>Save backup settings</Button></div>
+          </form>
+        </Panel>
         {!overview.backupCommandConfigured && (
           <Panel title="Operator hook required" icon={<CircleAlert size={17} />}>
             <p className="subtle">The server can list, verify, and delete backup artifacts. Running or restoring backups from the web UI is disabled until `COLLAB_BACKUP_COMMAND` or `COLLAB_RESTORE_COMMAND` is configured by the operator.</p>
@@ -2539,3 +2600,4 @@ function IconButton({ label, children, onClick }: { label: string; children: Rea
 function Loading() { return <div className="empty-state"><RefreshCw className="spin" /><p>Loading server data...</p></div>; }
 function CenteredMessage({ title }: { title: string }) { return <main className="auth-page"><Card className="auth-card"><Server size={28} /><h1>{title}</h1></Card></main>; }
 function formatBytes(value: number) { if (value < 1024) return `${value} B`; if (value < 1024 ** 2) return `${(value / 1024).toFixed(1)} KB`; return `${(value / 1024 ** 2).toFixed(1)} MB`; }
+function formatDuration(seconds: number) { if (seconds < 60) return `${seconds}s`; if (seconds < 3600) return `${Math.round(seconds / 60)}m`; if (seconds < 86400) return `${Math.round(seconds / 3600)}h`; return `${Math.round(seconds / 86400)}d`; }

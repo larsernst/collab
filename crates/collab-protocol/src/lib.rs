@@ -178,7 +178,37 @@ pub struct AdminBackupOverview {
     pub backup_dir: String,
     pub backup_command_configured: bool,
     pub restore_command_configured: bool,
+    pub schedule: AdminBackupSchedule,
+    pub export_target: AdminBackupExportTarget,
+    pub settings: AdminBackupSettings,
     pub backups: Vec<AdminBackupSummary>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct AdminBackupSchedule {
+    pub enabled: bool,
+    pub interval_seconds: u64,
+    pub retention_days: u64,
+    pub mode: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct AdminBackupExportTarget {
+    pub configured: bool,
+    pub path: Option<String>,
+    pub writable: bool,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct AdminBackupSettings {
+    pub schedule_enabled: bool,
+    pub interval_seconds: u64,
+    pub retention_days: u64,
+    pub export_dir: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

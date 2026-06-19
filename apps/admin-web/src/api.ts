@@ -100,6 +100,8 @@ export const serverApi = {
     `/api/v1/users/${userId}/avatar${updatedAt ? `?v=${encodeURIComponent(updatedAt)}` : ''}`,
   overview: () => api<AdminOverview>('/api/v1/admin/overview'),
   backups: () => api<AdminBackupOverview>('/api/v1/admin/backups'),
+  updateBackupSettings: (payload: Record<string, unknown>) =>
+    api<AdminBackupOverview>('/api/v1/admin/backups/settings', { method: 'PATCH', body: JSON.stringify(payload) }),
   runBackup: () => api<AdminBackupCommandResult>('/api/v1/admin/backups', { method: 'POST' }),
   verifyBackup: (name: string) =>
     api<AdminBackupVerification>(`/api/v1/admin/backups/${encodeURIComponent(name)}/verify`, { method: 'POST' }),

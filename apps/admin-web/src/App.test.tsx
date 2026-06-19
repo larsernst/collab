@@ -18,6 +18,7 @@ vi.mock('./api', () => ({
     avatarUrl: vi.fn((id: string) => `/api/v1/users/${id}/avatar`),
     overview: vi.fn(),
     backups: vi.fn(),
+    updateBackupSettings: vi.fn(),
     runBackup: vi.fn(),
     verifyBackup: vi.fn(),
     restoreBackup: vi.fn(),
@@ -138,7 +139,19 @@ describe('admin application', () => {
       backupDir: '/backups',
       backupCommandConfigured: false,
       restoreCommandConfigured: false,
-      backups: [],
+      schedule: { enabled: false, intervalSeconds: 86_400, retentionDays: 14, mode: 'manual' },
+      exportTarget: { configured: false, path: null, writable: false, message: 'No external export target configured.' },
+      settings: { scheduleEnabled: false, intervalSeconds: 86_400, retentionDays: 14, exportDir: null },
+      backups: [{
+        name: 'collab-backup-20260618T111501Z',
+        createdAt: '2026-06-18T11:15:01Z',
+        sizeBytes: 2048,
+        hasPostgresDump: true,
+        hasBlobArchive: true,
+        hasManifest: true,
+        hasConfig: true,
+        hasChecksums: true,
+      }],
     });
     vi.mocked(serverApi.vaults).mockResolvedValue([]);
     vi.mocked(serverApi.vaultStorage).mockResolvedValue({
@@ -208,6 +221,9 @@ describe('admin application', () => {
       backupDir: '/backups',
       backupCommandConfigured: false,
       restoreCommandConfigured: false,
+      schedule: { enabled: true, intervalSeconds: 86_400, retentionDays: 14, mode: 'server-scheduler' },
+      exportTarget: { configured: true, path: '/backup-export', writable: true, message: 'Backups are copied to this mounted export target after creation.' },
+      settings: { scheduleEnabled: true, intervalSeconds: 86_400, retentionDays: 14, exportDir: '/backup-export' },
       backups: [{
         name: 'collab-backup-20260618T111501Z',
         createdAt: '2026-06-18T11:15:01Z',
@@ -228,12 +244,40 @@ describe('admin application', () => {
       ],
     });
     vi.mocked(serverApi.deleteBackup).mockResolvedValue(undefined);
+    vi.mocked(serverApi.updateBackupSettings).mockResolvedValue({
+      backupDir: '/backups',
+      backupCommandConfigured: false,
+      restoreCommandConfigured: false,
+      schedule: { enabled: true, intervalSeconds: 43_200, retentionDays: 7, mode: 'server-scheduler' },
+      exportTarget: { configured: true, path: '/backup-export', writable: true, message: 'Backups are copied to this mounted export target after creation.' },
+      settings: { scheduleEnabled: true, intervalSeconds: 43_200, retentionDays: 7, exportDir: '/backup-export' },
+      backups: [{
+        name: 'collab-backup-20260618T111501Z',
+        createdAt: '2026-06-18T11:15:01Z',
+        sizeBytes: 2048,
+        hasPostgresDump: true,
+        hasBlobArchive: true,
+        hasManifest: true,
+        hasConfig: true,
+        hasChecksums: true,
+      }],
+    });
 
     render(<App />);
     fireEvent.click(await screen.findByRole('button', { name: 'Backups' }));
     expect(await screen.findByRole('heading', { name: 'Backups' })).toBeTruthy();
     expect(screen.getByText('collab-backup-20260618T111501Z')).toBeTruthy();
+    expect(screen.getByText('Server-managed backups run every 1d.')).toBeTruthy();
+    expect(screen.getByText('Backups are copied to this mounted export target after creation.')).toBeTruthy();
     expect((screen.getByRole('button', { name: 'Run backup' }) as HTMLButtonElement).disabled).toBe(true);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Save backup settings' }));
+    await waitFor(() => expect(serverApi.updateBackupSettings).toHaveBeenCalledWith({
+      scheduleEnabled: true,
+      intervalSeconds: 86_400,
+      retentionDays: 14,
+      exportDir: '/backup-export',
+    }));
 
     fireEvent.click(screen.getByRole('button', { name: 'Verify' }));
     await waitFor(() => expect(serverApi.verifyBackup).toHaveBeenCalledWith('collab-backup-20260618T111501Z'));

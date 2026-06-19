@@ -87,6 +87,19 @@ and restore backups. Set `COLLAB_BACKUP_COMMAND=` and
 `COLLAB_RESTORE_COMMAND=` in `.env` to disable those buttons while keeping
 listing, verification, and deletion available.
 
+The Backups page can configure the built-in scheduler and container export path
+directly. `.env` values are used as initial defaults before GUI-managed backup
+settings are saved. For external storage, mount the target on the host and pass
+it into Compose:
+
+```dotenv
+COLLAB_BACKUP_EXPORT_PATH=/mnt/collab-backups
+```
+
+Mount SMB/NFS/USB storage on the host first, then point
+`COLLAB_BACKUP_EXPORT_PATH` at that mounted path. In the admin UI, use
+`/backup-export` as the container export path.
+
 Stop containers without deleting data:
 
 ```bash
@@ -134,6 +147,12 @@ Supported environment variables:
 - `COLLAB_BACKUP_RETENTION_DAYS`: backup directories older than this are
   pruned by the optional backup worker; defaults to 14 days, set to `0` to
   disable pruning.
+- `COLLAB_BACKUP_SCHEDULE_ENABLED`: enables the server-managed backup
+  scheduler when `true`; defaults to `false`.
+- `COLLAB_BACKUP_EXPORT_PATH`: optional Docker host path mounted into the
+  server and backup containers for external backup copies.
+- `COLLAB_BACKUP_EXPORT_DIR`: optional container path for external backup
+  copies; use `/backup-export` with the default Compose mount.
 - `COLLAB_BACKUP_COMMAND`: optional server-admin UI command hook for running a
   backup. Leave empty unless the container has been explicitly granted a safe
   orchestration path.

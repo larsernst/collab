@@ -38,6 +38,10 @@ services:
       COLLAB_MAX_IMPORT_BYTES: ${COLLAB_MAX_IMPORT_BYTES:-536870912}
       COLLAB_MAX_IMPORT_EXPANDED_BYTES: ${COLLAB_MAX_IMPORT_EXPANDED_BYTES:-2147483648}
       COLLAB_BACKUP_DIR: /backups
+      COLLAB_BACKUP_SCHEDULE_ENABLED: ${COLLAB_BACKUP_SCHEDULE_ENABLED:-false}
+      COLLAB_BACKUP_INTERVAL_SECONDS: ${COLLAB_BACKUP_INTERVAL_SECONDS:-86400}
+      COLLAB_BACKUP_RETENTION_DAYS: ${COLLAB_BACKUP_RETENTION_DAYS:-14}
+      COLLAB_BACKUP_EXPORT_DIR: ${COLLAB_BACKUP_EXPORT_DIR:-}
       COLLAB_BACKUP_COMMAND: ${COLLAB_BACKUP_COMMAND-/usr/local/bin/collab-backup}
       COLLAB_RESTORE_COMMAND: ${COLLAB_RESTORE_COMMAND-/usr/local/bin/collab-admin-restore}
       COLLAB_LOG_FORMAT: ${COLLAB_LOG_FORMAT:-json}
@@ -53,6 +57,7 @@ services:
     volumes:
       - blob-data:/data/blobs
       - backups:/backups
+      - ${COLLAB_BACKUP_EXPORT_PATH:-./server-data/backup-export}:/backup-export
       - ./scripts/server-backup-container.sh:/usr/local/bin/collab-backup:ro
       - ./scripts/server-restore-container.sh:/usr/local/bin/collab-restore:ro
       - ./scripts/server-admin-restore-container.sh:/usr/local/bin/collab-admin-restore:ro
@@ -79,8 +84,10 @@ services:
       POSTGRES_USER: ${POSTGRES_USER:-collab}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-collab-development-only}
       POSTGRES_HOST: postgres
+      COLLAB_BACKUP_SCHEDULE_ENABLED: ${COLLAB_BACKUP_SCHEDULE_ENABLED:-false}
       COLLAB_BACKUP_INTERVAL_SECONDS: ${COLLAB_BACKUP_INTERVAL_SECONDS:-86400}
       COLLAB_BACKUP_RETENTION_DAYS: ${COLLAB_BACKUP_RETENTION_DAYS:-14}
+      COLLAB_BACKUP_EXPORT_DIR: ${COLLAB_BACKUP_EXPORT_DIR:-}
       COLLAB_HTTP_BIND: ${COLLAB_HTTP_BIND:-0.0.0.0}
       COLLAB_HTTP_PORT: ${COLLAB_HTTP_PORT:-8788}
       COLLAB_BROWSER_SECURE_COOKIES: ${COLLAB_BROWSER_SECURE_COOKIES:-false}
@@ -97,6 +104,7 @@ services:
     volumes:
       - backups:/backups
       - blob-data:/data/blobs:ro
+      - ${COLLAB_BACKUP_EXPORT_PATH:-./server-data/backup-export}:/backup-export
       - ./scripts/server-backup-container.sh:/usr/local/bin/collab-backup:ro
     command:
       - /bin/sh

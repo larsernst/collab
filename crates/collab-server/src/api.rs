@@ -17,7 +17,8 @@ use base64::{engine::general_purpose::STANDARD, Engine};
 use collab_protocol::GrantSubjectType;
 use collab_protocol::{
     capabilities_for_role, AdminBackupArtifactVerification, AdminBackupCommandResult,
-    AdminBackupOverview, AdminBackupSummary, AdminBackupVerification, AdminOverview, ApiError,
+    AdminBackupExportTarget, AdminBackupOverview, AdminBackupSchedule, AdminBackupSettings,
+    AdminBackupSummary, AdminBackupVerification, AdminOverview, ApiError,
     AuditEvent, BootstrapStatus, BrowserSession, Capability, CreatedInvitation, DataResponse,
     ErrorCode, ErrorResponse, HealthState, HostedChatMessage, HostedDocumentType, HostedFileEntry,
     HostedFileKind, HostedFileReference, HostedFileRevision, HostedFileState, HostedPdfAnnotations,
@@ -30,7 +31,7 @@ use collab_protocol::{
     ServerUser, ServerUserRole, StorageSummary, UserDirectoryEntry, UserGroup, UserGroupMember,
     VaultGrant, WritePdfAnnotationsRequest, WsTicket, WsTicketRequest,
 };
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use sqlx::{PgPool, Postgres, Row, Transaction};
@@ -333,6 +334,15 @@ pub struct ImportVaultZipRequest {
 #[serde(rename_all = "camelCase")]
 pub struct RestoreBackupRequest {
     pub confirmation: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateBackupSettingsRequest {
+    pub schedule_enabled: bool,
+    pub interval_seconds: u64,
+    pub retention_days: u64,
+    pub export_dir: Option<String>,
 }
 
 pub async fn bootstrap_status(
@@ -4197,6 +4207,34 @@ pub async fn admin_backups(
     Ok(Json(DataResponse::new(load_backup_overview(&state))))
 }
 
+pub async fn admin_update_backup_settings(
+    State(state): State<AppState>,
+    Extension(request_id): Extension<String>,
+    headers: HeaderMap,
+    Json(payload): Json<UpdateBackupSettingsRequest>,
+) -> Result<Json<DataResponse<AdminBackupOverview>>, ApiFailure> {
+    let actor = require_admin_csrf(&state, &headers, &request_id).await?;
+    let settings = BackupRuntimeSettings::from_request(payload, &request_id)?;
+    save_backup_runtime_settings(&state.config.backup_dir, &settings, &request_id)?;
+    record_audit(
+        &state.database,
+        Some(&actor.user.id),
+        "admin.backup.settings.update",
+        Some("backup"),
+        None,
+        "success",
+        &request_id,
+        json!({
+            "scheduleEnabled": settings.schedule_enabled,
+            "intervalSeconds": settings.interval_seconds,
+            "retentionDays": settings.retention_days,
+            "exportConfigured": settings.export_dir.is_some()
+        }),
+    )
+    .await?;
+    Ok(Json(DataResponse::new(load_backup_overview(&state))))
+}
+
 pub async fn admin_verify_backup(
     State(state): State<AppState>,
     Extension(request_id): Extension<String>,
@@ -4224,10 +4262,12 @@ pub async fn admin_run_backup(
             request_id,
         ));
     };
+    let settings = load_backup_runtime_settings(&state.config);
     let result = run_operator_command(
         &command,
         &state.config.backup_dir,
         None,
+        &settings,
         Duration::from_secs(30 * 60),
         &request_id,
     )
@@ -4279,6 +4319,7 @@ pub async fn admin_restore_backup(
         &command,
         &state.config.backup_dir,
         Some(&backup_name),
+        &load_backup_runtime_settings(&state.config),
         Duration::from_secs(60 * 60),
         &request_id,
     )
@@ -5941,7 +5982,85 @@ async fn load_admin_vault_detail(
     })
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct BackupRuntimeSettings {
+    pub schedule_enabled: bool,
+    pub interval_seconds: u64,
+    pub retention_days: u64,
+    pub export_dir: Option<PathBuf>,
+}
+
+impl BackupRuntimeSettings {
+    fn from_config(config: &crate::config::ServerConfig) -> Self {
+        Self {
+            schedule_enabled: config.backup_schedule_enabled,
+            interval_seconds: config.backup_interval_seconds,
+            retention_days: config.backup_retention_days,
+            export_dir: config.backup_export_dir.clone(),
+        }
+    }
+
+    fn from_request(
+        payload: UpdateBackupSettingsRequest,
+        request_id: &str,
+    ) -> Result<Self, ApiFailure> {
+        if payload.schedule_enabled && payload.interval_seconds == 0 {
+            return Err(ApiFailure::validation(
+                "Backup interval must be greater than zero.",
+                request_id.to_owned(),
+            ));
+        }
+        let export_dir = payload.export_dir.and_then(|value| {
+            let trimmed = value.trim();
+            (!trimmed.is_empty()).then(|| PathBuf::from(trimmed))
+        });
+        Ok(Self {
+            schedule_enabled: payload.schedule_enabled,
+            interval_seconds: payload.interval_seconds.max(60),
+            retention_days: payload.retention_days,
+            export_dir,
+        })
+    }
+
+    fn to_protocol(&self) -> AdminBackupSettings {
+        AdminBackupSettings {
+            schedule_enabled: self.schedule_enabled,
+            interval_seconds: self.interval_seconds,
+            retention_days: self.retention_days,
+            export_dir: self.export_dir.as_ref().map(|path| path.display().to_string()),
+        }
+    }
+}
+
+pub(crate) fn load_backup_runtime_settings(
+    config: &crate::config::ServerConfig,
+) -> BackupRuntimeSettings {
+    let path = backup_settings_path(&config.backup_dir);
+    fs::read_to_string(path)
+        .ok()
+        .and_then(|raw| serde_json::from_str(&raw).ok())
+        .unwrap_or_else(|| BackupRuntimeSettings::from_config(config))
+}
+
+fn save_backup_runtime_settings(
+    backup_dir: &FsPath,
+    settings: &BackupRuntimeSettings,
+    request_id: &str,
+) -> Result<(), ApiFailure> {
+    fs::create_dir_all(backup_dir).map_err(|_| ApiFailure::server(request_id.to_owned()))?;
+    let raw = serde_json::to_string_pretty(settings)
+        .map_err(|_| ApiFailure::server(request_id.to_owned()))?;
+    fs::write(backup_settings_path(backup_dir), raw)
+        .map_err(|_| ApiFailure::server(request_id.to_owned()))
+}
+
+fn backup_settings_path(backup_dir: &FsPath) -> PathBuf {
+    backup_dir.join("backup-settings.json")
+}
+
 fn load_backup_overview(state: &AppState) -> AdminBackupOverview {
+    let settings = load_backup_runtime_settings(&state.config);
     let mut backups = Vec::new();
     if let Ok(entries) = fs::read_dir(&state.config.backup_dir) {
         for entry in entries.flatten() {
@@ -5963,7 +6082,46 @@ fn load_backup_overview(state: &AppState) -> AdminBackupOverview {
         backup_dir: state.config.backup_dir.display().to_string(),
         backup_command_configured: state.config.backup_command.is_some(),
         restore_command_configured: state.config.restore_command.is_some(),
+        schedule: AdminBackupSchedule {
+            enabled: settings.schedule_enabled,
+            interval_seconds: settings.interval_seconds,
+            retention_days: settings.retention_days,
+            mode: if settings.schedule_enabled {
+                "server-scheduler"
+            } else {
+                "manual"
+            }
+            .into(),
+        },
+        export_target: backup_export_target(&settings.export_dir),
+        settings: settings.to_protocol(),
         backups,
+    }
+}
+
+fn backup_export_target(path: &Option<PathBuf>) -> AdminBackupExportTarget {
+    let Some(path) = path else {
+        return AdminBackupExportTarget {
+            configured: false,
+            path: None,
+            writable: false,
+            message: "No external export target configured.".into(),
+        };
+    };
+    let writable = path.is_dir()
+        && path
+            .metadata()
+            .map(|metadata| !metadata.permissions().readonly())
+            .unwrap_or(false);
+    AdminBackupExportTarget {
+        configured: true,
+        path: Some(path.display().to_string()),
+        writable,
+        message: if writable {
+            "Backups are copied to this mounted export target after creation.".into()
+        } else {
+            "Export target is configured but is not writable by the server container.".into()
+        },
     }
 }
 
@@ -6115,10 +6273,11 @@ fn sha256_file(path: &FsPath) -> std::io::Result<String> {
     Ok(format!("{digest:x}"))
 }
 
-async fn run_operator_command(
+pub(crate) async fn run_operator_command(
     command: &str,
     backup_dir: &FsPath,
     backup_name: Option<&str>,
+    settings: &BackupRuntimeSettings,
     max_duration: Duration,
     request_id: &str,
 ) -> Result<AdminBackupCommandResult, ApiFailure> {
@@ -6127,8 +6286,15 @@ async fn run_operator_command(
         .arg("-c")
         .arg(command)
         .env("COLLAB_BACKUP_DIR", backup_dir)
+        .env("COLLAB_BACKUP_INTERVAL_SECONDS", settings.interval_seconds.to_string())
+        .env("COLLAB_BACKUP_RETENTION_DAYS", settings.retention_days.to_string())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
+    if let Some(export_dir) = &settings.export_dir {
+        process.env("COLLAB_BACKUP_EXPORT_DIR", export_dir);
+    } else {
+        process.env_remove("COLLAB_BACKUP_EXPORT_DIR");
+    }
     if let Some(backup_name) = backup_name {
         process.env("COLLAB_RESTORE_BACKUP", backup_name);
     }

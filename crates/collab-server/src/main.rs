@@ -1,6 +1,7 @@
 use anyhow::Context;
 use collab_server::{
-    build_router, database, storage::FileSystemBlobStorage, AppState, ServerConfig,
+    app::spawn_backup_scheduler, build_router, database, storage::FileSystemBlobStorage, AppState,
+    ServerConfig,
 };
 use std::sync::Arc;
 use tokio::net::TcpListener;
@@ -20,6 +21,7 @@ async fn main() -> anyhow::Result<()> {
             .context("failed to initialize blob storage")?,
     );
     let state = AppState::new(config.clone(), pool, blob_storage);
+    spawn_backup_scheduler(state.clone());
     let listener = TcpListener::bind(config.bind_address())
         .await
         .with_context(|| format!("failed to bind {}", config.bind_address()))?;

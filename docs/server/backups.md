@@ -6,9 +6,30 @@ both parts from the same deployment.
 
 ## Automated Compose Backups
 
-The Compose stack includes an optional `backup` profile. It runs a small
-PostgreSQL-based worker that periodically writes backup directories into the
-shared `backups` volume.
+The default server container can run scheduled backups itself. Open
+`/admin/` -> **Backups** -> **Schedule and export** to enable the scheduler,
+change the interval, set retention, and configure an export path. These
+settings are stored in the backup volume and apply to both scheduled backups
+and the **Run backup** button.
+
+`.env` values provide initial defaults when no GUI-managed backup settings have
+been saved yet:
+
+```dotenv
+COLLAB_BACKUP_SCHEDULE_ENABLED=true
+COLLAB_BACKUP_INTERVAL_SECONDS=86400
+COLLAB_BACKUP_RETENTION_DAYS=14
+```
+
+`COLLAB_BACKUP_INTERVAL_SECONDS` controls how often a full deployment backup is
+created. `COLLAB_BACKUP_RETENTION_DAYS=0` disables automatic pruning.
+
+The admin web Backups page shows whether the scheduler is enabled, the interval,
+retention, and the external export target status.
+
+An optional `backup` profile is still available for operators who prefer a
+separate worker container. It runs the same backup helper into the shared
+`backups` volume.
 
 Simple command:
 
@@ -29,15 +50,6 @@ Each backup directory is named `collab-backup-<UTC timestamp>` and contains:
 - `manifest.txt`: backup metadata.
 - `config.env`: sanitized non-secret server configuration values.
 - `checksums.sha256`: SHA-256 checksums for the backup artifacts.
-
-Configure the schedule and retention in `.env`:
-
-```dotenv
-COLLAB_BACKUP_INTERVAL_SECONDS=86400
-COLLAB_BACKUP_RETENTION_DAYS=14
-```
-
-`COLLAB_BACKUP_RETENTION_DAYS=0` disables automatic pruning.
 
 ## Manual Backup
 
@@ -106,6 +118,26 @@ artifacts off-host, or delegates restores to a separate automation system.
 When `COLLAB_RESTORE_COMMAND` runs, the server sets
 `COLLAB_RESTORE_BACKUP=<backup name>` and `COLLAB_BACKUP_DIR=<backup root>` in
 the command environment.
+
+## External Export Target
+
+Backups are always written to the internal Compose `backups` volume first. To
+also copy each completed backup to external storage, mount that storage on the
+Docker host and bind it into the containers.
+
+Example host mount plus GUI/export setup for SMB, NFS, or USB:
+
+```dotenv
+COLLAB_BACKUP_EXPORT_PATH=/mnt/collab-backups
+```
+
+`COLLAB_BACKUP_EXPORT_PATH` is the host path. It can be a local folder, a USB
+drive mount, an SMB mount, or an NFS mount. After restarting Compose, set the
+admin UI **Container export path** field to `/backup-export`.
+
+The Backups page shows whether the export target is configured and writable.
+If it is configured but not writable, backup creation fails instead of silently
+leaving the external copy behind.
 
 ## Copy Backups Off Host
 
