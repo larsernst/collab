@@ -30,6 +30,8 @@ pub struct ServerConfig {
     pub max_import_expanded_bytes: usize,
     pub storage_warning_bytes: u64,
     pub storage_quota_bytes: u64,
+    pub rest_rate_limit_per_minute: u32,
+    pub ws_rate_limit_per_minute: u32,
     pub backup_dir: PathBuf,
     pub backup_command: Option<String>,
     pub restore_command: Option<String>,
@@ -59,6 +61,8 @@ impl Default for ServerConfig {
             max_import_expanded_bytes: 2 * 1024 * 1024 * 1024,
             storage_warning_bytes: 10 * 1024 * 1024 * 1024,
             storage_quota_bytes: 0,
+            rest_rate_limit_per_minute: 1200,
+            ws_rate_limit_per_minute: 120,
             backup_dir: PathBuf::from("server-data/backups"),
             backup_command: None,
             restore_command: None,
@@ -206,6 +210,16 @@ impl ServerConfig {
             self.storage_quota_bytes = parse_byte_size(&value)
                 .map_err(|_| ConfigError::Invalid("COLLAB_STORAGE_QUOTA_BYTES"))?;
         }
+        if let Ok(value) = env::var("COLLAB_REST_RATE_LIMIT_PER_MINUTE") {
+            self.rest_rate_limit_per_minute = value
+                .parse()
+                .map_err(|_| ConfigError::Invalid("COLLAB_REST_RATE_LIMIT_PER_MINUTE"))?;
+        }
+        if let Ok(value) = env::var("COLLAB_WS_RATE_LIMIT_PER_MINUTE") {
+            self.ws_rate_limit_per_minute = value
+                .parse()
+                .map_err(|_| ConfigError::Invalid("COLLAB_WS_RATE_LIMIT_PER_MINUTE"))?;
+        }
         if let Ok(value) = env::var("COLLAB_BACKUP_DIR") {
             self.backup_dir = value.into();
         }
@@ -300,6 +314,13 @@ impl ServerConfig {
         if self.storage_quota_bytes > 64 * 1024 * 1024 * 1024 * 1024 {
             return Err(ConfigError::Invalid("COLLAB_STORAGE_QUOTA_BYTES"));
         }
+        // `0` disables the limit; otherwise cap to catch obvious misconfiguration.
+        if self.rest_rate_limit_per_minute > 1_000_000 {
+            return Err(ConfigError::Invalid("COLLAB_REST_RATE_LIMIT_PER_MINUTE"));
+        }
+        if self.ws_rate_limit_per_minute > 1_000_000 {
+            return Err(ConfigError::Invalid("COLLAB_WS_RATE_LIMIT_PER_MINUTE"));
+        }
         Ok(())
     }
 }
@@ -360,6 +381,8 @@ mod tests {
         assert_eq!(config.max_import_expanded_bytes, 2 * 1024 * 1024 * 1024);
         assert_eq!(config.storage_warning_bytes, 10 * 1024 * 1024 * 1024);
         assert_eq!(config.storage_quota_bytes, 0);
+        assert_eq!(config.rest_rate_limit_per_minute, 1200);
+        assert_eq!(config.ws_rate_limit_per_minute, 120);
         assert_eq!(config.backup_dir, PathBuf::from("server-data/backups"));
         assert_eq!(config.backup_command, None);
         assert_eq!(config.restore_command, None);

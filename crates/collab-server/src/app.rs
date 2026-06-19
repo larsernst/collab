@@ -1,16 +1,19 @@
 use crate::{api, config::ServerConfig, database, storage::BlobStorage};
 use axum::{
-    extract::{DefaultBodyLimit, Request, State},
+    extract::{ConnectInfo, DefaultBodyLimit, Request, State},
     http::{HeaderName, HeaderValue, StatusCode},
     middleware::{self, Next},
     response::{IntoResponse, Redirect, Response},
     routing::{get, patch, post, put},
     Json, Router,
 };
-use collab_protocol::{DataResponse, HealthState, HealthStatus, PROTOCOL_VERSION};
+use collab_protocol::{
+    ApiError, DataResponse, ErrorCode, ErrorResponse, HealthState, HealthStatus, PROTOCOL_VERSION,
+};
 use sqlx::PgPool;
 use std::{
     collections::HashMap,
+    net::SocketAddr,
     sync::Arc,
     time::{Duration, Instant},
 };
@@ -30,6 +33,7 @@ pub struct AppState {
     pub database: PgPool,
     pub blobs: Arc<dyn BlobStorage>,
     pub login_limiter: LoginRateLimiter,
+    pub rate_limiter: RateLimiter,
     pub hub: Arc<crate::ws::Hub>,
     pub started_at: Instant,
 }
@@ -42,6 +46,7 @@ impl AppState {
             database,
             blobs,
             login_limiter: LoginRateLimiter::default(),
+            rate_limiter: RateLimiter::new(Duration::from_secs(60)),
             hub,
             started_at: Instant::now(),
         }
@@ -298,6 +303,7 @@ pub fn build_router(state: AppState) -> Router {
             HeaderValue::from_static("nosniff"),
         ))
         .layer(DefaultBodyLimit::max(max_json_body_bytes))
+        .layer(middleware::from_fn_with_state(state.clone(), rate_limit))
         .layer(middleware::from_fn(request_id))
         .layer(TraceLayer::new_for_http())
         .with_state(state)
@@ -369,6 +375,133 @@ impl LoginRateLimiter {
     }
 }
 
+/// Stop sweeping idle buckets out of the rate-limiter map only once it has grown
+/// past this many distinct keys, so the common small-deployment case never pays
+/// for the sweep.
+const RATE_LIMIT_SWEEP_THRESHOLD: usize = 4096;
+
+/// A generic fixed-window per-key rate limiter (used for coarse per-client-IP
+/// REST and WebSocket limits). Counts hits in a sliding window and reports how
+/// long a blocked caller should wait before retrying.
+#[derive(Debug, Clone)]
+pub struct RateLimiter {
+    hits: Arc<Mutex<HashMap<String, Vec<Instant>>>>,
+    window: Duration,
+}
+
+impl RateLimiter {
+    pub fn new(window: Duration) -> Self {
+        Self {
+            hits: Arc::new(Mutex::new(HashMap::new())),
+            window,
+        }
+    }
+
+    /// Records a hit for `key`. Returns `None` when the request is allowed, or
+    /// `Some(retry_after_seconds)` when `limit` hits in the current window have
+    /// already been used. A `limit` of `0` disables the limiter.
+    pub async fn check(&self, key: &str, limit: u32) -> Option<u64> {
+        if limit == 0 {
+            return None;
+        }
+        let now = Instant::now();
+        let mut hits = self.hits.lock().await;
+        if hits.len() > RATE_LIMIT_SWEEP_THRESHOLD {
+            hits.retain(|_, timestamps| {
+                timestamps.retain(|hit| now.duration_since(*hit) < self.window);
+                !timestamps.is_empty()
+            });
+        }
+        let entries = hits.entry(key.to_owned()).or_default();
+        entries.retain(|hit| now.duration_since(*hit) < self.window);
+        if entries.len() as u32 >= limit {
+            let oldest = entries.first().copied().unwrap_or(now);
+            let retry = self.window.saturating_sub(now.duration_since(oldest));
+            return Some(retry.as_secs().max(1));
+        }
+        entries.push(now);
+        None
+    }
+}
+
+/// Coarse per-client-IP rate limiting for `/api/v1/*` (REST) and `/ws/v1/*`
+/// (WebSocket upgrade) traffic. Other paths (health checks, the admin SPA, the
+/// root redirect) are never limited. Limits are operator-controlled and a value
+/// of `0` disables the corresponding limiter.
+async fn rate_limit(State(state): State<AppState>, request: Request, next: Next) -> Response {
+    let path = request.uri().path();
+    let (scope, limit) = if path.starts_with("/api/v1/") {
+        ("rest", state.config.rest_rate_limit_per_minute)
+    } else if path.starts_with("/ws/v1/") {
+        ("ws", state.config.ws_rate_limit_per_minute)
+    } else {
+        return next.run(request).await;
+    };
+    if limit == 0 {
+        return next.run(request).await;
+    }
+    let bucket = format!("{scope}:{}", client_key(&request));
+    if let Some(retry_after) = state.rate_limiter.check(&bucket, limit).await {
+        let request_id = request
+            .extensions()
+            .get::<String>()
+            .cloned()
+            .unwrap_or_else(|| Uuid::now_v7().to_string());
+        return rate_limited_response(retry_after, request_id);
+    }
+    next.run(request).await
+}
+
+/// Derives a stable per-client key for rate limiting. Behind the deployment's
+/// trusted reverse proxy the real client address is the last hop appended to
+/// `X-Forwarded-For`; falls back to `X-Real-IP` and then the direct socket peer.
+fn client_key(request: &Request) -> String {
+    let headers = request.headers();
+    if let Some(forwarded) = headers
+        .get("x-forwarded-for")
+        .and_then(|value| value.to_str().ok())
+    {
+        if let Some(last) = forwarded
+            .split(',')
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .next_back()
+        {
+            return last.to_owned();
+        }
+    }
+    if let Some(real_ip) = headers
+        .get("x-real-ip")
+        .and_then(|value| value.to_str().ok())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        return real_ip.to_owned();
+    }
+    if let Some(ConnectInfo(addr)) = request.extensions().get::<ConnectInfo<SocketAddr>>() {
+        return addr.ip().to_string();
+    }
+    "unknown".to_owned()
+}
+
+fn rate_limited_response(retry_after_seconds: u64, request_id: String) -> Response {
+    let body = ErrorResponse {
+        error: ApiError {
+            code: ErrorCode::RateLimited,
+            message: "Too many requests. Slow down and try again shortly.".into(),
+            request_id,
+            details: serde_json::Value::Null,
+        },
+    };
+    let mut response = (StatusCode::TOO_MANY_REQUESTS, Json(body)).into_response();
+    if let Ok(value) = HeaderValue::from_str(&retry_after_seconds.to_string()) {
+        response
+            .headers_mut()
+            .insert(HeaderName::from_static("retry-after"), value);
+    }
+    response
+}
+
 async fn liveness() -> Json<DataResponse<HealthStatus>> {
     Json(DataResponse::new(health_status(HealthState::Ok)))
 }
@@ -418,7 +551,7 @@ async fn request_id(mut request: Request, next: Next) -> Response {
 
 #[cfg(test)]
 mod tests {
-    use super::{build_router, AppState, LoginRateLimiter};
+    use super::{build_router, client_key, AppState, LoginRateLimiter, RateLimiter};
     use crate::{config::ServerConfig, storage::FileSystemBlobStorage};
     use axum::{
         body::Body,
@@ -430,13 +563,17 @@ mod tests {
     use tower::ServiceExt;
 
     async fn test_state() -> AppState {
+        test_state_with(ServerConfig::default()).await
+    }
+
+    async fn test_state_with(config: ServerConfig) -> AppState {
         let database = PgPoolOptions::new()
             .acquire_timeout(Duration::from_millis(50))
             .connect_lazy("postgres://collab:collab@127.0.0.1:1/unavailable")
             .unwrap();
         let dir = tempfile::tempdir().unwrap().keep();
         let blobs = Arc::new(FileSystemBlobStorage::new(dir).await.unwrap());
-        AppState::new(ServerConfig::default(), database, blobs)
+        AppState::new(config, database, blobs)
     }
 
     #[tokio::test]
@@ -535,5 +672,102 @@ mod tests {
         assert!(!limiter.allow("alice").await);
         limiter.clear("alice").await;
         assert!(limiter.allow("alice").await);
+    }
+
+    #[tokio::test]
+    async fn rate_limiter_allows_up_to_limit_then_reports_retry_after() {
+        let limiter = RateLimiter::new(Duration::from_secs(60));
+        assert_eq!(limiter.check("client", 2).await, None);
+        assert_eq!(limiter.check("client", 2).await, None);
+        // The third hit in the window is blocked with a positive retry hint.
+        let retry = limiter.check("client", 2).await.expect("third hit blocked");
+        assert!(retry >= 1 && retry <= 60);
+        // A different key has its own independent budget.
+        assert_eq!(limiter.check("other", 2).await, None);
+        // A limit of zero disables the limiter entirely.
+        for _ in 0..10 {
+            assert_eq!(limiter.check("client", 0).await, None);
+        }
+    }
+
+    #[test]
+    fn client_key_prefers_the_last_forwarded_hop_then_real_ip() {
+        // The trusted proxy appends the real client as the last X-Forwarded-For hop.
+        let forwarded = Request::builder()
+            .header("x-forwarded-for", "9.9.9.9, 203.0.113.7")
+            .body(Body::empty())
+            .unwrap();
+        assert_eq!(client_key(&forwarded), "203.0.113.7");
+
+        let real_ip = Request::builder()
+            .header("x-real-ip", "198.51.100.4")
+            .body(Body::empty())
+            .unwrap();
+        assert_eq!(client_key(&real_ip), "198.51.100.4");
+
+        // With neither header (and no socket peer in tests) it degrades to a shared key.
+        let bare = Request::builder().body(Body::empty()).unwrap();
+        assert_eq!(client_key(&bare), "unknown");
+    }
+
+    #[tokio::test]
+    async fn rest_requests_are_rate_limited_per_client_after_the_burst() {
+        let state = test_state_with(ServerConfig {
+            rest_rate_limit_per_minute: 2,
+            ..ServerConfig::default()
+        })
+        .await;
+        let send = |state: AppState| async move {
+            build_router(state)
+                .oneshot(
+                    Request::builder()
+                        .uri("/api/v1/users/directory")
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap()
+        };
+        // The first two requests pass the limiter (and fail later for other reasons).
+        for _ in 0..2 {
+            let response = send(state.clone()).await;
+            assert_ne!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+        }
+        let blocked = send(state.clone()).await;
+        assert_eq!(blocked.status(), StatusCode::TOO_MANY_REQUESTS);
+        assert!(blocked.headers().contains_key("retry-after"));
+
+        // Health checks are never rate limited.
+        let health = build_router(state.clone())
+            .oneshot(
+                Request::builder()
+                    .uri("/health/live")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(health.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn rest_rate_limit_of_zero_disables_limiting() {
+        let state = test_state_with(ServerConfig {
+            rest_rate_limit_per_minute: 0,
+            ..ServerConfig::default()
+        })
+        .await;
+        for _ in 0..20 {
+            let response = build_router(state.clone())
+                .oneshot(
+                    Request::builder()
+                        .uri("/api/v1/users/directory")
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_ne!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+        }
     }
 }

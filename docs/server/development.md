@@ -152,6 +152,17 @@ are 1024-based and case-insensitive. The same string forms are accepted by the
   operations (asset uploads, text document writes, document creation, and ZIP
   imports) are rejected with `413`/`507 QUOTA_EXCEEDED` once the quota would be
   crossed. Set to `0` (the default) for no quota.
+- `COLLAB_REST_RATE_LIMIT_PER_MINUTE`: coarse per-client-IP request budget for
+  `/api/v1/*` routes (default `1200`). Exceeding it returns `429 RATE_LIMITED`
+  with a `Retry-After` header. Set to `0` to disable. Clients are identified by
+  the last `X-Forwarded-For` hop appended by the trusted gateway (falling back to
+  `X-Real-IP` and then the socket peer), so teams behind a single egress IP share
+  one budget — raise or disable it for large shared-IP deployments.
+- `COLLAB_WS_RATE_LIMIT_PER_MINUTE`: coarse per-client-IP budget for
+  `/ws/v1/*` WebSocket upgrade attempts (default `120`); `0` disables it. An
+  established socket additionally has a generous per-connection inbound message
+  flood guard that disconnects a runaway client (which then reconnects and
+  re-syncs).
 - `COLLAB_BACKUP_INTERVAL_SECONDS`: interval for the optional Compose backup
   worker and the server-managed scheduler.
 - `COLLAB_BACKUP_RETENTION_DAYS`: backup directories older than this are

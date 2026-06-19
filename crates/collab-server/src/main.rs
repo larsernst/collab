@@ -27,10 +27,13 @@ async fn main() -> anyhow::Result<()> {
         .with_context(|| format!("failed to bind {}", config.bind_address()))?;
 
     tracing::info!(address = %config.bind_address(), "collab server listening");
-    axum::serve(listener, build_router(state))
-        .with_graceful_shutdown(shutdown_signal())
-        .await
-        .context("server failed")
+    axum::serve(
+        listener,
+        build_router(state).into_make_service_with_connect_info::<std::net::SocketAddr>(),
+    )
+    .with_graceful_shutdown(shutdown_signal())
+    .await
+    .context("server failed")
 }
 
 fn init_tracing(config: &ServerConfig) {

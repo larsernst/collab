@@ -73,6 +73,25 @@ A valid backup contains:
 
 Backup and blob retention must prevent garbage collection from deleting content needed by an in-progress backup. Restore testing is required before production readiness.
 
+## Rate Limiting
+
+- Authentication endpoints keep a per-username login attempt limiter (5 attempts
+  per minute) that resets on success.
+- A coarse per-client-IP limiter protects all `/api/v1/*` (REST) and `/ws/v1/*`
+  (WebSocket upgrade) traffic, tuned by `COLLAB_REST_RATE_LIMIT_PER_MINUTE`
+  (default 1200) and `COLLAB_WS_RATE_LIMIT_PER_MINUTE` (default 120); either set
+  to `0` disables that limiter. Exceeding a limit returns `429 RATE_LIMITED` with
+  a `Retry-After` header. Health checks, the admin SPA, and the root redirect are
+  never rate limited.
+- The client identity is the last `X-Forwarded-For` hop appended by the trusted
+  reverse proxy (falling back to `X-Real-IP`, then the socket peer). This trusts
+  the front proxy to set `X-Forwarded-For`; do not expose the server port
+  directly to untrusted clients without a proxy that overwrites that header.
+- Each authenticated WebSocket additionally has a generous per-connection inbound
+  message flood guard (2,000 frames per 10 seconds) that disconnects a runaway or
+  hostile socket; the client reconnects and re-syncs through the state-vector
+  handshake. Ping/pong keepalives are exempt.
+
 ## Import and Upload Limits
 
 Configurable limits apply to:

@@ -25,7 +25,7 @@ use std::{
         atomic::{AtomicU64, Ordering},
         Arc, Mutex as StdMutex,
     },
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use axum::{
@@ -85,6 +85,15 @@ impl MaterializeKind {
 /// is materialized into a normal text revision.
 const MATERIALIZE_DEBOUNCE: Duration = Duration::from_millis(1500);
 const MAX_AWARENESS_BYTES: usize = 64 * 1024;
+
+/// Per-connection inbound message flood guard. A single authenticated socket may
+/// send at most this many frames per [`MESSAGE_FLOOD_WINDOW`]; this is far above
+/// what fast collaborative editing produces and only trips on a runaway or
+/// hostile client, which is then disconnected (and can reconnect and re-sync via
+/// the state-vector handshake). This complements the coarse per-IP connection
+/// rate limit applied at the HTTP upgrade.
+const MESSAGE_FLOOD_LIMIT: usize = 2_000;
+const MESSAGE_FLOOD_WINDOW: Duration = Duration::from_secs(10);
 
 /// A live document update broadcast to every session subscribed to a file.
 #[derive(Clone)]
@@ -720,7 +729,26 @@ async fn handle_socket(socket: WebSocket, state: AppState, vault_id: Uuid) {
     // file_id -> room + forwarder task for each active subscription.
     let mut subscriptions: HashMap<Uuid, Subscription> = HashMap::new();
 
+    // Sliding window of recent inbound frame times for the message flood guard.
+    let mut recent_messages: Vec<Instant> = Vec::new();
+
     while let Some(Ok(message)) = stream.next().await {
+        // Ping/Pong are connection keepalives and are not counted toward the flood
+        // budget. Everything else (control + binary CRDT/awareness frames) is.
+        if !matches!(message, Message::Ping(_) | Message::Pong(_)) {
+            let now = Instant::now();
+            recent_messages.retain(|at| now.duration_since(*at) < MESSAGE_FLOOD_WINDOW);
+            if recent_messages.len() >= MESSAGE_FLOOD_LIMIT {
+                send_error(
+                    &out_tx,
+                    ErrorCode::RateLimited,
+                    "Too many messages on this connection; reconnect and retry.",
+                )
+                .await;
+                break;
+            }
+            recent_messages.push(now);
+        }
         match message {
             Message::Text(text) => {
                 let Ok(control) = serde_json::from_str::<WsClientControl>(text.as_str()) else {
