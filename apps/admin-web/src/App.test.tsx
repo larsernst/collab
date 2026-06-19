@@ -131,7 +131,7 @@ describe('admin application', () => {
       activeSessions: 1,
       pendingInvitations: 0,
       hostedVaults: 0,
-      storage: { databaseBytes: 1024, blobBytes: 0, warningThresholdBytes: 10 * 1024 * 1024 * 1024 },
+      storage: { databaseBytes: 1024, blobBytes: 0, warningThresholdBytes: 10 * 1024 * 1024 * 1024, storedContentBytes: 512, quotaBytes: 0 },
       liveCollaboration: {
         activeConnections: 2,
         loadedRooms: 3,
@@ -158,6 +158,7 @@ describe('admin application', () => {
         maxImportBytes: setting(536_870_912, 'COLLAB_MAX_IMPORT_BYTES'),
         maxImportExpandedBytes: setting(2_147_483_648, 'COLLAB_MAX_IMPORT_EXPANDED_BYTES'),
         storageWarningBytes: setting(10_737_418_240, 'COLLAB_STORAGE_WARNING_BYTES'),
+        storageQuotaBytes: setting(0, 'COLLAB_STORAGE_QUOTA_BYTES'),
       },
       backup: { scheduleEnabled: false, intervalSeconds: 86_400, retentionDays: 14, exportDir: null, locks: unlockedBackupLocks },
     });
@@ -172,6 +173,7 @@ describe('admin application', () => {
         maxImportBytes: setting(536_870_912, 'COLLAB_MAX_IMPORT_BYTES'),
         maxImportExpandedBytes: setting(2_147_483_648, 'COLLAB_MAX_IMPORT_EXPANDED_BYTES'),
         storageWarningBytes: setting(10_737_418_240, 'COLLAB_STORAGE_WARNING_BYTES'),
+        storageQuotaBytes: setting(0, 'COLLAB_STORAGE_QUOTA_BYTES'),
       },
       backup: { scheduleEnabled: false, intervalSeconds: 86_400, retentionDays: 14, exportDir: null, locks: unlockedBackupLocks },
     });
@@ -878,6 +880,7 @@ describe('admin application', () => {
         maxImportBytes: setting(536_870_912, 'COLLAB_MAX_IMPORT_BYTES'),
         maxImportExpandedBytes: setting(2_147_483_648, 'COLLAB_MAX_IMPORT_EXPANDED_BYTES'),
         storageWarningBytes: setting(10_737_418_240, 'COLLAB_STORAGE_WARNING_BYTES'),
+        storageQuotaBytes: setting(0, 'COLLAB_STORAGE_QUOTA_BYTES'),
       },
       backup: { scheduleEnabled: false, intervalSeconds: 86_400, retentionDays: 14, exportDir: null, locks: { ...unlockedBackupLocks, exportDir: true } },
     });
@@ -886,11 +889,16 @@ describe('admin application', () => {
     fireEvent.click(await screen.findByRole('button', { name: 'Settings' }));
     expect(await screen.findByText('Locked by COLLAB_BROWSER_SECURE_COOKIES')).toBeTruthy();
     expect(await screen.findByText('Locked by COLLAB_BACKUP_EXPORT_DIR')).toBeTruthy();
+    // Byte settings round-trip to human-readable binary units.
+    expect((screen.getByLabelText('Max file size') as HTMLInputElement).value).toBe('256 MiB');
+    expect((screen.getByLabelText('Storage warning size') as HTMLInputElement).value).toBe('10 GiB');
     fireEvent.change(screen.getByLabelText('Session TTL hours'), { target: { value: '24' } });
+    fireEvent.change(screen.getByLabelText('Storage quota (0 = unlimited)'), { target: { value: '12 GiB' } });
     fireEvent.click(screen.getByRole('button', { name: 'Save server settings' }));
 
+    // Byte fields submit the raw human-readable string; the server parses it.
     await waitFor(() => expect(serverApi.updateSettings).toHaveBeenCalledWith(expect.objectContaining({
-      runtime: expect.objectContaining({ sessionTtlHours: 24 }),
+      runtime: expect.objectContaining({ sessionTtlHours: 24, storageQuotaBytes: '12 GiB', maxFileBytes: '256 MiB' }),
     })));
   });
 

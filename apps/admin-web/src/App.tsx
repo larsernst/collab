@@ -320,10 +320,11 @@ function ServerConfigurationPanel() {
     nativeAccessTtlMinutes: 15,
     nativeRefreshTtlDays: 30,
     wsTicketTtlSeconds: 30,
-    maxFileBytes: 256 * 1024 * 1024,
-    maxImportBytes: 512 * 1024 * 1024,
-    maxImportExpandedBytes: 2 * 1024 * 1024 * 1024,
-    storageWarningBytes: 10 * 1024 * 1024 * 1024,
+    maxFileBytes: '256 MiB',
+    maxImportBytes: '512 MiB',
+    maxImportExpandedBytes: '2 GiB',
+    storageWarningBytes: '10 GiB',
+    storageQuotaBytes: '0',
     scheduleEnabled: false,
     intervalSeconds: 86_400,
     retentionDays: 14,
@@ -340,10 +341,11 @@ function ServerConfigurationPanel() {
       nativeAccessTtlMinutes: next.runtime.nativeAccessTtlMinutes.value,
       nativeRefreshTtlDays: next.runtime.nativeRefreshTtlDays.value,
       wsTicketTtlSeconds: next.runtime.wsTicketTtlSeconds.value,
-      maxFileBytes: next.runtime.maxFileBytes.value,
-      maxImportBytes: next.runtime.maxImportBytes.value,
-      maxImportExpandedBytes: next.runtime.maxImportExpandedBytes.value,
-      storageWarningBytes: next.runtime.storageWarningBytes.value,
+      maxFileBytes: formatByteSize(next.runtime.maxFileBytes.value),
+      maxImportBytes: formatByteSize(next.runtime.maxImportBytes.value),
+      maxImportExpandedBytes: formatByteSize(next.runtime.maxImportExpandedBytes.value),
+      storageWarningBytes: formatByteSize(next.runtime.storageWarningBytes.value),
+      storageQuotaBytes: formatByteSize(next.runtime.storageQuotaBytes.value),
       scheduleEnabled: next.backup.scheduleEnabled,
       intervalSeconds: next.backup.intervalSeconds,
       retentionDays: next.backup.retentionDays,
@@ -370,6 +372,7 @@ function ServerConfigurationPanel() {
           maxImportBytes: draft.maxImportBytes,
           maxImportExpandedBytes: draft.maxImportExpandedBytes,
           storageWarningBytes: draft.storageWarningBytes,
+          storageQuotaBytes: draft.storageQuotaBytes,
         },
         backup: {
           scheduleEnabled: draft.scheduleEnabled,
@@ -404,10 +407,11 @@ function ServerConfigurationPanel() {
           <SettingField label="Native access TTL minutes" setting={runtime.nativeAccessTtlMinutes} type="number" min={1} max={1440} value={draft.nativeAccessTtlMinutes} onChange={(event) => setDraft((current) => ({ ...current, nativeAccessTtlMinutes: Number(event.target.value) || 1 }))} />
           <SettingField label="Native refresh TTL days" setting={runtime.nativeRefreshTtlDays} type="number" min={1} max={365} value={draft.nativeRefreshTtlDays} onChange={(event) => setDraft((current) => ({ ...current, nativeRefreshTtlDays: Number(event.target.value) || 1 }))} />
           <SettingField label="WebSocket ticket TTL seconds" setting={runtime.wsTicketTtlSeconds} type="number" min={1} max={600} value={draft.wsTicketTtlSeconds} onChange={(event) => setDraft((current) => ({ ...current, wsTicketTtlSeconds: Number(event.target.value) || 1 }))} />
-          <SettingField label="Max file bytes" setting={runtime.maxFileBytes} type="number" min={1} value={draft.maxFileBytes} onChange={(event) => setDraft((current) => ({ ...current, maxFileBytes: Number(event.target.value) || 1 }))} />
-          <SettingField label="Max ZIP import bytes" setting={runtime.maxImportBytes} type="number" min={1} value={draft.maxImportBytes} onChange={(event) => setDraft((current) => ({ ...current, maxImportBytes: Number(event.target.value) || 1 }))} />
-          <SettingField label="Max expanded ZIP bytes" setting={runtime.maxImportExpandedBytes} type="number" min={1} value={draft.maxImportExpandedBytes} onChange={(event) => setDraft((current) => ({ ...current, maxImportExpandedBytes: Number(event.target.value) || 1 }))} />
-          <SettingField label="Storage warning bytes" setting={runtime.storageWarningBytes} type="number" min={0} value={draft.storageWarningBytes} onChange={(event) => setDraft((current) => ({ ...current, storageWarningBytes: Number(event.target.value) || 0 }))} />
+          <SettingField label="Max file size" setting={runtime.maxFileBytes} type="text" placeholder="e.g. 256 MiB" value={draft.maxFileBytes} onChange={(event) => setDraft((current) => ({ ...current, maxFileBytes: event.target.value }))} />
+          <SettingField label="Max ZIP import size" setting={runtime.maxImportBytes} type="text" placeholder="e.g. 512 MiB" value={draft.maxImportBytes} onChange={(event) => setDraft((current) => ({ ...current, maxImportBytes: event.target.value }))} />
+          <SettingField label="Max expanded ZIP size" setting={runtime.maxImportExpandedBytes} type="text" placeholder="e.g. 2 GiB" value={draft.maxImportExpandedBytes} onChange={(event) => setDraft((current) => ({ ...current, maxImportExpandedBytes: event.target.value }))} />
+          <SettingField label="Storage warning size" setting={runtime.storageWarningBytes} type="text" placeholder="e.g. 10 GiB" value={draft.storageWarningBytes} onChange={(event) => setDraft((current) => ({ ...current, storageWarningBytes: event.target.value }))} />
+          <SettingField label="Storage quota (0 = unlimited)" setting={runtime.storageQuotaBytes} type="text" placeholder="e.g. 50 GiB or 0" value={draft.storageQuotaBytes} onChange={(event) => setDraft((current) => ({ ...current, storageQuotaBytes: event.target.value }))} />
         </div>
         <Separator />
         <div className="settings-grid">
@@ -473,6 +477,12 @@ function Dashboard() {
             label="Storage"
             value={formatBytes(overview.storage.databaseBytes + overview.storage.blobBytes)}
             detail={`${formatBytes(overview.storage.databaseBytes)} database · ${formatBytes(overview.storage.blobBytes)} blobs${overview.storage.warningThresholdBytes > 0 ? ` · warns at ${formatBytes(overview.storage.warningThresholdBytes)}` : ''}`}
+          />
+          <Metric
+            icon={<Database />}
+            label="Stored content"
+            value={formatBytes(overview.storage.storedContentBytes)}
+            detail={overview.storage.quotaBytes > 0 ? `${formatBytes(overview.storage.quotaBytes)} quota` : 'Deduplicated · no quota set'}
           />
           <Metric icon={<KeyRound />} label="Pending invitations" value={overview.pendingInvitations} detail="One-time expiring links" />
         </div>
@@ -2749,4 +2759,14 @@ function IconButton({ label, children, onClick }: { label: string; children: Rea
 function Loading() { return <div className="empty-state"><RefreshCw className="spin" /><p>Loading server data...</p></div>; }
 function CenteredMessage({ title }: { title: string }) { return <main className="auth-page"><Card className="auth-card"><Server size={28} /><h1>{title}</h1></Card></main>; }
 function formatBytes(value: number) { if (value < 1024) return `${value} B`; if (value < 1024 ** 2) return `${(value / 1024).toFixed(1)} KB`; return `${(value / 1024 ** 2).toFixed(1)} MB`; }
+// Renders a byte count as the largest binary unit it divides evenly into, so the
+// editable settings round-trip cleanly (e.g. 268435456 -> "256 MiB", 0 -> "0").
+function formatByteSize(value: number) {
+  if (!Number.isFinite(value) || value <= 0) return '0';
+  const units: [string, number][] = [['TiB', 1024 ** 4], ['GiB', 1024 ** 3], ['MiB', 1024 ** 2], ['KiB', 1024]];
+  for (const [label, size] of units) {
+    if (value % size === 0) return `${value / size} ${label}`;
+  }
+  return `${value} B`;
+}
 function formatDuration(seconds: number) { if (seconds < 60) return `${seconds}s`; if (seconds < 3600) return `${Math.round(seconds / 60)}m`; if (seconds < 86400) return `${Math.round(seconds / 3600)}h`; return `${Math.round(seconds / 86400)}d`; }

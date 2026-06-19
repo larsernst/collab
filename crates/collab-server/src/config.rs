@@ -29,6 +29,7 @@ pub struct ServerConfig {
     pub max_import_bytes: usize,
     pub max_import_expanded_bytes: usize,
     pub storage_warning_bytes: u64,
+    pub storage_quota_bytes: u64,
     pub backup_dir: PathBuf,
     pub backup_command: Option<String>,
     pub restore_command: Option<String>,
@@ -57,6 +58,7 @@ impl Default for ServerConfig {
             max_import_bytes: 512 * 1024 * 1024,
             max_import_expanded_bytes: 2 * 1024 * 1024 * 1024,
             storage_warning_bytes: 10 * 1024 * 1024 * 1024,
+            storage_quota_bytes: 0,
             backup_dir: PathBuf::from("server-data/backups"),
             backup_command: None,
             restore_command: None,
@@ -68,6 +70,42 @@ impl Default for ServerConfig {
             log_format: LogFormat::Pretty,
         }
     }
+}
+
+/// Parses a byte-size value that may be a plain integer (`268435456`) or a
+/// human-readable size with a binary unit suffix (`256 MiB`, `12GiB`, `1.5 GB`,
+/// `512k`). Suffixes are binary (1024-based) and case-insensitive; both the IEC
+/// spellings (`KiB`/`MiB`/`GiB`/`TiB`), the short SI spellings (`KB`/`MB`/`GB`/
+/// `TB`), and bare unit letters (`K`/`M`/`G`/`T`) are accepted, matching the
+/// 1024-based math the rest of the app uses. A bare number or a `B` suffix is
+/// interpreted as bytes.
+pub fn parse_byte_size(input: &str) -> Result<u64, ()> {
+    let trimmed = input.trim();
+    if trimmed.is_empty() {
+        return Err(());
+    }
+    let split = trimmed.find(|c: char| c.is_ascii_alphabetic());
+    let (number_part, unit_part) = match split {
+        Some(index) => (trimmed[..index].trim(), trimmed[index..].trim()),
+        None => (trimmed, ""),
+    };
+    let multiplier: u64 = match unit_part.to_ascii_lowercase().as_str() {
+        "" | "b" => 1,
+        "k" | "kb" | "kib" => 1024,
+        "m" | "mb" | "mib" => 1024 * 1024,
+        "g" | "gb" | "gib" => 1024 * 1024 * 1024,
+        "t" | "tb" | "tib" => 1024_u64 * 1024 * 1024 * 1024,
+        _ => return Err(()),
+    };
+    let value: f64 = number_part.parse().map_err(|_| ())?;
+    if !value.is_finite() || value < 0.0 {
+        return Err(());
+    }
+    let bytes = value * multiplier as f64;
+    if bytes > u64::MAX as f64 {
+        return Err(());
+    }
+    Ok(bytes.round() as u64)
 }
 
 impl ServerConfig {
@@ -146,24 +184,27 @@ impl ServerConfig {
                 .map_err(|_| ConfigError::Invalid("COLLAB_WS_TICKET_TTL_SECONDS"))?;
         }
         if let Ok(value) = env::var("COLLAB_MAX_FILE_BYTES") {
-            self.max_file_bytes = value
-                .parse()
-                .map_err(|_| ConfigError::Invalid("COLLAB_MAX_FILE_BYTES"))?;
+            self.max_file_bytes = parse_byte_size(&value)
+                .map_err(|_| ConfigError::Invalid("COLLAB_MAX_FILE_BYTES"))?
+                as usize;
         }
         if let Ok(value) = env::var("COLLAB_MAX_IMPORT_BYTES") {
-            self.max_import_bytes = value
-                .parse()
-                .map_err(|_| ConfigError::Invalid("COLLAB_MAX_IMPORT_BYTES"))?;
+            self.max_import_bytes = parse_byte_size(&value)
+                .map_err(|_| ConfigError::Invalid("COLLAB_MAX_IMPORT_BYTES"))?
+                as usize;
         }
         if let Ok(value) = env::var("COLLAB_MAX_IMPORT_EXPANDED_BYTES") {
-            self.max_import_expanded_bytes = value
-                .parse()
-                .map_err(|_| ConfigError::Invalid("COLLAB_MAX_IMPORT_EXPANDED_BYTES"))?;
+            self.max_import_expanded_bytes = parse_byte_size(&value)
+                .map_err(|_| ConfigError::Invalid("COLLAB_MAX_IMPORT_EXPANDED_BYTES"))?
+                as usize;
         }
         if let Ok(value) = env::var("COLLAB_STORAGE_WARNING_BYTES") {
-            self.storage_warning_bytes = value
-                .parse()
+            self.storage_warning_bytes = parse_byte_size(&value)
                 .map_err(|_| ConfigError::Invalid("COLLAB_STORAGE_WARNING_BYTES"))?;
+        }
+        if let Ok(value) = env::var("COLLAB_STORAGE_QUOTA_BYTES") {
+            self.storage_quota_bytes = parse_byte_size(&value)
+                .map_err(|_| ConfigError::Invalid("COLLAB_STORAGE_QUOTA_BYTES"))?;
         }
         if let Ok(value) = env::var("COLLAB_BACKUP_DIR") {
             self.backup_dir = value.into();
@@ -255,6 +296,10 @@ impl ServerConfig {
         if self.storage_warning_bytes > 1024 * 1024 * 1024 * 1024 {
             return Err(ConfigError::Invalid("COLLAB_STORAGE_WARNING_BYTES"));
         }
+        // `0` means unlimited; otherwise cap at 64 TiB to catch obvious misconfiguration.
+        if self.storage_quota_bytes > 64 * 1024 * 1024 * 1024 * 1024 {
+            return Err(ConfigError::Invalid("COLLAB_STORAGE_QUOTA_BYTES"));
+        }
         Ok(())
     }
 }
@@ -277,8 +322,33 @@ pub enum ConfigError {
 
 #[cfg(test)]
 mod tests {
-    use super::{LogFormat, ServerConfig};
+    use super::{parse_byte_size, LogFormat, ServerConfig};
     use std::path::PathBuf;
+
+    #[test]
+    fn parse_byte_size_accepts_plain_integers_and_binary_suffixes() {
+        assert_eq!(parse_byte_size("1024"), Ok(1024));
+        assert_eq!(parse_byte_size("0"), Ok(0));
+        assert_eq!(parse_byte_size("512 B"), Ok(512));
+        assert_eq!(parse_byte_size("4 MiB"), Ok(4 * 1024 * 1024));
+        assert_eq!(parse_byte_size("12GiB"), Ok(12 * 1024 * 1024 * 1024));
+        // SI spellings and bare letters are accepted as binary aliases.
+        assert_eq!(parse_byte_size("256mb"), Ok(256 * 1024 * 1024));
+        assert_eq!(parse_byte_size("512k"), Ok(512 * 1024));
+        assert_eq!(parse_byte_size("2 T"), Ok(2 * 1024_u64.pow(4)));
+        // Decimal values round to whole bytes.
+        assert_eq!(parse_byte_size("1.5 GiB"), Ok(1024 * 1024 * 1024 + 512 * 1024 * 1024));
+    }
+
+    #[test]
+    fn parse_byte_size_rejects_garbage_and_negatives() {
+        assert!(parse_byte_size("").is_err());
+        assert!(parse_byte_size("   ").is_err());
+        assert!(parse_byte_size("abc").is_err());
+        assert!(parse_byte_size("12 PB").is_err());
+        assert!(parse_byte_size("-4 MiB").is_err());
+        assert!(parse_byte_size("4 MiB extra").is_err());
+    }
 
     #[test]
     fn default_configuration_is_safe_for_local_development() {
@@ -289,6 +359,7 @@ mod tests {
         assert_eq!(config.max_import_bytes, 512 * 1024 * 1024);
         assert_eq!(config.max_import_expanded_bytes, 2 * 1024 * 1024 * 1024);
         assert_eq!(config.storage_warning_bytes, 10 * 1024 * 1024 * 1024);
+        assert_eq!(config.storage_quota_bytes, 0);
         assert_eq!(config.backup_dir, PathBuf::from("server-data/backups"));
         assert_eq!(config.backup_command, None);
         assert_eq!(config.restore_command, None);
@@ -337,6 +408,21 @@ mod tests {
             ..ServerConfig::default()
         };
         assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn validation_accepts_unlimited_quota_and_rejects_oversized_quota() {
+        let unlimited = ServerConfig {
+            storage_quota_bytes: 0,
+            ..ServerConfig::default()
+        };
+        unlimited.validate().unwrap();
+
+        let oversized = ServerConfig {
+            storage_quota_bytes: 64 * 1024 * 1024 * 1024 * 1024 + 1,
+            ..ServerConfig::default()
+        };
+        assert!(oversized.validate().is_err());
     }
 
     #[test]

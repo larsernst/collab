@@ -137,11 +137,21 @@ Supported environment variables:
 - `COLLAB_NATIVE_ACCESS_TTL_MINUTES`
 - `COLLAB_NATIVE_REFRESH_TTL_DAYS`
 - `COLLAB_WS_TICKET_TTL_SECONDS`
+All `*_BYTES` settings below accept either a plain integer or a human-readable
+binary size with a unit suffix (`256MiB`, `12 GiB`, `1.5GiB`, `512k`); suffixes
+are 1024-based and case-insensitive. The same string forms are accepted by the
+`/admin/settings` byte fields, which display and round-trip the binary units.
+
 - `COLLAB_MAX_FILE_BYTES`: maximum decoded size for one hosted file.
 - `COLLAB_MAX_IMPORT_BYTES`: maximum compressed ZIP import size.
 - `COLLAB_MAX_IMPORT_EXPANDED_BYTES`: maximum total expanded ZIP content.
 - `COLLAB_STORAGE_WARNING_BYTES`: dashboard storage-pressure threshold for
   combined PostgreSQL and blob usage; set to `0` to disable the warning.
+- `COLLAB_STORAGE_QUOTA_BYTES`: hard server-wide storage quota enforced against
+  total deduplicated stored content (sum of unique blob sizes). Content-growing
+  operations (asset uploads, text document writes, document creation, and ZIP
+  imports) are rejected with `413`/`507 QUOTA_EXCEEDED` once the quota would be
+  crossed. Set to `0` (the default) for no quota.
 - `COLLAB_BACKUP_INTERVAL_SECONDS`: interval for the optional Compose backup
   worker and the server-managed scheduler.
 - `COLLAB_BACKUP_RETENTION_DAYS`: backup directories older than this are

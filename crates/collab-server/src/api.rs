@@ -358,10 +358,37 @@ pub struct UpdateRuntimeSettingsRequest {
     pub native_access_ttl_minutes: Option<i64>,
     pub native_refresh_ttl_days: Option<i64>,
     pub ws_ticket_ttl_seconds: Option<i64>,
+    #[serde(default, deserialize_with = "deserialize_opt_byte_size")]
     pub max_file_bytes: Option<u64>,
+    #[serde(default, deserialize_with = "deserialize_opt_byte_size")]
     pub max_import_bytes: Option<u64>,
+    #[serde(default, deserialize_with = "deserialize_opt_byte_size")]
     pub max_import_expanded_bytes: Option<u64>,
+    #[serde(default, deserialize_with = "deserialize_opt_byte_size")]
     pub storage_warning_bytes: Option<u64>,
+    #[serde(default, deserialize_with = "deserialize_opt_byte_size")]
+    pub storage_quota_bytes: Option<u64>,
+}
+
+/// Accepts a byte-size value from JSON as either a number (`268435456`) or a
+/// human-readable string (`"256 MiB"`), parsed by [`crate::config::parse_byte_size`].
+fn deserialize_opt_byte_size<'de, D>(deserializer: D) -> Result<Option<u64>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum ByteSizeInput {
+        Int(u64),
+        Str(String),
+    }
+    match Option::<ByteSizeInput>::deserialize(deserializer)? {
+        None => Ok(None),
+        Some(ByteSizeInput::Int(value)) => Ok(Some(value)),
+        Some(ByteSizeInput::Str(raw)) => crate::config::parse_byte_size(&raw)
+            .map(Some)
+            .map_err(|_| serde::de::Error::custom(format!("invalid byte size: {raw}"))),
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -1901,6 +1928,16 @@ pub async fn create_vault_file(
         .map_err(|error| ApiFailure::path_invalid(error.to_string(), request_id.clone()))?;
 
     let content = (payload.kind == HostedFileKind::Document).then(|| payload.content.into_bytes());
+    if let Some(content) = content.as_deref() {
+        let settings = load_effective_runtime_settings(&state.config);
+        enforce_storage_quota(
+            &state.database,
+            settings.storage_quota_bytes,
+            &[(collab_core::sha256_bytes(content), content.len())],
+            &request_id,
+        )
+        .await?;
+    }
     let digest = if let Some(content) = content.as_deref() {
         Some(
             state
@@ -2644,6 +2681,14 @@ pub async fn write_text_revision(
     )
     .await?;
     let content = payload.content.into_bytes();
+    let settings = load_effective_runtime_settings(&state.config);
+    enforce_storage_quota(
+        &state.database,
+        settings.storage_quota_bytes,
+        &[(collab_core::sha256_bytes(&content), content.len())],
+        &request_id,
+    )
+    .await?;
     let digest = state
         .blobs
         .put(&content)
@@ -2966,6 +3011,13 @@ pub async fn upload_binary_asset(
     if digest != payload.expected_hash.to_ascii_lowercase() {
         return Err(ApiFailure::upload_hash_mismatch(request_id));
     }
+    enforce_storage_quota(
+        &state.database,
+        settings.storage_quota_bytes,
+        &[(digest.clone(), content.len())],
+        &request_id,
+    )
+    .await?;
     let stored_digest = state
         .blobs
         .put(&content)
@@ -3769,6 +3821,22 @@ pub async fn import_vault_zip(
         settings.max_import_expanded_bytes,
         &request_id,
     )?;
+    let quota_incoming: Vec<(String, usize)> = entries
+        .iter()
+        .filter_map(|entry| {
+            entry
+                .content
+                .as_deref()
+                .map(|content| (collab_core::sha256_bytes(content), content.len()))
+        })
+        .collect();
+    enforce_storage_quota(
+        &state.database,
+        settings.storage_quota_bytes,
+        &quota_incoming,
+        &request_id,
+    )
+    .await?;
     let mut imported_bytes = 0usize;
     for entry in &mut entries {
         if let Some(content) = entry.content.as_deref() {
@@ -4175,6 +4243,9 @@ pub async fn overview(
         .total_bytes()
         .await
         .map_err(|_| ApiFailure::server(request_id.clone()))?;
+    let stored_content_bytes = stored_content_bytes(&state.database)
+        .await
+        .map_err(|_| ApiFailure::server(request_id.clone()))?;
     let blob_health_ok = state.blobs.health_check().await.is_ok();
     let settings = load_effective_runtime_settings(&state.config);
     let pending_update_count: i64 = persisted_live_metrics.get("pending_update_count");
@@ -4265,6 +4336,29 @@ pub async fn overview(
             severity: "warning".into(),
         });
     }
+    if settings.storage_quota_bytes > 0 {
+        if stored_content_bytes >= settings.storage_quota_bytes {
+            warnings.push(OperationalWarning {
+                code: "storage_quota_exceeded".into(),
+                message: format!(
+                    "Stored content totals {} and has reached the storage quota of {}. New uploads are blocked until content is removed.",
+                    format_bytes(stored_content_bytes),
+                    format_bytes(settings.storage_quota_bytes)
+                ),
+                severity: "critical".into(),
+            });
+        } else if stored_content_bytes * 10 >= settings.storage_quota_bytes * 9 {
+            warnings.push(OperationalWarning {
+                code: "storage_quota_pressure".into(),
+                message: format!(
+                    "Stored content totals {} and is within 10% of the storage quota of {}.",
+                    format_bytes(stored_content_bytes),
+                    format_bytes(settings.storage_quota_bytes)
+                ),
+                severity: "warning".into(),
+            });
+        }
+    }
     if pending_update_count >= CRDT_PENDING_UPDATE_WARNING_COUNT
         || pending_update_bytes >= CRDT_PENDING_UPDATE_WARNING_BYTES
     {
@@ -4295,6 +4389,8 @@ pub async fn overview(
             database_bytes,
             blob_bytes,
             warning_threshold_bytes: settings.storage_warning_bytes,
+            stored_content_bytes,
+            quota_bytes: settings.storage_quota_bytes,
         },
         live_collaboration: LiveCollaborationMetrics {
             active_connections: runtime_live_metrics.active_connections,
@@ -6155,6 +6251,7 @@ struct StoredRuntimeSettings {
     max_import_bytes: Option<u64>,
     max_import_expanded_bytes: Option<u64>,
     storage_warning_bytes: Option<u64>,
+    storage_quota_bytes: Option<u64>,
 }
 
 #[derive(Debug, Clone)]
@@ -6168,6 +6265,7 @@ pub(crate) struct EffectiveRuntimeSettings {
     max_import_bytes: usize,
     max_import_expanded_bytes: usize,
     storage_warning_bytes: u64,
+    storage_quota_bytes: u64,
 }
 
 impl BackupRuntimeSettings {
@@ -6342,6 +6440,13 @@ pub(crate) fn load_effective_runtime_settings(
                 .storage_warning_bytes
                 .unwrap_or(config.storage_warning_bytes)
         },
+        storage_quota_bytes: if env_locked("COLLAB_STORAGE_QUOTA_BYTES") {
+            config.storage_quota_bytes
+        } else {
+            stored
+                .storage_quota_bytes
+                .unwrap_or(config.storage_quota_bytes)
+        },
     }
 }
 
@@ -6395,6 +6500,11 @@ fn runtime_settings_to_protocol(
             effective.storage_warning_bytes,
             "COLLAB_STORAGE_WARNING_BYTES",
             stored.storage_warning_bytes.is_some(),
+        ),
+        storage_quota_bytes: setting_u64(
+            effective.storage_quota_bytes,
+            "COLLAB_STORAGE_QUOTA_BYTES",
+            stored.storage_quota_bytes.is_some(),
         ),
     }
 }
@@ -6544,6 +6654,21 @@ fn apply_runtime_update(
             &mut stored.storage_warning_bytes,
             value,
             "COLLAB_STORAGE_WARNING_BYTES",
+            request_id,
+        )?;
+    }
+    if let Some(value) = payload.storage_quota_bytes {
+        validate_range_u64(
+            value,
+            0,
+            64 * 1024 * 1024 * 1024 * 1024,
+            "Storage quota bytes",
+            request_id,
+        )?;
+        set_if_unlocked_u64(
+            &mut stored.storage_quota_bytes,
+            value,
+            "COLLAB_STORAGE_QUOTA_BYTES",
             request_id,
         )?;
     }
@@ -8656,6 +8781,72 @@ async fn insert_blob_record(
     Ok(())
 }
 
+/// Total deduplicated stored content across the server, measured as the sum of
+/// unique blob sizes. This is the metric the storage quota is enforced against.
+async fn stored_content_bytes(db: &PgPool) -> Result<u64, sqlx::Error> {
+    let bytes: i64 =
+        sqlx::query_scalar("SELECT COALESCE(SUM(size_bytes), 0)::bigint FROM hosted_blobs")
+            .fetch_one(db)
+            .await?;
+    Ok(bytes.max(0) as u64)
+}
+
+/// Rejects content-growing operations that would push the server's deduplicated
+/// stored content past the configured storage quota. `quota_bytes == 0` disables
+/// the quota. `incoming` is the set of `(digest, size)` pairs the operation would
+/// add; digests already stored (or duplicated within `incoming`) add nothing,
+/// matching content-addressed blob deduplication so re-uploading existing content
+/// is never falsely rejected.
+async fn enforce_storage_quota(
+    db: &PgPool,
+    quota_bytes: u64,
+    incoming: &[(String, usize)],
+    request_id: &str,
+) -> Result<(), ApiFailure> {
+    if quota_bytes == 0 || incoming.is_empty() {
+        return Ok(());
+    }
+    let digests: Vec<String> = incoming.iter().map(|(digest, _)| digest.clone()).collect();
+    let existing: Vec<String> =
+        sqlx::query_scalar("SELECT digest FROM hosted_blobs WHERE digest = ANY($1)")
+            .bind(&digests)
+            .fetch_all(db)
+            .await
+            .map_err(|_| ApiFailure::server(request_id.to_owned()))?;
+    let existing: HashSet<String> = existing.into_iter().collect();
+    let added = quota_added_bytes(incoming, &existing);
+    if added == 0 {
+        return Ok(());
+    }
+    let current = stored_content_bytes(db)
+        .await
+        .map_err(|_| ApiFailure::server(request_id.to_owned()))?;
+    if quota_would_exceed(current, added, quota_bytes) {
+        return Err(ApiFailure::storage_quota_exceeded(request_id.to_owned()));
+    }
+    Ok(())
+}
+
+/// Bytes a content-addressed write would newly store: sums the size of each
+/// incoming digest that is neither already stored (`existing`) nor a duplicate
+/// of an earlier entry in `incoming`.
+fn quota_added_bytes(incoming: &[(String, usize)], existing: &HashSet<String>) -> u64 {
+    let mut counted: HashSet<&str> = existing.iter().map(String::as_str).collect();
+    let mut added: u64 = 0;
+    for (digest, size) in incoming {
+        if counted.insert(digest.as_str()) {
+            added = added.saturating_add(*size as u64);
+        }
+    }
+    added
+}
+
+/// Whether storing `added` more bytes over the current `current` total would
+/// cross `quota`. A `quota` of `0` means unlimited.
+fn quota_would_exceed(current: u64, added: u64, quota: u64) -> bool {
+    quota > 0 && current.saturating_add(added) > quota
+}
+
 fn map_path_database_error(error: sqlx::Error, request_id: String) -> ApiFailure {
     if error
         .as_database_error()
@@ -9882,6 +10073,15 @@ impl ApiFailure {
             request_id,
         )
     }
+
+    fn storage_quota_exceeded(request_id: String) -> Self {
+        Self::new(
+            StatusCode::INSUFFICIENT_STORAGE,
+            ErrorCode::QuotaExceeded,
+            "This upload would exceed the server storage quota.",
+            request_id,
+        )
+    }
 }
 
 impl IntoResponse for ApiFailure {
@@ -9894,9 +10094,10 @@ impl IntoResponse for ApiFailure {
 mod tests {
     use super::{
         cookie, indexed_note_tags, indexed_note_title, is_safe_backup_name,
-        parse_backup_created_at, parse_vault_zip, search_excerpt, sha256_file, verify_backup,
-        Capability, STANDARD,
+        parse_backup_created_at, parse_vault_zip, quota_added_bytes, quota_would_exceed,
+        search_excerpt, sha256_file, verify_backup, Capability, STANDARD,
     };
+    use std::collections::HashSet;
     use crate::auth::hash_secret;
     use crate::{
         app::{build_router, AppState},
@@ -9919,6 +10120,62 @@ mod tests {
     };
     use tower::ServiceExt;
     use uuid::Uuid;
+
+    #[test]
+    fn quota_added_bytes_ignores_existing_and_duplicate_digests() {
+        let mut existing = HashSet::new();
+        existing.insert("a".to_string());
+        // "a" already stored (0), "b" new (10), "b" again duplicate (0), "c" new (5).
+        let incoming = vec![
+            ("a".to_string(), 100),
+            ("b".to_string(), 10),
+            ("b".to_string(), 10),
+            ("c".to_string(), 5),
+        ];
+        assert_eq!(quota_added_bytes(&incoming, &existing), 15);
+    }
+
+    #[test]
+    fn quota_added_bytes_is_zero_when_all_content_is_already_stored() {
+        let mut existing = HashSet::new();
+        existing.insert("a".to_string());
+        let incoming = vec![("a".to_string(), 100)];
+        assert_eq!(quota_added_bytes(&incoming, &existing), 0);
+    }
+
+    #[test]
+    fn runtime_settings_request_accepts_byte_strings_and_numbers() {
+        let request: super::UpdateRuntimeSettingsRequest = serde_json::from_value(serde_json::json!({
+            "maxFileBytes": "256 MiB",
+            "maxImportBytes": 536_870_912u64,
+            "storageQuotaBytes": "12 GiB",
+        }))
+        .unwrap();
+        assert_eq!(request.max_file_bytes, Some(256 * 1024 * 1024));
+        assert_eq!(request.max_import_bytes, Some(536_870_912));
+        assert_eq!(request.storage_quota_bytes, Some(12 * 1024 * 1024 * 1024));
+        // Omitted byte fields stay absent.
+        assert_eq!(request.max_import_expanded_bytes, None);
+        assert_eq!(request.storage_warning_bytes, None);
+    }
+
+    #[test]
+    fn runtime_settings_request_rejects_unparseable_byte_strings() {
+        let result: Result<super::UpdateRuntimeSettingsRequest, _> =
+            serde_json::from_value(serde_json::json!({ "maxFileBytes": "not a size" }));
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn quota_would_exceed_respects_unlimited_and_threshold() {
+        // Unlimited quota never trips.
+        assert!(!quota_would_exceed(1_000, 1_000, 0));
+        // Exactly at the quota is allowed; one byte over is rejected.
+        assert!(!quota_would_exceed(900, 100, 1_000));
+        assert!(quota_would_exceed(901, 100, 1_000));
+        // Saturating addition cannot wrap around the limit.
+        assert!(quota_would_exceed(u64::MAX, 1, 1_000));
+    }
 
     #[test]
     fn cookie_parser_matches_exact_names() {

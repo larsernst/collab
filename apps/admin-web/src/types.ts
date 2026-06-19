@@ -52,6 +52,8 @@ export interface AdminOverview {
     databaseBytes: number;
     blobBytes: number;
     warningThresholdBytes: number;
+    storedContentBytes: number;
+    quotaBytes: number;
   };
   liveCollaboration: {
     activeConnections: number;
@@ -130,6 +132,7 @@ export interface AdminServerSettings {
     maxImportBytes: AdminRuntimeSetting<number>;
     maxImportExpandedBytes: AdminRuntimeSetting<number>;
     storageWarningBytes: AdminRuntimeSetting<number>;
+    storageQuotaBytes: AdminRuntimeSetting<number>;
   };
   backup: AdminBackupSettings;
 }

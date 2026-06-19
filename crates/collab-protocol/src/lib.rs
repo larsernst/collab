@@ -163,6 +163,12 @@ pub struct StorageSummary {
     pub database_bytes: i64,
     pub blob_bytes: u64,
     pub warning_threshold_bytes: u64,
+    /// Total deduplicated stored content (sum of unique blob sizes). This is the
+    /// metric the storage quota is enforced against, distinct from the physical
+    /// `database_bytes`/`blob_bytes` figures used for the pressure warning.
+    pub stored_content_bytes: u64,
+    /// Hard server-wide storage cap in bytes. `0` means unlimited.
+    pub quota_bytes: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -243,6 +249,7 @@ pub struct AdminRuntimeSettings {
     pub max_import_bytes: AdminRuntimeSetting<u64>,
     pub max_import_expanded_bytes: AdminRuntimeSetting<u64>,
     pub storage_warning_bytes: AdminRuntimeSetting<u64>,
+    pub storage_quota_bytes: AdminRuntimeSetting<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
