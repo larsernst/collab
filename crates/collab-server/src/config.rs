@@ -28,6 +28,7 @@ pub struct ServerConfig {
     pub max_file_bytes: usize,
     pub max_import_bytes: usize,
     pub max_import_expanded_bytes: usize,
+    pub storage_warning_bytes: u64,
     pub backup_dir: PathBuf,
     pub backup_command: Option<String>,
     pub restore_command: Option<String>,
@@ -55,6 +56,7 @@ impl Default for ServerConfig {
             max_file_bytes: 256 * 1024 * 1024,
             max_import_bytes: 512 * 1024 * 1024,
             max_import_expanded_bytes: 2 * 1024 * 1024 * 1024,
+            storage_warning_bytes: 10 * 1024 * 1024 * 1024,
             backup_dir: PathBuf::from("server-data/backups"),
             backup_command: None,
             restore_command: None,
@@ -158,6 +160,11 @@ impl ServerConfig {
                 .parse()
                 .map_err(|_| ConfigError::Invalid("COLLAB_MAX_IMPORT_EXPANDED_BYTES"))?;
         }
+        if let Ok(value) = env::var("COLLAB_STORAGE_WARNING_BYTES") {
+            self.storage_warning_bytes = value
+                .parse()
+                .map_err(|_| ConfigError::Invalid("COLLAB_STORAGE_WARNING_BYTES"))?;
+        }
         if let Ok(value) = env::var("COLLAB_BACKUP_DIR") {
             self.backup_dir = value.into();
         }
@@ -245,6 +252,9 @@ impl ServerConfig {
         {
             return Err(ConfigError::Invalid("COLLAB_MAX_IMPORT_EXPANDED_BYTES"));
         }
+        if self.storage_warning_bytes > 1024 * 1024 * 1024 * 1024 {
+            return Err(ConfigError::Invalid("COLLAB_STORAGE_WARNING_BYTES"));
+        }
         Ok(())
     }
 }
@@ -278,6 +288,7 @@ mod tests {
         assert_eq!(config.max_file_bytes, 256 * 1024 * 1024);
         assert_eq!(config.max_import_bytes, 512 * 1024 * 1024);
         assert_eq!(config.max_import_expanded_bytes, 2 * 1024 * 1024 * 1024);
+        assert_eq!(config.storage_warning_bytes, 10 * 1024 * 1024 * 1024);
         assert_eq!(config.backup_dir, PathBuf::from("server-data/backups"));
         assert_eq!(config.backup_command, None);
         assert_eq!(config.restore_command, None);

@@ -18,9 +18,10 @@ use collab_protocol::GrantSubjectType;
 use collab_protocol::{
     capabilities_for_role, AdminBackupArtifactVerification, AdminBackupCommandResult,
     AdminBackupExportTarget, AdminBackupOverview, AdminBackupSchedule, AdminBackupSettings,
-    AdminBackupSummary, AdminBackupVerification, AdminOverview, ApiError,
-    AuditEvent, BootstrapStatus, BrowserSession, Capability, CreatedInvitation, DataResponse,
-    ErrorCode, ErrorResponse, HealthState, HostedChatMessage, HostedDocumentType, HostedFileEntry,
+    AdminBackupSettingsLocks, AdminBackupSummary, AdminBackupVerification, AdminOverview,
+    AdminRuntimeSetting, AdminRuntimeSettings, AdminServerSettings, ApiError, AuditEvent,
+    BootstrapStatus, BrowserSession, Capability, CreatedInvitation, DataResponse, ErrorCode,
+    ErrorResponse, HealthState, HostedChatMessage, HostedDocumentType, HostedFileEntry,
     HostedFileKind, HostedFileReference, HostedFileRevision, HostedFileState, HostedPdfAnnotations,
     HostedPresenceEntry, HostedReferenceImpact, HostedRevisionContent, HostedSearchResult,
     HostedSnapshot, HostedStructuralOperationPreview, HostedStructuralOperationResult,
@@ -41,7 +42,7 @@ use std::{
     io::{Cursor, Read, Write},
     path::{Path as FsPath, PathBuf},
     process::Stdio,
-    time::Duration,
+    time::{Duration, SystemTime},
 };
 use tokio::{process::Command, time::timeout};
 use uuid::Uuid;
@@ -62,6 +63,10 @@ pub struct LoginRequest {
     pub username: String,
     pub password: String,
 }
+
+const BACKUP_FAILURE_LOOKBACK_HOURS: i64 = 24;
+const CRDT_PENDING_UPDATE_WARNING_COUNT: i64 = 10_000;
+const CRDT_PENDING_UPDATE_WARNING_BYTES: i64 = 64 * 1024 * 1024;
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -345,6 +350,27 @@ pub struct UpdateBackupSettingsRequest {
     pub export_dir: Option<String>,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateRuntimeSettingsRequest {
+    pub browser_secure_cookies: Option<bool>,
+    pub session_ttl_hours: Option<i64>,
+    pub native_access_ttl_minutes: Option<i64>,
+    pub native_refresh_ttl_days: Option<i64>,
+    pub ws_ticket_ttl_seconds: Option<i64>,
+    pub max_file_bytes: Option<u64>,
+    pub max_import_bytes: Option<u64>,
+    pub max_import_expanded_bytes: Option<u64>,
+    pub storage_warning_bytes: Option<u64>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateServerSettingsRequest {
+    pub runtime: Option<UpdateRuntimeSettingsRequest>,
+    pub backup: Option<UpdateBackupSettingsRequest>,
+}
+
 pub async fn bootstrap_status(
     State(state): State<AppState>,
     Extension(request_id): Extension<String>,
@@ -575,16 +601,13 @@ pub async fn logout(
     )
     .await?;
     let mut response = StatusCode::NO_CONTENT.into_response();
+    let settings = load_effective_runtime_settings(&state.config);
     append_expired_cookie(
         &mut response,
         SESSION_COOKIE,
-        state.config.browser_secure_cookies,
+        settings.browser_secure_cookies,
     );
-    append_expired_cookie(
-        &mut response,
-        CSRF_COOKIE,
-        state.config.browser_secure_cookies,
-    );
+    append_expired_cookie(&mut response, CSRF_COOKIE, settings.browser_secure_cookies);
     Ok(response)
 }
 
@@ -666,10 +689,11 @@ pub async fn refresh(
     let user = user_from_row(&row);
     let access_token = generate_secret();
     let refresh_token = generate_secret();
+    let settings = load_effective_runtime_settings(&state.config);
     let access_expires_at =
-        chrono::Utc::now() + chrono::Duration::minutes(state.config.native_access_ttl_minutes);
+        chrono::Utc::now() + chrono::Duration::minutes(settings.native_access_ttl_minutes);
     let refresh_expires_at =
-        chrono::Utc::now() + chrono::Duration::days(state.config.native_refresh_ttl_days);
+        chrono::Utc::now() + chrono::Duration::days(settings.native_refresh_ttl_days);
     let rotated = sqlx::query(
         r#"
         UPDATE native_sessions SET access_token_hash = $1, previous_refresh_token_hash = refresh_token_hash,
@@ -1551,7 +1575,11 @@ pub async fn update_vault_member(
     // Resolve the resulting membership-level capability set for the self-lockout
     // guard and the template-existence check.
     let template_caps = if let MemberUpdate::Template(template_id) = update {
-        Some(load_template(&state.database, template_id, &request_id).await?.capabilities)
+        Some(
+            load_template(&state.database, template_id, &request_id)
+                .await?
+                .capabilities,
+        )
     } else {
         None
     };
@@ -1601,7 +1629,10 @@ pub async fn update_vault_member(
         MemberUpdate::Capabilities(tokens) => {
             sqlx::query("UPDATE hosted_vault_memberships SET template_id = NULL, capabilities = $1, updated_at = NOW() WHERE vault_id = $2 AND user_id = $3")
                 .bind(tokens).bind(vault_id).bind(user_id).execute(&mut *transaction).await.map_err(|_| ApiFailure::server(request_id.clone()))?;
-            ("member.permissions_changed", json!({"capabilities": tokens}))
+            (
+                "member.permissions_changed",
+                json!({"capabilities": tokens}),
+            )
         }
         MemberUpdate::Template(template_id) => {
             sqlx::query("UPDATE hosted_vault_memberships SET template_id = $1, capabilities = NULL, updated_at = NOW() WHERE vault_id = $2 AND user_id = $3")
@@ -2574,8 +2605,8 @@ pub async fn issue_ws_ticket(
     .await?;
     let ticket = generate_secret();
     let ticket_hash = hash_secret(&ticket);
-    let expires_at =
-        chrono::Utc::now() + chrono::Duration::seconds(state.config.ws_ticket_ttl_seconds);
+    let settings = load_effective_runtime_settings(&state.config);
+    let expires_at = chrono::Utc::now() + chrono::Duration::seconds(settings.ws_ticket_ttl_seconds);
     sqlx::query(
         "INSERT INTO ws_tickets (id, ticket_hash, user_id, vault_id, expires_at) VALUES ($1, $2, $3, $4, $5)",
     )
@@ -2927,7 +2958,8 @@ pub async fn upload_binary_asset(
     let content = STANDARD.decode(&payload.content_base64).map_err(|_| {
         ApiFailure::validation("Asset content is not valid base64.", request_id.clone())
     })?;
-    if content.len() > state.config.max_file_bytes {
+    let settings = load_effective_runtime_settings(&state.config);
+    if content.len() > settings.max_file_bytes {
         return Err(ApiFailure::quota_exceeded(request_id));
     }
     let digest = collab_core::sha256_bytes(&content);
@@ -3716,7 +3748,8 @@ pub async fn import_vault_zip(
     let archive_bytes = STANDARD.decode(payload.archive_base64).map_err(|_| {
         ApiFailure::validation("Vault import is not valid base64.", request_id.clone())
     })?;
-    if archive_bytes.len() > state.config.max_import_bytes {
+    let settings = load_effective_runtime_settings(&state.config);
+    if archive_bytes.len() > settings.max_import_bytes {
         return Err(ApiFailure::quota_exceeded(request_id));
     }
     let manifest = load_vault_manifest(&state.database, vault_id, &request_id).await?;
@@ -3732,8 +3765,8 @@ pub async fn import_vault_zip(
     }
     let mut entries = parse_vault_zip(
         &archive_bytes,
-        state.config.max_file_bytes,
-        state.config.max_import_expanded_bytes,
+        settings.max_file_bytes,
+        settings.max_import_expanded_bytes,
         &request_id,
     )?;
     let mut imported_bytes = 0usize;
@@ -4142,8 +4175,33 @@ pub async fn overview(
         .total_bytes()
         .await
         .map_err(|_| ApiFailure::server(request_id.clone()))?;
+    let blob_health_ok = state.blobs.health_check().await.is_ok();
+    let settings = load_effective_runtime_settings(&state.config);
+    let pending_update_count: i64 = persisted_live_metrics.get("pending_update_count");
+    let pending_update_bytes: i64 = persisted_live_metrics.get("pending_update_bytes");
+    let backup_overview = load_backup_overview(&state);
+    let backup_failure_count = sqlx::query_scalar::<_, i64>(
+        r#"
+        SELECT COUNT(*)
+          FROM audit_events
+         WHERE action IN ('admin.backup.run', 'admin.backup.restore')
+           AND result = 'failure'
+           AND created_at >= NOW() - INTERVAL '24 hours'
+        "#,
+    )
+    .fetch_one(&state.database)
+    .await
+    .map_err(|_| ApiFailure::server(request_id.clone()))?;
     let mut warnings = Vec::new();
-    if !state.config.browser_secure_cookies {
+    if !blob_health_ok {
+        warnings.push(OperationalWarning {
+            code: "blob_storage_unavailable".into(),
+            message: "Blob storage health check failed. File reads, uploads, and backups may be incomplete."
+                .into(),
+            severity: "critical".into(),
+        });
+    }
+    if !settings.browser_secure_cookies {
         warnings.push(OperationalWarning {
             code: "insecure_browser_cookies".into(),
             message: "Secure browser cookies are disabled. Enable them behind TLS for production."
@@ -4161,8 +4219,66 @@ pub async fn overview(
             severity: "info".into(),
         });
     }
+    if state.config.backup_command.is_some() {
+        if backup_overview.backups.is_empty() {
+            warnings.push(OperationalWarning {
+                code: "backup_missing".into(),
+                message:
+                    "No verified backup artifacts were found in the configured backup directory."
+                        .into(),
+                severity: "warning".into(),
+            });
+        } else if let Some(latest_backup_age) = latest_backup_age(&backup_overview.backups) {
+            let stale_after =
+                Duration::from_secs(backup_overview.settings.interval_seconds.saturating_mul(2))
+                    .max(Duration::from_secs(24 * 60 * 60));
+            if latest_backup_age > stale_after {
+                warnings.push(OperationalWarning {
+                    code: "backup_stale".into(),
+                    message: format!(
+                        "Latest backup is older than {} hours.",
+                        stale_after.as_secs() / 3600
+                    ),
+                    severity: "warning".into(),
+                });
+            }
+        }
+    }
+    if backup_failure_count > 0 {
+        warnings.push(OperationalWarning {
+            code: "backup_failures".into(),
+            message: format!(
+                "{backup_failure_count} backup or restore failure(s) were recorded in the last {BACKUP_FAILURE_LOOKBACK_HOURS} hours."
+            ),
+            severity: "critical".into(),
+        });
+    }
+    let storage_total_bytes = database_bytes.max(0) as u64 + blob_bytes;
+    if settings.storage_warning_bytes > 0 && storage_total_bytes >= settings.storage_warning_bytes {
+        warnings.push(OperationalWarning {
+            code: "storage_pressure".into(),
+            message: format!(
+                "Database and blob storage total {} and crossed the configured warning threshold of {}.",
+                format_bytes(storage_total_bytes),
+                format_bytes(settings.storage_warning_bytes)
+            ),
+            severity: "warning".into(),
+        });
+    }
+    if pending_update_count >= CRDT_PENDING_UPDATE_WARNING_COUNT
+        || pending_update_bytes >= CRDT_PENDING_UPDATE_WARNING_BYTES
+    {
+        warnings.push(OperationalWarning {
+            code: "crdt_compaction_backlog".into(),
+            message: format!(
+                "The live collaboration update log has {pending_update_count} pending update(s), totalling {}.",
+                format_bytes(pending_update_bytes.max(0) as u64)
+            ),
+            severity: "warning".into(),
+        });
+    }
     Ok(Json(DataResponse::new(AdminOverview {
-        health: if state.blobs.health_check().await.is_ok() {
+        health: if blob_health_ok {
             HealthState::Ok
         } else {
             HealthState::Degraded
@@ -4178,14 +4294,15 @@ pub async fn overview(
         storage: StorageSummary {
             database_bytes,
             blob_bytes,
+            warning_threshold_bytes: settings.storage_warning_bytes,
         },
         live_collaboration: LiveCollaborationMetrics {
             active_connections: runtime_live_metrics.active_connections,
             loaded_rooms: runtime_live_metrics.loaded_rooms,
             active_awareness_states: runtime_live_metrics.active_awareness_states,
             active_presence_users: persisted_live_metrics.get("active_presence_users"),
-            pending_update_count: persisted_live_metrics.get("pending_update_count"),
-            pending_update_bytes: persisted_live_metrics.get("pending_update_bytes"),
+            pending_update_count,
+            pending_update_bytes,
             updates_last_minute: persisted_live_metrics.get("updates_last_minute"),
             compacted_documents: persisted_live_metrics.get("compacted_documents"),
             compacted_state_bytes: persisted_live_metrics.get("compacted_state_bytes"),
@@ -4207,6 +4324,44 @@ pub async fn admin_backups(
     Ok(Json(DataResponse::new(load_backup_overview(&state))))
 }
 
+pub async fn admin_settings(
+    State(state): State<AppState>,
+    Extension(request_id): Extension<String>,
+    headers: HeaderMap,
+) -> Result<Json<DataResponse<AdminServerSettings>>, ApiFailure> {
+    require_admin(&state, &headers, &request_id).await?;
+    Ok(Json(DataResponse::new(load_server_settings(&state.config))))
+}
+
+pub async fn admin_update_settings(
+    State(state): State<AppState>,
+    Extension(request_id): Extension<String>,
+    headers: HeaderMap,
+    Json(payload): Json<UpdateServerSettingsRequest>,
+) -> Result<Json<DataResponse<AdminServerSettings>>, ApiFailure> {
+    let actor = require_admin_csrf(&state, &headers, &request_id).await?;
+    if let Some(runtime) = payload.runtime {
+        let stored = apply_runtime_update(&state.config, runtime, &request_id)?;
+        save_stored_runtime_settings(&state.config.backup_dir, &stored, &request_id)?;
+    }
+    if let Some(backup) = payload.backup {
+        let settings = BackupRuntimeSettings::from_request(&state.config, backup, &request_id)?;
+        save_backup_runtime_settings(&state.config.backup_dir, &settings, &request_id)?;
+    }
+    record_audit(
+        &state.database,
+        Some(&actor.user.id),
+        "admin.settings.update",
+        Some("settings"),
+        Some("server"),
+        "success",
+        &request_id,
+        json!({ "updated": true }),
+    )
+    .await?;
+    Ok(Json(DataResponse::new(load_server_settings(&state.config))))
+}
+
 pub async fn admin_update_backup_settings(
     State(state): State<AppState>,
     Extension(request_id): Extension<String>,
@@ -4214,7 +4369,7 @@ pub async fn admin_update_backup_settings(
     Json(payload): Json<UpdateBackupSettingsRequest>,
 ) -> Result<Json<DataResponse<AdminBackupOverview>>, ApiFailure> {
     let actor = require_admin_csrf(&state, &headers, &request_id).await?;
-    let settings = BackupRuntimeSettings::from_request(payload, &request_id)?;
+    let settings = BackupRuntimeSettings::from_request(&state.config, payload, &request_id)?;
     save_backup_runtime_settings(&state.config.backup_dir, &settings, &request_id)?;
     record_audit(
         &state.database,
@@ -5777,12 +5932,9 @@ pub async fn admin_update_vault_member(
     let actor = require_admin_csrf(&state, &headers, &request_id).await?;
     // The server-admin member endpoint only changes the legacy role; fine-grained
     // capability/template assignment goes through the admin grant endpoints.
-    let role = payload.role.ok_or_else(|| {
-        ApiFailure::validation(
-            "A member role is required.",
-            request_id.clone(),
-        )
-    })?;
+    let role = payload
+        .role
+        .ok_or_else(|| ApiFailure::validation("A member role is required.", request_id.clone()))?;
     require_vault_not_pending_delete(&state.database, vault_id, &request_id).await?;
     let target = load_vault_member(&state.database, vault_id, user_id, &request_id).await?;
     if target.owner {
@@ -5991,6 +6143,33 @@ pub(crate) struct BackupRuntimeSettings {
     pub export_dir: Option<PathBuf>,
 }
 
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct StoredRuntimeSettings {
+    browser_secure_cookies: Option<bool>,
+    session_ttl_hours: Option<i64>,
+    native_access_ttl_minutes: Option<i64>,
+    native_refresh_ttl_days: Option<i64>,
+    ws_ticket_ttl_seconds: Option<i64>,
+    max_file_bytes: Option<u64>,
+    max_import_bytes: Option<u64>,
+    max_import_expanded_bytes: Option<u64>,
+    storage_warning_bytes: Option<u64>,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct EffectiveRuntimeSettings {
+    browser_secure_cookies: bool,
+    session_ttl_hours: i64,
+    native_access_ttl_minutes: i64,
+    native_refresh_ttl_days: i64,
+    ws_ticket_ttl_seconds: i64,
+    max_file_bytes: usize,
+    max_import_bytes: usize,
+    max_import_expanded_bytes: usize,
+    storage_warning_bytes: u64,
+}
+
 impl BackupRuntimeSettings {
     fn from_config(config: &crate::config::ServerConfig) -> Self {
         Self {
@@ -6002,6 +6181,7 @@ impl BackupRuntimeSettings {
     }
 
     fn from_request(
+        config: &crate::config::ServerConfig,
         payload: UpdateBackupSettingsRequest,
         request_id: &str,
     ) -> Result<Self, ApiFailure> {
@@ -6016,21 +6196,458 @@ impl BackupRuntimeSettings {
             (!trimmed.is_empty()).then(|| PathBuf::from(trimmed))
         });
         Ok(Self {
-            schedule_enabled: payload.schedule_enabled,
-            interval_seconds: payload.interval_seconds.max(60),
-            retention_days: payload.retention_days,
-            export_dir,
+            schedule_enabled: if env_locked("COLLAB_BACKUP_SCHEDULE_ENABLED") {
+                config.backup_schedule_enabled
+            } else {
+                payload.schedule_enabled
+            },
+            interval_seconds: if env_locked("COLLAB_BACKUP_INTERVAL_SECONDS") {
+                config.backup_interval_seconds
+            } else {
+                payload.interval_seconds.max(60)
+            },
+            retention_days: if env_locked("COLLAB_BACKUP_RETENTION_DAYS") {
+                config.backup_retention_days
+            } else {
+                payload.retention_days
+            },
+            export_dir: if env_locked("COLLAB_BACKUP_EXPORT_DIR") {
+                config.backup_export_dir.clone()
+            } else {
+                export_dir
+            },
         })
     }
 
     fn to_protocol(&self) -> AdminBackupSettings {
+        let locks = AdminBackupSettingsLocks {
+            schedule_enabled: env_locked("COLLAB_BACKUP_SCHEDULE_ENABLED"),
+            interval_seconds: env_locked("COLLAB_BACKUP_INTERVAL_SECONDS"),
+            retention_days: env_locked("COLLAB_BACKUP_RETENTION_DAYS"),
+            export_dir: env_locked("COLLAB_BACKUP_EXPORT_DIR"),
+        };
         AdminBackupSettings {
             schedule_enabled: self.schedule_enabled,
             interval_seconds: self.interval_seconds,
             retention_days: self.retention_days,
-            export_dir: self.export_dir.as_ref().map(|path| path.display().to_string()),
+            export_dir: self
+                .export_dir
+                .as_ref()
+                .map(|path| path.display().to_string()),
+            locks,
         }
     }
+}
+
+fn runtime_settings_path(backup_dir: &FsPath) -> PathBuf {
+    backup_dir.join("server-settings.json")
+}
+
+fn env_locked(name: &str) -> bool {
+    std::env::var_os(name).is_some()
+}
+
+fn setting_source(locked: bool, gui_value_present: bool) -> String {
+    if locked {
+        "env".into()
+    } else if gui_value_present {
+        "gui".into()
+    } else {
+        "default".into()
+    }
+}
+
+fn load_stored_runtime_settings(config: &crate::config::ServerConfig) -> StoredRuntimeSettings {
+    fs::read_to_string(runtime_settings_path(&config.backup_dir))
+        .ok()
+        .and_then(|raw| serde_json::from_str(&raw).ok())
+        .unwrap_or_default()
+}
+
+fn save_stored_runtime_settings(
+    backup_dir: &FsPath,
+    settings: &StoredRuntimeSettings,
+    request_id: &str,
+) -> Result<(), ApiFailure> {
+    fs::create_dir_all(backup_dir).map_err(|_| ApiFailure::server(request_id.to_owned()))?;
+    let raw = serde_json::to_string_pretty(settings)
+        .map_err(|_| ApiFailure::server(request_id.to_owned()))?;
+    fs::write(runtime_settings_path(backup_dir), raw)
+        .map_err(|_| ApiFailure::server(request_id.to_owned()))
+}
+
+pub(crate) fn load_effective_runtime_settings(
+    config: &crate::config::ServerConfig,
+) -> EffectiveRuntimeSettings {
+    let stored = load_stored_runtime_settings(config);
+    EffectiveRuntimeSettings {
+        browser_secure_cookies: if env_locked("COLLAB_BROWSER_SECURE_COOKIES") {
+            config.browser_secure_cookies
+        } else {
+            stored
+                .browser_secure_cookies
+                .unwrap_or(config.browser_secure_cookies)
+        },
+        session_ttl_hours: if env_locked("COLLAB_SESSION_TTL_HOURS") {
+            config.session_ttl_hours
+        } else {
+            stored.session_ttl_hours.unwrap_or(config.session_ttl_hours)
+        },
+        native_access_ttl_minutes: if env_locked("COLLAB_NATIVE_ACCESS_TTL_MINUTES") {
+            config.native_access_ttl_minutes
+        } else {
+            stored
+                .native_access_ttl_minutes
+                .unwrap_or(config.native_access_ttl_minutes)
+        },
+        native_refresh_ttl_days: if env_locked("COLLAB_NATIVE_REFRESH_TTL_DAYS") {
+            config.native_refresh_ttl_days
+        } else {
+            stored
+                .native_refresh_ttl_days
+                .unwrap_or(config.native_refresh_ttl_days)
+        },
+        ws_ticket_ttl_seconds: if env_locked("COLLAB_WS_TICKET_TTL_SECONDS") {
+            config.ws_ticket_ttl_seconds
+        } else {
+            stored
+                .ws_ticket_ttl_seconds
+                .unwrap_or(config.ws_ticket_ttl_seconds)
+        },
+        max_file_bytes: if env_locked("COLLAB_MAX_FILE_BYTES") {
+            config.max_file_bytes
+        } else {
+            stored
+                .max_file_bytes
+                .unwrap_or(config.max_file_bytes as u64) as usize
+        },
+        max_import_bytes: if env_locked("COLLAB_MAX_IMPORT_BYTES") {
+            config.max_import_bytes
+        } else {
+            stored
+                .max_import_bytes
+                .unwrap_or(config.max_import_bytes as u64) as usize
+        },
+        max_import_expanded_bytes: if env_locked("COLLAB_MAX_IMPORT_EXPANDED_BYTES") {
+            config.max_import_expanded_bytes
+        } else {
+            stored
+                .max_import_expanded_bytes
+                .unwrap_or(config.max_import_expanded_bytes as u64) as usize
+        },
+        storage_warning_bytes: if env_locked("COLLAB_STORAGE_WARNING_BYTES") {
+            config.storage_warning_bytes
+        } else {
+            stored
+                .storage_warning_bytes
+                .unwrap_or(config.storage_warning_bytes)
+        },
+    }
+}
+
+fn runtime_settings_to_protocol(
+    config: &crate::config::ServerConfig,
+    effective: &EffectiveRuntimeSettings,
+) -> AdminRuntimeSettings {
+    let stored = load_stored_runtime_settings(config);
+    AdminRuntimeSettings {
+        browser_secure_cookies: setting_bool(
+            effective.browser_secure_cookies,
+            "COLLAB_BROWSER_SECURE_COOKIES",
+            stored.browser_secure_cookies.is_some(),
+        ),
+        session_ttl_hours: setting_i64(
+            effective.session_ttl_hours,
+            "COLLAB_SESSION_TTL_HOURS",
+            stored.session_ttl_hours.is_some(),
+        ),
+        native_access_ttl_minutes: setting_i64(
+            effective.native_access_ttl_minutes,
+            "COLLAB_NATIVE_ACCESS_TTL_MINUTES",
+            stored.native_access_ttl_minutes.is_some(),
+        ),
+        native_refresh_ttl_days: setting_i64(
+            effective.native_refresh_ttl_days,
+            "COLLAB_NATIVE_REFRESH_TTL_DAYS",
+            stored.native_refresh_ttl_days.is_some(),
+        ),
+        ws_ticket_ttl_seconds: setting_i64(
+            effective.ws_ticket_ttl_seconds,
+            "COLLAB_WS_TICKET_TTL_SECONDS",
+            stored.ws_ticket_ttl_seconds.is_some(),
+        ),
+        max_file_bytes: setting_u64(
+            effective.max_file_bytes as u64,
+            "COLLAB_MAX_FILE_BYTES",
+            stored.max_file_bytes.is_some(),
+        ),
+        max_import_bytes: setting_u64(
+            effective.max_import_bytes as u64,
+            "COLLAB_MAX_IMPORT_BYTES",
+            stored.max_import_bytes.is_some(),
+        ),
+        max_import_expanded_bytes: setting_u64(
+            effective.max_import_expanded_bytes as u64,
+            "COLLAB_MAX_IMPORT_EXPANDED_BYTES",
+            stored.max_import_expanded_bytes.is_some(),
+        ),
+        storage_warning_bytes: setting_u64(
+            effective.storage_warning_bytes,
+            "COLLAB_STORAGE_WARNING_BYTES",
+            stored.storage_warning_bytes.is_some(),
+        ),
+    }
+}
+
+fn setting_bool(value: bool, env_var: &str, gui_value_present: bool) -> AdminRuntimeSetting<bool> {
+    let locked = env_locked(env_var);
+    AdminRuntimeSetting {
+        value,
+        env_var: env_var.into(),
+        locked,
+        source: setting_source(locked, gui_value_present),
+    }
+}
+
+fn setting_i64(value: i64, env_var: &str, gui_value_present: bool) -> AdminRuntimeSetting<i64> {
+    let locked = env_locked(env_var);
+    AdminRuntimeSetting {
+        value,
+        env_var: env_var.into(),
+        locked,
+        source: setting_source(locked, gui_value_present),
+    }
+}
+
+fn setting_u64(value: u64, env_var: &str, gui_value_present: bool) -> AdminRuntimeSetting<u64> {
+    let locked = env_locked(env_var);
+    AdminRuntimeSetting {
+        value,
+        env_var: env_var.into(),
+        locked,
+        source: setting_source(locked, gui_value_present),
+    }
+}
+
+fn load_server_settings(config: &crate::config::ServerConfig) -> AdminServerSettings {
+    let effective = load_effective_runtime_settings(config);
+    AdminServerSettings {
+        runtime: runtime_settings_to_protocol(config, &effective),
+        backup: load_backup_runtime_settings(config).to_protocol(),
+    }
+}
+
+fn apply_runtime_update(
+    config: &crate::config::ServerConfig,
+    payload: UpdateRuntimeSettingsRequest,
+    request_id: &str,
+) -> Result<StoredRuntimeSettings, ApiFailure> {
+    let mut stored = load_stored_runtime_settings(config);
+    if let Some(value) = payload.browser_secure_cookies {
+        set_if_unlocked_bool(
+            &mut stored.browser_secure_cookies,
+            value,
+            "COLLAB_BROWSER_SECURE_COOKIES",
+            request_id,
+        )?;
+    }
+    if let Some(value) = payload.session_ttl_hours {
+        validate_range_i64(value, 1, 24 * 30, "Session TTL hours", request_id)?;
+        set_if_unlocked_i64(
+            &mut stored.session_ttl_hours,
+            value,
+            "COLLAB_SESSION_TTL_HOURS",
+            request_id,
+        )?;
+    }
+    if let Some(value) = payload.native_access_ttl_minutes {
+        validate_range_i64(value, 1, 24 * 60, "Native access TTL minutes", request_id)?;
+        set_if_unlocked_i64(
+            &mut stored.native_access_ttl_minutes,
+            value,
+            "COLLAB_NATIVE_ACCESS_TTL_MINUTES",
+            request_id,
+        )?;
+    }
+    if let Some(value) = payload.native_refresh_ttl_days {
+        validate_range_i64(value, 1, 365, "Native refresh TTL days", request_id)?;
+        set_if_unlocked_i64(
+            &mut stored.native_refresh_ttl_days,
+            value,
+            "COLLAB_NATIVE_REFRESH_TTL_DAYS",
+            request_id,
+        )?;
+    }
+    if let Some(value) = payload.ws_ticket_ttl_seconds {
+        validate_range_i64(value, 1, 600, "WebSocket ticket TTL seconds", request_id)?;
+        set_if_unlocked_i64(
+            &mut stored.ws_ticket_ttl_seconds,
+            value,
+            "COLLAB_WS_TICKET_TTL_SECONDS",
+            request_id,
+        )?;
+    }
+    if let Some(value) = payload.max_file_bytes {
+        validate_range_u64(
+            value,
+            1,
+            8 * 1024 * 1024 * 1024,
+            "Max file bytes",
+            request_id,
+        )?;
+        set_if_unlocked_u64(
+            &mut stored.max_file_bytes,
+            value,
+            "COLLAB_MAX_FILE_BYTES",
+            request_id,
+        )?;
+    }
+    if let Some(value) = payload.max_import_bytes {
+        validate_range_u64(
+            value,
+            1,
+            8 * 1024 * 1024 * 1024,
+            "Max import bytes",
+            request_id,
+        )?;
+        set_if_unlocked_u64(
+            &mut stored.max_import_bytes,
+            value,
+            "COLLAB_MAX_IMPORT_BYTES",
+            request_id,
+        )?;
+    }
+    if let Some(value) = payload.max_import_expanded_bytes {
+        validate_range_u64(
+            value,
+            1,
+            32 * 1024 * 1024 * 1024,
+            "Max expanded import bytes",
+            request_id,
+        )?;
+        set_if_unlocked_u64(
+            &mut stored.max_import_expanded_bytes,
+            value,
+            "COLLAB_MAX_IMPORT_EXPANDED_BYTES",
+            request_id,
+        )?;
+    }
+    if let Some(value) = payload.storage_warning_bytes {
+        validate_range_u64(
+            value,
+            0,
+            1024 * 1024 * 1024 * 1024,
+            "Storage warning bytes",
+            request_id,
+        )?;
+        set_if_unlocked_u64(
+            &mut stored.storage_warning_bytes,
+            value,
+            "COLLAB_STORAGE_WARNING_BYTES",
+            request_id,
+        )?;
+    }
+    let max_import = if env_locked("COLLAB_MAX_IMPORT_BYTES") {
+        config.max_import_bytes as u64
+    } else {
+        stored
+            .max_import_bytes
+            .unwrap_or(config.max_import_bytes as u64)
+    };
+    let max_expanded = if env_locked("COLLAB_MAX_IMPORT_EXPANDED_BYTES") {
+        config.max_import_expanded_bytes as u64
+    } else {
+        stored
+            .max_import_expanded_bytes
+            .unwrap_or(config.max_import_expanded_bytes as u64)
+    };
+    if max_expanded < max_import {
+        return Err(ApiFailure::validation(
+            "Expanded import limit must be at least the compressed import limit.",
+            request_id.to_owned(),
+        ));
+    }
+    Ok(stored)
+}
+
+fn validate_range_i64(
+    value: i64,
+    min: i64,
+    max: i64,
+    label: &str,
+    request_id: &str,
+) -> Result<(), ApiFailure> {
+    if value < min || value > max {
+        return Err(ApiFailure::validation(
+            format!("{label} must be between {min} and {max}."),
+            request_id.to_owned(),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_range_u64(
+    value: u64,
+    min: u64,
+    max: u64,
+    label: &str,
+    request_id: &str,
+) -> Result<(), ApiFailure> {
+    if value < min || value > max {
+        return Err(ApiFailure::validation(
+            format!("{label} must be between {min} and {max}."),
+            request_id.to_owned(),
+        ));
+    }
+    Ok(())
+}
+
+fn locked_failure(env_var: &str, request_id: &str) -> ApiFailure {
+    ApiFailure::validation(
+        format!(
+            "{env_var} is configured by the environment and cannot be changed in the admin UI."
+        ),
+        request_id.to_owned(),
+    )
+}
+
+fn set_if_unlocked_bool(
+    target: &mut Option<bool>,
+    value: bool,
+    env_var: &str,
+    request_id: &str,
+) -> Result<(), ApiFailure> {
+    if env_locked(env_var) {
+        return Err(locked_failure(env_var, request_id));
+    }
+    *target = Some(value);
+    Ok(())
+}
+
+fn set_if_unlocked_i64(
+    target: &mut Option<i64>,
+    value: i64,
+    env_var: &str,
+    request_id: &str,
+) -> Result<(), ApiFailure> {
+    if env_locked(env_var) {
+        return Err(locked_failure(env_var, request_id));
+    }
+    *target = Some(value);
+    Ok(())
+}
+
+fn set_if_unlocked_u64(
+    target: &mut Option<u64>,
+    value: u64,
+    env_var: &str,
+    request_id: &str,
+) -> Result<(), ApiFailure> {
+    if env_locked(env_var) {
+        return Err(locked_failure(env_var, request_id));
+    }
+    *target = Some(value);
+    Ok(())
 }
 
 pub(crate) fn load_backup_runtime_settings(
@@ -6128,8 +6745,13 @@ fn backup_export_target(path: &Option<PathBuf>) -> AdminBackupExportTarget {
 fn backup_summary(name: &str, dir: &FsPath) -> AdminBackupSummary {
     AdminBackupSummary {
         name: name.to_owned(),
-        created_at: read_backup_created_at(dir)
-            .or_else(|| dir.metadata().ok()?.modified().ok().map(system_time_to_rfc3339)),
+        created_at: read_backup_created_at(dir).or_else(|| {
+            dir.metadata()
+                .ok()?
+                .modified()
+                .ok()
+                .map(system_time_to_rfc3339)
+        }),
         size_bytes: directory_size(dir),
         has_postgres_dump: dir.join("postgres.dump").is_file(),
         has_blob_archive: dir.join("blobs.tar.gz").is_file(),
@@ -6168,11 +6790,46 @@ fn system_time_to_rfc3339(value: std::time::SystemTime) -> String {
     chrono::DateTime::<chrono::Utc>::from(value).to_rfc3339()
 }
 
-fn resolve_backup_dir(
-    root: &FsPath,
-    name: &str,
-    request_id: &str,
-) -> Result<PathBuf, ApiFailure> {
+fn latest_backup_age(backups: &[AdminBackupSummary]) -> Option<Duration> {
+    let newest = backups
+        .iter()
+        .filter_map(|backup| backup.created_at.as_deref())
+        .filter_map(parse_backup_created_at)
+        .max()?;
+    let newest_system_time: SystemTime = newest.into();
+    SystemTime::now().duration_since(newest_system_time).ok()
+}
+
+fn parse_backup_created_at(value: &str) -> Option<chrono::DateTime<chrono::Utc>> {
+    chrono::DateTime::parse_from_rfc3339(value)
+        .ok()
+        .map(|value| value.with_timezone(&chrono::Utc))
+        .or_else(|| {
+            chrono::NaiveDateTime::parse_from_str(value, "%Y%m%dT%H%M%SZ")
+                .ok()
+                .map(|value| value.and_utc())
+        })
+}
+
+fn format_bytes(bytes: u64) -> String {
+    const UNITS: [&str; 5] = ["B", "KiB", "MiB", "GiB", "TiB"];
+    let mut value = bytes as f64;
+    let mut unit = UNITS[0];
+    for candidate in UNITS.iter().skip(1) {
+        if value < 1024.0 {
+            break;
+        }
+        value /= 1024.0;
+        unit = candidate;
+    }
+    if unit == "B" {
+        format!("{bytes} {unit}")
+    } else {
+        format!("{value:.1} {unit}")
+    }
+}
+
+fn resolve_backup_dir(root: &FsPath, name: &str, request_id: &str) -> Result<PathBuf, ApiFailure> {
     if !is_safe_backup_name(name) {
         return Err(ApiFailure::validation(
             "Backup name is not valid.",
@@ -6200,8 +6857,9 @@ fn verify_backup(
     request_id: &str,
 ) -> Result<AdminBackupVerification, ApiFailure> {
     let checksum_path = dir.join("checksums.sha256");
-    let checksums = fs::read_to_string(&checksum_path)
-        .map_err(|_| ApiFailure::validation("Backup checksums are missing.", request_id.to_owned()))?;
+    let checksums = fs::read_to_string(&checksum_path).map_err(|_| {
+        ApiFailure::validation("Backup checksums are missing.", request_id.to_owned())
+    })?;
     let mut artifacts = Vec::new();
     for line in checksums.lines().filter(|line| !line.trim().is_empty()) {
         let Some((expected, path)) = parse_checksum_line(line) else {
@@ -6286,8 +6944,14 @@ pub(crate) async fn run_operator_command(
         .arg("-c")
         .arg(command)
         .env("COLLAB_BACKUP_DIR", backup_dir)
-        .env("COLLAB_BACKUP_INTERVAL_SECONDS", settings.interval_seconds.to_string())
-        .env("COLLAB_BACKUP_RETENTION_DAYS", settings.retention_days.to_string())
+        .env(
+            "COLLAB_BACKUP_INTERVAL_SECONDS",
+            settings.interval_seconds.to_string(),
+        )
+        .env(
+            "COLLAB_BACKUP_RETENTION_DAYS",
+            settings.retention_days.to_string(),
+        )
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     if let Some(export_dir) = &settings.export_dir {
@@ -6300,7 +6964,9 @@ pub(crate) async fn run_operator_command(
     }
     let output = timeout(max_duration, process.output())
         .await
-        .map_err(|_| ApiFailure::validation("The backup command timed out.", request_id.to_owned()))?
+        .map_err(|_| {
+            ApiFailure::validation("The backup command timed out.", request_id.to_owned())
+        })?
         .map_err(|_| ApiFailure::server(request_id.to_owned()))?;
     let combined = truncate_command_output(&format!(
         "{}{}",
@@ -6421,10 +7087,11 @@ async fn create_native_session(
     }
     let access_token = generate_secret();
     let refresh_token = generate_secret();
+    let settings = load_effective_runtime_settings(&state.config);
     let access_expires_at =
-        chrono::Utc::now() + chrono::Duration::minutes(state.config.native_access_ttl_minutes);
+        chrono::Utc::now() + chrono::Duration::minutes(settings.native_access_ttl_minutes);
     let refresh_expires_at =
-        chrono::Utc::now() + chrono::Duration::days(state.config.native_refresh_ttl_days);
+        chrono::Utc::now() + chrono::Duration::days(settings.native_refresh_ttl_days);
     sqlx::query(
         "INSERT INTO native_sessions (id, user_id, access_token_hash, refresh_token_hash, client_name, access_expires_at, refresh_expires_at) VALUES ($1, $2, $3, $4, $5, $6, $7)",
     ).bind(Uuid::now_v7()).bind(Uuid::parse_str(&user.id).unwrap()).bind(hash_secret(&access_token))
@@ -8701,6 +9368,7 @@ async fn create_browser_session(
     let token = generate_secret();
     let csrf = generate_secret();
     let session_id = Uuid::now_v7();
+    let settings = load_effective_runtime_settings(&state.config);
     sqlx::query(
         r#"
         INSERT INTO sessions (id, user_id, token_hash, csrf_hash, user_agent, expires_at)
@@ -8717,7 +9385,7 @@ async fn create_browser_session(
             .and_then(|value| value.to_str().ok())
             .map(|value| value.chars().take(512).collect::<String>()),
     )
-    .bind(state.config.session_ttl_hours.to_string())
+    .bind(settings.session_ttl_hours.to_string())
     .execute(&state.database)
     .await
     .map_err(|_| ApiFailure::server(request_id.to_owned()))?;
@@ -8732,16 +9400,16 @@ async fn create_browser_session(
         SESSION_COOKIE,
         &token,
         true,
-        state.config.browser_secure_cookies,
-        state.config.session_ttl_hours,
+        settings.browser_secure_cookies,
+        settings.session_ttl_hours,
     );
     append_cookie(
         &mut response,
         CSRF_COOKIE,
         &csrf,
         false,
-        state.config.browser_secure_cookies,
-        state.config.session_ttl_hours,
+        settings.browser_secure_cookies,
+        settings.session_ttl_hours,
     );
     Ok(response)
 }
@@ -9225,8 +9893,9 @@ impl IntoResponse for ApiFailure {
 #[cfg(test)]
 mod tests {
     use super::{
-        cookie, indexed_note_tags, indexed_note_title, is_safe_backup_name, parse_vault_zip,
-        search_excerpt, sha256_file, verify_backup, Capability, STANDARD,
+        cookie, indexed_note_tags, indexed_note_title, is_safe_backup_name,
+        parse_backup_created_at, parse_vault_zip, search_excerpt, sha256_file, verify_backup,
+        Capability, STANDARD,
     };
     use crate::auth::hash_secret;
     use crate::{
@@ -9271,7 +9940,11 @@ mod tests {
         std::fs::create_dir(&backup_dir).unwrap();
         std::fs::write(backup_dir.join("postgres.dump"), b"database").unwrap();
         std::fs::write(backup_dir.join("blobs.tar.gz"), b"blobs").unwrap();
-        std::fs::write(backup_dir.join("manifest.txt"), b"created_at=20260618T111501Z\n").unwrap();
+        std::fs::write(
+            backup_dir.join("manifest.txt"),
+            b"created_at=20260618T111501Z\n",
+        )
+        .unwrap();
         let pg_hash = sha256_file(&backup_dir.join("postgres.dump")).unwrap();
         let blob_hash = sha256_file(&backup_dir.join("blobs.tar.gz")).unwrap();
         let manifest_hash = sha256_file(&backup_dir.join("manifest.txt")).unwrap();
@@ -9291,7 +9964,17 @@ mod tests {
         let failed =
             verify_backup("collab-backup-20260618T111501Z", &backup_dir, "request").unwrap();
         assert!(!failed.ok);
-        assert!(failed.artifacts.iter().any(|artifact| artifact.path == "blobs.tar.gz" && !artifact.ok));
+        assert!(failed
+            .artifacts
+            .iter()
+            .any(|artifact| artifact.path == "blobs.tar.gz" && !artifact.ok));
+    }
+
+    #[test]
+    fn backup_created_at_parser_accepts_manifest_and_rfc3339_timestamps() {
+        assert!(parse_backup_created_at("20260618T111501Z").is_some());
+        assert!(parse_backup_created_at("2026-06-18T11:15:01Z").is_some());
+        assert!(parse_backup_created_at("not-a-timestamp").is_none());
     }
 
     #[test]
@@ -12418,7 +13101,10 @@ mod tests {
             Some(&owner_csrf),
         )
         .await;
-        let vault_id = json_body(vault).await["data"]["id"].as_str().unwrap().to_owned();
+        let vault_id = json_body(vault).await["data"]["id"]
+            .as_str()
+            .unwrap()
+            .to_owned();
 
         // Add bob as an editor member.
         for (user, role) in [(&bob_id, "editor"), (&alice_id, "editor")] {
@@ -12459,7 +13145,9 @@ mod tests {
         assert_eq!(templates.status(), StatusCode::OK);
         let templates_body = json_body(templates).await;
         let template_array = templates_body["data"].as_array().unwrap();
-        assert!(template_array.iter().any(|t| t["name"] == "viewer" && t["isBuiltin"] == true));
+        assert!(template_array
+            .iter()
+            .any(|t| t["name"] == "viewer" && t["isBuiltin"] == true));
         let editor_template_id = template_array
             .iter()
             .find(|t| t["name"] == "editor")
@@ -12614,7 +13302,10 @@ mod tests {
             Some(&owner_csrf),
         )
         .await;
-        let member_id = json_body(member).await["data"]["id"].as_str().unwrap().to_owned();
+        let member_id = json_body(member).await["data"]["id"]
+            .as_str()
+            .unwrap()
+            .to_owned();
         let member_login = request(
             &app,
             "POST",
@@ -12635,7 +13326,10 @@ mod tests {
             Some(&owner_csrf),
         )
         .await;
-        let vault_id = json_body(vault).await["data"]["id"].as_str().unwrap().to_owned();
+        let vault_id = json_body(vault).await["data"]["id"]
+            .as_str()
+            .unwrap()
+            .to_owned();
         let added = request(
             &app,
             "POST",

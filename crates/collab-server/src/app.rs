@@ -186,6 +186,10 @@ pub fn build_router(state: AppState) -> Router {
         )
         .route("/api/v1/admin/overview", get(api::overview))
         .route(
+            "/api/v1/admin/settings",
+            get(api::admin_settings).patch(api::admin_update_settings),
+        )
+        .route(
             "/api/v1/admin/backups",
             get(api::admin_backups).post(api::admin_run_backup),
         )

@@ -3,6 +3,7 @@ import type {
   AdminBackupCommandResult,
   AdminBackupOverview,
   AdminBackupVerification,
+  AdminServerSettings,
   AuditEvent,
   CreatedInvitation,
   HostedVaultActivityEvent,
@@ -99,6 +100,9 @@ export const serverApi = {
   avatarUrl: (userId: string, updatedAt?: string | null) =>
     `/api/v1/users/${userId}/avatar${updatedAt ? `?v=${encodeURIComponent(updatedAt)}` : ''}`,
   overview: () => api<AdminOverview>('/api/v1/admin/overview'),
+  settings: () => api<AdminServerSettings>('/api/v1/admin/settings'),
+  updateSettings: (payload: Record<string, unknown>) =>
+    api<AdminServerSettings>('/api/v1/admin/settings', { method: 'PATCH', body: JSON.stringify(payload) }),
   backups: () => api<AdminBackupOverview>('/api/v1/admin/backups'),
   updateBackupSettings: (payload: Record<string, unknown>) =>
     api<AdminBackupOverview>('/api/v1/admin/backups/settings', { method: 'PATCH', body: JSON.stringify(payload) }),

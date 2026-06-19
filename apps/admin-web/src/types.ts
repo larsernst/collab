@@ -51,6 +51,7 @@ export interface AdminOverview {
   storage: {
     databaseBytes: number;
     blobBytes: number;
+    warningThresholdBytes: number;
   };
   liveCollaboration: {
     activeConnections: number;
@@ -103,6 +104,34 @@ export interface AdminBackupSettings {
   intervalSeconds: number;
   retentionDays: number;
   exportDir: string | null;
+  locks: {
+    scheduleEnabled: boolean;
+    intervalSeconds: boolean;
+    retentionDays: boolean;
+    exportDir: boolean;
+  };
+}
+
+export interface AdminRuntimeSetting<T> {
+  value: T;
+  envVar: string;
+  locked: boolean;
+  source: 'default' | 'gui' | 'env' | string;
+}
+
+export interface AdminServerSettings {
+  runtime: {
+    browserSecureCookies: AdminRuntimeSetting<boolean>;
+    sessionTtlHours: AdminRuntimeSetting<number>;
+    nativeAccessTtlMinutes: AdminRuntimeSetting<number>;
+    nativeRefreshTtlDays: AdminRuntimeSetting<number>;
+    wsTicketTtlSeconds: AdminRuntimeSetting<number>;
+    maxFileBytes: AdminRuntimeSetting<number>;
+    maxImportBytes: AdminRuntimeSetting<number>;
+    maxImportExpandedBytes: AdminRuntimeSetting<number>;
+    storageWarningBytes: AdminRuntimeSetting<number>;
+  };
+  backup: AdminBackupSettings;
 }
 
 export interface AdminBackupSummary {

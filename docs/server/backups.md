@@ -12,8 +12,9 @@ change the interval, set retention, and configure an export path. These
 settings are stored in the backup volume and apply to both scheduled backups
 and the **Run backup** button.
 
-`.env` values provide initial defaults when no GUI-managed backup settings have
-been saved yet:
+`.env` values are global overrides. If one of these variables is present in the
+container environment, the matching admin UI field is locked until the variable
+is removed and the container is restarted:
 
 ```dotenv
 COLLAB_BACKUP_SCHEDULE_ENABLED=true

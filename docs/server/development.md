@@ -136,19 +136,18 @@ Supported environment variables:
 - `COLLAB_SESSION_TTL_HOURS`
 - `COLLAB_NATIVE_ACCESS_TTL_MINUTES`
 - `COLLAB_NATIVE_REFRESH_TTL_DAYS`
-- `COLLAB_MAX_FILE_BYTES`: maximum decoded size for one hosted file; defaults
-  to 256 MiB.
-- `COLLAB_MAX_IMPORT_BYTES`: maximum compressed ZIP import size; defaults to
-  512 MiB.
-- `COLLAB_MAX_IMPORT_EXPANDED_BYTES`: maximum total expanded ZIP content;
-  defaults to 2 GiB.
+- `COLLAB_WS_TICKET_TTL_SECONDS`
+- `COLLAB_MAX_FILE_BYTES`: maximum decoded size for one hosted file.
+- `COLLAB_MAX_IMPORT_BYTES`: maximum compressed ZIP import size.
+- `COLLAB_MAX_IMPORT_EXPANDED_BYTES`: maximum total expanded ZIP content.
+- `COLLAB_STORAGE_WARNING_BYTES`: dashboard storage-pressure threshold for
+  combined PostgreSQL and blob usage; set to `0` to disable the warning.
 - `COLLAB_BACKUP_INTERVAL_SECONDS`: interval for the optional Compose backup
-  worker; defaults to 24 hours.
+  worker and the server-managed scheduler.
 - `COLLAB_BACKUP_RETENTION_DAYS`: backup directories older than this are
-  pruned by the optional backup worker; defaults to 14 days, set to `0` to
-  disable pruning.
+  pruned by backup helpers; set to `0` to disable pruning.
 - `COLLAB_BACKUP_SCHEDULE_ENABLED`: enables the server-managed backup
-  scheduler when `true`; defaults to `false`.
+  scheduler when `true`.
 - `COLLAB_BACKUP_EXPORT_PATH`: optional Docker host path mounted into the
   server and backup containers for external backup copies.
 - `COLLAB_BACKUP_EXPORT_DIR`: optional container path for external backup
@@ -167,6 +166,11 @@ streaming/staged importer is required before enabling multi-gigabyte compressed
 archives.
 - `COLLAB_LOG`
 - `COLLAB_LOG_FORMAT`: `pretty` or `json`
+
+Runtime security, session, upload/import, storage-warning, and backup schedule
+settings are configurable from `/admin/settings`. If one of the matching
+`COLLAB_*` variables is present in `.env` or the container environment, it is
+treated as a global override and the admin UI shows that field as locked.
 
 ## Verification
 

@@ -17,6 +17,8 @@ vi.mock('./api', () => ({
     deleteOwnAvatar: vi.fn(),
     avatarUrl: vi.fn((id: string) => `/api/v1/users/${id}/avatar`),
     overview: vi.fn(),
+    settings: vi.fn(),
+    updateSettings: vi.fn(),
     backups: vi.fn(),
     updateBackupSettings: vi.fn(),
     runBackup: vi.fn(),
@@ -104,6 +106,17 @@ const localStorageMock = {
   get length() { return storedValues.size; },
 };
 
+const unlockedBackupLocks = {
+  scheduleEnabled: false,
+  intervalSeconds: false,
+  retentionDays: false,
+  exportDir: false,
+};
+
+function setting<T>(value: T, envVar: string, locked = false) {
+  return { value, envVar, locked, source: locked ? 'env' : 'default' };
+}
+
 describe('admin application', () => {
   beforeEach(() => {
     vi.stubGlobal('localStorage', localStorageMock);
@@ -118,7 +131,7 @@ describe('admin application', () => {
       activeSessions: 1,
       pendingInvitations: 0,
       hostedVaults: 0,
-      storage: { databaseBytes: 1024, blobBytes: 0 },
+      storage: { databaseBytes: 1024, blobBytes: 0, warningThresholdBytes: 10 * 1024 * 1024 * 1024 },
       liveCollaboration: {
         activeConnections: 2,
         loadedRooms: 3,
@@ -134,6 +147,34 @@ describe('admin application', () => {
       operationalWarnings: [],
       recentAuditEvents: [],
     });
+    vi.mocked(serverApi.settings).mockResolvedValue({
+      runtime: {
+        browserSecureCookies: setting(false, 'COLLAB_BROWSER_SECURE_COOKIES'),
+        sessionTtlHours: setting(12, 'COLLAB_SESSION_TTL_HOURS'),
+        nativeAccessTtlMinutes: setting(15, 'COLLAB_NATIVE_ACCESS_TTL_MINUTES'),
+        nativeRefreshTtlDays: setting(30, 'COLLAB_NATIVE_REFRESH_TTL_DAYS'),
+        wsTicketTtlSeconds: setting(30, 'COLLAB_WS_TICKET_TTL_SECONDS'),
+        maxFileBytes: setting(268_435_456, 'COLLAB_MAX_FILE_BYTES'),
+        maxImportBytes: setting(536_870_912, 'COLLAB_MAX_IMPORT_BYTES'),
+        maxImportExpandedBytes: setting(2_147_483_648, 'COLLAB_MAX_IMPORT_EXPANDED_BYTES'),
+        storageWarningBytes: setting(10_737_418_240, 'COLLAB_STORAGE_WARNING_BYTES'),
+      },
+      backup: { scheduleEnabled: false, intervalSeconds: 86_400, retentionDays: 14, exportDir: null, locks: unlockedBackupLocks },
+    });
+    vi.mocked(serverApi.updateSettings).mockResolvedValue({
+      runtime: {
+        browserSecureCookies: setting(true, 'COLLAB_BROWSER_SECURE_COOKIES', true),
+        sessionTtlHours: setting(12, 'COLLAB_SESSION_TTL_HOURS'),
+        nativeAccessTtlMinutes: setting(15, 'COLLAB_NATIVE_ACCESS_TTL_MINUTES'),
+        nativeRefreshTtlDays: setting(30, 'COLLAB_NATIVE_REFRESH_TTL_DAYS'),
+        wsTicketTtlSeconds: setting(30, 'COLLAB_WS_TICKET_TTL_SECONDS'),
+        maxFileBytes: setting(268_435_456, 'COLLAB_MAX_FILE_BYTES'),
+        maxImportBytes: setting(536_870_912, 'COLLAB_MAX_IMPORT_BYTES'),
+        maxImportExpandedBytes: setting(2_147_483_648, 'COLLAB_MAX_IMPORT_EXPANDED_BYTES'),
+        storageWarningBytes: setting(10_737_418_240, 'COLLAB_STORAGE_WARNING_BYTES'),
+      },
+      backup: { scheduleEnabled: false, intervalSeconds: 86_400, retentionDays: 14, exportDir: null, locks: unlockedBackupLocks },
+    });
     vi.mocked(serverApi.invitations).mockResolvedValue([]);
     vi.mocked(serverApi.backups).mockResolvedValue({
       backupDir: '/backups',
@@ -141,7 +182,7 @@ describe('admin application', () => {
       restoreCommandConfigured: false,
       schedule: { enabled: false, intervalSeconds: 86_400, retentionDays: 14, mode: 'manual' },
       exportTarget: { configured: false, path: null, writable: false, message: 'No external export target configured.' },
-      settings: { scheduleEnabled: false, intervalSeconds: 86_400, retentionDays: 14, exportDir: null },
+      settings: { scheduleEnabled: false, intervalSeconds: 86_400, retentionDays: 14, exportDir: null, locks: unlockedBackupLocks },
       backups: [{
         name: 'collab-backup-20260618T111501Z',
         createdAt: '2026-06-18T11:15:01Z',
@@ -223,7 +264,7 @@ describe('admin application', () => {
       restoreCommandConfigured: false,
       schedule: { enabled: true, intervalSeconds: 86_400, retentionDays: 14, mode: 'server-scheduler' },
       exportTarget: { configured: true, path: '/backup-export', writable: true, message: 'Backups are copied to this mounted export target after creation.' },
-      settings: { scheduleEnabled: true, intervalSeconds: 86_400, retentionDays: 14, exportDir: '/backup-export' },
+      settings: { scheduleEnabled: true, intervalSeconds: 86_400, retentionDays: 14, exportDir: '/backup-export', locks: unlockedBackupLocks },
       backups: [{
         name: 'collab-backup-20260618T111501Z',
         createdAt: '2026-06-18T11:15:01Z',
@@ -250,7 +291,7 @@ describe('admin application', () => {
       restoreCommandConfigured: false,
       schedule: { enabled: true, intervalSeconds: 43_200, retentionDays: 7, mode: 'server-scheduler' },
       exportTarget: { configured: true, path: '/backup-export', writable: true, message: 'Backups are copied to this mounted export target after creation.' },
-      settings: { scheduleEnabled: true, intervalSeconds: 43_200, retentionDays: 7, exportDir: '/backup-export' },
+      settings: { scheduleEnabled: true, intervalSeconds: 43_200, retentionDays: 7, exportDir: '/backup-export', locks: unlockedBackupLocks },
       backups: [{
         name: 'collab-backup-20260618T111501Z',
         createdAt: '2026-06-18T11:15:01Z',
@@ -821,6 +862,36 @@ describe('admin application', () => {
       accent: 'emerald',
       compact: true,
     });
+  });
+
+  it('shows environment-locked server settings and saves editable settings', async () => {
+    vi.mocked(serverApi.bootstrapStatus).mockResolvedValue({ required: false });
+    vi.mocked(serverApi.me).mockResolvedValue(admin);
+    vi.mocked(serverApi.settings).mockResolvedValue({
+      runtime: {
+        browserSecureCookies: setting(true, 'COLLAB_BROWSER_SECURE_COOKIES', true),
+        sessionTtlHours: setting(12, 'COLLAB_SESSION_TTL_HOURS'),
+        nativeAccessTtlMinutes: setting(15, 'COLLAB_NATIVE_ACCESS_TTL_MINUTES'),
+        nativeRefreshTtlDays: setting(30, 'COLLAB_NATIVE_REFRESH_TTL_DAYS'),
+        wsTicketTtlSeconds: setting(30, 'COLLAB_WS_TICKET_TTL_SECONDS'),
+        maxFileBytes: setting(268_435_456, 'COLLAB_MAX_FILE_BYTES'),
+        maxImportBytes: setting(536_870_912, 'COLLAB_MAX_IMPORT_BYTES'),
+        maxImportExpandedBytes: setting(2_147_483_648, 'COLLAB_MAX_IMPORT_EXPANDED_BYTES'),
+        storageWarningBytes: setting(10_737_418_240, 'COLLAB_STORAGE_WARNING_BYTES'),
+      },
+      backup: { scheduleEnabled: false, intervalSeconds: 86_400, retentionDays: 14, exportDir: null, locks: { ...unlockedBackupLocks, exportDir: true } },
+    });
+    render(<App />);
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Settings' }));
+    expect(await screen.findByText('Locked by COLLAB_BROWSER_SECURE_COOKIES')).toBeTruthy();
+    expect(await screen.findByText('Locked by COLLAB_BACKUP_EXPORT_DIR')).toBeTruthy();
+    fireEvent.change(screen.getByLabelText('Session TTL hours'), { target: { value: '24' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save server settings' }));
+
+    await waitFor(() => expect(serverApi.updateSettings).toHaveBeenCalledWith(expect.objectContaining({
+      runtime: expect.objectContaining({ sessionTtlHours: 24 }),
+    })));
   });
 
   it('renders the permissions overview tree and filters by search', async () => {

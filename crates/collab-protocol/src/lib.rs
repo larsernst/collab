@@ -162,6 +162,7 @@ pub struct CreatedInvitation {
 pub struct StorageSummary {
     pub database_bytes: i64,
     pub blob_bytes: u64,
+    pub warning_threshold_bytes: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -209,6 +210,46 @@ pub struct AdminBackupSettings {
     pub interval_seconds: u64,
     pub retention_days: u64,
     pub export_dir: Option<String>,
+    pub locks: AdminBackupSettingsLocks,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct AdminBackupSettingsLocks {
+    pub schedule_enabled: bool,
+    pub interval_seconds: bool,
+    pub retention_days: bool,
+    pub export_dir: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct AdminRuntimeSetting<T> {
+    pub value: T,
+    pub env_var: String,
+    pub locked: bool,
+    pub source: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct AdminRuntimeSettings {
+    pub browser_secure_cookies: AdminRuntimeSetting<bool>,
+    pub session_ttl_hours: AdminRuntimeSetting<i64>,
+    pub native_access_ttl_minutes: AdminRuntimeSetting<i64>,
+    pub native_refresh_ttl_days: AdminRuntimeSetting<i64>,
+    pub ws_ticket_ttl_seconds: AdminRuntimeSetting<i64>,
+    pub max_file_bytes: AdminRuntimeSetting<u64>,
+    pub max_import_bytes: AdminRuntimeSetting<u64>,
+    pub max_import_expanded_bytes: AdminRuntimeSetting<u64>,
+    pub storage_warning_bytes: AdminRuntimeSetting<u64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct AdminServerSettings {
+    pub runtime: AdminRuntimeSettings,
+    pub backup: AdminBackupSettings,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

@@ -118,12 +118,19 @@ The dashboard may display:
 - Process uptime and last successful migration time.
 - User, active-session, invitation, and hosted-vault counts.
 - Database and blob-storage usage summaries.
+- Live collaboration metrics: WebSocket connections, loaded rooms, awareness
+  state count, hosted presence count, update rate, CRDT backlog size, compacted
+  document count, compacted state bytes, and last compaction time.
 - Recent redacted audit events.
-- Typed operational warnings such as failed login spikes, storage pressure,
-  migration failures, or unavailable dependencies.
+- Typed operational warnings such as unavailable blob storage, missing or stale
+  backups, failed backup or restore audit events, storage pressure, expired
+  invitations, insecure cookie configuration, and CRDT compaction backlog.
+- Server settings for runtime security/session TTLs, upload/import limits,
+  storage warnings, and backup schedule/export. Values supplied through
+  `COLLAB_*` environment variables are shown as locked global overrides.
 
-Detailed metrics, raw log aggregation, and production alerting remain Phase 7
-work.
+Raw log aggregation and external production alert routing remain future
+operations work.
 
 ## Testing Expectations
 

@@ -35,6 +35,7 @@ import type {
   AdminBackupOverview,
   AdminBackupVerification,
   AdminOverview,
+  AdminServerSettings,
   AuditEvent,
   GrantSubjectType,
   HostedVaultActivityEvent,
@@ -306,7 +307,147 @@ function SettingsPage({
           <Button>Primary action</Button>
         </div>
       </Panel>
+      <ServerConfigurationPanel />
     </>
+  );
+}
+
+function ServerConfigurationPanel() {
+  const [settings, setSettings] = useState<AdminServerSettings | null>(null);
+  const [draft, setDraft] = useState({
+    browserSecureCookies: false,
+    sessionTtlHours: 12,
+    nativeAccessTtlMinutes: 15,
+    nativeRefreshTtlDays: 30,
+    wsTicketTtlSeconds: 30,
+    maxFileBytes: 256 * 1024 * 1024,
+    maxImportBytes: 512 * 1024 * 1024,
+    maxImportExpandedBytes: 2 * 1024 * 1024 * 1024,
+    storageWarningBytes: 10 * 1024 * 1024 * 1024,
+    scheduleEnabled: false,
+    intervalSeconds: 86_400,
+    retentionDays: 14,
+    exportDir: '',
+  });
+  const [message, setMessage] = useState('');
+  const [error, setError] = useState('');
+  const [busy, setBusy] = useState(false);
+  const applySettings = useCallback((next: AdminServerSettings) => {
+    setSettings(next);
+    setDraft({
+      browserSecureCookies: next.runtime.browserSecureCookies.value,
+      sessionTtlHours: next.runtime.sessionTtlHours.value,
+      nativeAccessTtlMinutes: next.runtime.nativeAccessTtlMinutes.value,
+      nativeRefreshTtlDays: next.runtime.nativeRefreshTtlDays.value,
+      wsTicketTtlSeconds: next.runtime.wsTicketTtlSeconds.value,
+      maxFileBytes: next.runtime.maxFileBytes.value,
+      maxImportBytes: next.runtime.maxImportBytes.value,
+      maxImportExpandedBytes: next.runtime.maxImportExpandedBytes.value,
+      storageWarningBytes: next.runtime.storageWarningBytes.value,
+      scheduleEnabled: next.backup.scheduleEnabled,
+      intervalSeconds: next.backup.intervalSeconds,
+      retentionDays: next.backup.retentionDays,
+      exportDir: next.backup.exportDir ?? '',
+    });
+  }, []);
+  const load = useCallback(() => serverApi.settings().then((next) => { applySettings(next); setError(''); }).catch((reason) => setError(String(reason))), [applySettings]);
+  useEffect(() => void load(), [load]);
+
+  async function save(event: FormEvent) {
+    event.preventDefault();
+    setBusy(true);
+    setMessage('');
+    setError('');
+    try {
+      const next = await serverApi.updateSettings({
+        runtime: {
+          browserSecureCookies: draft.browserSecureCookies,
+          sessionTtlHours: draft.sessionTtlHours,
+          nativeAccessTtlMinutes: draft.nativeAccessTtlMinutes,
+          nativeRefreshTtlDays: draft.nativeRefreshTtlDays,
+          wsTicketTtlSeconds: draft.wsTicketTtlSeconds,
+          maxFileBytes: draft.maxFileBytes,
+          maxImportBytes: draft.maxImportBytes,
+          maxImportExpandedBytes: draft.maxImportExpandedBytes,
+          storageWarningBytes: draft.storageWarningBytes,
+        },
+        backup: {
+          scheduleEnabled: draft.scheduleEnabled,
+          intervalSeconds: draft.intervalSeconds,
+          retentionDays: draft.retentionDays,
+          exportDir: draft.exportDir.trim() || null,
+        },
+      });
+      applySettings(next);
+      setMessage('Server settings saved.');
+    } catch (reason) {
+      setError(String(reason));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  if (!settings) {
+    return <Panel title="Server configuration" icon={<Server size={17} />}><Loading /></Panel>;
+  }
+  const runtime = settings.runtime;
+  const backup = settings.backup;
+  return (
+    <Panel title="Server configuration" icon={<Server size={17} />}>
+      <form className="settings-stack" onSubmit={save}>
+        {error && <div className="error-banner"><CircleAlert size={16} />{error}</div>}
+        {message && <div className="success-banner" role="status"><ShieldCheck size={16} />{message}</div>}
+        <p className="subtle">Settings marked as environment overrides are locked because their `COLLAB_*` variable is configured. Remove the variable and restart the container to make that field editable from the admin UI.</p>
+        <div className="settings-grid">
+          <SettingField label="Browser secure cookies" setting={runtime.browserSecureCookies} type="checkbox" checked={draft.browserSecureCookies} onChange={(event) => setDraft((current) => ({ ...current, browserSecureCookies: event.target.checked }))} />
+          <SettingField label="Session TTL hours" setting={runtime.sessionTtlHours} type="number" min={1} max={720} value={draft.sessionTtlHours} onChange={(event) => setDraft((current) => ({ ...current, sessionTtlHours: Number(event.target.value) || 1 }))} />
+          <SettingField label="Native access TTL minutes" setting={runtime.nativeAccessTtlMinutes} type="number" min={1} max={1440} value={draft.nativeAccessTtlMinutes} onChange={(event) => setDraft((current) => ({ ...current, nativeAccessTtlMinutes: Number(event.target.value) || 1 }))} />
+          <SettingField label="Native refresh TTL days" setting={runtime.nativeRefreshTtlDays} type="number" min={1} max={365} value={draft.nativeRefreshTtlDays} onChange={(event) => setDraft((current) => ({ ...current, nativeRefreshTtlDays: Number(event.target.value) || 1 }))} />
+          <SettingField label="WebSocket ticket TTL seconds" setting={runtime.wsTicketTtlSeconds} type="number" min={1} max={600} value={draft.wsTicketTtlSeconds} onChange={(event) => setDraft((current) => ({ ...current, wsTicketTtlSeconds: Number(event.target.value) || 1 }))} />
+          <SettingField label="Max file bytes" setting={runtime.maxFileBytes} type="number" min={1} value={draft.maxFileBytes} onChange={(event) => setDraft((current) => ({ ...current, maxFileBytes: Number(event.target.value) || 1 }))} />
+          <SettingField label="Max ZIP import bytes" setting={runtime.maxImportBytes} type="number" min={1} value={draft.maxImportBytes} onChange={(event) => setDraft((current) => ({ ...current, maxImportBytes: Number(event.target.value) || 1 }))} />
+          <SettingField label="Max expanded ZIP bytes" setting={runtime.maxImportExpandedBytes} type="number" min={1} value={draft.maxImportExpandedBytes} onChange={(event) => setDraft((current) => ({ ...current, maxImportExpandedBytes: Number(event.target.value) || 1 }))} />
+          <SettingField label="Storage warning bytes" setting={runtime.storageWarningBytes} type="number" min={0} value={draft.storageWarningBytes} onChange={(event) => setDraft((current) => ({ ...current, storageWarningBytes: Number(event.target.value) || 0 }))} />
+        </div>
+        <Separator />
+        <div className="settings-grid">
+          <LockedFieldMeta locked={backup.locks.scheduleEnabled} envVar="COLLAB_BACKUP_SCHEDULE_ENABLED" source={backup.locks.scheduleEnabled ? 'env' : 'gui/default'}>
+            <label className="toggle-row"><input type="checkbox" disabled={backup.locks.scheduleEnabled} checked={draft.scheduleEnabled} onChange={(event) => setDraft((current) => ({ ...current, scheduleEnabled: event.target.checked }))} /> Enable scheduled backups</label>
+          </LockedFieldMeta>
+          <LockedFieldMeta locked={backup.locks.intervalSeconds} envVar="COLLAB_BACKUP_INTERVAL_SECONDS" source={backup.locks.intervalSeconds ? 'env' : 'gui/default'}>
+            <Field label="Backup interval seconds" type="number" min={60} step={60} disabled={backup.locks.intervalSeconds} value={draft.intervalSeconds} onChange={(event) => setDraft((current) => ({ ...current, intervalSeconds: Number(event.target.value) || 60 }))} />
+          </LockedFieldMeta>
+          <LockedFieldMeta locked={backup.locks.retentionDays} envVar="COLLAB_BACKUP_RETENTION_DAYS" source={backup.locks.retentionDays ? 'env' : 'gui/default'}>
+            <Field label="Backup retention days" type="number" min={0} disabled={backup.locks.retentionDays} value={draft.retentionDays} onChange={(event) => setDraft((current) => ({ ...current, retentionDays: Number(event.target.value) || 0 }))} />
+          </LockedFieldMeta>
+          <LockedFieldMeta locked={backup.locks.exportDir} envVar="COLLAB_BACKUP_EXPORT_DIR" source={backup.locks.exportDir ? 'env' : 'gui/default'}>
+            <Field label="Backup export path" placeholder="/backup-export" disabled={backup.locks.exportDir} value={draft.exportDir} onChange={(event) => setDraft((current) => ({ ...current, exportDir: event.target.value }))} />
+          </LockedFieldMeta>
+        </div>
+        <div className="actions"><Button type="submit" size="sm" disabled={busy}>Save server settings</Button></div>
+      </form>
+    </Panel>
+  );
+}
+
+function SettingField<T extends string | number | boolean>({
+  label,
+  setting,
+  ...inputProps
+}: React.InputHTMLAttributes<HTMLInputElement> & { label: string; setting: { envVar: string; locked: boolean; source: string } }) {
+  return (
+    <LockedFieldMeta locked={setting.locked} envVar={setting.envVar} source={setting.source}>
+      <Field label={label} disabled={setting.locked} {...inputProps} />
+    </LockedFieldMeta>
+  );
+}
+
+function LockedFieldMeta({ children, locked, envVar, source }: { children: React.ReactNode; locked: boolean; envVar: string; source: string }) {
+  return (
+    <div className={locked ? 'locked-setting' : ''}>
+      {children}
+      <small className="setting-source">{locked ? `Locked by ${envVar}` : `Source: ${source}`}</small>
+    </div>
   );
 }
 
@@ -327,7 +468,12 @@ function Dashboard() {
           <Metric icon={<KeyRound />} label="Active sessions" value={overview.activeSessions} detail="Revocable browser sessions" />
           <Metric icon={<Boxes />} label="Hosted vaults" value={overview.hostedVaults} detail="Vault storage arrives in Phase 3" />
           <Metric icon={<Server />} label="Server version" value={`v${overview.serverVersion}`} detail={`Protocol ${overview.protocolVersion}`} />
-          <Metric icon={<Database />} label="Database storage" value={formatBytes(overview.storage.databaseBytes)} detail={`${formatBytes(overview.storage.blobBytes)} blobs`} />
+          <Metric
+            icon={<Database />}
+            label="Storage"
+            value={formatBytes(overview.storage.databaseBytes + overview.storage.blobBytes)}
+            detail={`${formatBytes(overview.storage.databaseBytes)} database · ${formatBytes(overview.storage.blobBytes)} blobs${overview.storage.warningThresholdBytes > 0 ? ` · warns at ${formatBytes(overview.storage.warningThresholdBytes)}` : ''}`}
+          />
           <Metric icon={<KeyRound />} label="Pending invitations" value={overview.pendingInvitations} detail="One-time expiring links" />
         </div>
         <Panel title="Live collaboration" icon={<Activity size={17} />}>
@@ -345,7 +491,7 @@ function Dashboard() {
             />
           </div>
         </Panel>
-        {overview.operationalWarnings.length > 0 && <Panel title="Operational warnings" icon={<CircleAlert size={17} />}><div className="warning-list">{overview.operationalWarnings.map((warning) => <div className="warning-row" key={warning.code}><CircleAlert size={16} /><div><strong>{warning.code.replaceAll('_', ' ')}</strong><small>{warning.message}</small></div></div>)}</div></Panel>}
+        {overview.operationalWarnings.length > 0 && <Panel title="Operational warnings" icon={<CircleAlert size={17} />}><div className="warning-list">{overview.operationalWarnings.map((warning) => <div className={`warning-row ${warning.severity}`} key={warning.code}><CircleAlert size={16} /><div><strong>{warning.code.replaceAll('_', ' ')}</strong><small>{warning.message}</small></div></div>)}</div></Panel>}
         <Panel title="Recent activity" icon={<Activity size={17} />}><AuditTable events={overview.recentAuditEvents} /></Panel>
       </>}
     </>
@@ -486,20 +632,23 @@ function BackupsPage() {
             <div>
               <label>Scheduler</label>
               <p className="subtle">{overview.schedule.enabled ? `Server-managed backups run every ${formatDuration(overview.schedule.intervalSeconds)}.` : 'Scheduled backups are disabled. Enable them here to let the server run backups automatically.'}</p>
-              <label className="toggle-row"><input type="checkbox" checked={settingsDraft.scheduleEnabled} onChange={(event) => setSettingsDraft((current) => ({ ...current, scheduleEnabled: event.target.checked }))} /> Enable scheduled backups</label>
+              <label className="toggle-row"><input type="checkbox" disabled={overview.settings.locks.scheduleEnabled} checked={settingsDraft.scheduleEnabled} onChange={(event) => setSettingsDraft((current) => ({ ...current, scheduleEnabled: event.target.checked }))} /> Enable scheduled backups</label>
+              {overview.settings.locks.scheduleEnabled && <small className="setting-source">Locked by COLLAB_BACKUP_SCHEDULE_ENABLED</small>}
             </div>
             <div>
               <label>Retention</label>
               <p className="subtle">{overview.schedule.retentionDays === 0 ? 'Automatic pruning is disabled.' : `Backups older than ${overview.schedule.retentionDays} days are pruned.`}</p>
               <div className="inline-fields">
-                <Field label="Interval seconds" type="number" min={60} step={60} value={settingsDraft.intervalSeconds} onChange={(event) => setSettingsDraft((current) => ({ ...current, intervalSeconds: Number(event.target.value) || 60 }))} />
-                <Field label="Retention days" type="number" min={0} value={settingsDraft.retentionDays} onChange={(event) => setSettingsDraft((current) => ({ ...current, retentionDays: Number(event.target.value) || 0 }))} />
+                <Field label="Interval seconds" type="number" min={60} step={60} disabled={overview.settings.locks.intervalSeconds} value={settingsDraft.intervalSeconds} onChange={(event) => setSettingsDraft((current) => ({ ...current, intervalSeconds: Number(event.target.value) || 60 }))} />
+                <Field label="Retention days" type="number" min={0} disabled={overview.settings.locks.retentionDays} value={settingsDraft.retentionDays} onChange={(event) => setSettingsDraft((current) => ({ ...current, retentionDays: Number(event.target.value) || 0 }))} />
               </div>
+              {(overview.settings.locks.intervalSeconds || overview.settings.locks.retentionDays) && <small className="setting-source">One or more retention fields are locked by environment variables.</small>}
             </div>
             <div>
               <label>External export target</label>
               <p className="subtle">{overview.exportTarget.message}</p>
-              <Field label="Container export path" placeholder="/backup-export" value={settingsDraft.exportDir} onChange={(event) => setSettingsDraft((current) => ({ ...current, exportDir: event.target.value }))} />
+              <Field label="Container export path" placeholder="/backup-export" disabled={overview.settings.locks.exportDir} value={settingsDraft.exportDir} onChange={(event) => setSettingsDraft((current) => ({ ...current, exportDir: event.target.value }))} />
+              {overview.settings.locks.exportDir && <small className="setting-source">Locked by COLLAB_BACKUP_EXPORT_DIR</small>}
             </div>
             <div className="actions"><Button type="submit" size="sm" disabled={busy === 'settings'}>Save backup settings</Button></div>
           </form>

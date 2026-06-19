@@ -94,7 +94,12 @@ impl ReplicaStore {
         let root = replica_root(config_root)
             .join(server_key(server_url))
             .join(vault_segment);
-        for dir in [&root, &root.join(DOCUMENTS_DIR), &root.join(ASSETS_DIR), &root.join(CRDT_DIR)] {
+        for dir in [
+            &root,
+            &root.join(DOCUMENTS_DIR),
+            &root.join(ASSETS_DIR),
+            &root.join(CRDT_DIR),
+        ] {
             std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
         }
         let store = Self { root };
@@ -182,11 +187,7 @@ impl ReplicaStore {
         Ok(ops)
     }
 
-    pub fn update_operation_status(
-        &self,
-        id: &str,
-        status: PendingOpStatus,
-    ) -> Result<(), String> {
+    pub fn update_operation_status(&self, id: &str, status: PendingOpStatus) -> Result<(), String> {
         let mut ops = self.list_pending_operations()?;
         let mut found = false;
         for op in ops.iter_mut() {
@@ -555,7 +556,9 @@ impl ReplicaStore {
             Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
             Err(err) => return Err(err.to_string()),
         };
-        serde_json::from_str(&raw).map(Some).map_err(|e| e.to_string())
+        serde_json::from_str(&raw)
+            .map(Some)
+            .map_err(|e| e.to_string())
     }
 
     fn write_json<T: Serialize>(&self, name: &str, value: &T) -> Result<(), String> {
@@ -660,7 +663,10 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let store = open(&dir);
 
-        assert_eq!(store.read_sync_state().unwrap(), ReplicaSyncState::default());
+        assert_eq!(
+            store.read_sync_state().unwrap(),
+            ReplicaSyncState::default()
+        );
         assert!(store.read_manifest().unwrap().is_none());
 
         store.write_manifest(&manifest(7)).unwrap();
@@ -682,7 +688,11 @@ mod tests {
     fn open_or_create_preserves_created_at_and_reopen_finds_existing() {
         let dir = TempDir::new().unwrap();
         let first = open(&dir);
-        let created = first.read_json::<ReplicaMeta>(META_FILE).unwrap().unwrap().created_at;
+        let created = first
+            .read_json::<ReplicaMeta>(META_FILE)
+            .unwrap()
+            .unwrap()
+            .created_at;
 
         let second = open(&dir);
         let reopened = second.read_json::<ReplicaMeta>(META_FILE).unwrap().unwrap();
@@ -703,9 +713,14 @@ mod tests {
         store.enqueue_operation(&pending_op("a")).unwrap();
         store.enqueue_operation(&pending_op("b")).unwrap();
         let ops = store.list_pending_operations().unwrap();
-        assert_eq!(ops.iter().map(|op| op.id.as_str()).collect::<Vec<_>>(), ["a", "b"]);
+        assert_eq!(
+            ops.iter().map(|op| op.id.as_str()).collect::<Vec<_>>(),
+            ["a", "b"]
+        );
 
-        store.update_operation_status("a", PendingOpStatus::InFlight).unwrap();
+        store
+            .update_operation_status("a", PendingOpStatus::InFlight)
+            .unwrap();
         let ops = store.list_pending_operations().unwrap();
         assert_eq!(ops[0].status, PendingOpStatus::InFlight);
         assert_eq!(ops[1].status, PendingOpStatus::Pending);
@@ -723,9 +738,14 @@ mod tests {
 
         store.remove_operation("a").unwrap();
         let ops = store.list_pending_operations().unwrap();
-        assert_eq!(ops.iter().map(|op| op.id.as_str()).collect::<Vec<_>>(), ["b"]);
+        assert_eq!(
+            ops.iter().map(|op| op.id.as_str()).collect::<Vec<_>>(),
+            ["b"]
+        );
 
-        assert!(store.update_operation_status("missing", PendingOpStatus::Failed).is_err());
+        assert!(store
+            .update_operation_status("missing", PendingOpStatus::Failed)
+            .is_err());
     }
 
     #[test]
@@ -760,10 +780,16 @@ mod tests {
         let store = open(&dir);
         assert!(store.read_cached_document("file-1").unwrap().is_none());
         store.cache_document("file-1", "# Hello").unwrap();
-        assert_eq!(store.read_cached_document("file-1").unwrap().unwrap(), "# Hello");
+        assert_eq!(
+            store.read_cached_document("file-1").unwrap().unwrap(),
+            "# Hello"
+        );
 
         store.cache_asset("asset-1", &[1, 2, 3]).unwrap();
-        assert_eq!(store.read_cached_asset("asset-1").unwrap().unwrap(), vec![1, 2, 3]);
+        assert_eq!(
+            store.read_cached_asset("asset-1").unwrap().unwrap(),
+            vec![1, 2, 3]
+        );
 
         assert!(store.cache_document("../escape", "x").is_err());
     }
@@ -773,7 +799,9 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let store = open(&dir);
         assert!(store.read_cached_crdt_state("file-1").unwrap().is_none());
-        store.cache_crdt_state("file-1", &[9, 8, 7, 0, 255]).unwrap();
+        store
+            .cache_crdt_state("file-1", &[9, 8, 7, 0, 255])
+            .unwrap();
         assert_eq!(
             store.read_cached_crdt_state("file-1").unwrap().unwrap(),
             vec![9, 8, 7, 0, 255]
@@ -842,7 +870,9 @@ mod tests {
         let store = open(&dir);
         // active-1 is active in the manifest; orphan-1 is not; pending-1 is
         // referenced by a queued operation (its bytes are the only local copy).
-        store.write_manifest(&manifest_with_active(&["active-1"])).unwrap();
+        store
+            .write_manifest(&manifest_with_active(&["active-1"]))
+            .unwrap();
         store.cache_document("active-1", "keep").unwrap();
         store.cache_document("orphan-1", "drop").unwrap();
         store.cache_document("pending-1", "queued edit").unwrap();
