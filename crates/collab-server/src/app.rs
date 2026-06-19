@@ -1,7 +1,7 @@
 use crate::{api, config::ServerConfig, database, storage::BlobStorage};
 use axum::{
     extract::{ConnectInfo, DefaultBodyLimit, Request, State},
-    http::{HeaderName, HeaderValue, StatusCode},
+    http::{HeaderName, HeaderValue, Method, StatusCode},
     middleware::{self, Next},
     response::{IntoResponse, Redirect, Response},
     routing::{get, patch, post, put},
@@ -307,6 +307,10 @@ pub fn build_router(state: AppState) -> Router {
             HeaderValue::from_static("nosniff"),
         ))
         .layer(DefaultBodyLimit::max(max_json_body_bytes))
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            maintenance_mode,
+        ))
         .layer(middleware::from_fn_with_state(state.clone(), rate_limit))
         .layer(middleware::from_fn(request_id))
         .layer(TraceLayer::new_for_http())
@@ -534,6 +538,67 @@ fn rate_limited_response(retry_after_seconds: u64, request_id: String) -> Respon
     response
 }
 
+/// Graceful maintenance mode leaves health checks, auth, admin operations, and
+/// read-only REST requests available while rejecting hosted-vault mutations and
+/// live WebSocket entry points. The state is persisted in the backup/server-data
+/// volume and can be toggled from the admin settings page.
+async fn maintenance_mode(State(state): State<AppState>, request: Request, next: Next) -> Response {
+    let mode = api::load_maintenance_mode(&state.config);
+    if !mode.enabled || maintenance_allowed(&request) {
+        return next.run(request).await;
+    }
+    let request_id = request
+        .extensions()
+        .get::<String>()
+        .cloned()
+        .unwrap_or_else(|| Uuid::now_v7().to_string());
+    maintenance_mode_response(request_id, mode.message)
+}
+
+fn maintenance_allowed(request: &Request) -> bool {
+    let path = request.uri().path();
+    let method = request.method();
+    if path == "/" || path.starts_with("/admin") || path.starts_with("/health/") {
+        return true;
+    }
+    if path == "/api/v1/auth/ws-ticket" {
+        return false;
+    }
+    if path.starts_with("/api/v1/admin/") || path.starts_with("/api/v1/auth/") {
+        return true;
+    }
+    if path == "/api/v1/users/me"
+        || path.starts_with("/api/v1/users/")
+        || path == "/api/v1/users/directory"
+    {
+        return matches!(method, &Method::GET);
+    }
+    if path.starts_with("/ws/v1/") {
+        return false;
+    }
+    matches!(method, &Method::GET | &Method::HEAD | &Method::OPTIONS)
+}
+
+fn maintenance_mode_response(request_id: String, message: Option<String>) -> Response {
+    let body = ErrorResponse {
+        error: ApiError {
+            code: ErrorCode::MaintenanceMode,
+            message: message.unwrap_or_else(|| {
+                "The Collab server is in maintenance mode. Mutating requests are temporarily paused."
+                    .into()
+            }),
+            request_id,
+            details: serde_json::Value::Null,
+        },
+    };
+    let mut response = (StatusCode::SERVICE_UNAVAILABLE, Json(body)).into_response();
+    response.headers_mut().insert(
+        HeaderName::from_static("retry-after"),
+        HeaderValue::from_static("60"),
+    );
+    response
+}
+
 async fn liveness() -> Json<DataResponse<HealthStatus>> {
     Json(DataResponse::new(health_status(HealthState::Ok)))
 }
@@ -584,6 +649,7 @@ async fn request_id(mut request: Request, next: Next) -> Response {
 #[cfg(test)]
 mod tests {
     use super::{build_router, client_key, AppState, LoginRateLimiter, RateLimiter};
+    use crate::api::StoredMaintenanceMode;
     use crate::{config::ServerConfig, storage::FileSystemBlobStorage};
     use axum::{
         body::Body,
@@ -598,12 +664,13 @@ mod tests {
         test_state_with(ServerConfig::default()).await
     }
 
-    async fn test_state_with(config: ServerConfig) -> AppState {
+    async fn test_state_with(mut config: ServerConfig) -> AppState {
         let database = PgPoolOptions::new()
             .acquire_timeout(Duration::from_millis(50))
             .connect_lazy("postgres://collab:collab@127.0.0.1:1/unavailable")
             .unwrap();
         let dir = tempfile::tempdir().unwrap().keep();
+        config.backup_dir = dir.join("backups");
         let blobs = Arc::new(FileSystemBlobStorage::new(dir).await.unwrap());
         AppState::new(config, database, blobs)
     }
@@ -801,5 +868,85 @@ mod tests {
                 .unwrap();
             assert_ne!(response.status(), StatusCode::TOO_MANY_REQUESTS);
         }
+    }
+
+    #[tokio::test]
+    async fn maintenance_mode_blocks_mutations_and_websockets_but_allows_reads() {
+        let state = test_state().await;
+        std::fs::create_dir_all(&state.config.backup_dir).unwrap();
+        std::fs::write(
+            state.config.backup_dir.join("maintenance-mode.json"),
+            serde_json::to_string(&StoredMaintenanceMode {
+                enabled: true,
+                message: Some("Short upgrade window".into()),
+                updated_at: Some("2026-06-19T09:00:00Z".into()),
+            })
+            .unwrap(),
+        )
+        .unwrap();
+
+        let health = build_router(state.clone())
+            .oneshot(
+                Request::builder()
+                    .uri("/health/live")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(health.status(), StatusCode::OK);
+
+        let read = build_router(state.clone())
+            .oneshot(
+                Request::builder()
+                    .uri("/api/v1/vaults")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(read.status(), StatusCode::UNAUTHORIZED);
+
+        let write = build_router(state.clone())
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/v1/vaults")
+                    .header("content-type", "application/json")
+                    .body(Body::from("{}"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(write.status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(write.headers()["retry-after"], "60");
+        let body = write.into_body().collect().await.unwrap().to_bytes();
+        let raw = std::str::from_utf8(&body).unwrap();
+        assert!(raw.contains("\"code\":\"maintenance_mode\""));
+        assert!(raw.contains("Short upgrade window"));
+
+        let ticket = build_router(state.clone())
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/v1/auth/ws-ticket")
+                    .header("content-type", "application/json")
+                    .body(Body::from("{}"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(ticket.status(), StatusCode::SERVICE_UNAVAILABLE);
+
+        let ws = build_router(state)
+            .oneshot(
+                Request::builder()
+                    .uri("/ws/v1/vaults/019eb16e-2a85-7070-bbe7-8cf09911c2c1")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(ws.status(), StatusCode::SERVICE_UNAVAILABLE);
     }
 }

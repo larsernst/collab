@@ -128,6 +128,9 @@ The dashboard may display:
 - Server settings for runtime security/session TTLs, upload/import limits,
   storage warnings, and backup schedule/export. Values supplied through
   `COLLAB_*` environment variables are shown as locked global overrides.
+- Maintenance mode controls. When enabled, the server stays readable and
+  manageable but pauses hosted-vault mutations and live WebSocket sessions with
+  a `503 maintenance_mode` response.
 
 Raw log aggregation and external production alert routing remain future
 operations work.

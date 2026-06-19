@@ -330,6 +330,8 @@ function ServerConfigurationPanel() {
     intervalSeconds: 86_400,
     retentionDays: 14,
     exportDir: '',
+    maintenanceEnabled: false,
+    maintenanceMessage: '',
   });
   const [message, setMessage] = useState('');
   const [error, setError] = useState('');
@@ -353,13 +355,14 @@ function ServerConfigurationPanel() {
       intervalSeconds: next.backup.intervalSeconds,
       retentionDays: next.backup.retentionDays,
       exportDir: next.backup.exportDir ?? '',
+      maintenanceEnabled: next.maintenance.enabled,
+      maintenanceMessage: next.maintenance.message ?? '',
     });
   }, []);
   const load = useCallback(() => serverApi.settings().then((next) => { applySettings(next); setError(''); }).catch((reason) => setError(String(reason))), [applySettings]);
   useEffect(() => void load(), [load]);
 
-  async function save(event: FormEvent) {
-    event.preventDefault();
+  async function saveCurrentSettings() {
     setBusy(true);
     setMessage('');
     setError('');
@@ -383,6 +386,10 @@ function ServerConfigurationPanel() {
           retentionDays: draft.retentionDays,
           exportDir: draft.exportDir.trim() || null,
         },
+        maintenance: {
+          enabled: draft.maintenanceEnabled,
+          message: draft.maintenanceMessage.trim() || null,
+        },
       });
       applySettings(next);
       setMessage('Server settings saved.');
@@ -391,6 +398,11 @@ function ServerConfigurationPanel() {
     } finally {
       setBusy(false);
     }
+  }
+
+  async function save(event: FormEvent) {
+    event.preventDefault();
+    await saveCurrentSettings();
   }
 
   async function runMaintenance() {
@@ -448,6 +460,20 @@ function ServerConfigurationPanel() {
         </div>
         <div className="actions"><Button type="submit" size="sm" disabled={busy}>Save server settings</Button></div>
       </form>
+      <Separator />
+      <div className="settings-stack">
+        <div className="settings-row">
+          <div>
+            <strong>Maintenance mode</strong>
+            <small>Pause hosted-vault writes and live WebSocket sessions while keeping reads, health checks, auth, backups, and admin controls available.</small>
+          </div>
+          <Switch label="Maintenance mode" checked={draft.maintenanceEnabled} onCheckedChange={(enabled) => setDraft((current) => ({ ...current, maintenanceEnabled: enabled }))} />
+        </div>
+        <Field label="Maintenance message" maxLength={500} placeholder="Short upgrade window, please retry in a few minutes." value={draft.maintenanceMessage} onChange={(event) => setDraft((current) => ({ ...current, maintenanceMessage: event.target.value }))} />
+        {settings.maintenance.updatedAt && <p className="subtle">Last changed {new Date(settings.maintenance.updatedAt).toLocaleString()}.</p>}
+        {draft.maintenanceEnabled && <div className="warning-row"><CircleAlert size={16} /><div><strong>Maintenance mode enabled</strong><small>Mutating hosted-vault API calls and live collaboration WebSocket sessions will receive a temporary maintenance response.</small></div></div>}
+        <div className="actions"><Button type="button" size="sm" disabled={busy} onClick={() => void saveCurrentSettings()}>Save maintenance mode</Button></div>
+      </div>
       <Separator />
       <div className="settings-stack">
         <p className="subtle">Retention and compaction runs automatically on a schedule. Run it now to immediately clear expired sessions/tickets, prune logs beyond their retention window, compact document revision history, and reclaim orphaned blob storage.</p>

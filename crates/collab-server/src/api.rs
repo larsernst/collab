@@ -18,10 +18,10 @@ use collab_protocol::GrantSubjectType;
 use collab_protocol::{
     capabilities_for_role, AdminBackupArtifactVerification, AdminBackupCommandResult,
     AdminBackupExportTarget, AdminBackupOverview, AdminBackupSchedule, AdminBackupSettings,
-    AdminBackupSettingsLocks, AdminBackupSummary, AdminBackupVerification, AdminOverview,
-    AdminRuntimeSetting, AdminRuntimeSettings, AdminServerSettings, ApiError, AuditEvent,
-    BootstrapStatus, BrowserSession, Capability, CreatedInvitation, DataResponse, ErrorCode,
-    ErrorResponse, HealthState, HostedChatMessage, HostedDocumentType, HostedFileEntry,
+    AdminBackupSettingsLocks, AdminBackupSummary, AdminBackupVerification, AdminMaintenanceMode,
+    AdminOverview, AdminRuntimeSetting, AdminRuntimeSettings, AdminServerSettings, ApiError,
+    AuditEvent, BootstrapStatus, BrowserSession, Capability, CreatedInvitation, DataResponse,
+    ErrorCode, ErrorResponse, HealthState, HostedChatMessage, HostedDocumentType, HostedFileEntry,
     HostedFileKind, HostedFileReference, HostedFileRevision, HostedFileState, HostedPdfAnnotations,
     HostedPresenceEntry, HostedReferenceImpact, HostedRevisionContent, HostedSearchResult,
     HostedSnapshot, HostedStructuralOperationPreview, HostedStructuralOperationResult,
@@ -29,9 +29,8 @@ use collab_protocol::{
     HostedVaultAdminDetail, HostedVaultImportResult, HostedVaultManifest, HostedVaultManifestDelta,
     HostedVaultMember, HostedVaultRole, HostedVaultStatus, HostedVaultStorage, HostedVaultSummary,
     Invitation, LiveCollaborationMetrics, MaintenanceReport, NativeSession, OperationalWarning,
-    PermissionTemplate,
-    ServerUser, ServerUserRole, StorageSummary, UserDirectoryEntry, UserGroup, UserGroupMember,
-    VaultGrant, WritePdfAnnotationsRequest, WsTicket, WsTicketRequest,
+    PermissionTemplate, ServerUser, ServerUserRole, StorageSummary, UserDirectoryEntry, UserGroup,
+    UserGroupMember, VaultGrant, WritePdfAnnotationsRequest, WsTicket, WsTicketRequest,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -371,6 +370,13 @@ pub struct UpdateRuntimeSettingsRequest {
     pub storage_quota_bytes: Option<u64>,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateMaintenanceModeRequest {
+    pub enabled: bool,
+    pub message: Option<String>,
+}
+
 /// Accepts a byte-size value from JSON as either a number (`268435456`) or a
 /// human-readable string (`"256 MiB"`), parsed by [`crate::config::parse_byte_size`].
 fn deserialize_opt_byte_size<'de, D>(deserializer: D) -> Result<Option<u64>, D::Error>
@@ -397,6 +403,7 @@ where
 pub struct UpdateServerSettingsRequest {
     pub runtime: Option<UpdateRuntimeSettingsRequest>,
     pub backup: Option<UpdateBackupSettingsRequest>,
+    pub maintenance: Option<UpdateMaintenanceModeRequest>,
 }
 
 pub async fn bootstrap_status(
@@ -4249,6 +4256,7 @@ pub async fn overview(
         .map_err(|_| ApiFailure::server(request_id.clone()))?;
     let blob_health_ok = state.blobs.health_check().await.is_ok();
     let settings = load_effective_runtime_settings(&state.config);
+    let maintenance = load_maintenance_mode(&state.config);
     let pending_update_count: i64 = persisted_live_metrics.get("pending_update_count");
     let pending_update_bytes: i64 = persisted_live_metrics.get("pending_update_bytes");
     let backup_overview = load_backup_overview(&state);
@@ -4271,6 +4279,16 @@ pub async fn overview(
             message: "Blob storage health check failed. File reads, uploads, and backups may be incomplete."
                 .into(),
             severity: "critical".into(),
+        });
+    }
+    if maintenance.enabled {
+        warnings.push(OperationalWarning {
+            code: "maintenance_mode".into(),
+            message: maintenance
+                .message
+                .clone()
+                .unwrap_or_else(|| "Maintenance mode is enabled. Mutating API requests and live WebSocket sessions are paused.".into()),
+            severity: "warning".into(),
         });
     }
     if !settings.browser_secure_cookies {
@@ -4474,6 +4492,30 @@ pub async fn admin_update_settings(
     if let Some(backup) = payload.backup {
         let settings = BackupRuntimeSettings::from_request(&state.config, backup, &request_id)?;
         save_backup_runtime_settings(&state.config.backup_dir, &settings, &request_id)?;
+    }
+    if let Some(maintenance) = payload.maintenance {
+        let message = maintenance
+            .message
+            .map(|value| value.trim().to_owned())
+            .filter(|value| !value.is_empty());
+        if message
+            .as_ref()
+            .is_some_and(|value| value.chars().count() > 500)
+        {
+            return Err(ApiFailure::validation(
+                "Maintenance message must be at most 500 characters.",
+                request_id.clone(),
+            ));
+        }
+        save_maintenance_mode(
+            &state.config.backup_dir,
+            &StoredMaintenanceMode {
+                enabled: maintenance.enabled,
+                message,
+                updated_at: Some(chrono::Utc::now().to_rfc3339()),
+            },
+            &request_id,
+        )?;
     }
     record_audit(
         &state.database,
@@ -6299,6 +6341,14 @@ pub(crate) struct EffectiveRuntimeSettings {
     storage_quota_bytes: u64,
 }
 
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct StoredMaintenanceMode {
+    pub enabled: bool,
+    pub message: Option<String>,
+    pub updated_at: Option<String>,
+}
+
 impl BackupRuntimeSettings {
     fn from_config(config: &crate::config::ServerConfig) -> Self {
         Self {
@@ -6370,6 +6420,37 @@ impl BackupRuntimeSettings {
 
 fn runtime_settings_path(backup_dir: &FsPath) -> PathBuf {
     backup_dir.join("server-settings.json")
+}
+
+fn maintenance_mode_path(backup_dir: &FsPath) -> PathBuf {
+    backup_dir.join("maintenance-mode.json")
+}
+
+pub(crate) fn load_maintenance_mode(config: &crate::config::ServerConfig) -> StoredMaintenanceMode {
+    fs::read_to_string(maintenance_mode_path(&config.backup_dir))
+        .ok()
+        .and_then(|raw| serde_json::from_str(&raw).ok())
+        .unwrap_or_default()
+}
+
+fn save_maintenance_mode(
+    backup_dir: &FsPath,
+    mode: &StoredMaintenanceMode,
+    request_id: &str,
+) -> Result<(), ApiFailure> {
+    fs::create_dir_all(backup_dir).map_err(|_| ApiFailure::server(request_id.to_owned()))?;
+    let raw = serde_json::to_string_pretty(mode)
+        .map_err(|_| ApiFailure::server(request_id.to_owned()))?;
+    fs::write(maintenance_mode_path(backup_dir), raw)
+        .map_err(|_| ApiFailure::server(request_id.to_owned()))
+}
+
+fn maintenance_mode_to_protocol(mode: StoredMaintenanceMode) -> AdminMaintenanceMode {
+    AdminMaintenanceMode {
+        enabled: mode.enabled,
+        message: mode.message,
+        updated_at: mode.updated_at,
+    }
 }
 
 fn env_locked(name: &str) -> bool {
@@ -6575,6 +6656,7 @@ fn load_server_settings(config: &crate::config::ServerConfig) -> AdminServerSett
     AdminServerSettings {
         runtime: runtime_settings_to_protocol(config, &effective),
         backup: load_backup_runtime_settings(config).to_protocol(),
+        maintenance: maintenance_mode_to_protocol(load_maintenance_mode(config)),
     }
 }
 
@@ -10128,7 +10210,6 @@ mod tests {
         parse_backup_created_at, parse_vault_zip, quota_added_bytes, quota_would_exceed,
         search_excerpt, sha256_file, verify_backup, Capability, STANDARD,
     };
-    use std::collections::HashSet;
     use crate::auth::hash_secret;
     use crate::{
         app::{build_router, AppState},
@@ -10145,6 +10226,7 @@ mod tests {
     use http_body_util::BodyExt;
     use serde_json::{json, Value};
     use sqlx::{postgres::PgPoolOptions, Row};
+    use std::collections::HashSet;
     use std::{
         io::{Cursor, Read, Write},
         sync::Arc,
@@ -10176,12 +10258,13 @@ mod tests {
 
     #[test]
     fn runtime_settings_request_accepts_byte_strings_and_numbers() {
-        let request: super::UpdateRuntimeSettingsRequest = serde_json::from_value(serde_json::json!({
-            "maxFileBytes": "256 MiB",
-            "maxImportBytes": 536_870_912u64,
-            "storageQuotaBytes": "12 GiB",
-        }))
-        .unwrap();
+        let request: super::UpdateRuntimeSettingsRequest =
+            serde_json::from_value(serde_json::json!({
+                "maxFileBytes": "256 MiB",
+                "maxImportBytes": 536_870_912u64,
+                "storageQuotaBytes": "12 GiB",
+            }))
+            .unwrap();
         assert_eq!(request.max_file_bytes, Some(256 * 1024 * 1024));
         assert_eq!(request.max_import_bytes, Some(536_870_912));
         assert_eq!(request.storage_quota_bytes, Some(12 * 1024 * 1024 * 1024));

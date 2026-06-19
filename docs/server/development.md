@@ -78,6 +78,18 @@ flows, keep using the lower-level script:
 COLLAB_RESTORE_CONFIRM=restore ./scripts/server-restore.sh collab-backup-YYYYMMDDTHHMMSSZ
 ```
 
+Before changing server images or migration files, create a verified rollback
+point and capture migration state:
+
+```bash
+pnpm server:upgrade:preflight
+```
+
+For short operator windows, enable **Maintenance mode** from `/admin/settings`.
+Health checks, login, admin controls, backups, and read-only REST requests stay
+available; hosted-vault writes and live WebSocket sessions receive
+`503 maintenance_mode` until the mode is disabled again.
+
 Backups are written to the `backups` volume. See
 [Server backups](./backups.md) for artifact layout, schedule, retention, and
 restore procedures.

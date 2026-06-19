@@ -162,6 +162,7 @@ describe('admin application', () => {
         storageQuotaBytes: setting(0, 'COLLAB_STORAGE_QUOTA_BYTES'),
       },
       backup: { scheduleEnabled: false, intervalSeconds: 86_400, retentionDays: 14, exportDir: null, locks: unlockedBackupLocks },
+      maintenance: { enabled: false, message: null, updatedAt: null },
     });
     vi.mocked(serverApi.updateSettings).mockResolvedValue({
       runtime: {
@@ -177,6 +178,7 @@ describe('admin application', () => {
         storageQuotaBytes: setting(0, 'COLLAB_STORAGE_QUOTA_BYTES'),
       },
       backup: { scheduleEnabled: false, intervalSeconds: 86_400, retentionDays: 14, exportDir: null, locks: unlockedBackupLocks },
+      maintenance: { enabled: true, message: 'Short upgrade window', updatedAt: '2026-06-19T09:00:00Z' },
     });
     vi.mocked(serverApi.invitations).mockResolvedValue([]);
     vi.mocked(serverApi.backups).mockResolvedValue({
@@ -884,6 +886,7 @@ describe('admin application', () => {
         storageQuotaBytes: setting(0, 'COLLAB_STORAGE_QUOTA_BYTES'),
       },
       backup: { scheduleEnabled: false, intervalSeconds: 86_400, retentionDays: 14, exportDir: null, locks: { ...unlockedBackupLocks, exportDir: true } },
+      maintenance: { enabled: false, message: null, updatedAt: null },
     });
     render(<App />);
 
@@ -895,11 +898,14 @@ describe('admin application', () => {
     expect((screen.getByLabelText('Storage warning size') as HTMLInputElement).value).toBe('10 GiB');
     fireEvent.change(screen.getByLabelText('Session TTL hours'), { target: { value: '24' } });
     fireEvent.change(screen.getByLabelText('Storage quota (0 = unlimited)'), { target: { value: '12 GiB' } });
+    fireEvent.click(screen.getByRole('switch', { name: 'Maintenance mode' }));
+    fireEvent.change(screen.getByLabelText('Maintenance message'), { target: { value: 'Short upgrade window' } });
     fireEvent.click(screen.getByRole('button', { name: 'Save server settings' }));
 
     // Byte fields submit the raw human-readable string; the server parses it.
     await waitFor(() => expect(serverApi.updateSettings).toHaveBeenCalledWith(expect.objectContaining({
       runtime: expect.objectContaining({ sessionTtlHours: 24, storageQuotaBytes: '12 GiB', maxFileBytes: '256 MiB' }),
+      maintenance: { enabled: true, message: 'Short upgrade window' },
     })));
 
     // Running maintenance on demand reports the reclaimed counts.

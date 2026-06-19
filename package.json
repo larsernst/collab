@@ -18,6 +18,7 @@
     "server:backup:schedule": "./scripts/server-backups.sh schedule",
     "server:backup:list": "./scripts/server-backups.sh list",
     "server:backup:smoke": "./scripts/server-backups.sh smoke-test",
+    "server:upgrade:preflight": "./scripts/server-backups.sh upgrade-preflight",
     "server:restore": "./scripts/server-backups.sh restore",
     "tauri": "node scripts/tauri-command.mjs"
   },

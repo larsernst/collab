@@ -50,8 +50,12 @@ pub async fn run_maintenance(
 ) -> MaintenanceReport {
     let mut report = MaintenanceReport::default();
 
-    report.expired_ws_tickets =
-        delete_count(db, "DELETE FROM ws_tickets WHERE expires_at <= NOW()", "ws_tickets").await;
+    report.expired_ws_tickets = delete_count(
+        db,
+        "DELETE FROM ws_tickets WHERE expires_at <= NOW()",
+        "ws_tickets",
+    )
+    .await;
     report.expired_sessions = delete_count(
         db,
         "DELETE FROM sessions WHERE expires_at <= NOW()",
@@ -128,7 +132,10 @@ async fn reclaim_revisions(db: &PgPool, history_limit: u32) -> u64 {
     .execute(db)
     .await
     {
-        tracing::warn!(?error, "clearing tombstoned current-revision pointers failed");
+        tracing::warn!(
+            ?error,
+            "clearing tombstoned current-revision pointers failed"
+        );
     }
     pruned += delete_count(
         db,

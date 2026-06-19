@@ -14,6 +14,7 @@ Simple commands:
   list                   List available backups
   verify <backup-name>   Verify checksums for one backup
   restore <backup-name>  Restore one backup, with an interactive confirmation
+  upgrade-preflight      Create+verify a backup and capture migration state
   smoke-test             Run the isolated backup/restore smoke test
 
 Custom operator commands remain available:
@@ -122,6 +123,13 @@ case "${command}" in
     require_backup_name "$@"
     confirm_restore "$1"
     COLLAB_RESTORE_CONFIRM=restore ./scripts/server-restore.sh "$1"
+    ;;
+  upgrade-preflight | preflight)
+    if [[ $# -ne 0 ]]; then
+      usage >&2
+      exit 64
+    fi
+    ./scripts/server-upgrade-preflight.sh
     ;;
   smoke-test)
     if [[ $# -ne 0 ]]; then

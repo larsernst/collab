@@ -61,6 +61,27 @@ The first version does not defend against a malicious server operator. Hosted va
 - Destructive or irreversible migrations require a verified backup and explicit operator opt-in.
 - A failed migration stops startup without serving traffic.
 - Rollback means restoring the pre-upgrade database and blob backup; down migrations are not relied upon.
+- Operators should run `pnpm server:upgrade:preflight` before upgrading. It
+  creates and verifies a full backup, records the current migration table, and
+  prints the exact restore command for rollback.
+
+## Maintenance Mode
+
+Maintenance mode is toggled from `/admin/settings` and persists in the server
+data/backup volume. It is intended for short upgrade, backup, restore, or
+operator-maintenance windows.
+
+While enabled:
+
+- Health checks, authentication, admin pages, backup/restore controls, settings,
+  and read-only REST requests remain available.
+- Hosted-vault mutations, WebSocket ticket issuance, and live WebSocket upgrades
+  return `503 maintenance_mode` with a `Retry-After` header.
+- The admin dashboard shows a `maintenance_mode` operational warning using the
+  operator-supplied message.
+
+Disable maintenance mode after the upgrade or maintenance action is complete and
+the dashboard is healthy.
 
 ## Backups
 

@@ -58,6 +58,7 @@ pub enum ErrorCode {
     UploadHashMismatch,
     QuotaExceeded,
     ProtocolVersionUnsupported,
+    MaintenanceMode,
     ServerUnavailable,
 }
 
@@ -271,6 +272,15 @@ pub struct AdminRuntimeSettings {
 pub struct AdminServerSettings {
     pub runtime: AdminRuntimeSettings,
     pub backup: AdminBackupSettings,
+    pub maintenance: AdminMaintenanceMode,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct AdminMaintenanceMode {
+    pub enabled: bool,
+    pub message: Option<String>,
+    pub updated_at: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

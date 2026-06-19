@@ -389,7 +389,10 @@ mod tests {
         assert_eq!(parse_byte_size("512k"), Ok(512 * 1024));
         assert_eq!(parse_byte_size("2 T"), Ok(2 * 1024_u64.pow(4)));
         // Decimal values round to whole bytes.
-        assert_eq!(parse_byte_size("1.5 GiB"), Ok(1024 * 1024 * 1024 + 512 * 1024 * 1024));
+        assert_eq!(
+            parse_byte_size("1.5 GiB"),
+            Ok(1024 * 1024 * 1024 + 512 * 1024 * 1024)
+        );
     }
 
     #[test]

@@ -77,6 +77,7 @@ Initial error families:
 - `upload_hash_mismatch`
 - `quota_exceeded`
 - `protocol_version_unsupported`
+- `maintenance_mode`
 - `server_unavailable`
 
 ## Initial Endpoint Groups

@@ -146,6 +146,11 @@ export interface AdminServerSettings {
     storageQuotaBytes: AdminRuntimeSetting<number>;
   };
   backup: AdminBackupSettings;
+  maintenance: {
+    enabled: boolean;
+    message: string | null;
+    updatedAt: string | null;
+  };
 }
 
 export interface AdminBackupSummary {
