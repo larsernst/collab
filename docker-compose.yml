@@ -1,0 +1,142 @@
+# Collab collaboration server — production / release stack.
+#
+# This file runs the prebuilt, published multi-architecture image from GitHub
+# Container Registry. It never builds the server locally. Use it for real
+# self-hosted deployments and version upgrades.
+#
+# For self-building, local development, and testing, use compose.yaml instead
+# (`docker compose up --build`).
+#
+# Quick start:
+#   1. cp .env.example .env   # then edit POSTGRES_PASSWORD and review settings
+#   2. docker compose -f docker-compose.yml up -d
+#
+# Pin a specific release in .env (recommended for production):
+#   COLLAB_SERVER_IMAGE=ghcr.io/azazel55605/collab-server:0.4.8
+# Leave it unset to track the rolling `latest` tag.
+name: collab-server
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-collab}
+      POSTGRES_USER: ${POSTGRES_USER:-collab}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    restart: unless-stopped
+
+  collab-server:
+    image: ${COLLAB_SERVER_IMAGE:-ghcr.io/azazel55605/collab-server:latest}
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      COLLAB_HOST: 0.0.0.0
+      COLLAB_PORT: 8787
+      POSTGRES_DB: ${POSTGRES_DB:-collab}
+      POSTGRES_USER: ${POSTGRES_USER:-collab}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+      POSTGRES_HOST: postgres
+      COLLAB_DATABASE_URL: postgres://${POSTGRES_USER:-collab}:${POSTGRES_PASSWORD:-collab-development-only}@postgres:5432/${POSTGRES_DB:-collab}
+      COLLAB_BLOB_DIR: /data/blobs
+      COLLAB_ADMIN_WEB_DIR: /app/admin-web
+      COLLAB_BACKUP_DIR: /backups
+      COLLAB_BACKUP_COMMAND: ${COLLAB_BACKUP_COMMAND-/usr/local/bin/collab-backup}
+      COLLAB_RESTORE_COMMAND: ${COLLAB_RESTORE_COMMAND-/usr/local/bin/collab-admin-restore}
+      COLLAB_LOG_FORMAT: ${COLLAB_LOG_FORMAT:-json}
+      COLLAB_LOG: ${COLLAB_LOG:-collab_server=info,tower_http=info}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "--silent", "http://127.0.0.1:8787/health/ready"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+    volumes:
+      - blob-data:/data/blobs
+      - backups:/backups
+      - ${COLLAB_BACKUP_EXPORT_PATH:-./server-data/backup-export}:/backup-export
+      - ./scripts/server-backup-container.sh:/usr/local/bin/collab-backup:ro
+      - ./scripts/server-restore-container.sh:/usr/local/bin/collab-restore:ro
+      - ./scripts/server-admin-restore-container.sh:/usr/local/bin/collab-admin-restore:ro
+    restart: unless-stopped
+
+  gateway:
+    image: caddy:2.10-alpine
+    depends_on:
+      collab-server:
+        condition: service_healthy
+    ports:
+      - "${COLLAB_HTTP_BIND:-0.0.0.0}:${COLLAB_HTTP_PORT:-8788}:80"
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    restart: unless-stopped
+
+  backup:
+    image: postgres:17-alpine
+    profiles: ["backup"]
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-collab}
+      POSTGRES_USER: ${POSTGRES_USER:-collab}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+      POSTGRES_HOST: postgres
+      COLLAB_HTTP_BIND: ${COLLAB_HTTP_BIND:-0.0.0.0}
+      COLLAB_HTTP_PORT: ${COLLAB_HTTP_PORT:-8788}
+      COLLAB_LOG_FORMAT: ${COLLAB_LOG_FORMAT:-json}
+      COLLAB_LOG: ${COLLAB_LOG:-collab_server=info,tower_http=info}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - backups:/backups
+      - blob-data:/data/blobs:ro
+      - ${COLLAB_BACKUP_EXPORT_PATH:-./server-data/backup-export}:/backup-export
+      - ./scripts/server-backup-container.sh:/usr/local/bin/collab-backup:ro
+    command:
+      - /bin/sh
+      - -c
+      - |
+        set -eu
+        while true; do
+          /usr/local/bin/collab-backup
+          sleep "$${COLLAB_BACKUP_INTERVAL_SECONDS}"
+        done
+    restart: unless-stopped
+
+  restore:
+    image: postgres:17-alpine
+    profiles: ["restore"]
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-collab}
+      POSTGRES_USER: ${POSTGRES_USER:-collab}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+      POSTGRES_HOST: postgres
+      COLLAB_BLOB_DIR: /data/blobs
+      COLLAB_RESTORE_CONFIRM: ${COLLAB_RESTORE_CONFIRM:-}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - backups:/backups
+      - blob-data:/data/blobs
+      - ./scripts/server-restore-container.sh:/usr/local/bin/collab-restore:ro
+
+volumes:
+  postgres-data:
+  blob-data:
+  backups:
+  caddy-data:
+  caddy-config:

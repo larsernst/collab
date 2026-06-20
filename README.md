@@ -5,14 +5,18 @@ PDFs, images, and collaboration.
 
 `collab` is a Tauri 2 desktop app built with React 19, TypeScript, Rust, and
 CodeMirror 6. Local vaults remain first-class and stay on disk. Existing
-shared-folder collaboration works through vault metadata, while a self-hosted
-collaboration server is being built for authenticated users, hosted vaults,
-server-backed permissions, and future live/offline synchronization.
+shared-folder collaboration works through vault metadata, and a self-hosted
+collaboration server provides authenticated users, hosted vaults, server-backed
+permissions, live co-editing, and offline synchronization.
 
-The server foundation plus authentication and administration phases are
-complete. They include PostgreSQL-backed identities, Argon2id credentials,
-secure browser and native sessions, expiring invitations, audit events, a
-Collab-style admin web interface, and a minimal desktop server connection flow.
+The server foundation, authentication, administration, hosted-vault content,
+live co-editing, and offline-sync phases are implemented. They include
+PostgreSQL-backed identities, Argon2id credentials, secure browser and native
+sessions, expiring invitations, audit events, a Collab-style admin web
+interface, a desktop server connection flow, server-backed CRDT live editing
+over WebSocket, and a native offline replica with reconnect convergence.
+Published multi-architecture (AMD64/ARM64) server images are released to GitHub
+Container Registry and run with a single production Compose file.
 
 ## Highlights
 
@@ -23,7 +27,11 @@ Collab-style admin web interface, and a minimal desktop server connection flow.
 - Dedicated PDF reader with single-page, long-scroll, and side-by-side layouts plus fit and custom zoom modes
 - Dedicated image viewer/editor with additive annotation overlays and permanent crop/rotate/resize/export flows
 - Shared-folder collaboration with presence, chat, per-file history snapshots, permissions, and conflict dialogs
-- Self-hosted Docker Compose server foundation with PostgreSQL, persistent blob storage, Caddy, health checks, and migrations
+- Hosted vaults on a self-hosted server with server-backed roles, fine-grained permissions, and authenticated native/browser sessions
+- Live co-editing of hosted notes, Kanban boards, and canvases over a server-held CRDT, with live presence and read-only-when-disconnected REST fallback
+- Offline synchronization for hosted vaults through a native replica with reconnect convergence and a status-bar sync/conflict indicator
+- Self-hosted Docker Compose server with PostgreSQL, persistent blob storage, Caddy gateway, health checks, automatic migrations, backups, quotas, and rate limiting
+- Published multi-architecture (AMD64/ARM64) server images on GitHub Container Registry for one-command production deployment
 - Server administration web interface with first-admin bootstrap, invitations, dashboard, user/password/session lifecycle management, activity inspection, and audit views
 - Vault encryption with Argon2id + AES-256-GCM
 - Theming, font, motion, calendar, zoom, and web preview settings
@@ -143,13 +151,23 @@ Collab-style admin web interface, and a minimal desktop server connection flow.
   theme, accent, and density settings
 - Dashboard storage/warning summaries, user creation/invitations, password reset, disable/re-enable/delete controls, session revocation, activity inspection, and redacted audit views
 - Desktop server login in Settings with memory-only access tokens and refresh tokens stored in the OS credential store
+- Live co-editing of hosted notes, Kanban boards, and canvases backed by a
+  per-document server-held `yrs` CRDT, relayed over an authenticated WebSocket
+  with single-use tickets, live awareness/presence, and REST optimistic-write
+  fallback when no live session is available
+- Offline synchronization through a native per-vault replica store with a
+  pending-operation queue, CRDT-state caching, integrity checks, reconnect
+  convergence, and a status-bar sync/conflict recovery indicator
+- Operational hardening: server-wide storage quota and warnings, per-client-IP
+  REST/WebSocket rate limiting, and a retention/compaction maintenance worker
+- Published multi-architecture (AMD64/ARM64) images on GitHub Container Registry,
+  built and vulnerability-scanned per platform before release tags are assigned
 - TLS certificates are verified by default. Private servers using self-signed
   certificates can explicitly enable **Allow untrusted TLS certificates** in
   Server Settings; installing the private CA on the device remains the safer
   production approach.
 
-Reference-aware operations, search/import/export, and live/offline
-synchronization remain under active development. Progress is tracked in
+Remaining server work is tracked in
 [COLLAB_SERVER_PLAN.md](./COLLAB_SERVER_PLAN.md).
 
 ### Vault Management And Security
@@ -238,8 +256,10 @@ src-tauri/src/commands/
   update.rs
   web.rs
   server.rs
+  replica.rs            Native hosted-vault offline replica store
 
-compose.yaml          Local server/PostgreSQL/Caddy stack
+docker-compose.yml    Production/release stack (published GHCR image)
+compose.yaml          Local build stack for development and testing
 Dockerfile.server     Cached multi-stage server and admin-web image
 ```
 
@@ -302,11 +322,53 @@ on `127.0.0.1:8787`.
 
 ### Collaboration Server With Docker Compose
 
-Start PostgreSQL, the collaboration server, and Caddy:
+The repository ships two Compose files:
+
+| File | Use it for | Image |
+| --- | --- | --- |
+| `docker-compose.yml` | **Production / releases (recommended for most users)** | Pulls the published GHCR image; never builds |
+| `compose.yaml` | Self-building, local development, and testing | Builds the server from source |
+
+Both bring up PostgreSQL, the collaboration server, and a Caddy gateway, share
+the same `.env` configuration, and use the same persistent volumes.
+
+#### Run a published release (recommended)
+
+You only need the repository files (`docker-compose.yml`, `.env.example`,
+`deploy/Caddyfile`, and `scripts/`), so clone or download the repository, then:
+
+```bash
+cp .env.example .env
+# Edit .env: set a strong POSTGRES_PASSWORD and review the runtime settings.
+docker compose -f docker-compose.yml up -d
+```
+
+This pulls `ghcr.io/azazel55605/collab-server:latest`. For production, pin an
+exact version in `.env` so upgrades are deliberate:
+
+```bash
+# .env
+COLLAB_SERVER_IMAGE=ghcr.io/azazel55605/collab-server:0.4.8
+```
+
+Upgrade later by bumping that tag and re-pulling:
+
+```bash
+docker compose -f docker-compose.yml pull
+docker compose -f docker-compose.yml up -d
+```
+
+#### Build from source (development / testing)
 
 ```bash
 docker compose up --build --wait
 ```
+
+The source image uses `cargo-chef` to cache Rust dependencies, and the admin-web
+image stage caches JavaScript dependency installation separately from source
+changes.
+
+#### Access, networking, and lifecycle
 
 The gateway listens on port `8788` on all host interfaces by default:
 
@@ -314,25 +376,31 @@ The gateway listens on port `8788` on all host interfaces by default:
 - Liveness: `http://127.0.0.1:8788/health/live`
 - Readiness: `http://127.0.0.1:8788/health/ready`
 
+On first launch, open the admin interface to bootstrap the initial
+administrator account.
+
 Set `COLLAB_HTTP_BIND=127.0.0.1` to keep the gateway local-only. Public
 deployments should place the gateway behind HTTPS and set
-`COLLAB_BROWSER_SECURE_COOKIES=true`.
+`COLLAB_BROWSER_SECURE_COOKIES=true`; see
+[docs/server/tls-and-secrets.md](./docs/server/tls-and-secrets.md) and
+`deploy/Caddyfile.tls.example`.
 
-Stop the containers while preserving data:
+Automated backups are available through the optional `backup` profile (and
+restore through the `restore` profile); see
+[docs/server/backups.md](./docs/server/backups.md).
+
+Stop the containers while preserving data (add `-f docker-compose.yml` for the
+release stack):
 
 ```bash
 docker compose down
 ```
 
-Delete the development containers and their persistent volumes:
+Delete the containers and their persistent volumes:
 
 ```bash
 docker compose down --volumes
 ```
-
-The server image uses `cargo-chef` to cache Rust dependencies, and the admin-web
-image stage caches JavaScript dependency installation separately from source
-changes.
 
 ### Flatpak
 
