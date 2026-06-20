@@ -29,10 +29,37 @@ The first version does not defend against a malicious server operator. Hosted va
 ## Secrets and Configuration
 
 - Secrets are supplied through environment variables or mounted secret files, never committed configuration.
-- Required secrets include the access-token signing key and bootstrap credentials during first initialization.
-- Production startup fails if default or weak signing secrets are detected.
+- Required secrets include PostgreSQL credentials, first-bootstrap credentials
+  during initialization, TLS private keys when Caddy is not managing them, and
+  any external backup-target credentials mounted by the host.
 - Logs redact authorization headers, cookies, passwords, refresh tokens, WebSocket tickets, and invitation secrets.
 - Configuration is validated before migrations or network listeners start.
+- Browser sessions, native tokens, CSRF secrets, invitations, and WebSocket
+  tickets are opaque random values stored only as PostgreSQL hashes. Rotate them
+  by revoking sessions/tickets rather than by replacing a shared signing key.
+  See [TLS, Security Headers, and Secret Rotation](./tls-and-secrets.md).
+
+## Security Headers and TLS
+
+- The server and gateway set a baseline `Content-Security-Policy`,
+  `X-Content-Type-Options`, `Referrer-Policy`, `Permissions-Policy`,
+  `Cross-Origin-Opener-Policy`, and `X-Frame-Options` on all responses.
+- Production deployments should terminate HTTPS at the gateway or at an
+  upstream reverse proxy and set `COLLAB_BROWSER_SECURE_COOKIES=true`.
+- HSTS belongs only on a real HTTPS hostname. The TLS Caddy example enables it;
+  the default local/LAN HTTP gateway intentionally does not.
+- Do not expose the internal app port or PostgreSQL to untrusted networks.
+
+## Vulnerability Scanning
+
+- Dependency and image scans are release gates for the hosted server. Run
+  `pnpm server:security:scan` locally and keep the GitHub `Security Scan`
+  workflow green.
+- The gate covers `pnpm audit`, RustSec advisories through `cargo-audit`, and
+  high/critical findings in the built `Dockerfile.server` image.
+- Scanner exceptions must be time-limited and documented with the advisory ID,
+  impact assessment, owner, and removal condition. Prefer upgrading or replacing
+  the vulnerable dependency over suppressing the finding.
 
 ## Admin Web Interface
 

@@ -28,11 +28,17 @@ On a fresh database it opens the one-time first-administrator bootstrap flow.
 Do not expose the default plain-HTTP development gateway directly to the
 internet. Terminate TLS in front of it and set
 `COLLAB_BROWSER_SECURE_COOKIES=true`.
+For Caddy-managed HTTPS and credential-rotation procedures, see
+[TLS, Security Headers, and Secret Rotation](./tls-and-secrets.md).
 
 The server image uses `cargo-chef` to keep compiled Rust dependencies in a
 separate Docker layer. Normal source changes rebuild the application crate but
 reuse the dependency layer. Changes to Cargo manifests or `Cargo.lock`
 intentionally rebuild dependencies.
+
+Build an AMD64/ARM64 OCI archive with `pnpm server:image:build`. See
+[Multi-Architecture Server Images](./container-images.md) for Buildx requirements,
+overrides, CI artifacts, GHCR release tags, and pinned-image deployment.
 
 Persistent named volumes:
 
@@ -89,6 +95,13 @@ For short operator windows, enable **Maintenance mode** from `/admin/settings`.
 Health checks, login, admin controls, backups, and read-only REST requests stay
 available; hosted-vault writes and live WebSocket sessions receive
 `503 maintenance_mode` until the mode is disabled again.
+
+After suspected token theft or a planned administrator credential rotation,
+revoke all active browser and native sessions:
+
+```bash
+pnpm server:sessions:revoke
+```
 
 Backups are written to the `backups` volume. See
 [Server backups](./backups.md) for artifact layout, schedule, retention, and
@@ -229,6 +242,8 @@ pnpm admin:build
 docker compose config
 ./scripts/server-smoke.sh
 ./scripts/server-backup-restore-smoke.sh
+pnpm server:security:scan
+pnpm server:image:build
 ```
 
 PostgreSQL migration tests run when `COLLAB_TEST_DATABASE_URL` is set:

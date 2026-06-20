@@ -19,6 +19,10 @@
     "server:backup:list": "./scripts/server-backups.sh list",
     "server:backup:smoke": "./scripts/server-backups.sh smoke-test",
     "server:upgrade:preflight": "./scripts/server-backups.sh upgrade-preflight",
+    "server:sessions:revoke": "./scripts/server-revoke-sessions.sh",
+    "server:security:scan": "./scripts/server-security-scan.sh",
+    "server:image:build": "./scripts/server-container-build.sh",
+    "server:release:check": "node scripts/check-release-version.mjs",
     "server:restore": "./scripts/server-backups.sh restore",
     "tauri": "node scripts/tauri-command.mjs"
   },

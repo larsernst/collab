@@ -382,6 +382,9 @@ not point it at a database containing valuable data.
 - [Server development and Compose](./docs/server/development.md) - local operation, configuration, and verification
 - [Server backups](./docs/server/backups.md) - Compose backup worker, manual backup, retention, and artifact layout
 - [Upgrade and failed-migration recovery](./docs/server/upgrade-recovery.md) - preflight backup, migration-state capture, and rollback procedure
+- [TLS, security headers, and secret rotation](./docs/server/tls-and-secrets.md) - HTTPS deployment, gateway hardening, and credential/session rotation
+- [Dependency and container vulnerability scanning](./docs/server/vulnerability-scanning.md) - local and CI scans for dependencies and server images
+- [Multi-architecture server images](./docs/server/container-images.md) - AMD64/ARM64 Buildx builds and CI artifacts
 - [Admin web interface](./docs/server/admin-web.md) - scope, security model, and testing expectations
 - [REST and WebSocket protocol](./docs/server/protocol.md) - versioned API and synchronization contracts
 - [Hosted vault domain model](./docs/server/hosted-vault-domain.md) - identities, permissions, revisions, and vault structure

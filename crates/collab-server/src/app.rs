@@ -26,6 +26,10 @@ use tower_http::{
 use uuid::Uuid;
 
 const REQUEST_ID_HEADER: &str = "x-request-id";
+const CONTENT_SECURITY_POLICY: &str =
+    "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'";
+const PERMISSIONS_POLICY: &str =
+    "accelerometer=(), camera=(), geolocation=(), gyroscope=(), magnetometer=(), microphone=(), payment=(), usb=()";
 
 #[derive(Clone)]
 pub struct AppState {
@@ -68,7 +72,10 @@ pub fn build_router(state: AppState) -> Router {
         .route("/api/v1/auth/native/login", post(api::native_login))
         .route("/api/v1/auth/refresh", post(api::refresh))
         .route("/api/v1/auth/native/logout", post(api::native_logout))
-        .route("/api/v1/auth/invitations/{token}/accept", post(api::accept_invitation))
+        .route(
+            "/api/v1/auth/invitations/{token}/accept",
+            post(api::accept_invitation),
+        )
         .route("/api/v1/auth/ws-ticket", post(api::issue_ws_ticket))
         .route("/api/v1/auth/logout", post(api::logout))
         .route("/ws/v1/vaults/{vault_id}", get(crate::ws::vault_ws))
@@ -114,10 +121,7 @@ pub fn build_router(state: AppState) -> Router {
             "/api/v1/vaults/{vault_id}/manifest/delta",
             get(api::vault_manifest_delta),
         )
-        .route(
-            "/api/v1/vaults/{vault_id}/storage",
-            get(api::vault_storage),
-        )
+        .route("/api/v1/vaults/{vault_id}/storage", get(api::vault_storage))
         .route(
             "/api/v1/vaults/{vault_id}/files",
             get(api::list_vault_files).post(api::create_vault_file),
@@ -218,7 +222,10 @@ pub fn build_router(state: AppState) -> Router {
             "/api/v1/admin/backups/{backup_name}",
             axum::routing::delete(api::admin_delete_backup),
         )
-        .route("/api/v1/admin/users", get(api::list_users).post(api::create_user))
+        .route(
+            "/api/v1/admin/users",
+            get(api::list_users).post(api::create_user),
+        )
         .route(
             "/api/v1/admin/users/{user_id}",
             patch(api::update_user).delete(api::delete_user),
@@ -298,13 +305,27 @@ pub fn build_router(state: AppState) -> Router {
         .nest_service("/admin", admin_assets)
         .layer(SetResponseHeaderLayer::if_not_present(
             HeaderName::from_static("content-security-policy"),
-            HeaderValue::from_static(
-                "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'",
-            ),
+            HeaderValue::from_static(CONTENT_SECURITY_POLICY),
         ))
         .layer(SetResponseHeaderLayer::if_not_present(
             HeaderName::from_static("x-content-type-options"),
             HeaderValue::from_static("nosniff"),
+        ))
+        .layer(SetResponseHeaderLayer::if_not_present(
+            HeaderName::from_static("referrer-policy"),
+            HeaderValue::from_static("no-referrer"),
+        ))
+        .layer(SetResponseHeaderLayer::if_not_present(
+            HeaderName::from_static("permissions-policy"),
+            HeaderValue::from_static(PERMISSIONS_POLICY),
+        ))
+        .layer(SetResponseHeaderLayer::if_not_present(
+            HeaderName::from_static("cross-origin-opener-policy"),
+            HeaderValue::from_static("same-origin"),
+        ))
+        .layer(SetResponseHeaderLayer::if_not_present(
+            HeaderName::from_static("x-frame-options"),
+            HeaderValue::from_static("DENY"),
         ))
         .layer(DefaultBodyLimit::max(max_json_body_bytes))
         .layer(middleware::from_fn_with_state(
@@ -693,6 +714,30 @@ mod tests {
         assert!(std::str::from_utf8(&body)
             .unwrap()
             .contains("\"status\":\"ok\""));
+    }
+
+    #[tokio::test]
+    async fn responses_include_security_headers() {
+        let response = build_router(test_state().await)
+            .oneshot(
+                Request::builder()
+                    .uri("/health/live")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        let headers = response.headers();
+        assert_eq!(
+            headers["content-security-policy"],
+            super::CONTENT_SECURITY_POLICY
+        );
+        assert_eq!(headers["x-content-type-options"], "nosniff");
+        assert_eq!(headers["referrer-policy"], "no-referrer");
+        assert_eq!(headers["permissions-policy"], super::PERMISSIONS_POLICY);
+        assert_eq!(headers["cross-origin-opener-policy"], "same-origin");
+        assert_eq!(headers["x-frame-options"], "DENY");
     }
 
     #[tokio::test]

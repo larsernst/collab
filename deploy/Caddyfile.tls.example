@@ -1,18 +1,22 @@
 {
-	auto_https off
 	admin off
 }
 
-:80 {
+# Copy this file to deploy/Caddyfile, set COLLAB_PUBLIC_HOST in .env, and expose
+# ports 80/443 when Caddy should terminate public TLS directly.
+{$COLLAB_PUBLIC_HOST} {
 	encode zstd gzip
+
 	header {
 		Content-Security-Policy "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'"
 		Cross-Origin-Opener-Policy "same-origin"
 		Permissions-Policy "accelerometer=(), camera=(), geolocation=(), gyroscope=(), magnetometer=(), microphone=(), payment=(), usb=()"
 		Referrer-Policy "no-referrer"
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
 		X-Content-Type-Options "nosniff"
 		X-Frame-Options "DENY"
 	}
+
 	redir / /admin/ permanent
 	reverse_proxy collab-server:8787
 }

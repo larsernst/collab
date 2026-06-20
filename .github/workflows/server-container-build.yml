@@ -1,0 +1,150 @@
+name: Server Container Build
+
+on:
+  push:
+    tags:
+      - 'v[0-9]+.[0-9]+.[0-9]+*'
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: Build ${{ matrix.platform }}
+    if: ${{ !startsWith(github.ref, 'refs/tags/') }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux/amd64
+            architecture: amd64
+          - platform: linux/arm64
+            architecture: arm64
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build OCI image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile.server
+          platforms: ${{ matrix.platform }}
+          tags: collab-server:ci-${{ matrix.architecture }}
+          outputs: type=oci,dest=/tmp/collab-server-${{ matrix.architecture }}.tar
+          cache-from: type=gha,scope=server-${{ matrix.architecture }}
+          cache-to: type=gha,mode=max,scope=server-${{ matrix.architecture }}
+
+      - name: Upload OCI image
+        uses: actions/upload-artifact@v4
+        with:
+          name: collab-server-${{ matrix.architecture }}
+          path: /tmp/collab-server-${{ matrix.architecture }}.tar
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7
+
+  publish:
+    name: Publish release image
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Verify release version
+        run: node scripts/check-release-version.mjs "${{ github.ref_name }}"
+
+      - name: Set registry image name
+        id: registry
+        shell: bash
+        run: echo "image=ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/collab-server" >> "$GITHUB_OUTPUT"
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build release image for scanning
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile.server
+          platforms: linux/amd64
+          load: true
+          tags: collab-server:release-scan
+          cache-from: type=gha,scope=server-amd64
+          cache-to: type=gha,mode=max,scope=server-amd64
+
+      - name: Scan release image
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          image-ref: collab-server:release-scan
+          format: table
+          severity: HIGH,CRITICAL
+          vuln-type: os,library
+          ignore-unfixed: true
+          exit-code: '1'
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Generate image metadata
+        id: metadata
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ steps.registry.outputs.image }}
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=raw,value=latest,enable=${{ !contains(github.ref_name, '-') }}
+          labels: |
+            org.opencontainers.image.title=Collab Server
+            org.opencontainers.image.description=Self-hosted collaboration server for Collab
+
+      - name: Build and publish multi-platform image
+        id: publish
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile.server
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.metadata.outputs.tags }}
+          labels: ${{ steps.metadata.outputs.labels }}
+          cache-from: |
+            type=gha,scope=server-amd64
+            type=gha,scope=server-arm64
+          cache-to: type=gha,mode=max,scope=server-release
+          provenance: mode=max
+          sbom: true
+
+      - name: Publish summary
+        shell: bash
+        run: |
+          {
+            echo '## Collab Server image'
+            echo
+            echo '**Digest:** `${{ steps.publish.outputs.digest }}`'
+            echo
+            echo '```text'
+            echo '${{ steps.metadata.outputs.tags }}'
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
