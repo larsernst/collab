@@ -51,6 +51,10 @@ BuildKit cache and makes failures easy to identify. Manual builds do not log in
 to a registry or publish an image. Automatic runs occur only for version tags
 and publish the release image described below.
 
+AMD64 runs on `ubuntu-latest`; ARM64 runs on GitHub's native
+`ubuntu-24.04-arm` runner. Both jobs use plain BuildKit progress and run in
+parallel, avoiding the much slower and occasionally quiet QEMU compilation path.
+
 ## Published Releases
 
 Pushing a semantic-version tag such as `v0.4.8` publishes a multi-platform image
@@ -68,10 +72,13 @@ deployments should pin the exact version, or an image digest when immutable
 identity is required.
 
 Before publishing, the workflow verifies that the Git tag matches the root
-package, admin package, Cargo workspace, and Tauri package versions. It then
-builds and scans the release image for high/critical known vulnerabilities.
-Only a passing image is published. The final AMD64/ARM64 manifest includes OCI
-source/version metadata, a BuildKit provenance attestation, and an SBOM.
+package, admin package, Cargo workspace, and Tauri package versions. Native
+AMD64 and ARM64 jobs each build once and push an untagged image by digest, then
+scan that digest for high/critical known vulnerabilities. Only after both jobs
+pass does a small final job assign the release tags to a combined manifest.
+Failed scans therefore leave no deployable release tag. Each platform image
+includes OCI source/version metadata, a BuildKit provenance attestation, and an
+SBOM.
 
 Run the version gate locally before creating a release tag:
 

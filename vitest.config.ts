@@ -16,9 +16,8 @@ export default defineConfig({
     setupFiles: ['./src/test/setup.ts'],
     clearMocks: true,
     restoreMocks: true,
-    // Project tests live under src/. Scoping the glob here keeps vitest from
-    // picking up source copies inside generated build trees (e.g.
-    // `.flatpak-builder/`, `flatpak/`), whose modules cannot resolve.
-    include: ['src/**/*.{test,spec}.{ts,tsx}'],
+    // Explicit roots keep Vitest from picking up source copies inside generated
+    // build trees (e.g. `.flatpak-builder/`, `flatpak/`).
+    include: ['src/**/*.{test,spec}.{ts,tsx}', 'scripts/**/*.{test,spec}.{ts,tsx}'],
   },
 });

@@ -10,7 +10,8 @@ jobs:
   build:
     name: Build ${{ matrix.platform }}
     if: ${{ !startsWith(github.ref, 'refs/tags/') }}
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
     permissions:
       contents: read
     strategy:
@@ -19,15 +20,14 @@ jobs:
         include:
           - platform: linux/amd64
             architecture: amd64
+            runner: ubuntu-latest
           - platform: linux/arm64
             architecture: arm64
+            runner: ubuntu-24.04-arm
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -42,6 +42,8 @@ jobs:
           outputs: type=oci,dest=/tmp/collab-server-${{ matrix.architecture }}.tar
           cache-from: type=gha,scope=server-${{ matrix.architecture }}
           cache-to: type=gha,mode=max,scope=server-${{ matrix.architecture }}
+        env:
+          BUILDKIT_PROGRESS: plain
 
       - name: Upload OCI image
         uses: actions/upload-artifact@v4
@@ -52,13 +54,14 @@ jobs:
           compression-level: 0
           retention-days: 7
 
-  publish:
-    name: Publish release image
+  release:
+    name: Prepare release image
     if: startsWith(github.ref, 'refs/tags/')
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      packages: write
+    outputs:
+      image: ${{ steps.registry.outputs.image }}
 
     steps:
       - name: Checkout
@@ -72,36 +75,31 @@ jobs:
         shell: bash
         run: echo "image=ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/collab-server" >> "$GITHUB_OUTPUT"
 
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3
+  publish-platform:
+    name: Build and scan ${{ matrix.platform }}
+    needs: release
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux/amd64
+            architecture: amd64
+            runner: ubuntu-latest
+          - platform: linux/arm64
+            architecture: arm64
+            runner: ubuntu-24.04-arm
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
-
-      - name: Build release image for scanning
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          file: Dockerfile.server
-          platforms: linux/amd64
-          load: true
-          tags: collab-server:release-scan
-          cache-from: type=gha,scope=server-amd64
-          cache-to: type=gha,mode=max,scope=server-amd64
-
-      - name: Install Trivy
-        run: |
-          ./scripts/install-trivy.sh "$RUNNER_TEMP/trivy-bin"
-          echo "$RUNNER_TEMP/trivy-bin" >> "$GITHUB_PATH"
-
-      - name: Scan release image
-        run: |
-          trivy image \
-            --severity HIGH,CRITICAL \
-            --pkg-types os,library \
-            --ignore-unfixed \
-            --exit-code 1 \
-            collab-server:release-scan
 
       - name: Log in to GitHub Container Registry
         uses: docker/login-action@v3
@@ -110,43 +108,109 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Generate image metadata
-        id: metadata
-        uses: docker/metadata-action@v5
-        with:
-          images: ${{ steps.registry.outputs.image }}
-          tags: |
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
-            type=raw,value=latest,enable=${{ !contains(github.ref_name, '-') }}
-          labels: |
-            org.opencontainers.image.title=Collab Server
-            org.opencontainers.image.description=Self-hosted collaboration server for Collab
-
-      - name: Build and publish multi-platform image
-        id: publish
+      - name: Build and push platform image by digest
+        id: platform
         uses: docker/build-push-action@v6
         with:
           context: .
           file: Dockerfile.server
-          platforms: linux/amd64,linux/arm64
-          push: true
-          tags: ${{ steps.metadata.outputs.tags }}
-          labels: ${{ steps.metadata.outputs.labels }}
-          cache-from: |
-            type=gha,scope=server-amd64
-            type=gha,scope=server-arm64
-          cache-to: type=gha,mode=max,scope=server-release
+          platforms: ${{ matrix.platform }}
+          labels: |
+            org.opencontainers.image.title=Collab Server
+            org.opencontainers.image.description=Self-hosted collaboration server for Collab
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.version=${{ github.ref_name }}
+          outputs: type=image,name=${{ needs.release.outputs.image }},push-by-digest=true,name-canonical=true,push=true
+          cache-from: type=gha,scope=server-${{ matrix.architecture }}
+          cache-to: type=gha,mode=max,scope=server-${{ matrix.architecture }}
           provenance: mode=max
           sbom: true
+        env:
+          BUILDKIT_PROGRESS: plain
+
+      - name: Install Trivy
+        run: |
+          ./scripts/install-trivy.sh "$RUNNER_TEMP/trivy-bin"
+          echo "$RUNNER_TEMP/trivy-bin" >> "$GITHUB_PATH"
+
+      - name: Scan platform image by digest
+        run: |
+          trivy image \
+            --severity HIGH,CRITICAL \
+            --pkg-types os,library \
+            --ignore-unfixed \
+            --exit-code 1 \
+            "${{ needs.release.outputs.image }}@${{ steps.platform.outputs.digest }}"
+
+      - name: Export platform digest
+        shell: bash
+        run: |
+          mkdir -p "$RUNNER_TEMP/digests"
+          digest='${{ steps.platform.outputs.digest }}'
+          touch "$RUNNER_TEMP/digests/${digest#sha256:}"
+
+      - name: Upload platform digest
+        uses: actions/upload-artifact@v4
+        with:
+          name: collab-server-digest-${{ matrix.architecture }}
+          path: ${{ runner.temp }}/digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+  publish-manifest:
+    name: Publish multi-platform manifest
+    needs: [release, publish-platform]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Download platform digests
+        uses: actions/download-artifact@v4
+        with:
+          pattern: collab-server-digest-*
+          path: /tmp/digests
+          merge-multiple: true
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Generate release tags
+        id: metadata
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ needs.release.outputs.image }}
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=raw,value=latest,enable=${{ !contains(github.ref_name, '-') }}
+
+      - name: Create multi-platform manifest
+        working-directory: /tmp/digests
+        env:
+          REGISTRY_IMAGE: ${{ needs.release.outputs.image }}
+        run: |
+          tags="$(jq -cr '.tags | map("-t " + .) | join(" ")' <<< "$DOCKER_METADATA_OUTPUT_JSON")"
+          sources="$(printf "${REGISTRY_IMAGE}@sha256:%s " *)"
+          docker buildx imagetools create $tags $sources
+
+      - name: Inspect published image
+        run: docker buildx imagetools inspect "${{ needs.release.outputs.image }}:${{ steps.metadata.outputs.version }}"
 
       - name: Publish summary
         shell: bash
         run: |
           {
             echo '## Collab Server image'
-            echo
-            echo '**Digest:** `${{ steps.publish.outputs.digest }}`'
             echo
             echo '```text'
             echo '${{ steps.metadata.outputs.tags }}'
