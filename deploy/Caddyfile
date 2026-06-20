@@ -1,3 +1,6 @@
+# Gateway config for the development/self-build stack (compose.yaml bind-mounts
+# this file). The release stack (docker-compose.yml) embeds an identical copy
+# inline as a Compose config; keep the two in sync when changing gateway rules.
 {
 	auto_https off
 	admin off

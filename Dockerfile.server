@@ -43,6 +43,14 @@ WORKDIR /app
 COPY --from=builder /app/target/release/collab-server /usr/local/bin/collab-server
 COPY --from=admin-builder /app/apps/admin-web/dist /app/admin-web
 
+# Bake the backup/restore helpers into the image so the published release stack
+# is self-contained (no host bind mounts required). The development compose.yaml
+# bind-mounts the same paths to pick up live script edits.
+COPY scripts/server-backup-container.sh /usr/local/bin/collab-backup
+COPY scripts/server-restore-container.sh /usr/local/bin/collab-restore
+COPY scripts/server-admin-restore-container.sh /usr/local/bin/collab-admin-restore
+RUN chmod 0755 /usr/local/bin/collab-backup /usr/local/bin/collab-restore /usr/local/bin/collab-admin-restore
+
 USER collab
 EXPOSE 8787
 ENTRYPOINT ["collab-server"]

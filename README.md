@@ -334,12 +334,15 @@ the same `.env` configuration, and use the same persistent volumes.
 
 #### Run a published release (recommended)
 
-You only need the repository files (`docker-compose.yml`, `.env.example`,
-`deploy/Caddyfile`, and `scripts/`), so clone or download the repository, then:
+`docker-compose.yml` is self-contained: the only file you need beside it is a
+`.env`. The Caddy gateway config is embedded inline, and the backup/restore
+helpers are baked into the published image, so there are no host bind mounts to
+provide. Download just `docker-compose.yml` (and `.env.example` for reference),
+then:
 
 ```bash
-cp .env.example .env
-# Edit .env: set a strong POSTGRES_PASSWORD and review the runtime settings.
+# Create .env with at least a strong POSTGRES_PASSWORD, e.g.:
+#   POSTGRES_PASSWORD=replace-with-a-long-random-password
 docker compose -f docker-compose.yml up -d
 ```
 

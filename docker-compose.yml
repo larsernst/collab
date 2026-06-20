@@ -1,8 +1,10 @@
 # Collab collaboration server — production / release stack.
 #
 # This file runs the prebuilt, published multi-architecture image from GitHub
-# Container Registry. It never builds the server locally. Use it for real
-# self-hosted deployments and version upgrades.
+# Container Registry. It never builds the server locally, and it is fully
+# self-contained: it requires no sibling files except a `.env`. The Caddy
+# gateway config is provided inline, and the backup/restore helpers are baked
+# into the published image.
 #
 # For self-building, local development, and testing, use compose.yaml instead
 # (`docker compose up --build`).
@@ -44,7 +46,7 @@ services:
       POSTGRES_USER: ${POSTGRES_USER:-collab}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
       POSTGRES_HOST: postgres
-      COLLAB_DATABASE_URL: postgres://${POSTGRES_USER:-collab}:${POSTGRES_PASSWORD:-collab-development-only}@postgres:5432/${POSTGRES_DB:-collab}
+      COLLAB_DATABASE_URL: postgres://${POSTGRES_USER:-collab}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-collab}
       COLLAB_BLOB_DIR: /data/blobs
       COLLAB_ADMIN_WEB_DIR: /app/admin-web
       COLLAB_BACKUP_DIR: /backups
@@ -64,9 +66,6 @@ services:
       - blob-data:/data/blobs
       - backups:/backups
       - ${COLLAB_BACKUP_EXPORT_PATH:-./server-data/backup-export}:/backup-export
-      - ./scripts/server-backup-container.sh:/usr/local/bin/collab-backup:ro
-      - ./scripts/server-restore-container.sh:/usr/local/bin/collab-restore:ro
-      - ./scripts/server-admin-restore-container.sh:/usr/local/bin/collab-admin-restore:ro
     restart: unless-stopped
 
   gateway:
@@ -76,14 +75,18 @@ services:
         condition: service_healthy
     ports:
       - "${COLLAB_HTTP_BIND:-0.0.0.0}:${COLLAB_HTTP_PORT:-8788}:80"
+    configs:
+      - source: caddyfile
+        target: /etc/caddy/Caddyfile
     volumes:
-      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
       - caddy-data:/data
       - caddy-config:/config
     restart: unless-stopped
 
+  # Optional scheduled backup worker. Start with:
+  #   docker compose -f docker-compose.yml --profile backup up -d backup
   backup:
-    image: postgres:17-alpine
+    image: ${COLLAB_SERVER_IMAGE:-ghcr.io/azazel55605/collab-server:latest}
     profiles: ["backup"]
     env_file:
       - path: .env
@@ -93,8 +96,8 @@ services:
       POSTGRES_USER: ${POSTGRES_USER:-collab}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
       POSTGRES_HOST: postgres
-      COLLAB_HTTP_BIND: ${COLLAB_HTTP_BIND:-0.0.0.0}
-      COLLAB_HTTP_PORT: ${COLLAB_HTTP_PORT:-8788}
+      COLLAB_BLOB_DIR: /data/blobs
+      COLLAB_BACKUP_DIR: /backups
       COLLAB_LOG_FORMAT: ${COLLAB_LOG_FORMAT:-json}
       COLLAB_LOG: ${COLLAB_LOG:-collab_server=info,tower_http=info}
     depends_on:
@@ -104,20 +107,21 @@ services:
       - backups:/backups
       - blob-data:/data/blobs:ro
       - ${COLLAB_BACKUP_EXPORT_PATH:-./server-data/backup-export}:/backup-export
-      - ./scripts/server-backup-container.sh:/usr/local/bin/collab-backup:ro
+    entrypoint: ["/bin/sh", "-c"]
     command:
-      - /bin/sh
-      - -c
       - |
         set -eu
         while true; do
           /usr/local/bin/collab-backup
-          sleep "$${COLLAB_BACKUP_INTERVAL_SECONDS}"
+          sleep "$${COLLAB_BACKUP_INTERVAL_SECONDS:-86400}"
         done
     restart: unless-stopped
 
+  # Optional one-shot restore helper. Run with:
+  #   COLLAB_RESTORE_CONFIRM=restore docker compose -f docker-compose.yml \
+  #     run --rm restore /usr/local/bin/collab-restore /backups/<backup-dir>
   restore:
-    image: postgres:17-alpine
+    image: ${COLLAB_SERVER_IMAGE:-ghcr.io/azazel55605/collab-server:latest}
     profiles: ["restore"]
     environment:
       POSTGRES_DB: ${POSTGRES_DB:-collab}
@@ -132,7 +136,29 @@ services:
     volumes:
       - backups:/backups
       - blob-data:/data/blobs
-      - ./scripts/server-restore-container.sh:/usr/local/bin/collab-restore:ro
+    entrypoint: []
+
+configs:
+  caddyfile:
+    content: |
+      {
+      	auto_https off
+      	admin off
+      }
+
+      :80 {
+      	encode zstd gzip
+      	header {
+      		Content-Security-Policy "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'"
+      		Cross-Origin-Opener-Policy "same-origin"
+      		Permissions-Policy "accelerometer=(), camera=(), geolocation=(), gyroscope=(), magnetometer=(), microphone=(), payment=(), usb=()"
+      		Referrer-Policy "no-referrer"
+      		X-Content-Type-Options "nosniff"
+      		X-Frame-Options "DENY"
+      	}
+      	redir / /admin/ permanent
+      	reverse_proxy collab-server:8787
+      }
 
 volumes:
   postgres-data:
