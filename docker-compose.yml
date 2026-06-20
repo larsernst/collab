@@ -46,7 +46,7 @@ services:
       POSTGRES_USER: ${POSTGRES_USER:-collab}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
       POSTGRES_HOST: postgres
-      COLLAB_DATABASE_URL: postgres://${POSTGRES_USER:-collab}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-collab}
+      COLLAB_DATABASE_URL: postgres://${POSTGRES_USER:-collab}:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}@postgres:5432/${POSTGRES_DB:-collab}
       COLLAB_BLOB_DIR: /data/blobs
       COLLAB_ADMIN_WEB_DIR: /app/admin-web
       COLLAB_BACKUP_DIR: /backups
