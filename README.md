@@ -451,10 +451,13 @@ not point it at a database containing valuable data.
 - [COLLAB_SERVER_PLAN.md](./COLLAB_SERVER_PLAN.md) - phased server implementation tracker
 - [Server architecture index](./docs/server/README.md) - entry point for server architecture documents
 - [Server development and Compose](./docs/server/development.md) - local operation, configuration, and verification
+- [Deployment topology and upgrade compatibility](./docs/server/deployment-topology.md) - supported topology, sizing, and upgrade rules
 - [Server backups](./docs/server/backups.md) - Compose backup worker, manual backup, retention, and artifact layout
 - [Upgrade and failed-migration recovery](./docs/server/upgrade-recovery.md) - preflight backup, migration-state capture, and rollback procedure
 - [TLS, security headers, and secret rotation](./docs/server/tls-and-secrets.md) - HTTPS deployment, gateway hardening, and credential/session rotation
 - [Dependency and container vulnerability scanning](./docs/server/vulnerability-scanning.md) - local and CI scans for dependencies and server images
+- [Load testing](./docs/server/load-testing.md) - capacity/rate-limit load test harness and results template
+- [Release security review](./docs/server/security-review.md) - threat-model coverage, findings, and sign-off
 - [Multi-architecture server images](./docs/server/container-images.md) - AMD64/ARM64 Buildx builds and CI artifacts
 - [Admin web interface](./docs/server/admin-web.md) - scope, security model, and testing expectations
 - [REST and WebSocket protocol](./docs/server/protocol.md) - versioned API and synchronization contracts

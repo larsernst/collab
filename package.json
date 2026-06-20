@@ -1,7 +1,7 @@
 {
   "name": "collab",
   "private": true,
-  "version": "0.4.8",
+  "version": "0.4.9",
   "packageManager": "pnpm@10.33.0",
   "type": "module",
   "scripts": {
@@ -21,6 +21,7 @@
     "server:upgrade:preflight": "./scripts/server-backups.sh upgrade-preflight",
     "server:sessions:revoke": "./scripts/server-revoke-sessions.sh",
     "server:security:scan": "./scripts/server-security-scan.sh",
+    "server:load-test": "./scripts/server-load-test.sh",
     "server:image:build": "./scripts/server-container-build.sh",
     "server:release:check": "node scripts/check-release-version.mjs",
     "server:restore": "./scripts/server-backups.sh restore",

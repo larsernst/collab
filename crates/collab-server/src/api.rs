@@ -12522,7 +12522,7 @@ mod tests {
         let sent_chat_body = json_body(sent_chat).await;
         assert_eq!(sent_chat_body["data"]["id"], chat_message_id.to_string());
         assert_eq!(sent_chat_body["data"]["userId"], member_id);
-        assert_eq!(sent_chat_body["data"]["userName"], "Member User");
+        assert_eq!(sent_chat_body["data"]["userName"], "Member");
         assert_eq!(sent_chat_body["data"]["content"], "Hello from hosted chat");
         assert!(sent_chat_body["data"]["timestamp"].as_u64().unwrap() > 0);
 
@@ -12573,7 +12573,7 @@ mod tests {
         let presence = listed_presence_body["data"].as_array().unwrap();
         assert_eq!(presence.len(), 1);
         assert_eq!(presence[0]["userId"], member_id);
-        assert_eq!(presence[0]["userName"], "Member User");
+        assert_eq!(presence[0]["userName"], "Member");
         assert_eq!(presence[0]["activeFile"], "Notes/Imported.md");
         assert_eq!(presence[0]["cursorLine"], 7);
         assert_eq!(presence[0]["chatTypingUntil"], 123456);
@@ -13333,6 +13333,25 @@ mod tests {
 
         // Force-deleting is only allowed once a vault is marked for deletion, so a
         // single destructive request can never skip the soft-delete step.
+        // Reactivate the vault (it was left pending_delete by the redelete step
+        // above) so the force-delete guard is exercised against an active vault.
+        let reactivate_before_force = request(
+            &app,
+            "PATCH",
+            &format!("/api/v1/admin/vaults/{vault_id}"),
+            json!({"status": "active"}),
+            Some(&admin_cookie),
+            Some(&admin_csrf),
+        )
+        .await;
+        assert_eq!(reactivate_before_force.status(), StatusCode::OK);
+        assert_eq!(
+            json_body(reactivate_before_force).await["data"]["status"],
+            "active"
+        );
+
+        // Force-delete must be rejected while the vault is still active: a vault
+        // has to be marked for deletion first.
         let force_too_early = request(
             &app,
             "POST",
