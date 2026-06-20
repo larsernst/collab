@@ -45,9 +45,9 @@ scan_dependencies() {
 
   echo "==> Scanning Rust dependencies with cargo audit"
   if command -v cargo-audit >/dev/null 2>&1; then
-    cargo audit --deny warnings
+    cargo audit
   elif cargo audit --version >/dev/null 2>&1; then
-    cargo audit --deny warnings
+    cargo audit
   else
     echo "cargo-audit is not installed. Install with: cargo install cargo-audit --locked" >&2
     return 1

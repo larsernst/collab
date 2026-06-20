@@ -31,16 +31,15 @@ jobs:
         run: pnpm audit --audit-level high
 
       - name: Audit Rust dependencies
-        uses: rustsec/audit-check@v2.0.0
-        with:
-          token: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          cargo install cargo-audit --version 0.22.2 --locked
+          cargo audit
 
   container:
     name: Container vulnerabilities
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      security-events: write
 
     steps:
       - name: Checkout
@@ -62,21 +61,17 @@ jobs:
       - name: Verify server image archive
         run: test -s /tmp/collab-server-security-scan.tar
 
-      - name: Scan server image
-        uses: aquasecurity/trivy-action@v0.28.0
-        with:
-          scan-type: image
-          input: /tmp/collab-server-security-scan.tar
-          format: sarif
-          output: trivy-results.sarif
-          severity: HIGH,CRITICAL
-          vuln-type: os,library
-          ignore-unfixed: true
-          exit-code: '1'
+      - name: Install Trivy
+        run: |
+          ./scripts/install-trivy.sh "$RUNNER_TEMP/trivy-bin"
+          echo "$RUNNER_TEMP/trivy-bin" >> "$GITHUB_PATH"
 
-      - name: Upload Trivy SARIF
-        if: always() && hashFiles('trivy-results.sarif') != ''
-        continue-on-error: true
-        uses: github/codeql-action/upload-sarif@v3
-        with:
-          sarif_file: trivy-results.sarif
+      - name: Scan server image
+        run: |
+          trivy image \
+            --input /tmp/collab-server-security-scan.tar \
+            --format table \
+            --severity HIGH,CRITICAL \
+            --pkg-types os,library \
+            --ignore-unfixed \
+            --exit-code 1
