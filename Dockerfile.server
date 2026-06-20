@@ -31,7 +31,8 @@ RUN pnpm admin:build
 
 FROM postgres:17-bookworm AS runtime
 
-RUN apt-get update \
+RUN rm -f /usr/local/bin/gosu /usr/local/bin/docker-entrypoint.sh \
+    && apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates curl \
     && rm -rf /var/lib/apt/lists/*
 
