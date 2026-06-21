@@ -484,6 +484,52 @@ describe('admin application', () => {
     await waitFor(() => expect(serverApi.updateVault).toHaveBeenCalledWith('vault-1', { name: 'Renamed Vault' }));
   });
 
+  it('toggles the hosted-vault offline-copy policy from vault settings', async () => {
+    const vaultSummary = {
+      id: 'vault-1',
+      name: 'Team Vault',
+      ownerDisplayName: 'Admin User',
+      status: 'active' as const,
+      members: 1,
+      storageBytes: 0,
+      requireOfflineCopy: false,
+      updatedAt: '2026-06-10T00:00:00Z',
+    };
+    const vaultDetail = {
+      id: 'vault-1',
+      name: 'Team Vault',
+      ownerUserId: 'admin-1',
+      ownerUsername: 'admin',
+      ownerDisplayName: 'Admin User',
+      status: 'active' as const,
+      manifestSequence: 0,
+      members: 1,
+      activeFiles: 0,
+      trashedFiles: 0,
+      storageBytes: 0,
+      requireOfflineCopy: false,
+      createdAt: '2026-06-09T00:00:00Z',
+      updatedAt: '2026-06-10T00:00:00Z',
+    };
+    vi.mocked(serverApi.bootstrapStatus).mockResolvedValue({ required: false });
+    vi.mocked(serverApi.me).mockResolvedValue(admin);
+    vi.mocked(serverApi.users).mockResolvedValue([admin]);
+    vi.mocked(serverApi.vaults).mockResolvedValue([vaultSummary]);
+    vi.mocked(serverApi.vaultDetail).mockResolvedValue(vaultDetail);
+    vi.mocked(serverApi.vaultMembers).mockResolvedValue([
+      { userId: 'admin-1', username: 'admin', displayName: 'Admin User', role: 'admin', owner: true, createdAt: '2026-06-09T00:00:00Z' },
+    ]);
+    vi.mocked(serverApi.vaultActivity).mockResolvedValue([]);
+    vi.mocked(serverApi.updateVault).mockResolvedValue({ ...vaultDetail, requireOfflineCopy: true });
+
+    render(<App />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Vaults' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Manage Team Vault' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Require offline copy' }));
+
+    await waitFor(() => expect(serverApi.updateVault).toHaveBeenCalledWith('vault-1', { requireOfflineCopy: true }));
+  });
+
   it('shows storage accounting and exports hosted vaults from the web interface', async () => {
     vi.stubGlobal('URL', {
       createObjectURL: vi.fn(() => 'blob:export'),

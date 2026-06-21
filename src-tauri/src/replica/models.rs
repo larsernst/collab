@@ -21,6 +21,10 @@ pub struct ReplicaMeta {
     pub schema_version: u32,
     pub created_at: String,
     pub updated_at: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub role: Option<String>,
+    #[serde(default)]
+    pub capabilities: Vec<String>,
 }
 
 /// The coarse synchronization status of a replica relative to the server.
@@ -48,6 +52,24 @@ pub struct ReplicaSyncState {
     /// ISO-8601 timestamp of the last successful synchronization, if any.
     pub last_synced_at: Option<String>,
     pub status: SyncStatus,
+}
+
+/// A lightweight inventory entry for an existing hosted-vault replica. This is
+/// used by the native UI to show offline copies when the server cannot be
+/// reached.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ReplicaSummary {
+    pub server_url: String,
+    pub vault_id: String,
+    pub vault_name: String,
+    pub manifest_sequence: i64,
+    pub last_synced_at: Option<String>,
+    pub status: SyncStatus,
+    pub pending_count: usize,
+    pub updated_at: String,
+    pub role: Option<String>,
+    pub capabilities: Vec<String>,
 }
 
 impl Default for ReplicaSyncState {

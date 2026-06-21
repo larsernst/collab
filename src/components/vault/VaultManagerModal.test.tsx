@@ -4,7 +4,7 @@ import { useServerStore } from '../../store/serverStore';
 import { useUiStore } from '../../store/uiStore';
 import { useVaultStore } from '../../store/vaultStore';
 import VaultManagerModal from './VaultManagerModal';
-import type { HostedVaultSummary, LocalVaultMeta } from '../../types/vault';
+import type { HostedVaultMeta, HostedVaultSummary, LocalVaultMeta } from '../../types/vault';
 
 vi.mock('../../lib/tauri', () => ({
   tauriCommands: {
@@ -15,6 +15,36 @@ vi.mock('../../lib/tauri', () => ({
 }));
 
 vi.mock('sonner', () => ({ toast: { error: vi.fn(), success: vi.fn() } }));
+
+const syncStoreMock = vi.hoisted(() => ({
+  makeAvailableOffline: vi.fn(),
+}));
+
+const replicaMock = vi.hoisted(() => ({
+  listHostedVaultReplicas: vi.fn(),
+  deleteHostedVaultReplica: vi.fn(),
+}));
+
+vi.mock('../../store/syncStore', () => ({
+  syncRollup: () => 'synced',
+  useSyncStore: () => ({
+    status: 'idle',
+    lastSyncedAt: '2026-06-18T00:00:00Z',
+    pending: [],
+    failed: [],
+    access: 'ok',
+    isSyncing: false,
+    refresh: vi.fn(async () => {}),
+    syncNow: vi.fn(async () => {}),
+    makeAvailableOffline: syncStoreMock.makeAvailableOffline,
+    removeReplica: vi.fn(async () => {}),
+  }),
+}));
+
+vi.mock('../../lib/vaultReplica', () => ({
+  listHostedVaultReplicas: replicaMock.listHostedVaultReplicas,
+  deleteHostedVaultReplica: replicaMock.deleteHostedVaultReplica,
+}));
 
 // The manager modal builds a VaultClient per row; stub it so local rows do not hit Tauri.
 vi.mock('../../lib/vaultClient', () => ({
@@ -46,6 +76,17 @@ const localVault: LocalVaultMeta = {
   isEncrypted: false,
 };
 
+const openHostedVaultMeta: HostedVaultMeta = {
+  ...hostedVault,
+  kind: 'hosted',
+  hostedVaultId: hostedVault.id,
+  id: `hosted:${hostedVault.id}`,
+  serverUrl: 'https://collab.example.test',
+  path: `hosted://${hostedVault.id}`,
+  lastOpened: 1,
+  isEncrypted: false,
+};
+
 const openHostedVault = vi.fn(async () => {});
 const createHostedVault = vi.fn(async () => hostedVault);
 
@@ -72,6 +113,9 @@ function connect(connected: boolean) {
 describe('VaultManagerModal hosted vaults', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    replicaMock.listHostedVaultReplicas.mockResolvedValue([]);
+    replicaMock.deleteHostedVaultReplica.mockResolvedValue(undefined);
+    vi.spyOn(window, 'confirm').mockReturnValue(true);
     useUiStore.setState({ isVaultManagerOpen: true, closeVaultManager: vi.fn() } as never);
     useVaultStore.setState({
       vault: localVault,
@@ -124,5 +168,86 @@ describe('VaultManagerModal hosted vaults', () => {
     await waitFor(() =>
       expect(openHostedVault).toHaveBeenCalledWith(expect.objectContaining({ kind: 'hosted', hostedVaultId: 'vault-1' })),
     );
+  });
+
+  it('exposes hosted offline sync controls and starts the offline cache action', async () => {
+    connect(true);
+    syncStoreMock.makeAvailableOffline.mockResolvedValue({ documentsCached: 1, assetsCached: 2, skipped: 0 });
+    useVaultStore.setState({ vault: openHostedVaultMeta } as never);
+    render(<VaultManagerModal />);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Offline Sync' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Make available offline' }));
+
+    await waitFor(() => expect(syncStoreMock.makeAvailableOffline).toHaveBeenCalledWith(openHostedVaultMeta, expect.any(Function)));
+  });
+
+  it('lists offline hosted copies from multiple servers and opens one', async () => {
+    connect(false);
+    replicaMock.listHostedVaultReplicas.mockResolvedValue([
+      {
+        serverUrl: 'https://server-one.test',
+        vaultId: 'vault-a',
+        vaultName: 'Alpha Offline',
+        manifestSequence: 4,
+        lastSyncedAt: '2026-06-21T10:00:00Z',
+        status: 'offline',
+        pendingCount: 1,
+        updatedAt: '2026-06-21T10:00:00Z',
+        role: 'editor',
+        capabilities: ['vault.read', 'file.write'],
+      },
+      {
+        serverUrl: 'https://server-two.test',
+        vaultId: 'vault-b',
+        vaultName: 'Beta Offline',
+        manifestSequence: 5,
+        lastSyncedAt: null,
+        status: 'idle',
+        pendingCount: 0,
+        updatedAt: '2026-06-20T10:00:00Z',
+        role: 'admin',
+        capabilities: ['vault.read'],
+      },
+    ]);
+    render(<VaultManagerModal />);
+
+    expect(await screen.findByText('Offline copies · https://server-one.test')).toBeTruthy();
+    expect(screen.getByText('Offline copies · https://server-two.test')).toBeTruthy();
+    fireEvent.click(screen.getAllByTitle('Open hosted vault')[0]);
+
+    await waitFor(() => expect(openHostedVault).toHaveBeenCalledWith(expect.objectContaining({
+      kind: 'hosted',
+      hostedVaultId: 'vault-a',
+      serverUrl: 'https://server-one.test',
+      role: 'editor',
+      capabilities: ['vault.read', 'file.write'],
+    })));
+  });
+
+  it('removes a stale offline hosted copy and refreshes the list', async () => {
+    connect(false);
+    const staleReplica = {
+      serverUrl: 'https://dead-server.test',
+      vaultId: 'vault-stale',
+      vaultName: 'Stale Offline',
+      manifestSequence: 1,
+      lastSyncedAt: null,
+      status: 'idle',
+      pendingCount: 0,
+      updatedAt: '2026-06-20T10:00:00Z',
+      role: 'viewer',
+      capabilities: [],
+    };
+    replicaMock.listHostedVaultReplicas
+      .mockResolvedValueOnce([staleReplica])
+      .mockResolvedValueOnce([]);
+    render(<VaultManagerModal />);
+
+    expect(await screen.findByText('Stale Offline')).toBeTruthy();
+    fireEvent.click(screen.getByTitle('Remove offline copy'));
+
+    await waitFor(() => expect(replicaMock.deleteHostedVaultReplica).toHaveBeenCalledWith(staleReplica));
+    await waitFor(() => expect(screen.queryByText('Stale Offline')).toBeNull());
   });
 });

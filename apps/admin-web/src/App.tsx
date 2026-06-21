@@ -1251,6 +1251,22 @@ function VaultDetailPage({ vaultId, onBack }: { vaultId: string; onBack: () => v
           <Metric icon={<Users />} label="Members" value={detail.members} detail="Persisted vault memberships" />
           <Metric icon={<Activity />} label="Manifest sequence" value={detail.manifestSequence} detail={`Updated ${new Date(detail.updatedAt).toLocaleString()}`} />
         </div>
+        <Panel title="Vault settings" icon={<Settings size={17} />}>
+          <div className="settings-row">
+            <div>
+              <strong>Require offline copy</strong>
+              <p className="subtle">Ask native clients to prepare this vault for offline use whenever they open it.</p>
+            </div>
+            <Button
+              size="sm"
+              variant={detail.requireOfflineCopy ? 'default' : 'outline'}
+              disabled={pendingDelete}
+              onClick={() => run(() => serverApi.updateVault(vaultId, { requireOfflineCopy: !detail.requireOfflineCopy }))}
+            >
+              {detail.requireOfflineCopy ? 'Offline copy required' : 'Require offline copy'}
+            </Button>
+          </div>
+        </Panel>
         <Panel title="Storage and transfer" icon={<Database size={17} />}>
           {storage ? (
             <div className="storage-grid">

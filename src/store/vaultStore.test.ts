@@ -11,10 +11,13 @@ const tauriCommandsMock = vi.hoisted(() => ({
   isFlatpak: vi.fn(),
   showOpenVaultDialog: vi.fn(),
   hostedVaultRequest: vi.fn(),
+  hostedVaultAssetDataUrl: vi.fn(),
   replicaSeed: vi.fn(),
   replicaReadManifest: vi.fn(),
   replicaReadSyncState: vi.fn(),
   replicaListPendingOperations: vi.fn(),
+  replicaCacheDocument: vi.fn(),
+  replicaCacheAsset: vi.fn(),
   replicaCleanup: vi.fn().mockResolvedValue({ removedFiles: 0, freedBytes: 0, remainingBytes: 0 }),
 }));
 
@@ -29,6 +32,7 @@ describe('vaultStore Flatpak reopen fallback', () => {
   const initialState = useVaultStore.getState();
 
   beforeEach(() => {
+    localStorage.clear();
     vi.clearAllMocks();
     useVaultStore.setState({
       ...initialState,
@@ -53,6 +57,9 @@ describe('vaultStore Flatpak reopen fallback', () => {
       status: 'idle',
     });
     tauriCommandsMock.replicaListPendingOperations.mockResolvedValue([]);
+    tauriCommandsMock.replicaCacheDocument.mockResolvedValue(undefined);
+    tauriCommandsMock.replicaCacheAsset.mockResolvedValue(undefined);
+    tauriCommandsMock.hostedVaultAssetDataUrl.mockResolvedValue('data:image/png;base64,YXNzZXQ=');
   });
 
   it('reauthorizes Flatpak recents when direct reopen loses access', async () => {
@@ -257,6 +264,7 @@ describe('vaultStore Flatpak reopen fallback', () => {
     path: 'hosted://hosted-vault',
     lastOpened: 1,
     isEncrypted: false,
+    capabilities: ['vault.read', 'vault.offlineCopy'],
   };
 
   it('seeds the offline replica from the manifest when opening a hosted vault', async () => {
@@ -275,7 +283,122 @@ describe('vaultStore Flatpak reopen fallback', () => {
       'Hosted Vault',
       manifest,
       expect.objectContaining({ manifestSequence: 4, status: 'idle' }),
+      'editor',
+      ['vault.read', 'vault.offlineCopy'],
     );
+  });
+
+  it('creates a full offline copy when the client preference is enabled', async () => {
+    localStorage.setItem('collab-hosted-always-create-offline-copy', 'true');
+    const manifest = {
+      vaultId: 'hosted-vault',
+      sequence: 4,
+      files: [
+        {
+          id: 'note-1',
+          parentId: null,
+          name: 'Hosted.md',
+          relativePath: 'Hosted.md',
+          kind: 'document',
+          documentType: 'note',
+          state: 'active',
+          currentRevision: null,
+          createdAt: '2026-06-11T08:00:00Z',
+          updatedAt: '2026-06-11T08:00:00Z',
+        },
+      ],
+    };
+    tauriCommandsMock.hostedVaultRequest.mockImplementation((_url, _method, path) => {
+      if (path.endsWith('/manifest')) return Promise.resolve(manifest);
+      if (path.endsWith('/files/note-1')) return Promise.resolve({ content: '# Hosted' });
+      return Promise.resolve({ vaultId: 'hosted-vault', baseSequence: 0, sequence: 4, changedFiles: [] });
+    });
+    tauriCommandsMock.replicaReadManifest.mockResolvedValueOnce(null).mockResolvedValue(manifest);
+    tauriCommandsMock.replicaSeed.mockResolvedValue(undefined);
+
+    await useVaultStore.getState().openHostedVault(hostedVault);
+
+    await vi.waitFor(() => expect(tauriCommandsMock.replicaCacheDocument).toHaveBeenCalledWith(
+      'https://collab.example.test',
+      'hosted-vault',
+      'note-1',
+      '# Hosted',
+    ));
+  });
+
+  it('does not create a full offline copy when the user lacks the offline-copy capability', async () => {
+    localStorage.setItem('collab-hosted-always-create-offline-copy', 'true');
+    const manifest = {
+      vaultId: 'hosted-vault',
+      sequence: 4,
+      files: [
+        {
+          id: 'note-1',
+          parentId: null,
+          name: 'Hosted.md',
+          relativePath: 'Hosted.md',
+          kind: 'document',
+          documentType: 'note',
+          state: 'active',
+          currentRevision: null,
+          createdAt: '2026-06-11T08:00:00Z',
+          updatedAt: '2026-06-11T08:00:00Z',
+        },
+      ],
+    };
+    tauriCommandsMock.hostedVaultRequest.mockImplementation((_url, _method, path) => {
+      if (path.endsWith('/manifest')) return Promise.resolve(manifest);
+      if (path.endsWith('/files/note-1')) return Promise.resolve({ content: '# Hosted' });
+      return Promise.resolve({ vaultId: 'hosted-vault', baseSequence: 0, sequence: 4, changedFiles: [] });
+    });
+    tauriCommandsMock.replicaSeed.mockResolvedValue(undefined);
+
+    await useVaultStore.getState().openHostedVault({
+      ...hostedVault,
+      capabilities: ['vault.read'],
+      requireOfflineCopy: true,
+    });
+
+    await vi.waitFor(() => expect(tauriCommandsMock.replicaSeed).toHaveBeenCalled());
+    await Promise.resolve();
+    expect(tauriCommandsMock.replicaCacheDocument).not.toHaveBeenCalled();
+    expect(tauriCommandsMock.replicaCacheAsset).not.toHaveBeenCalled();
+  });
+
+  it('creates a full offline copy when the server requires one for the vault', async () => {
+    const manifest = {
+      vaultId: 'hosted-vault',
+      sequence: 4,
+      files: [
+        {
+          id: 'asset-1',
+          parentId: null,
+          name: 'Diagram.png',
+          relativePath: 'Diagram.png',
+          kind: 'asset',
+          documentType: null,
+          state: 'active',
+          currentRevision: null,
+          createdAt: '2026-06-11T08:00:00Z',
+          updatedAt: '2026-06-11T08:00:00Z',
+        },
+      ],
+    };
+    tauriCommandsMock.hostedVaultRequest.mockImplementation((_url, _method, path) => {
+      if (path.endsWith('/manifest')) return Promise.resolve(manifest);
+      return Promise.resolve({ vaultId: 'hosted-vault', baseSequence: 0, sequence: 4, changedFiles: [] });
+    });
+    tauriCommandsMock.replicaReadManifest.mockResolvedValueOnce(null).mockResolvedValue(manifest);
+    tauriCommandsMock.replicaSeed.mockResolvedValue(undefined);
+
+    await useVaultStore.getState().openHostedVault({ ...hostedVault, requireOfflineCopy: true });
+
+    await vi.waitFor(() => expect(tauriCommandsMock.replicaCacheAsset).toHaveBeenCalledWith(
+      'https://collab.example.test',
+      'hosted-vault',
+      'asset-1',
+      'YXNzZXQ=',
+    ));
   });
 
   it('still opens a hosted vault when replica seeding fails', async () => {

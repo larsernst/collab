@@ -6,7 +6,7 @@
 use super::app_config_dir;
 use crate::replica::{
     CacheCleanupReport, PendingOpStatus, PendingOperation, ReplicaIntegrityReport, ReplicaStore,
-    ReplicaSyncState, Tombstone,
+    ReplicaSummary, ReplicaSyncState, Tombstone,
 };
 use collab_protocol::HostedVaultManifest;
 
@@ -23,11 +23,26 @@ pub fn replica_seed(
     vault_name: String,
     manifest: HostedVaultManifest,
     sync_state: ReplicaSyncState,
+    role: Option<String>,
+    capabilities: Option<Vec<String>>,
 ) -> Result<(), String> {
     let config_root = app_config_dir()?;
-    let store = ReplicaStore::open_or_create(&config_root, &server_url, &vault_id, &vault_name)?;
+    let capabilities = capabilities.unwrap_or_default();
+    let store = ReplicaStore::open_or_create(
+        &config_root,
+        &server_url,
+        &vault_id,
+        &vault_name,
+        role.as_deref(),
+        &capabilities,
+    )?;
     store.write_manifest(&manifest)?;
     store.write_sync_state(&sync_state)
+}
+
+#[tauri::command]
+pub fn replica_list() -> Result<Vec<ReplicaSummary>, String> {
+    ReplicaStore::list(&app_config_dir()?)
 }
 
 #[tauri::command]

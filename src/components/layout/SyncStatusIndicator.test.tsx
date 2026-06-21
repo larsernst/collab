@@ -10,6 +10,7 @@ import {
   listPendingOperationRecoveries,
   retryPendingOperation,
   discardPendingOperation,
+  syncReplicaManifestDelta,
   type PendingOperation,
   type PendingOperationRecovery,
 } from '../../lib/vaultReplica';
@@ -167,5 +168,18 @@ describe('SyncStatusIndicator', () => {
     fireEvent.click(await screen.findByText('1 conflict'));
     fireEvent.click(await screen.findByRole('button', { name: /Discard/ }));
     await waitFor(() => expect(discardPendingOperation).toHaveBeenCalledWith(hostedVault, 'a'));
+  });
+
+  it('automatically syncs when the matching hosted server reconnects', async () => {
+    useServerStore.setState({ status: { connected: false, serverUrl: null } } as never);
+    useVaultStore.setState({ vault: hostedVault } as never);
+    render(<SyncStatusIndicator />);
+
+    await screen.findByText('Synced');
+    expect(syncReplicaManifestDelta).not.toHaveBeenCalled();
+
+    useServerStore.setState({ status: { connected: true, serverUrl: hostedVault.serverUrl } } as never);
+
+    await waitFor(() => expect(syncReplicaManifestDelta).toHaveBeenCalledWith(hostedVault));
   });
 });

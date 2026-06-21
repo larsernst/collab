@@ -42,7 +42,9 @@ export default function HostedConnectionStatus() {
     setBusy(true);
     try {
       const allowInvalidCertificates =
-        status?.allowInvalidCertificates ??
+        (status?.connected === true && status.serverUrl === vault.serverUrl
+          ? status.allowInvalidCertificates
+          : undefined) ??
         localStorage.getItem(ALLOW_INVALID_CERTIFICATES_KEY) === 'true';
       await reconnect(vault.serverUrl, allowInvalidCertificates);
       toast.success('Server session restored');

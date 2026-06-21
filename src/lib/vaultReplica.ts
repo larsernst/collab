@@ -89,6 +89,25 @@ export interface CacheCleanupReport {
   remainingBytes: number;
 }
 
+export interface OfflineAvailabilityReport {
+  documentsCached: number;
+  assetsCached: number;
+  skipped: number;
+}
+
+export interface ReplicaSummary {
+  serverUrl: string;
+  vaultId: string;
+  vaultName: string;
+  manifestSequence: number;
+  lastSyncedAt: string | null;
+  status: SyncStatus;
+  pendingCount: number;
+  updatedAt: string;
+  role?: string | null;
+  capabilities: string[];
+}
+
 /**
  * Default byte budget for a single vault's cached document/asset/CRDT content.
  * Cached content is re-fetchable from the server, so the cleanup pass evicts the
@@ -277,6 +296,15 @@ export async function readCachedReplicaManifest(vault: HostedVaultMeta): Promise
   return tauriCommands.replicaReadManifest(vault.serverUrl, vault.hostedVaultId);
 }
 
+export async function listHostedVaultReplicas(): Promise<ReplicaSummary[]> {
+  return tauriCommands.replicaList();
+}
+
+export async function deleteHostedVaultReplica(replica: Pick<ReplicaSummary, 'serverUrl' | 'vaultId'>): Promise<void> {
+  await tauriCommands.replicaDelete(replica.serverUrl, replica.vaultId);
+  emitReplicaMutated();
+}
+
 export async function writeOptimisticReplicaManifest(
   vault: HostedVaultMeta,
   manifest: ReplicaManifest,
@@ -287,6 +315,8 @@ export async function writeOptimisticReplicaManifest(
     vault.name,
     manifest,
     offlineSyncState(manifest.sequence),
+    vault.role,
+    vault.capabilities ?? [],
   );
   emitReplicaMutated();
 }
@@ -496,8 +526,66 @@ export async function seedReplicaFromManifest(vault: HostedVaultMeta): Promise<v
     vault.name,
     manifest,
     initialSyncState(manifest.sequence),
+    vault.role,
+    vault.capabilities ?? [],
   );
   emitReplicaMutated();
+}
+
+function dataUrlBase64(dataUrl: string): string {
+  const match = /^data:[^;]+;base64,(.*)$/s.exec(dataUrl);
+  if (!match) throw new Error('Hosted asset response was not a base64 data URL.');
+  return match[1];
+}
+
+/**
+ * Downloads the active hosted-vault content into the native replica so the vault
+ * can be opened and edited while the server is unreachable. Opening a hosted
+ * vault already seeds metadata automatically; this helper is the explicit
+ * "make available offline" path that also caches document and asset bodies.
+ */
+export async function makeHostedVaultAvailableOffline(
+  vault: HostedVaultMeta,
+  onProgress?: (completed: number, total: number) => void,
+): Promise<OfflineAvailabilityReport> {
+  await seedReplicaFromManifest(vault);
+  const manifest = await tauriCommands.replicaReadManifest(vault.serverUrl, vault.hostedVaultId);
+  if (!manifest) throw new Error('Replica manifest was not available after seeding.');
+
+  const activeFiles = manifest.files.filter((file) => file.state === 'active');
+  const cacheableFiles = activeFiles.filter((file) => file.kind === 'document' || file.kind === 'asset');
+  let completed = 0;
+  let documentsCached = 0;
+  let assetsCached = 0;
+  let skipped = 0;
+  onProgress?.(completed, cacheableFiles.length);
+
+  for (const file of cacheableFiles) {
+    try {
+      if (file.kind === 'document') {
+        const document = await tauriCommands.hostedVaultRequest<{ content: string }>(
+          vault.serverUrl,
+          'GET',
+          `/api/v1/vaults/${vault.hostedVaultId}/files/${file.id}`,
+        );
+        await tauriCommands.replicaCacheDocument(vault.serverUrl, vault.hostedVaultId, file.id, document.content);
+        documentsCached += 1;
+      } else if (file.kind === 'asset') {
+        const dataUrl = await tauriCommands.hostedVaultAssetDataUrl(vault.serverUrl, vault.hostedVaultId, file.id);
+        await tauriCommands.replicaCacheAsset(vault.serverUrl, vault.hostedVaultId, file.id, dataUrlBase64(dataUrl));
+        assetsCached += 1;
+      }
+    } catch {
+      skipped += 1;
+    } finally {
+      completed += 1;
+      onProgress?.(completed, cacheableFiles.length);
+    }
+  }
+
+  await cleanupReplicaCache(vault);
+  emitReplicaMutated();
+  return { documentsCached, assetsCached, skipped };
 }
 
 export async function syncReplicaManifestDelta(vault: HostedVaultMeta): Promise<ReplicaManifest> {
@@ -543,6 +631,8 @@ export async function syncReplicaManifestDelta(vault: HostedVaultMeta): Promise<
     vault.name,
     nextManifest,
     initialSyncState(delta.sequence),
+    vault.role,
+    vault.capabilities ?? [],
   );
   emitReplicaMutated();
   return nextManifest;

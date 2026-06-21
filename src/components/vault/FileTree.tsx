@@ -5,6 +5,7 @@ import {
 } from 'lucide-react';
 import { cn } from '../../lib/utils';
 import { useVaultStore } from '../../store/vaultStore';
+import { useServerStore } from '../../store/serverStore';
 import { tauriCommands } from '../../lib/tauri';
 import { importExternalFilesIntoVault, IMPORTABLE_EXTENSIONS } from '../../lib/vaultFileImport';
 import { useNativeFileDrop } from './useNativeFileDrop';
@@ -65,6 +66,7 @@ function isManagedPicturesFolder(node: Pick<NoteFile, 'isFolder' | 'relativePath
 
 export default function FileTree() {
   const { vault, fileTree, refreshFileTree } = useVaultStore();
+  const serverStatus = useServerStore((state) => state.status);
   const { openTab, closeTab, renameTab, activeTabPath } = useEditorStore();
   const {
     setActiveView,
@@ -112,6 +114,9 @@ export default function FileTree() {
   const selectedNode = selectedRelativePath
     ? flatten(fileTree).find((entry) => entry.relativePath === selectedRelativePath) ?? null
     : null;
+  const hostedReferenceRefreshKey = vault?.kind === 'hosted'
+    ? `${serverStatus?.connected ?? false}:${serverStatus?.serverUrl ?? ''}:${serverStatus?.accessExpiresAt ?? ''}`
+    : '';
 
   // Flattened list of nodes currently visible in the tree (respecting collapsed
   // folders), in display order — used for shift-range multi-selection.
@@ -568,7 +573,7 @@ export default function FileTree() {
     return () => {
       cancelled = true;
     };
-  }, [mode, selectedNode?.isFolder, selectedRelativePath, vault?.path]);
+  }, [hostedReferenceRefreshKey, mode, selectedNode?.isFolder, selectedRelativePath, vault?.path]);
 
   const selectedFile = selectedNode && !selectedNode.isFolder ? selectedNode : null;
 

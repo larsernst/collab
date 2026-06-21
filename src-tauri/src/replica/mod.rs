@@ -14,6 +14,6 @@ pub mod store;
 // reachable via `replica::models::` / `replica::store::` for later increments.
 pub use models::{
     CacheCleanupReport, PendingOpStatus, PendingOperation, ReplicaIntegrityReport,
-    ReplicaSyncState, Tombstone,
+    ReplicaSummary, ReplicaSyncState, Tombstone,
 };
 pub use store::ReplicaStore;

@@ -21,6 +21,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.server
+      network: ${COLLAB_BUILD_NETWORK:-host}
     env_file:
       - path: .env
         required: false

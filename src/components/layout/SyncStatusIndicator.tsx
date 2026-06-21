@@ -95,6 +95,7 @@ export default function SyncStatusIndicator() {
   const [open, setOpen] = useState(false);
   const [busyOp, setBusyOp] = useState<string | null>(null);
   const lastConflictCount = useRef(0);
+  const wasOnlineRef = useRef<boolean | null>(null);
 
   const hostedVault = vault && vaultKind(vault) === 'hosted' ? (vault as HostedVaultMeta) : null;
 
@@ -117,10 +118,25 @@ export default function SyncStatusIndicator() {
     return onReplicaMutated(doRefresh);
   }, [hostedVault, doRefresh]);
 
-  // Re-read when the server connection status changes (offline ↔ online).
+  const serverOnlineForVault =
+    !!hostedVault &&
+    serverStatus?.connected === true &&
+    serverStatus.serverUrl === hostedVault.serverUrl;
+
+  // Re-read when the server connection status changes (offline ↔ online), and
+  // automatically replay/pull once the matching server session comes back.
   useEffect(() => {
-    if (hostedVault) doRefresh();
-  }, [serverStatus, hostedVault, doRefresh]);
+    if (!hostedVault) {
+      wasOnlineRef.current = null;
+      return;
+    }
+    doRefresh();
+    const wasOnline = wasOnlineRef.current;
+    wasOnlineRef.current = serverOnlineForVault;
+    if (wasOnline === false && serverOnlineForVault) {
+      void syncNow(hostedVault).catch(() => {});
+    }
+  }, [serverOnlineForVault, hostedVault, doRefresh, syncNow]);
 
   // Poll while a hosted vault is open and the window is focused, plus refresh on
   // focus/online so a backgrounded window catches up promptly.

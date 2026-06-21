@@ -2,8 +2,10 @@ import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
 import { tauriCommands } from '../lib/tauri';
 import { createVaultClient, requireRuntimeCapability } from '../lib/vaultClient';
-import { cleanupReplicaCache, seedReplicaFromManifest } from '../lib/vaultReplica';
-import { hostedVaultMeta, type HostedVaultMeta, type HostedVaultSummary, type VaultMeta, type NoteFile } from '../types/vault';
+import { cleanupReplicaCache, makeHostedVaultAvailableOffline, seedReplicaFromManifest } from '../lib/vaultReplica';
+import { hostedVaultMeta, vaultCan, type HostedVaultMeta, type HostedVaultSummary, type VaultMeta, type NoteFile } from '../types/vault';
+
+const ALWAYS_CREATE_OFFLINE_COPY_KEY = 'collab-hosted-always-create-offline-copy';
 
 interface VaultState {
   vault: VaultMeta | null;
@@ -109,19 +111,21 @@ export const useVaultStore = create<VaultState>()(
             await createVaultClient(previousVault).runtime.watch?.stop().catch(() => {});
           }
           const fileTree = sortFileTreeAlphabetically(await createVaultClient(vault).listFiles());
-          // Seed (or refresh) the local offline replica from the server manifest.
-          // Best-effort: a replica failure must never prevent opening the vault.
-          seedReplicaFromManifest(vault)
-            .then(() =>
-              // Keep the offline replica's cached content bounded after seeding.
-              // Best-effort: never blocks opening and never evicts unsynced data.
-              cleanupReplicaCache(vault).catch((error) => {
-                console.warn('Failed to clean up hosted-vault replica cache:', error);
-              }),
-            )
-            .catch((error) => {
-              console.warn('Failed to seed hosted-vault replica:', error);
-            });
+          const shouldCreateOfflineCopy =
+            vaultCan(vault, 'vault.offlineCopy') &&
+            (vault.requireOfflineCopy === true ||
+              localStorage.getItem(ALWAYS_CREATE_OFFLINE_COPY_KEY) === 'true');
+          const prepareOfflineCopy = shouldCreateOfflineCopy
+            ? makeHostedVaultAvailableOffline(vault)
+            : seedReplicaFromManifest(vault).then(() => cleanupReplicaCache(vault));
+          prepareOfflineCopy.catch((error) => {
+            console.warn(
+              shouldCreateOfflineCopy
+                ? 'Failed to prepare hosted-vault offline copy:'
+                : 'Failed to seed hosted-vault replica:',
+              error,
+            );
+          });
           set({
             vault,
             isVaultLocked: false,
@@ -164,6 +168,7 @@ export const useVaultStore = create<VaultState>()(
             lastOpened: next.lastOpened,
             role: next.role,
             capabilities: next.capabilities,
+            requireOfflineCopy: next.requireOfflineCopy,
           },
         });
       },

@@ -5,6 +5,7 @@ import { tauriCommands } from '../lib/tauri';
 import {
   discardPendingOperation,
   listPendingOperationRecoveries,
+  makeHostedVaultAvailableOffline,
   retryPendingOperation,
   syncReplicaManifestDelta,
   type PendingOperation,
@@ -27,6 +28,7 @@ vi.mock('../lib/vaultReplica', async (importOriginal) => {
     listPendingOperationRecoveries: vi.fn(),
     retryPendingOperation: vi.fn().mockResolvedValue(undefined),
     discardPendingOperation: vi.fn().mockResolvedValue(undefined),
+    makeHostedVaultAvailableOffline: vi.fn().mockResolvedValue({ documentsCached: 1, assetsCached: 2, skipped: 0 }),
     syncReplicaManifestDelta: vi.fn().mockResolvedValue({}),
     // Use the real classifier/derivation/connectivity helpers.
     classifyVaultAccessError: actual.classifyVaultAccessError,
@@ -123,6 +125,15 @@ describe('syncStore', () => {
     await useSyncStore.getState().discard(vault, 'op-1');
     expect(discardPendingOperation).toHaveBeenCalledWith(vault, 'op-1');
     expect(tauriCommands.replicaListPendingOperations).toHaveBeenCalled();
+  });
+
+  it('makeAvailableOffline caches hosted content and refreshes the sync snapshot', async () => {
+    const progress = vi.fn();
+    const report = await useSyncStore.getState().makeAvailableOffline(vault, progress);
+    expect(makeHostedVaultAvailableOffline).toHaveBeenCalledWith(vault, progress);
+    expect(report).toEqual({ documentsCached: 1, assetsCached: 2, skipped: 0 });
+    expect(tauriCommands.replicaReadSyncState).toHaveBeenCalled();
+    expect(useSyncStore.getState().isSyncing).toBe(false);
   });
 
   it('derives revoked access from a permission-denied replay failure', async () => {

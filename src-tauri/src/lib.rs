@@ -209,6 +209,7 @@ pub fn run() {
             commands::update::download_and_install_update,
             // native hosted-vault replica store (offline sync)
             commands::replica::replica_seed,
+            commands::replica::replica_list,
             commands::replica::replica_read_manifest,
             commands::replica::replica_read_sync_state,
             commands::replica::replica_write_sync_state,

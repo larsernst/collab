@@ -8,7 +8,7 @@
 
 use super::models::{
     CacheCleanupReport, PendingOpStatus, PendingOperation, ReplicaIntegrityReport, ReplicaMeta,
-    ReplicaSyncState, Tombstone, REPLICA_SCHEMA_VERSION,
+    ReplicaSummary, ReplicaSyncState, Tombstone, REPLICA_SCHEMA_VERSION,
 };
 use collab_protocol::HostedVaultManifest;
 use serde::de::DeserializeOwned;
@@ -89,6 +89,8 @@ impl ReplicaStore {
         server_url: &str,
         vault_id: &str,
         vault_name: &str,
+        role: Option<&str>,
+        capabilities: &[String],
     ) -> Result<Self, String> {
         let vault_segment = safe_segment(vault_id)?;
         let root = replica_root(config_root)
@@ -116,6 +118,8 @@ impl ReplicaStore {
             schema_version: REPLICA_SCHEMA_VERSION,
             created_at,
             updated_at: now,
+            role: role.map(str::to_string),
+            capabilities: capabilities.to_vec(),
         };
         store.write_json(META_FILE, &meta)?;
         Ok(store)
@@ -133,6 +137,64 @@ impl ReplicaStore {
         } else {
             None
         }
+    }
+
+    /// List every seeded replica under the app config root, grouped internally
+    /// by the server hash directory but returning the original server URL from
+    /// `meta.json`. Corrupt or partial replica directories are skipped so one bad
+    /// cache cannot hide the rest of the offline inventory.
+    pub fn list(config_root: &Path) -> Result<Vec<ReplicaSummary>, String> {
+        let root = replica_root(config_root);
+        let servers = match std::fs::read_dir(&root) {
+            Ok(entries) => entries,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(err) => return Err(err.to_string()),
+        };
+        let mut summaries = Vec::new();
+        for server_entry in servers.flatten() {
+            let server_path = server_entry.path();
+            if !server_path.is_dir() {
+                continue;
+            }
+            let vaults = match std::fs::read_dir(server_path) {
+                Ok(entries) => entries,
+                Err(_) => continue,
+            };
+            for vault_entry in vaults.flatten() {
+                let vault_path = vault_entry.path();
+                if !vault_path.join(META_FILE).is_file() {
+                    continue;
+                }
+                let store = Self { root: vault_path };
+                let Some(meta) = store.read_json::<ReplicaMeta>(META_FILE)? else {
+                    continue;
+                };
+                let sync_state = store.read_sync_state().unwrap_or_default();
+                let pending_count = store
+                    .list_pending_operations()
+                    .map(|ops| ops.len())
+                    .unwrap_or_default();
+                summaries.push(ReplicaSummary {
+                    server_url: meta.server_url,
+                    vault_id: meta.vault_id,
+                    vault_name: meta.vault_name,
+                    manifest_sequence: sync_state.manifest_sequence,
+                    last_synced_at: sync_state.last_synced_at,
+                    status: sync_state.status,
+                    pending_count,
+                    updated_at: meta.updated_at,
+                    role: meta.role,
+                    capabilities: meta.capabilities,
+                });
+            }
+        }
+        summaries.sort_by(|left, right| {
+            left.server_url
+                .cmp(&right.server_url)
+                .then_with(|| left.vault_name.cmp(&right.vault_name))
+                .then_with(|| left.vault_id.cmp(&right.vault_id))
+        });
+        Ok(summaries)
     }
 
     #[cfg(test)]
@@ -654,8 +716,15 @@ mod tests {
     }
 
     fn open(dir: &TempDir) -> ReplicaStore {
-        ReplicaStore::open_or_create(dir.path(), "https://example.test/", "vault-1", "Vault One")
-            .unwrap()
+        ReplicaStore::open_or_create(
+            dir.path(),
+            "https://example.test/",
+            "vault-1",
+            "Vault One",
+            Some("admin"),
+            &["vault.read".into(), "file.write".into()],
+        )
+        .unwrap()
     }
 
     #[test]
@@ -702,6 +771,48 @@ mod tests {
             ReplicaStore::open_existing(dir.path(), "https://example.test", "vault-1").is_some()
         );
         assert!(ReplicaStore::open_existing(dir.path(), "https://other.test", "vault-1").is_none());
+    }
+
+    #[test]
+    fn list_returns_replicas_across_servers() {
+        let dir = TempDir::new().unwrap();
+        let first = ReplicaStore::open_or_create(
+            dir.path(),
+            "https://a.example.test",
+            "vault-a",
+            "Alpha",
+            Some("editor"),
+            &["vault.read".into()],
+        )
+        .unwrap();
+        first
+            .write_sync_state(&ReplicaSyncState {
+                manifest_sequence: 3,
+                last_synced_at: Some("2026-06-21T10:00:00Z".into()),
+                status: SyncStatus::Offline,
+            })
+            .unwrap();
+        first.enqueue_operation(&pending_op("op-a")).unwrap();
+
+        ReplicaStore::open_or_create(
+            dir.path(),
+            "https://b.example.test",
+            "vault-b",
+            "Beta",
+            Some("viewer"),
+            &[],
+        )
+        .unwrap();
+
+        let summaries = ReplicaStore::list(dir.path()).unwrap();
+        assert_eq!(summaries.len(), 2);
+        assert_eq!(summaries[0].server_url, "https://a.example.test");
+        assert_eq!(summaries[0].vault_id, "vault-a");
+        assert_eq!(summaries[0].vault_name, "Alpha");
+        assert_eq!(summaries[0].role.as_deref(), Some("editor"));
+        assert_eq!(summaries[0].pending_count, 1);
+        assert_eq!(summaries[0].manifest_sequence, 3);
+        assert_eq!(summaries[1].server_url, "https://b.example.test");
     }
 
     #[test]

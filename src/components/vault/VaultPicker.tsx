@@ -1,5 +1,5 @@
-import { useEffect, useState } from 'react';
-import { FolderOpen, Plus, Clock, ArrowRight, Server, RefreshCw, Check, LogIn, LogOut, ChevronDown } from 'lucide-react';
+import { useEffect, useMemo, useState } from 'react';
+import { FolderOpen, Plus, Clock, ArrowRight, Server, RefreshCw, Check, LogIn, LogOut, ChevronDown, WifiOff, Trash2 } from 'lucide-react';
 import { AppLogo } from '../ui/AppLogo';
 import { Button } from '../ui/button';
 import { Input } from '../ui/input';
@@ -7,7 +7,8 @@ import { Separator } from '../ui/separator';
 import { useVaultStore } from '../../store/vaultStore';
 import { useServerStore, isEffectivelyConnected } from '../../store/serverStore';
 import { tauriCommands } from '../../lib/tauri';
-import { hostedVaultMeta, vaultKind } from '../../types/vault';
+import { hostedVaultMeta, vaultKind, type HostedVaultMeta, type MemberRole } from '../../types/vault';
+import { deleteHostedVaultReplica, listHostedVaultReplicas, type ReplicaSummary } from '../../lib/vaultReplica';
 import { HostedLoginForm } from '../server/HostedLoginForm';
 import { toast } from 'sonner';
 
@@ -18,16 +19,40 @@ export default function VaultPicker() {
   const [hostedName, setHostedName] = useState('');
   const [hostedBusy, setHostedBusy] = useState(false);
   const [showLogin, setShowLogin] = useState(false);
+  const [offlineReplicas, setOfflineReplicas] = useState<ReplicaSummary[]>([]);
   const activeHostedVaults = hostedVaults.filter((vault) => vault.status === 'active');
   const localRecentVaults = recentVaults.filter((vault) => vaultKind(vault) === 'local').slice(0, 5);
   // A connected-but-expired session cannot create vaults; only offer creation when
   // the session can actually make authenticated requests.
   const canCreateHosted = isEffectivelyConnected(status);
 
+  const refreshOfflineReplicas = () => {
+    listHostedVaultReplicas().then(setOfflineReplicas).catch(() => setOfflineReplicas([]));
+  };
+
   useEffect(() => {
     loadRecentVaults();
     refresh().catch(() => {});
+    refreshOfflineReplicas();
   }, []);
+
+  const activeHostedKeys = useMemo(
+    () => new Set(activeHostedVaults.map((vault) => `${status?.serverUrl ?? ''}|${vault.id}`)),
+    [activeHostedVaults, status?.serverUrl],
+  );
+  const offlineOnlyReplicas = useMemo(
+    () => offlineReplicas.filter((replica) => !activeHostedKeys.has(`${replica.serverUrl}|${replica.vaultId}`)),
+    [offlineReplicas, activeHostedKeys],
+  );
+  const offlineReplicasByServer = useMemo(() => {
+    const groups = new Map<string, ReplicaSummary[]>();
+    for (const replica of offlineOnlyReplicas) {
+      const group = groups.get(replica.serverUrl) ?? [];
+      group.push(replica);
+      groups.set(replica.serverUrl, group);
+    }
+    return Array.from(groups.entries()).sort(([left], [right]) => left.localeCompare(right));
+  }, [offlineOnlyReplicas]);
 
   const openHosted = async (vaultId: string) => {
     if (!status?.serverUrl) return;
@@ -37,6 +62,31 @@ export default function VaultPicker() {
       await openHostedVault(hostedVaultMeta(status.serverUrl, hosted));
     } catch (reason) {
       toast.error(`Failed to open hosted vault: ${reason}`);
+    }
+  };
+
+  const openOfflineReplica = async (replica: ReplicaSummary) => {
+    try {
+      await openHostedVault(replicaToHostedVaultMeta(replica));
+    } catch (reason) {
+      toast.error(`Failed to open offline copy: ${reason}`);
+    }
+  };
+
+  const removeOfflineReplica = async (replica: ReplicaSummary) => {
+    const pendingText = replica.pendingCount > 0
+      ? `\n\nThis offline copy has ${replica.pendingCount} pending local change${replica.pendingCount === 1 ? '' : 's'} that will be discarded.`
+      : '';
+    const confirmed = window.confirm(
+      `Remove the offline copy of "${replica.vaultName}" from ${replica.serverUrl}?${pendingText}`,
+    );
+    if (!confirmed) return;
+    try {
+      await deleteHostedVaultReplica(replica);
+      refreshOfflineReplicas();
+      toast.success(`Removed offline copy "${replica.vaultName}"`);
+    } catch (reason) {
+      toast.error(`Could not remove offline copy: ${reason}`);
     }
   };
 
@@ -240,6 +290,54 @@ export default function VaultPicker() {
             </button>
           )}
 
+          {offlineReplicasByServer.length > 0 && (
+            <div className="mt-3 space-y-3">
+              {offlineReplicasByServer.map(([serverUrl, replicas]) => (
+                <div key={serverUrl} className="space-y-1">
+                  <div className="flex items-center gap-1.5 px-1 text-[10px] uppercase tracking-widest text-muted-foreground">
+                    <WifiOff size={10} />
+                    Offline copies · {serverUrl}
+                  </div>
+                  {replicas.map((replica) => (
+                    <div
+                      key={`${replica.serverUrl}|${replica.vaultId}`}
+                      className="group flex w-full items-center gap-3 rounded-lg border border-transparent px-3 py-2.5 text-left transition-all app-motion-base hover:border-amber-500/25 hover:bg-amber-500/5"
+                    >
+                      <div className="flex size-7 shrink-0 items-center justify-center rounded-md border border-amber-500/20 bg-amber-500/10">
+                        <WifiOff size={12} className="text-amber-400" />
+                      </div>
+                      <div className="min-w-0 flex-1">
+                        <div className="truncate text-sm font-medium text-foreground">{replica.vaultName}</div>
+                        <div className="truncate text-[11px] text-muted-foreground">
+                          offline copy · {replicaRole(replica)} · {replica.pendingCount} pending
+                        </div>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => openOfflineReplica(replica)}
+                        disabled={isLoading}
+                        className="flex h-7 items-center gap-1 rounded px-2 text-[11px] font-medium text-primary transition-colors hover:bg-primary/10"
+                        title="Open offline copy"
+                      >
+                        Open <ArrowRight size={11} />
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => removeOfflineReplica(replica)}
+                        disabled={isLoading}
+                        className="flex size-7 items-center justify-center rounded text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-destructive"
+                        title="Remove offline copy"
+                        aria-label={`Remove offline copy ${replica.vaultName}`}
+                      >
+                        <Trash2 size={12} />
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              ))}
+            </div>
+          )}
+
           {localRecentVaults.length > 0 && (
             <>
               <div className="flex items-center gap-2 mt-5 mb-3">
@@ -283,4 +381,25 @@ export default function VaultPicker() {
       </div>
     </div>
   );
+}
+
+function replicaRole(replica: ReplicaSummary): MemberRole {
+  return replica.role === 'admin' || replica.role === 'editor' || replica.role === 'viewer'
+    ? replica.role
+    : 'viewer';
+}
+
+function replicaToHostedVaultMeta(replica: ReplicaSummary): HostedVaultMeta {
+  return {
+    kind: 'hosted',
+    id: replica.vaultId,
+    hostedVaultId: replica.vaultId,
+    serverUrl: replica.serverUrl,
+    name: replica.vaultName,
+    path: `hosted://${replica.vaultId}`,
+    lastOpened: Date.parse(replica.updatedAt) || Date.now(),
+    isEncrypted: false,
+    role: replicaRole(replica),
+    capabilities: replica.capabilities ?? [],
+  };
 }

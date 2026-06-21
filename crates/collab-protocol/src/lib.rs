@@ -332,6 +332,7 @@ pub struct HostedVaultSummary {
     pub status: HostedVaultStatus,
     pub members: i64,
     pub storage_bytes: u64,
+    pub require_offline_copy: bool,
     pub updated_at: String,
     /// The requesting user's effective capabilities on this vault.
     #[serde(default)]
@@ -365,6 +366,8 @@ pub enum Capability {
     VaultExport,
     #[serde(rename = "vault.import")]
     VaultImport,
+    #[serde(rename = "vault.offlineCopy")]
+    VaultOfflineCopy,
     #[serde(rename = "vault.manageMembers")]
     VaultManageMembers,
     #[serde(rename = "vault.managePermissions")]
@@ -408,13 +411,14 @@ pub enum Capability {
 impl Capability {
     /// Every capability, in canonical order. Used to seed the admin built-in
     /// template and to resolve tokens back to the typed enum.
-    pub const ALL: [Capability; 25] = [
+    pub const ALL: [Capability; 26] = [
         Capability::VaultRead,
         Capability::VaultSearch,
         Capability::VaultViewHistory,
         Capability::VaultViewActivity,
         Capability::VaultExport,
         Capability::VaultImport,
+        Capability::VaultOfflineCopy,
         Capability::VaultManageMembers,
         Capability::VaultManagePermissions,
         Capability::VaultManageSnapshots,
@@ -444,6 +448,7 @@ impl Capability {
             Capability::VaultViewActivity => "vault.viewActivity",
             Capability::VaultExport => "vault.export",
             Capability::VaultImport => "vault.import",
+            Capability::VaultOfflineCopy => "vault.offlineCopy",
             Capability::VaultManageMembers => "vault.manageMembers",
             Capability::VaultManagePermissions => "vault.managePermissions",
             Capability::VaultManageSnapshots => "vault.manageSnapshots",
@@ -489,6 +494,7 @@ pub fn capabilities_for_role(role: HostedVaultRole) -> Vec<Capability> {
         Capability::FileMove,
         Capability::FileDelete,
         Capability::FileUploadAsset,
+        Capability::VaultOfflineCopy,
         Capability::KanbanCardCreate,
         Capability::KanbanCardEditContent,
         Capability::KanbanCardMove,
@@ -593,6 +599,7 @@ pub struct HostedVault {
     pub manifest_sequence: i64,
     pub members: i64,
     pub storage_bytes: u64,
+    pub require_offline_copy: bool,
     pub created_at: String,
     pub updated_at: String,
     /// The requesting user's effective capabilities on this vault.
@@ -627,6 +634,7 @@ pub struct HostedVaultAdminDetail {
     pub active_files: i64,
     pub trashed_files: i64,
     pub storage_bytes: u64,
+    pub require_offline_copy: bool,
     pub created_at: String,
     pub updated_at: String,
     /// The requesting user's effective capabilities on this vault.
@@ -1044,7 +1052,9 @@ mod tests {
         assert!(editor.iter().all(|cap| admin.contains(cap)));
         assert!(viewer.contains(&Capability::VaultRead));
         assert!(!viewer.contains(&Capability::FileWrite));
+        assert!(!viewer.contains(&Capability::VaultOfflineCopy));
         assert!(editor.contains(&Capability::KanbanCardComment));
+        assert!(editor.contains(&Capability::VaultOfflineCopy));
         assert!(!editor.contains(&Capability::VaultManageMembers));
         assert_eq!(admin.len(), Capability::ALL.len());
     }

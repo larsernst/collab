@@ -75,4 +75,26 @@ describe('SettingsServerSection', () => {
     ));
     expect(localStorage.getItem('collab-hosted-allow-invalid-certificates')).toBe('true');
   });
+
+  it('lets the current client always prepare hosted vaults for offline use', async () => {
+    vi.mocked(tauriCommands.serverConnectionStatus).mockResolvedValue({
+      connected: true,
+      serverUrl: 'https://collab.example.com',
+      allowInvalidCertificates: false,
+      user: { id: '1', username: 'alice', displayName: 'Alice', role: 'member', status: 'active' },
+      accessExpiresAt: '2026-06-09T12:00:00Z',
+    });
+    vi.mocked(tauriCommands.hostedVaultRequest).mockResolvedValue([]);
+
+    render(<SettingsServerSection />);
+
+    const toggle = await screen.findByRole('button', { name: 'Always create offline copy' });
+    fireEvent.click(toggle);
+
+    expect(localStorage.getItem('collab-hosted-always-create-offline-copy')).toBe('true');
+    expect(await screen.findByRole('button', { name: 'Always create offline copy: On' })).toBeTruthy();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Always create offline copy: On' }));
+    expect(localStorage.getItem('collab-hosted-always-create-offline-copy')).toBe('false');
+  });
 });

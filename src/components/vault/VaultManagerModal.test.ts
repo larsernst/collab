@@ -8,6 +8,6 @@ describe('vaultManagerTabIds', () => {
   });
 
   it('reserves permission management for hosted vaults', () => {
-    expect(vaultManagerTabIds('hosted')).toEqual(['vaults', 'permissions']);
+    expect(vaultManagerTabIds('hosted')).toEqual(['vaults', 'permissions', 'offline']);
   });
 });

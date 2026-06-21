@@ -436,6 +436,8 @@ describe('HostedVaultClient', () => {
         ]),
       }),
       expect.objectContaining({ manifestSequence: 8, status: 'offline' }),
+      'editor',
+      [],
     );
     expect(tauriCommands.replicaEnqueueOperation).toHaveBeenCalledWith(
       'https://collab.example.test',
@@ -495,6 +497,8 @@ describe('HostedVaultClient', () => {
         ]),
       }),
       expect.objectContaining({ status: 'offline' }),
+      'editor',
+      [],
     );
     expect(tauriCommands.replicaEnqueueOperation).toHaveBeenCalledWith(
       'https://collab.example.test',
@@ -553,6 +557,8 @@ describe('HostedVaultClient', () => {
         ]),
       }),
       expect.objectContaining({ status: 'offline' }),
+      'editor',
+      [],
     );
     expect(tauriCommands.replicaEnqueueOperation).toHaveBeenCalledWith(
       'https://collab.example.test',
@@ -849,6 +855,8 @@ describe('HostedVaultClient', () => {
         ]),
       }),
       expect.objectContaining({ status: 'offline' }),
+      'editor',
+      [],
     );
     expect(tauriCommands.replicaEnqueueOperation).toHaveBeenCalledWith(
       'https://collab.example.test',

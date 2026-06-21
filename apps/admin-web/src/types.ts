@@ -211,6 +211,7 @@ export interface HostedVaultSummary {
   status: HostedVaultStatus;
   members: number;
   storageBytes: number;
+  requireOfflineCopy?: boolean;
   updatedAt: string;
 }
 
@@ -226,6 +227,7 @@ export interface HostedVaultAdminDetail {
   activeFiles: number;
   trashedFiles: number;
   storageBytes: number;
+  requireOfflineCopy?: boolean;
   createdAt: string;
   updatedAt: string;
 }
@@ -353,6 +355,7 @@ export const CAPABILITY_GROUPS: Array<{ domain: string; capabilities: Array<{ to
       { token: 'vault.viewActivity', label: 'View activity' },
       { token: 'vault.export', label: 'Export' },
       { token: 'vault.import', label: 'Import' },
+      { token: 'vault.offlineCopy', label: 'Create offline copies' },
       { token: 'vault.manageMembers', label: 'Manage members' },
       { token: 'vault.managePermissions', label: 'Manage permissions' },
       { token: 'vault.manageSnapshots', label: 'Manage snapshots' },

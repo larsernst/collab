@@ -19,6 +19,7 @@ export const CAPABILITY_GROUPS: Array<{
       { token: 'vault.viewActivity', label: 'View activity' },
       { token: 'vault.export', label: 'Export' },
       { token: 'vault.import', label: 'Import' },
+      { token: 'vault.offlineCopy', label: 'Create offline copies' },
       { token: 'vault.manageMembers', label: 'Manage members' },
       { token: 'vault.managePermissions', label: 'Manage permissions' },
       { token: 'vault.manageSnapshots', label: 'Manage snapshots' },

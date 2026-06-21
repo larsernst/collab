@@ -7,8 +7,10 @@ import {
   discardPendingOperation,
   isLikelyConnectivityError,
   listPendingOperationRecoveries,
+  makeHostedVaultAvailableOffline,
   retryPendingOperation,
   syncReplicaManifestDelta,
+  type OfflineAvailabilityReport,
   type PendingOperation,
   type PendingOperationRecovery,
   type SyncStatus,
@@ -38,6 +40,10 @@ interface SyncStoreState {
   syncNow: (vault: HostedVaultMeta) => Promise<void>;
   retry: (vault: HostedVaultMeta, operationId: string) => Promise<void>;
   discard: (vault: HostedVaultMeta, operationId: string) => Promise<void>;
+  makeAvailableOffline: (
+    vault: HostedVaultMeta,
+    onProgress?: (completed: number, total: number) => void,
+  ) => Promise<OfflineAvailabilityReport>;
   /** Permanently remove the local replica (used after access is lost). */
   removeReplica: (vault: HostedVaultMeta) => Promise<void>;
   clear: () => void;
@@ -114,6 +120,18 @@ export const useSyncStore = create<SyncStoreState>((set, get) => ({
   discard: async (vault, operationId) => {
     await discardPendingOperation(vault, operationId);
     await get().refresh(vault);
+  },
+
+  makeAvailableOffline: async (vault, onProgress) => {
+    if (get().isSyncing) throw new Error('A sync is already running.');
+    set({ isSyncing: true });
+    try {
+      const report = await makeHostedVaultAvailableOffline(vault, onProgress);
+      await get().refresh(vault);
+      return report;
+    } finally {
+      set({ isSyncing: false });
+    }
   },
 
   removeReplica: async (vault) => {

@@ -50,9 +50,11 @@ describe('vaultCan', () => {
     const commenter = { ...hostedVault('viewer'), capabilities: ['vault.read', 'pdf.comment'] };
     expect(vaultCan(commenter, 'pdf.comment')).toBe(true);
     expect(vaultCan(commenter, 'pdf.annotate')).toBe(false);
+    expect(vaultCan(commenter, 'vault.offlineCopy')).toBe(false);
 
-    const annotator = { ...hostedVault('editor'), capabilities: ['pdf.comment', 'pdf.annotate'] };
+    const annotator = { ...hostedVault('editor'), capabilities: ['pdf.comment', 'pdf.annotate', 'vault.offlineCopy'] };
     expect(vaultCan(annotator, 'pdf.annotate')).toBe(true);
+    expect(vaultCan(annotator, 'vault.offlineCopy')).toBe(true);
   });
 
   it('fails closed when capabilities are absent or for null vaults', () => {

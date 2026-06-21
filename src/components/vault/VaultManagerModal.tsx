@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import {
   Vault, FolderOpen, Plus, Download, Upload, Trash2, Pencil,
   Check, ChevronRight, Clock, ShieldCheck, Lock, LockOpen, Eye, EyeOff,
-  Server, RefreshCw,
+  Server, RefreshCw, HardDriveDownload, AlertTriangle, WifiOff,
 } from 'lucide-react';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from '../ui/dialog';
 import { Button } from '../ui/button';
@@ -10,11 +10,13 @@ import { Input } from '../ui/input';
 import { cn } from '../../lib/utils';
 import { useVaultStore } from '../../store/vaultStore';
 import { useServerStore, isEffectivelyConnected } from '../../store/serverStore';
+import { syncRollup, useSyncStore } from '../../store/syncStore';
 import { useUiStore } from '../../store/uiStore';
 import { tauriCommands } from '../../lib/tauri';
 import { createVaultClient, hasRuntimeCapability, requireRuntimeCapability } from '../../lib/vaultClient';
+import { deleteHostedVaultReplica, listHostedVaultReplicas, type ReplicaSummary } from '../../lib/vaultReplica';
 import { HostedMembersPanel } from './HostedMembersPanel';
-import { hostedVaultMeta, vaultKind, type HostedVaultSummary, type VaultKind, type VaultMeta } from '../../types/vault';
+import { hostedVaultMeta, vaultKind, type HostedVaultMeta, type HostedVaultSummary, type MemberRole, type VaultKind, type VaultMeta } from '../../types/vault';
 import { toast } from 'sonner';
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -219,11 +221,17 @@ function HostedVaultRow({
   isCurrent,
   onOpen,
   onExport,
+  offline = false,
+  serverUrl,
+  onRemoveOffline,
 }: {
   summary: HostedVaultSummary;
   isCurrent: boolean;
   onOpen: () => void;
   onExport?: () => void;
+  offline?: boolean;
+  serverUrl?: string;
+  onRemoveOffline?: () => void;
 }) {
   return (
     <div
@@ -236,9 +244,13 @@ function HostedVaultRow({
     >
       <div className={cn(
         'w-8 h-8 rounded-md flex items-center justify-center shrink-0 border',
-        isCurrent ? 'bg-primary/15 border-primary/25' : 'bg-primary/10 border-primary/20',
+        isCurrent
+          ? 'bg-primary/15 border-primary/25'
+          : offline
+            ? 'bg-amber-500/10 border-amber-500/20'
+            : 'bg-primary/10 border-primary/20',
       )}>
-        <Server size={14} className="text-primary" />
+        {offline ? <WifiOff size={14} className="text-amber-400" /> : <Server size={14} className="text-primary" />}
       </div>
 
       <div className="min-w-0 flex-1">
@@ -249,17 +261,28 @@ function HostedVaultRow({
               current
             </span>
           )}
+          {offline && (
+            <span className="text-[10px] font-medium px-1.5 py-0.5 rounded-full bg-amber-500/10 text-amber-400 shrink-0">
+              offline copy
+            </span>
+          )}
         </div>
         <div className="mt-0.5 flex min-w-0 items-center gap-1.5 text-[11px] text-muted-foreground">
           <span className="shrink-0 capitalize">{summary.role}</span>
           <span className="shrink-0 opacity-50">·</span>
-          <span className="shrink-0">{summary.members} {summary.members === 1 ? 'member' : 'members'}</span>
-          <span className="shrink-0 opacity-50">·</span>
-          <span className="min-w-0 truncate opacity-70">{summary.ownerDisplayName}</span>
+          {offline ? (
+            <span className="min-w-0 truncate opacity-70">{serverUrl}</span>
+          ) : (
+            <>
+              <span className="shrink-0">{summary.members} {summary.members === 1 ? 'member' : 'members'}</span>
+              <span className="shrink-0 opacity-50">·</span>
+              <span className="min-w-0 truncate opacity-70">{summary.ownerDisplayName}</span>
+            </>
+          )}
         </div>
       </div>
 
-      {(!isCurrent || onExport) && (
+      {(!isCurrent || onExport || onRemoveOffline) && (
         <div className="ml-2 flex shrink-0 items-center gap-0.5 self-center border-l border-border/35 pl-3 opacity-0 transition-opacity app-motion-fast group-hover:opacity-100">
           {!isCurrent && (
             <button
@@ -279,10 +302,57 @@ function HostedVaultRow({
               <Download size={12} />
             </button>
           )}
+          {onRemoveOffline && (
+            <button
+              onClick={onRemoveOffline}
+              title="Remove offline copy"
+              className="w-6 h-6 flex items-center justify-center rounded text-muted-foreground hover:text-destructive hover:bg-destructive/10 transition-colors app-motion-fast"
+            >
+              <Trash2 size={12} />
+            </button>
+          )}
         </div>
       )}
     </div>
   );
+}
+
+function replicaRole(replica: ReplicaSummary): MemberRole {
+  return replica.role === 'admin' || replica.role === 'editor' || replica.role === 'viewer'
+    ? replica.role
+    : 'viewer';
+}
+
+function replicaToHostedVaultMeta(replica: ReplicaSummary): HostedVaultMeta {
+  return {
+    kind: 'hosted',
+    id: replica.vaultId,
+    hostedVaultId: replica.vaultId,
+    serverUrl: replica.serverUrl,
+    name: replica.vaultName,
+    path: `hosted://${replica.vaultId}`,
+    lastOpened: Date.parse(replica.updatedAt) || Date.now(),
+    isEncrypted: false,
+    role: replicaRole(replica),
+    capabilities: replica.capabilities ?? [],
+  };
+}
+
+function replicaToHostedVaultSummary(replica: ReplicaSummary): HostedVaultSummary {
+  return {
+    id: replica.vaultId,
+    name: replica.vaultName,
+    ownerUserId: '',
+    ownerDisplayName: 'Offline copy',
+    role: replicaRole(replica),
+    status: 'active',
+    manifestSequence: replica.manifestSequence,
+    members: 0,
+    storageBytes: 0,
+    createdAt: replica.updatedAt,
+    updatedAt: replica.updatedAt,
+    capabilities: replica.capabilities ?? [],
+  };
 }
 
 // ─── Vaults Tab ───────────────────────────────────────────────────────────────
@@ -294,18 +364,24 @@ function VaultsTab({
   onClose: () => void;
   onRequestRemove: (meta: VaultMeta) => void;
 }) {
-  const { vault, recentVaults, openVault, openHostedVault, loadRecentVaults } = useVaultStore();
+  const { vault, recentVaults, openVault, openHostedVault, loadRecentVaults, closeVault } = useVaultStore();
   const { status, hostedVaults, isLoading: serverLoading, refresh, loadHostedVaults, createHostedVault } = useServerStore();
   const [creating, setCreating] = useState(false);
   const [creatingHosted, setCreatingHosted] = useState(false);
   const [hostedName, setHostedName] = useState('');
   const [hostedBusy, setHostedBusy] = useState(false);
   const [vaults, setVaults] = useState<VaultMeta[]>(recentVaults);
+  const [offlineReplicas, setOfflineReplicas] = useState<ReplicaSummary[]>([]);
+
+  const refreshOfflineReplicas = () => {
+    listHostedVaultReplicas().then(setOfflineReplicas).catch(() => setOfflineReplicas([]));
+  };
 
   useEffect(() => {
     loadRecentVaults().then(() => setVaults(useVaultStore.getState().recentVaults));
     // Pull the latest hosted inventory so connected users can open server vaults here too.
     refresh().catch(() => {});
+    refreshOfflineReplicas();
   }, []);
 
   // Keep local list in sync with store
@@ -313,6 +389,18 @@ function VaultsTab({
 
   const localVaults = vaults.filter((meta) => vaultKind(meta) === 'local');
   const activeHostedVaults = hostedVaults.filter((hosted) => hosted.status === 'active');
+  const activeHostedKeys = new Set(activeHostedVaults.map((hosted) => `${status?.serverUrl ?? ''}|${hosted.id}`));
+  const offlineOnlyReplicas = offlineReplicas.filter(
+    (replica) => !activeHostedKeys.has(`${replica.serverUrl}|${replica.vaultId}`),
+  );
+  const offlineReplicasByServer = Array.from(
+    offlineOnlyReplicas.reduce((groups, replica) => {
+      const group = groups.get(replica.serverUrl) ?? [];
+      group.push(replica);
+      groups.set(replica.serverUrl, group);
+      return groups;
+    }, new Map<string, ReplicaSummary[]>()),
+  ).sort(([left], [right]) => left.localeCompare(right));
   const isConnected = status?.connected === true && !!status.serverUrl;
   // Vault creation needs a non-expired session that can make authenticated requests.
   const canCreateHosted = isEffectivelyConnected(status);
@@ -333,6 +421,39 @@ function VaultsTab({
       onClose();
     } catch (e) {
       toast.error('Failed to open hosted vault: ' + e);
+    }
+  };
+
+  const handleOpenOfflineReplica = async (replica: ReplicaSummary) => {
+    try {
+      await openHostedVault(replicaToHostedVaultMeta(replica));
+      onClose();
+    } catch (e) {
+      toast.error('Failed to open offline copy: ' + e);
+    }
+  };
+
+  const handleRemoveOfflineReplica = async (replica: ReplicaSummary) => {
+    const pendingText = replica.pendingCount > 0
+      ? `\n\nThis offline copy has ${replica.pendingCount} pending local change${replica.pendingCount === 1 ? '' : 's'} that will be discarded.`
+      : '';
+    const confirmed = window.confirm(
+      `Remove the offline copy of "${replica.vaultName}" from ${replica.serverUrl}?${pendingText}`,
+    );
+    if (!confirmed) return;
+    try {
+      await deleteHostedVaultReplica(replica);
+      if (
+        vault?.kind === 'hosted'
+        && vault.hostedVaultId === replica.vaultId
+        && vault.serverUrl === replica.serverUrl
+      ) {
+        closeVault();
+      }
+      refreshOfflineReplicas();
+      toast.success(`Removed offline copy "${replica.vaultName}"`);
+    } catch (e) {
+      toast.error('Failed to remove offline copy: ' + e);
     }
   };
 
@@ -417,7 +538,7 @@ function VaultsTab({
 
         {/* Vault list */}
         <div className="flex-1 overflow-y-auto min-h-0">
-          {localVaults.length === 0 && activeHostedVaults.length === 0 && !creating && (
+          {localVaults.length === 0 && activeHostedVaults.length === 0 && offlineOnlyReplicas.length === 0 && !creating && (
             <div className="flex flex-col items-center justify-center py-12 gap-2 text-muted-foreground">
               <Vault size={32} className="opacity-20" />
               <p className="text-sm">No vaults yet. Create or import one.</p>
@@ -491,8 +612,35 @@ function VaultsTab({
             </div>
           )}
 
+          {/* Offline hosted replicas from any server */}
+          {offlineReplicasByServer.map(([serverUrl, replicas]) => (
+            <div key={serverUrl} className="mb-4">
+              <div className="mb-2 flex items-center gap-1.5 text-[11px] font-medium uppercase tracking-widest text-muted-foreground">
+                <WifiOff size={11} />
+                Offline copies · {serverUrl}
+              </div>
+              <div className="flex flex-col gap-2">
+                {replicas.map((replica) => (
+                  <HostedVaultRow
+                    key={`${replica.serverUrl}|${replica.vaultId}`}
+                    summary={replicaToHostedVaultSummary(replica)}
+                    isCurrent={
+                      vault?.kind === 'hosted'
+                      && vault.hostedVaultId === replica.vaultId
+                      && vault.serverUrl === replica.serverUrl
+                    }
+                    onOpen={() => handleOpenOfflineReplica(replica)}
+                    offline
+                    serverUrl={replica.serverUrl}
+                    onRemoveOffline={() => handleRemoveOfflineReplica(replica)}
+                  />
+                ))}
+              </div>
+            </div>
+          ))}
+
           {/* Local vaults */}
-          {(localVaults.length > 0 || isConnected) && (
+          {(localVaults.length > 0 || isConnected || offlineOnlyReplicas.length > 0) && (
             <div className="mb-2 flex items-center gap-1.5 text-[11px] font-medium uppercase tracking-widest text-muted-foreground">
               <Clock size={11} />
               Local
@@ -524,6 +672,164 @@ function VaultsTab({
 
 function HostedPermissionsTab() {
   return <HostedMembersPanel />;
+}
+
+function OfflineSyncTab() {
+  const vault = useVaultStore((state) => state.vault);
+  const hostedVault = vault && vaultKind(vault) === 'hosted' ? (vault as HostedVaultMeta) : null;
+  const {
+    status,
+    lastSyncedAt,
+    pending,
+    failed,
+    access,
+    isSyncing,
+    refresh,
+    syncNow,
+    makeAvailableOffline,
+    removeReplica,
+  } = useSyncStore();
+  const [progress, setProgress] = useState<{ completed: number; total: number } | null>(null);
+  const [removing, setRemoving] = useState(false);
+
+  useEffect(() => {
+    if (!hostedVault) return;
+    refresh(hostedVault).catch(() => {});
+  }, [hostedVault, refresh]);
+
+  if (!hostedVault) {
+    return (
+      <div className="flex flex-1 items-center justify-center text-sm text-muted-foreground">
+        Offline sync is available for hosted vaults.
+      </div>
+    );
+  }
+
+  const rollup = syncRollup({ isSyncing, status, pending, failed });
+  const lastSyncLabel = lastSyncedAt ? new Date(lastSyncedAt).toLocaleString() : 'Not synced yet';
+  const accessLost = access !== 'ok';
+  const progressLabel = progress && progress.total > 0
+    ? `${progress.completed} / ${progress.total} files cached`
+    : progress
+      ? 'Preparing offline cache…'
+      : null;
+
+  const handleMakeOffline = async () => {
+    setProgress({ completed: 0, total: 0 });
+    try {
+      const report = await makeAvailableOffline(hostedVault, (completed, total) => {
+        setProgress({ completed, total });
+      });
+      toast.success(
+        `Offline copy ready: ${report.documentsCached} documents and ${report.assetsCached} assets cached`
+        + (report.skipped ? ` (${report.skipped} skipped)` : ''),
+      );
+    } catch (error) {
+      toast.error(`Could not prepare offline copy: ${error}`);
+    } finally {
+      setProgress(null);
+    }
+  };
+
+  const handleSyncNow = async () => {
+    try {
+      await syncNow(hostedVault);
+      toast.success('Hosted vault synced');
+    } catch (error) {
+      toast.error(`Sync failed: ${error}`);
+    }
+  };
+
+  const handleRemoveReplica = async () => {
+    setRemoving(true);
+    try {
+      await removeReplica(hostedVault);
+      toast.success('Removed the local offline copy');
+    } catch (error) {
+      toast.error(`Could not remove offline copy: ${error}`);
+    } finally {
+      setRemoving(false);
+    }
+  };
+
+  return (
+    <div className="flex h-full flex-col gap-4 overflow-y-auto pr-1">
+      <div className="rounded-lg border border-primary/25 bg-primary/5 p-4">
+        <div className="flex items-start gap-3">
+          <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-primary/25 bg-primary/10 text-primary">
+            <HardDriveDownload size={16} />
+          </div>
+          <div className="min-w-0 flex-1">
+            <p className="text-sm font-semibold text-foreground">Hosted offline sync</p>
+            <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
+              Hosted vaults keep an automatic local replica. Use this action to download active
+              document and asset bodies now, so the vault stays useful before you lose connection.
+            </p>
+          </div>
+        </div>
+      </div>
+
+      <div className="grid gap-3 sm:grid-cols-2">
+        <div className="rounded-lg border border-border/50 bg-card/60 p-3">
+          <p className="text-[11px] font-semibold uppercase tracking-widest text-muted-foreground">Status</p>
+          <p className="mt-2 text-sm font-medium capitalize text-foreground">{accessLost ? access : rollup}</p>
+          <p className="mt-1 text-xs text-muted-foreground">Last sync: {lastSyncLabel}</p>
+        </div>
+        <div className="rounded-lg border border-border/50 bg-card/60 p-3">
+          <p className="text-[11px] font-semibold uppercase tracking-widest text-muted-foreground">Local changes</p>
+          <p className="mt-2 text-sm font-medium text-foreground">{pending.length} pending</p>
+          <p className="mt-1 text-xs text-muted-foreground">{failed.length} conflict{failed.length === 1 ? '' : 's'} need attention</p>
+        </div>
+      </div>
+
+      {accessLost && (
+        <div className="rounded-lg border border-destructive/30 bg-destructive/5 p-3 text-xs text-muted-foreground">
+          <p className="mb-1 flex items-center gap-1 font-medium text-destructive">
+            <AlertTriangle size={13} /> Sync unavailable
+          </p>
+          Your access to this vault is no longer valid on the server. The local copy is kept until you remove it.
+        </div>
+      )}
+
+      <div className="flex flex-wrap gap-2">
+        <Button
+          size="sm"
+          className="gap-1.5"
+          disabled={isSyncing || accessLost}
+          onClick={() => void handleMakeOffline()}
+        >
+          <HardDriveDownload size={13} />
+          {progressLabel ?? 'Make available offline'}
+        </Button>
+        <Button
+          size="sm"
+          variant="outline"
+          className="gap-1.5"
+          disabled={isSyncing || accessLost}
+          onClick={() => void handleSyncNow()}
+        >
+          <RefreshCw size={13} className={isSyncing ? 'app-spin-soft' : undefined} />
+          Sync now
+        </Button>
+        <Button
+          size="sm"
+          variant="ghost"
+          className="ml-auto gap-1.5 text-muted-foreground hover:text-destructive"
+          disabled={isSyncing || removing || pending.length > 0 || failed.length > 0}
+          title={pending.length > 0 || failed.length > 0 ? 'Resolve or discard unsynced changes before removing the offline copy.' : undefined}
+          onClick={() => void handleRemoveReplica()}
+        >
+          <Trash2 size={13} />
+          {removing ? 'Removing…' : 'Remove offline copy'}
+        </Button>
+      </div>
+
+      <p className="text-[11px] leading-relaxed text-muted-foreground">
+        The status-bar sync chip is still the quickest place to retry, discard, or inspect
+        pending offline changes while you work.
+      </p>
+    </div>
+  );
 }
 
 // ─── Main Modal ───────────────────────────────────────────────────────────────
@@ -734,17 +1040,18 @@ function EncryptionTab() {
 
 // ─── Tab list ─────────────────────────────────────────────────────────────────
 
-type Tab = 'vaults' | 'permissions' | 'encryption';
+type Tab = 'vaults' | 'permissions' | 'offline' | 'encryption';
 
 const ALL_TABS: Record<Tab, { id: Tab; label: string; icon: React.ReactNode }> = {
   vaults: { id: 'vaults', label: 'Vaults', icon: <Vault size={14} /> },
   permissions: { id: 'permissions', label: 'Permissions', icon: <ShieldCheck size={14} /> },
+  offline: { id: 'offline', label: 'Offline Sync', icon: <HardDriveDownload size={14} /> },
   encryption: { id: 'encryption', label: 'Encryption', icon: <Lock size={14} /> },
 };
 
 export function vaultManagerTabIds(kind: VaultKind): Tab[] {
   return kind === 'hosted'
-    ? ['vaults', 'permissions']
+    ? ['vaults', 'permissions', 'offline']
     : ['vaults', 'encryption'];
 }
 
@@ -833,6 +1140,7 @@ export default function VaultManagerModal() {
           <div className="flex-1 min-w-0 overflow-y-auto p-5 flex flex-col">
             {tab === 'vaults' && <VaultsTab onClose={closeVaultManager} onRequestRemove={setRemoveTarget} />}
             {tab === 'permissions' && <HostedPermissionsTab />}
+            {tab === 'offline' && <OfflineSyncTab />}
             {tab === 'encryption' && <EncryptionTab />}
           </div>
         </div>

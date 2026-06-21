@@ -28,6 +28,8 @@ export interface HostedVaultMeta extends VaultMetaBase {
    * controls fail closed until the vault is reopened.
    */
   capabilities?: string[];
+  /** Server policy: this vault should be prepared for offline use on clients. */
+  requireOfflineCopy?: boolean;
 }
 
 export interface HostedVaultSummary {
@@ -44,6 +46,8 @@ export interface HostedVaultSummary {
   updatedAt: string;
   /** The caller's effective capability tokens on this vault. */
   capabilities?: string[];
+  /** Server policy: clients should create a full offline copy when opening. */
+  requireOfflineCopy?: boolean;
 }
 
 export function hostedVaultMeta(serverUrl: string, vault: HostedVaultSummary): HostedVaultMeta {
@@ -58,6 +62,7 @@ export function hostedVaultMeta(serverUrl: string, vault: HostedVaultSummary): H
     isEncrypted: false,
     role: vault.role,
     capabilities: vault.capabilities ?? [],
+    requireOfflineCopy: vault.requireOfflineCopy ?? false,
   };
 }
 

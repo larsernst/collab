@@ -9,6 +9,7 @@ import {
   initialSyncState,
   isLikelyConnectivityError,
   listPendingOperationRecoveries,
+  makeHostedVaultAvailableOffline,
   replayPendingOperations,
   REPLICA_CACHE_BUDGET_BYTES,
   retryPendingOperation,
@@ -20,6 +21,7 @@ vi.mock('./tauri', () => ({
   tauriCommands: {
     hostedVaultRequest: vi.fn(),
     replicaSeed: vi.fn().mockResolvedValue(undefined),
+    replicaList: vi.fn().mockResolvedValue([]),
     replicaReadManifest: vi.fn(),
     replicaReadSyncState: vi.fn(),
     replicaEnqueueOperation: vi.fn().mockResolvedValue(undefined),
@@ -27,6 +29,9 @@ vi.mock('./tauri', () => ({
     replicaUpdateOperationStatus: vi.fn().mockResolvedValue(undefined),
     replicaRecordOperationFailure: vi.fn().mockResolvedValue(undefined),
     replicaRemoveOperation: vi.fn().mockResolvedValue(undefined),
+    hostedVaultAssetDataUrl: vi.fn(),
+    replicaCacheDocument: vi.fn().mockResolvedValue(undefined),
+    replicaCacheAsset: vi.fn().mockResolvedValue(undefined),
     replicaReadCachedAsset: vi.fn(),
     replicaCleanup: vi.fn().mockResolvedValue({ removedFiles: 2, freedBytes: 10, remainingBytes: 5 }),
   },
@@ -106,6 +111,8 @@ describe('vaultReplica', () => {
       'Hosted Vault',
       manifest,
       expect.objectContaining({ manifestSequence: 9, status: 'idle' }),
+      'editor',
+      [],
     );
   });
 
@@ -113,6 +120,42 @@ describe('vaultReplica', () => {
     vi.mocked(tauriCommands.hostedVaultRequest).mockRejectedValue(new Error('offline'));
     await expect(seedReplicaFromManifest(hostedVault)).rejects.toThrow('offline');
     expect(tauriCommands.replicaSeed).not.toHaveBeenCalled();
+  });
+
+  it('downloads active document and asset bodies for explicit offline availability', async () => {
+    const progress = vi.fn();
+    const manifest = {
+      vaultId: 'hosted-vault',
+      sequence: 9,
+      files: [
+        { id: 'doc-1', kind: 'document', state: 'active' },
+        { id: 'asset-1', kind: 'asset', state: 'active' },
+        { id: 'folder-1', kind: 'folder', state: 'active' },
+        { id: 'old-doc', kind: 'document', state: 'trashed' },
+      ],
+    };
+    vi.mocked(tauriCommands.hostedVaultRequest)
+      .mockResolvedValueOnce(manifest)
+      .mockResolvedValueOnce({ content: '# Cached' });
+    vi.mocked(tauriCommands.replicaReadManifest).mockResolvedValue(manifest);
+    vi.mocked(tauriCommands.hostedVaultAssetDataUrl).mockResolvedValue('data:image/png;base64,aW1n');
+
+    const report = await makeHostedVaultAvailableOffline(hostedVault, progress);
+
+    expect(tauriCommands.replicaCacheDocument).toHaveBeenCalledWith(
+      hostedVault.serverUrl,
+      hostedVault.hostedVaultId,
+      'doc-1',
+      '# Cached',
+    );
+    expect(tauriCommands.replicaCacheAsset).toHaveBeenCalledWith(
+      hostedVault.serverUrl,
+      hostedVault.hostedVaultId,
+      'asset-1',
+      'aW1n',
+    );
+    expect(report).toEqual({ documentsCached: 1, assetsCached: 1, skipped: 0 });
+    expect(progress).toHaveBeenLastCalledWith(2, 2);
   });
 
   it('merges manifest delta entries into the cached replica manifest', async () => {
@@ -155,6 +198,8 @@ describe('vaultReplica', () => {
       'Hosted Vault',
       manifest,
       expect.objectContaining({ manifestSequence: 10, status: 'idle' }),
+      'editor',
+      [],
     );
   });
 
@@ -324,6 +369,8 @@ describe('vaultReplica', () => {
       'Hosted Vault',
       seededManifest,
       expect.objectContaining({ manifestSequence: 12, status: 'idle' }),
+      'editor',
+      [],
     );
   });
 

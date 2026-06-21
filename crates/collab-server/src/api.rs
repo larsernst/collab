@@ -156,6 +156,7 @@ pub struct CreateVaultRequest {
 pub struct UpdateVaultRequest {
     pub name: Option<String>,
     pub status: Option<HostedVaultStatus>,
+    pub require_offline_copy: Option<bool>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1036,7 +1037,7 @@ pub async fn list_vaults(
     let rows = sqlx::query(
         r#"
         SELECT v.id, v.name, v.owner_user_id, owner.display_name AS owner_display_name,
-               v.status::text AS status, v.manifest_sequence,
+               v.status::text AS status, v.manifest_sequence, v.require_offline_copy,
                v.created_at, v.updated_at,
                (SELECT COUNT(*) FROM hosted_vault_memberships members WHERE members.vault_id = v.id) AS members,
                COALESCE((SELECT SUM(r.size_bytes) FROM hosted_file_revisions r WHERE r.vault_id = v.id), 0)::bigint AS storage_bytes
@@ -1200,17 +1201,19 @@ pub async fn update_vault(
         UPDATE hosted_vaults SET
           name = COALESCE($1, name),
           status = COALESCE($2::hosted_vault_status, status),
+          require_offline_copy = COALESCE($3, require_offline_copy),
           archived_at = CASE
             WHEN $2 = 'archived' THEN NOW()
             WHEN $2 = 'active' THEN NULL
             ELSE archived_at
           END,
           updated_at = NOW()
-        WHERE id = $3
+        WHERE id = $4
         "#,
     )
     .bind(name.as_deref())
     .bind(status)
+    .bind(payload.require_offline_copy)
     .bind(vault_id)
     .execute(&mut *transaction)
     .await
@@ -1221,12 +1224,14 @@ pub async fn update_vault(
         Some(user_uuid(&actor.user)),
         if payload.status.is_some() {
             "vault.status_changed"
+        } else if payload.require_offline_copy.is_some() {
+            "vault.settings_changed"
         } else {
             "vault.renamed"
         },
         Some("vault"),
         Some(&vault_id.to_string()),
-        json!({"status": status, "name": name}),
+        json!({"status": status, "name": name, "requireOfflineCopy": payload.require_offline_copy}),
         &request_id,
     )
     .await?;
@@ -5159,7 +5164,7 @@ pub async fn hosted_vaults(
     let rows = sqlx::query(
         r#"
         SELECT v.id, v.name, owner.display_name AS owner_display_name, v.status::text AS status,
-               v.updated_at,
+               v.updated_at, v.require_offline_copy,
                (SELECT COUNT(*) FROM hosted_vault_memberships members WHERE members.vault_id = v.id) AS members,
                COALESCE((SELECT SUM(r.size_bytes) FROM hosted_file_revisions r WHERE r.vault_id = v.id), 0)::bigint AS storage_bytes
         FROM hosted_vaults v
@@ -5857,6 +5862,7 @@ pub async fn admin_update_vault(
         UPDATE hosted_vaults SET
           name = COALESCE($1, name),
           status = COALESCE($2::hosted_vault_status, status),
+          require_offline_copy = COALESCE($3, require_offline_copy),
           archived_at = CASE
             WHEN $2 = 'archived' THEN NOW()
             WHEN $2 = 'active' THEN NULL
@@ -5864,11 +5870,12 @@ pub async fn admin_update_vault(
           END,
           pending_delete_at = CASE WHEN $2 IS NOT NULL THEN NULL ELSE pending_delete_at END,
           updated_at = NOW()
-        WHERE id = $3
+        WHERE id = $4
         "#,
     )
     .bind(name.as_deref())
     .bind(status)
+    .bind(payload.require_offline_copy)
     .bind(vault_id)
     .execute(&mut *transaction)
     .await
@@ -5882,12 +5889,14 @@ pub async fn admin_update_vault(
         Some(user_uuid(&actor.user)),
         if payload.status.is_some() {
             "vault.status_changed"
+        } else if payload.require_offline_copy.is_some() {
+            "vault.settings_changed"
         } else {
             "vault.renamed"
         },
         Some("vault"),
         Some(&vault_id.to_string()),
-        json!({"status": status, "name": name, "byServerAdmin": true}),
+        json!({"status": status, "name": name, "requireOfflineCopy": payload.require_offline_copy, "byServerAdmin": true}),
         &request_id,
     )
     .await?;
@@ -5899,7 +5908,7 @@ pub async fn admin_update_vault(
         Some(&vault_id.to_string()),
         "success",
         &request_id,
-        json!({"status": status, "renamed": name.is_some()}),
+        json!({"status": status, "renamed": name.is_some(), "requireOfflineCopy": payload.require_offline_copy}),
     )
     .await?;
     transaction
@@ -6265,7 +6274,7 @@ async fn load_admin_vault_detail(
         r#"
         SELECT v.id, v.name, v.owner_user_id, owner.username AS owner_username,
                owner.display_name AS owner_display_name, v.status::text AS status,
-               v.manifest_sequence, v.created_at, v.updated_at,
+               v.manifest_sequence, v.require_offline_copy, v.created_at, v.updated_at,
                (SELECT COUNT(*) FROM hosted_vault_memberships m WHERE m.vault_id = v.id) AS members,
                (SELECT COUNT(*) FROM hosted_file_entries f WHERE f.vault_id = v.id AND f.state = 'active') AS active_files,
                (SELECT COUNT(*) FROM hosted_file_entries f WHERE f.vault_id = v.id AND f.state = 'trashed') AS trashed_files,
@@ -6292,6 +6301,7 @@ async fn load_admin_vault_detail(
         active_files: row.get("active_files"),
         trashed_files: row.get("trashed_files"),
         storage_bytes: row.get::<i64, _>("storage_bytes").max(0) as u64,
+        require_offline_copy: row.get("require_offline_copy"),
         created_at: row
             .get::<chrono::DateTime<chrono::Utc>, _>("created_at")
             .to_rfc3339(),
@@ -7741,7 +7751,7 @@ async fn load_vault(
     let row = sqlx::query(
         r#"
         SELECT v.id, v.name, v.owner_user_id, owner.display_name AS owner_display_name,
-               v.status::text AS status, v.manifest_sequence,
+               v.status::text AS status, v.manifest_sequence, v.require_offline_copy,
                v.created_at, v.updated_at,
                (SELECT COUNT(*) FROM hosted_vault_memberships members WHERE members.vault_id = v.id) AS members,
                COALESCE((SELECT SUM(r.size_bytes) FROM hosted_file_revisions r WHERE r.vault_id = v.id), 0)::bigint AS storage_bytes
@@ -7774,6 +7784,7 @@ fn vault_from_row_without_role(row: &sqlx::postgres::PgRow) -> HostedVault {
         manifest_sequence: row.get("manifest_sequence"),
         members: row.get("members"),
         storage_bytes: row.get::<i64, _>("storage_bytes").max(0) as u64,
+        require_offline_copy: row.get("require_offline_copy"),
         created_at: row
             .get::<chrono::DateTime<chrono::Utc>, _>("created_at")
             .to_rfc3339(),
@@ -7792,6 +7803,7 @@ fn vault_summary_from_row(row: &sqlx::postgres::PgRow) -> HostedVaultSummary {
         status: parse_vault_status(row.get::<String, _>("status").as_str()),
         members: row.get("members"),
         storage_bytes: row.get::<i64, _>("storage_bytes").max(0) as u64,
+        require_offline_copy: row.get("require_offline_copy"),
         updated_at: row
             .get::<chrono::DateTime<chrono::Utc>, _>("updated_at")
             .to_rfc3339(),
@@ -11070,6 +11082,7 @@ mod tests {
                 "vault.viewActivity".to_owned(),
             ]
         );
+        assert!(!viewer_caps.contains(&"vault.offlineCopy".to_owned()));
 
         let viewer_rename = request(
             &app,
@@ -11139,6 +11152,7 @@ mod tests {
         let editor_caps = capability_tokens(&editor_vaults_body["data"][0]);
         assert!(editor_caps.contains(&"file.write".to_owned()));
         assert!(editor_caps.contains(&"kanban.card.move".to_owned()));
+        assert!(editor_caps.contains(&"vault.offlineCopy".to_owned()));
         assert!(!editor_caps.contains(&"vault.managePermissions".to_owned()));
         assert!(!editor_caps.contains(&"vault.manageMembers".to_owned()));
 

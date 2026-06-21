@@ -28,6 +28,7 @@ import type {
   PendingOpStatus,
   ReplicaIntegrityReport,
   ReplicaManifest,
+  ReplicaSummary,
   ReplicaSyncState,
   Tombstone,
 } from './vaultReplica';
@@ -324,7 +325,18 @@ export const tauriCommands = {
     vaultName: string,
     manifest: ReplicaManifest,
     syncState: ReplicaSyncState,
-  ) => invoke<void>('replica_seed', { serverUrl, vaultId, vaultName, manifest, syncState }),
+    role?: string | null,
+    capabilities?: string[],
+  ) => invoke<void>('replica_seed', {
+    serverUrl,
+    vaultId,
+    vaultName,
+    manifest,
+    syncState,
+    role: role ?? null,
+    capabilities: capabilities ?? [],
+  }),
+  replicaList: () => invoke<ReplicaSummary[]>('replica_list'),
   replicaReadManifest: (serverUrl: string, vaultId: string) =>
     invoke<ReplicaManifest | null>('replica_read_manifest', { serverUrl, vaultId }),
   replicaReadSyncState: (serverUrl: string, vaultId: string) =>
