@@ -400,9 +400,10 @@ describe('admin application', () => {
     }]);
     render(<App />);
     fireEvent.click(await screen.findByRole('button', { name: 'Vaults' }));
-    expect(await screen.findByText('Archived Vault')).toBeTruthy();
-    expect(screen.getByText('archived')).toBeTruthy();
-    expect(screen.getByText(/2 members/)).toBeTruthy();
+    const inventory = (await screen.findByText('1 hosted vaults')).closest<HTMLElement>('.panel')!;
+    expect(within(inventory).getByText('Archived Vault')).toBeTruthy();
+    expect(within(inventory).getByText('archived')).toBeTruthy();
+    expect(within(inventory).getByText(/2 members/)).toBeTruthy();
   });
 
   it('manages hosted-vault members and lifecycle from the vault detail view', async () => {
@@ -749,7 +750,8 @@ describe('admin application', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Vault root' }));
     fireEvent.change(screen.getByLabelText('Search vault files'), { target: { value: 'test.md' } });
-    expect(await screen.findByText('Notes/Test.md')).toBeTruthy();
+    const filesDialog = screen.getByRole('dialog', { name: 'Vault files' });
+    expect(await within(filesDialog).findByText('Notes/Test.md')).toBeTruthy();
     expect(screen.getByText('1 matches across the vault')).toBeTruthy();
 
     fireEvent.click(screen.getByRole('button', { name: 'Download Notes/Test.md' }));
@@ -925,6 +927,176 @@ describe('admin application', () => {
     const confirmDialog = await screen.findByRole('dialog', { name: 'Delete member?' });
     fireEvent.click(within(confirmDialog).getByRole('button', { name: 'Delete account' }));
     await waitFor(() => expect(serverApi.deleteUser).toHaveBeenCalledWith('member-1'));
+  });
+
+  it('searches users and retrofits a member to an administrator', async () => {
+    vi.mocked(serverApi.bootstrapStatus).mockResolvedValue({ required: false });
+    vi.mocked(serverApi.me).mockResolvedValue(admin);
+    vi.mocked(serverApi.users).mockResolvedValue([admin, disabledMember]);
+    vi.mocked(serverApi.updateUser).mockResolvedValue({ ...disabledMember, role: 'admin' });
+
+    render(<App />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Users' }));
+    const panel = (await screen.findByText('2 server users')).closest<HTMLElement>('.panel')!;
+    expect(within(panel).getByText('Admin User')).toBeTruthy();
+
+    // Searching filters the list to matching accounts.
+    fireEvent.change(screen.getByLabelText('Search users'), { target: { value: 'member' } });
+    expect(within(panel).queryByText('Admin User')).toBeNull();
+    expect(within(panel).getByText('Member User')).toBeTruthy();
+
+    // Promote the member; a confirm dialog gates the role change.
+    fireEvent.click(screen.getByRole('button', { name: 'Make admin' }));
+    const dialog = await screen.findByRole('dialog', { name: 'Promote member to administrator?' });
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Make administrator' }));
+    await waitFor(() => expect(serverApi.updateUser).toHaveBeenCalledWith('member-1', { role: 'admin' }));
+  });
+
+  it('searches the hosted vault inventory', async () => {
+    vi.mocked(serverApi.bootstrapStatus).mockResolvedValue({ required: false });
+    vi.mocked(serverApi.me).mockResolvedValue(admin);
+    vi.mocked(serverApi.users).mockResolvedValue([admin]);
+    vi.mocked(serverApi.vaults).mockResolvedValue([
+      { id: 'vault-1', name: 'Team Vault', ownerDisplayName: 'Alice', status: 'active', members: 1, storageBytes: 0, updatedAt: '2026-06-10T00:00:00Z' },
+      { id: 'vault-2', name: 'Design Space', ownerDisplayName: 'Bob', status: 'active', members: 2, storageBytes: 0, updatedAt: '2026-06-10T00:00:00Z' },
+    ]);
+
+    render(<App />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Vaults' }));
+    expect(await screen.findByText('Team Vault')).toBeTruthy();
+    fireEvent.change(screen.getByLabelText('Search vaults'), { target: { value: 'design' } });
+    expect(screen.queryByText('Team Vault')).toBeNull();
+    expect(screen.getByText('Design Space')).toBeTruthy();
+  });
+
+  it('charts server-wide storage distribution across vaults', async () => {
+    vi.mocked(serverApi.bootstrapStatus).mockResolvedValue({ required: false });
+    vi.mocked(serverApi.me).mockResolvedValue(admin);
+    vi.mocked(serverApi.users).mockResolvedValue([admin]);
+    vi.mocked(serverApi.vaults).mockResolvedValue([
+      { id: 'vault-1', name: 'Team Vault', ownerDisplayName: 'Alice', status: 'active', members: 1, storageBytes: 3072, updatedAt: '2026-06-10T00:00:00Z' },
+      { id: 'vault-2', name: 'Design Space', ownerDisplayName: 'Bob', status: 'active', members: 2, storageBytes: 1024, updatedAt: '2026-06-10T00:00:00Z' },
+    ]);
+
+    render(<App />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Vaults' }));
+    const chart = (await screen.findByText('Storage by vault')).closest<HTMLElement>('.panel')!;
+    // The donut summarizes the total across the two vaults.
+    expect(within(chart).getByRole('img', { name: 'Storage by vault: 4.0 KB across 2 vaults' })).toBeTruthy();
+    // The legend lists each vault with its size and share (3072 / 4096 = 75%).
+    const teamEntry = within(chart).getByText('Team Vault').closest('li')!;
+    expect(within(teamEntry).getByText('3.0 KB · 75.0%')).toBeTruthy();
+    const designEntry = within(chart).getByText('Design Space').closest('li')!;
+    expect(within(designEntry).getByText('1.0 KB · 25.0%')).toBeTruthy();
+  });
+
+  it('charts the largest files in the vault detail view', async () => {
+    vi.mocked(serverApi.bootstrapStatus).mockResolvedValue({ required: false });
+    vi.mocked(serverApi.me).mockResolvedValue(admin);
+    vi.mocked(serverApi.users).mockResolvedValue([admin]);
+    vi.mocked(serverApi.vaults).mockResolvedValue([{
+      id: 'vault-1', name: 'Team Vault', ownerDisplayName: 'Other Owner', status: 'active',
+      members: 1, storageBytes: 3072, updatedAt: '2026-06-10T00:00:00Z',
+    }]);
+    vi.mocked(serverApi.vaultDetail).mockResolvedValue({
+      id: 'vault-1', name: 'Team Vault', ownerUserId: 'owner-1', ownerUsername: 'owner',
+      ownerDisplayName: 'Other Owner', status: 'active', manifestSequence: 4, members: 1,
+      activeFiles: 2, trashedFiles: 0, storageBytes: 3072,
+      createdAt: '2026-06-09T00:00:00Z', updatedAt: '2026-06-10T00:00:00Z',
+    });
+    vi.mocked(serverApi.vaultMembers).mockResolvedValue([]);
+    vi.mocked(serverApi.vaultActivity).mockResolvedValue([]);
+    vi.mocked(serverApi.vaultFiles).mockResolvedValue({
+      vaultId: 'vault-1',
+      sequence: 4,
+      files: [
+        { id: 'file-1', parentId: null, name: 'Big.md', relativePath: 'Big.md', kind: 'document', documentType: 'note', state: 'active', currentRevision: { id: 'r1', sequence: 1, contentHash: 'h1', sizeBytes: 2048, createdByDisplayName: 'Owner', createdAt: '2026-06-10T00:00:00Z' }, createdAt: '2026-06-09T00:00:00Z', updatedAt: '2026-06-10T00:00:00Z' },
+        { id: 'file-2', parentId: null, name: 'Small.md', relativePath: 'Small.md', kind: 'document', documentType: 'note', state: 'active', currentRevision: { id: 'r2', sequence: 1, contentHash: 'h2', sizeBytes: 1024, createdByDisplayName: 'Owner', createdAt: '2026-06-10T00:00:00Z' }, createdAt: '2026-06-09T00:00:00Z', updatedAt: '2026-06-10T00:00:00Z' },
+      ],
+    });
+
+    render(<App />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Vaults' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Manage Team Vault' }));
+    const chart = (await screen.findByText('Largest files')).closest<HTMLElement>('.panel')!;
+    const bigEntry = within(chart).getByText('Big.md').closest('li')!;
+    expect(within(bigEntry).getByText(/2\.0 KB · 66\.7%/)).toBeTruthy();
+  });
+
+  it('searches and filters audit events', async () => {
+    vi.mocked(serverApi.bootstrapStatus).mockResolvedValue({ required: false });
+    vi.mocked(serverApi.me).mockResolvedValue(admin);
+    vi.mocked(serverApi.auditEvents).mockResolvedValue([
+      { id: 'e1', actorDisplayName: 'Admin User', action: 'user.login', result: 'success', targetType: 'user', targetId: 'admin-1', createdAt: '2026-06-10T00:00:00Z' },
+      { id: 'e2', actorDisplayName: 'Admin User', action: 'admin.user.update', result: 'failure', targetType: 'user', targetId: 'member-1', createdAt: '2026-06-10T01:00:00Z' },
+    ]);
+
+    render(<App />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Audit log' }));
+    expect(await screen.findByText('user login')).toBeTruthy();
+    expect(screen.getByText('admin user update')).toBeTruthy();
+
+    // The search box narrows by action text.
+    fireEvent.change(screen.getByLabelText('Search audit events'), { target: { value: 'login' } });
+    expect(screen.getByText('user login')).toBeTruthy();
+    expect(screen.queryByText('admin user update')).toBeNull();
+
+    // The result filter narrows to failures.
+    fireEvent.change(screen.getByLabelText('Search audit events'), { target: { value: '' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Filter by result' }));
+    fireEvent.click(screen.getByRole('option', { name: 'failure' }));
+    expect(screen.getByText('admin user update')).toBeTruthy();
+    expect(screen.queryByText('user login')).toBeNull();
+  });
+
+  it('shows folder sizes, navigates up, and deletes vault files', async () => {
+    vi.stubGlobal('crypto', { randomUUID: () => 'operation-1' });
+    vi.mocked(serverApi.bootstrapStatus).mockResolvedValue({ required: false });
+    vi.mocked(serverApi.me).mockResolvedValue(admin);
+    vi.mocked(serverApi.users).mockResolvedValue([admin]);
+    vi.mocked(serverApi.vaults).mockResolvedValue([{
+      id: 'vault-1', name: 'Team Vault', ownerDisplayName: 'Other Owner', status: 'active',
+      members: 1, storageBytes: 12, updatedAt: '2026-06-10T00:00:00Z',
+    }]);
+    vi.mocked(serverApi.vaultDetail).mockResolvedValue({
+      id: 'vault-1', name: 'Team Vault', ownerUserId: 'owner-1', ownerUsername: 'owner',
+      ownerDisplayName: 'Other Owner', status: 'active', manifestSequence: 4, members: 1,
+      activeFiles: 2, trashedFiles: 0, storageBytes: 2048,
+      createdAt: '2026-06-09T00:00:00Z', updatedAt: '2026-06-10T00:00:00Z',
+    });
+    vi.mocked(serverApi.vaultMembers).mockResolvedValue([]);
+    vi.mocked(serverApi.vaultActivity).mockResolvedValue([]);
+    const currentRevision = { id: 'revision-2', sequence: 2, contentHash: 'hash-2', sizeBytes: 2048, createdByDisplayName: 'Owner', createdAt: '2026-06-10T00:00:00Z' };
+    vi.mocked(serverApi.vaultFiles).mockResolvedValue({
+      vaultId: 'vault-1',
+      sequence: 4,
+      files: [
+        { id: 'folder-1', parentId: null, name: 'Notes', relativePath: 'Notes', kind: 'folder', documentType: null, state: 'active', currentRevision: null, createdAt: '2026-06-09T00:00:00Z', updatedAt: '2026-06-10T00:00:00Z' },
+        { id: 'file-1', parentId: 'folder-1', name: 'Test.md', relativePath: 'Notes/Test.md', kind: 'document', documentType: 'note', state: 'active', currentRevision, createdAt: '2026-06-09T00:00:00Z', updatedAt: '2026-06-10T00:00:00Z' },
+      ],
+    });
+    vi.mocked(serverApi.moveFile).mockResolvedValue({ resultManifestSequence: 5 });
+
+    render(<App />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Vaults' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Manage Team Vault' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Browse files' }));
+
+    // The folder row aggregates its descendant file sizes (2048 bytes -> 2.0 KB).
+    const folderRow = (await screen.findByRole('button', { name: 'Notes' })).closest('.file-row');
+    expect(within(folderRow as HTMLElement).getByText('2.0 KB')).toBeTruthy();
+
+    // Entering the folder exposes an up-one-level row.
+    fireEvent.click(screen.getByRole('button', { name: 'Notes' }));
+    expect(await screen.findByRole('button', { name: '.. (up one level)' })).toBeTruthy();
+
+    // Delete moves the file to trash through a confirm dialog.
+    fireEvent.click(screen.getByRole('button', { name: 'Delete Notes/Test.md' }));
+    const dialog = await screen.findByRole('dialog', { name: 'Move Test.md to trash?' });
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Move to trash' }));
+    await waitFor(() => expect(serverApi.moveFile).toHaveBeenCalledWith('vault-1', expect.objectContaining({
+      operationType: 'trash', targetFileId: 'file-1',
+    })));
   });
 
   it('persists administration appearance settings', async () => {

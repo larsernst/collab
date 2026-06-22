@@ -209,7 +209,7 @@ nav { display:grid; gap:3px; } nav .ui-button { justify-content:flex-start; min-
 .accent-dot.active { border-color:var(--foreground); }
 .request-chip.removable { display:inline-flex; align-items:center; gap:5px; }
 .request-chip.removable button { background:none; border:0; color:inherit; cursor:pointer; font-size:13px; line-height:1; padding:0; }
-.permission-user-layout { display:grid; grid-template-columns:minmax(200px,260px) 1fr; gap:18px; margin-top:14px; }
+.permission-user-layout { display:grid; grid-template-columns:240px minmax(0,1fr); gap:18px; margin-top:14px; align-items:start; }
 .user-picker { max-height:60vh; overflow:auto; }
 .user-pick { width:100%; background:none; border:0; color:inherit; cursor:pointer; text-align:left; border-radius:8px; }
 .user-pick:hover { background:color-mix(in srgb,var(--foreground) 5%,transparent); }
@@ -222,4 +222,34 @@ nav { display:grid; gap:3px; } nav .ui-button { justify-content:flex-start; min-
 .access-grant-row { display:flex; align-items:center; gap:10px; }
 .access-grant-row .grow { display:grid; gap:2px; }
 .subject-detail { display:flex; flex-direction:column; gap:10px; margin-top:10px; }
+/* Inline list search used in Users, Vaults, and Audit panels. */
+.list-search { position:relative; display:flex; align-items:center; margin-bottom:12px; }
+.list-search > svg { position:absolute; left:10px; z-index:1; color:var(--muted-foreground); pointer-events:none; }
+.list-search .ui-input { width:100%; padding-left:32px; }
+.audit-filters { display:flex; flex-wrap:wrap; align-items:center; gap:10px; margin-bottom:12px; }
+.audit-filters .list-search { flex:1 1 240px; margin-bottom:0; }
+.audit-filters .ui-select-trigger { min-width:160px; }
+/* Pair small vault-detail panels side by side to use horizontal space. */
+.detail-columns { display:grid; grid-template-columns:repeat(auto-fit,minmax(300px,1fr)); gap:16px; }
+.detail-columns > .panel { margin-bottom:0; }
+.detail-columns + .panel { margin-top:16px; }
+.file-row-up .file-open-button { color:var(--muted-foreground); }
+/* Even out spacing between separated settings sections in a panel. */
+.panel > .ui-separator { margin:16px 0; }
+/* Storage breakdown chart (donut + legend). */
+.storage-chart { display:flex; align-items:center; gap:24px; flex-wrap:wrap; }
+.storage-donut { width:148px; height:148px; flex:none; }
+.storage-donut-track { stroke:color-mix(in srgb,var(--foreground) 8%,transparent); }
+.storage-donut-total { fill:var(--foreground); font-size:15px; font-weight:600; }
+.storage-donut-caption { fill:var(--muted-foreground); font-size:9px; text-transform:uppercase; letter-spacing:.04em; }
+.storage-legend { list-style:none; margin:0; padding:0; flex:1 1 260px; min-width:0; display:grid; gap:10px; }
+.storage-legend > li { display:flex; align-items:flex-start; gap:9px; min-width:0; }
+.storage-legend-dot { width:11px; height:11px; border-radius:3px; flex:none; margin-top:3px; }
+.storage-legend-main { flex:1; min-width:0; display:grid; gap:5px; }
+.storage-legend-head { display:flex; align-items:baseline; justify-content:space-between; gap:12px; }
+.storage-legend-label { font-size:12px; font-weight:500; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.storage-legend-size { font-size:11px; color:var(--muted-foreground); white-space:nowrap; flex:none; }
+.storage-legend-bar { height:6px; border-radius:999px; background:color-mix(in srgb,var(--foreground) 8%,transparent); overflow:hidden; }
+.storage-legend-bar > span { display:block; height:100%; border-radius:999px; min-width:2px; }
+@media(max-width:620px){.storage-chart{flex-direction:column;align-items:stretch}.storage-donut{align-self:center}}
 @media(max-width:760px){.permission-user-layout{grid-template-columns:1fr}.account-password{grid-template-columns:1fr}}

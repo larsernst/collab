@@ -75,6 +75,7 @@ pub struct UpdateUserRequest {
     pub username: Option<String>,
     pub disabled: Option<bool>,
     pub password: Option<String>,
+    pub role: Option<ServerUserRole>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -4894,6 +4895,34 @@ pub async fn update_user(
             request_id,
         ));
     }
+    if let Some(role) = payload.role {
+        if actor.user.id == user_id.to_string() {
+            return Err(ApiFailure::validation(
+                "Administrators cannot change their own role.",
+                request_id,
+            ));
+        }
+        if role == ServerUserRole::Member
+            && is_primary_admin(&state.database, user_id, &request_id).await?
+        {
+            return Err(ApiFailure::validation(
+                "The primary administrator must remain an administrator.",
+                request_id,
+            ));
+        }
+        let role_sql = match role {
+            ServerUserRole::Admin => "admin",
+            ServerUserRole::Member => "member",
+        };
+        sqlx::query(
+            "UPDATE users SET role = $1::server_user_role, updated_at = NOW() WHERE id = $2",
+        )
+        .bind(role_sql)
+        .bind(user_id)
+        .execute(&state.database)
+        .await
+        .map_err(|_| ApiFailure::server(request_id.clone()))?;
+    }
     if let Some(password) = payload.password.as_deref() {
         validate_password(password)
             .map_err(|error| ApiFailure::validation(error.to_string(), request_id.clone()))?;
@@ -4989,7 +5018,14 @@ pub async fn update_user(
         Some(&user.id),
         "success",
         &request_id,
-        json!({"disabled": disabled, "passwordReset": payload.password.is_some()}),
+        json!({
+            "disabled": disabled,
+            "passwordReset": payload.password.is_some(),
+            "role": payload.role.map(|role| match role {
+                ServerUserRole::Admin => "admin",
+                ServerUserRole::Member => "member",
+            }),
+        }),
     )
     .await?;
     Ok(Json(DataResponse::new(user)))
@@ -13353,6 +13389,41 @@ mod tests {
         )
         .await;
         assert_eq!(reenabled_login.status(), StatusCode::OK);
+
+        // An administrator can retrofit a member's role to admin and back.
+        let promoted = request(
+            &app,
+            "PATCH",
+            &format!("/api/v1/admin/users/{member_id}"),
+            json!({"role": "admin"}),
+            Some(&admin_cookie),
+            Some(&admin_csrf),
+        )
+        .await;
+        assert_eq!(promoted.status(), StatusCode::OK);
+        assert_eq!(json_body(promoted).await["data"]["role"], "admin");
+        let demoted = request(
+            &app,
+            "PATCH",
+            &format!("/api/v1/admin/users/{member_id}"),
+            json!({"role": "member"}),
+            Some(&admin_cookie),
+            Some(&admin_csrf),
+        )
+        .await;
+        assert_eq!(demoted.status(), StatusCode::OK);
+        assert_eq!(json_body(demoted).await["data"]["role"], "member");
+        // The primary administrator must remain an administrator.
+        let primary_demote = request(
+            &app,
+            "PATCH",
+            &format!("/api/v1/admin/users/{admin_id}"),
+            json!({"role": "member"}),
+            Some(&admin_cookie),
+            Some(&admin_csrf),
+        )
+        .await;
+        assert_eq!(primary_demote.status(), StatusCode::BAD_REQUEST);
 
         let deleted = request(
             &app,

@@ -526,7 +526,7 @@ function Dashboard() {
           <Metric icon={<ShieldCheck />} label="Server health" value={overview.health} detail={`${Math.floor(overview.uptimeSeconds / 60)} minutes uptime`} />
           <Metric icon={<Users />} label="Active users" value={overview.activeUsers} detail={`${overview.users} total`} />
           <Metric icon={<KeyRound />} label="Active sessions" value={overview.activeSessions} detail="Revocable browser sessions" />
-          <Metric icon={<Boxes />} label="Hosted vaults" value={overview.hostedVaults} detail="Vault storage arrives in Phase 3" />
+          <Metric icon={<Boxes />} label="Hosted vaults" value={overview.hostedVaults} detail="Canonical hosted vaults" />
           <Metric icon={<Server />} label="Server version" value={`v${overview.serverVersion}`} detail={`Protocol ${overview.protocolVersion}`} />
           <Metric
             icon={<Database />}
@@ -837,6 +837,8 @@ function UsersPage({ currentUser }: { currentUser: ServerUser }) {
   const [confirmDelete, setConfirmDelete] = useState<ServerUser | null>(null);
   const [resetTarget, setResetTarget] = useState<ServerUser | null>(null);
   const [editTarget, setEditTarget] = useState<ServerUser | null>(null);
+  const [roleTarget, setRoleTarget] = useState<ServerUser | null>(null);
+  const [search, setSearch] = useState('');
   const [error, setError] = useState('');
   const load = useCallback(async () => {
     try {
@@ -891,6 +893,16 @@ function UsersPage({ currentUser }: { currentUser: ServerUser }) {
       await load();
     } catch (reason) { setError(String(reason)); }
   }
+  async function setRole(user: ServerUser, role: 'admin' | 'member') {
+    try {
+      await serverApi.updateUser(user.id, { role });
+      await load();
+    } catch (reason) { setError(String(reason)); }
+  }
+  const query = search.trim().toLowerCase();
+  const visibleUsers = query
+    ? users.filter((user) => user.displayName.toLowerCase().includes(query) || user.username.toLowerCase().includes(query))
+    : users;
   return (
     <>
       <PageHeader eyebrow="IDENTITY" title="Users" subtitle="Create accounts, issue invitations, and manage access." action={<div className="actions"><Button variant="outline" size="sm" onClick={() => setShowInvite(!showInvite)}>Invite user</Button><Button size="sm" onClick={() => setShowCreate(!showCreate)}><Plus size={16} />Add user</Button></div>} />
@@ -898,7 +910,11 @@ function UsersPage({ currentUser }: { currentUser: ServerUser }) {
       {showCreate && <Panel title="Create user" icon={<Plus size={17} />}><form className="inline-form" onSubmit={create}><Field label="Display name" name="displayName" required /><Field label="Username" name="username" required /><Field label="Temporary password" name="password" type="password" required /><label className="check"><Checkbox name="admin" /> Administrator</label><Button size="sm">Create user</Button></form></Panel>}
       {showInvite && <Panel title="Invite user" icon={<KeyRound size={17} />}><form className="inline-form" onSubmit={invite}><Field label="Display name" name="displayName" required /><Field label="Username" name="username" required /><Field label="Expires in hours" name="expiresInHours" type="number" min={1} max={720} defaultValue={72} required /><label className="check"><Checkbox name="admin" /> Administrator</label><Button size="sm">Create link</Button></form>{invitationLink && <div className="invitation-link" role="status"><code>{invitationLink}</code><Button variant="outline" size="sm" onClick={() => navigator.clipboard?.writeText(invitationLink)}>Copy</Button></div>}</Panel>}
       <Panel title={`${users.length} server users`} icon={<Users size={17} />}>
-        <div className="user-list">{users.map((user) => <div className="user-row" key={user.id}><Avatar user={user} /><div className="grow"><strong>{user.displayName}</strong><small>{user.username} · {user.role}{user.isPrimaryAdmin ? ' · primary administrator' : ''}</small></div><Badge variant={user.status === 'active' ? 'success' : 'destructive'}>{user.status}</Badge><span className="session-count">{user.activeSessions} sessions</span><Button variant="outline" size="sm" onClick={() => setEditTarget(user)}>Edit</Button><Button variant="outline" size="sm" onClick={async () => setActivity({ user, events: await serverApi.userActivity(user.id) })}>Activity</Button><Button variant="outline" size="sm" onClick={() => setResetTarget(user)}>Reset password</Button>{user.status === 'disabled' ? <Button variant="outline" size="sm" disabled={user.isPrimaryAdmin} onClick={() => setDisabled(user, false)}>Re-enable</Button> : <Button variant="outline" size="sm" disabled={user.id === currentUser.id || user.isPrimaryAdmin} onClick={() => setDisabled(user, true)}>Disable</Button>}<Button variant="outline" size="sm" onClick={async () => { await serverApi.revokeSessions(user.id); await load(); }}>Revoke sessions</Button><Button variant="destructive" size="sm" disabled={user.id === currentUser.id || user.isPrimaryAdmin} onClick={() => setConfirmDelete(user)}>Delete account</Button></div>)}</div>
+        <label className="list-search">
+          <Search size={15} />
+          <Input type="search" value={search} placeholder="Search users by name or username" aria-label="Search users" onChange={(event) => setSearch(event.target.value)} />
+        </label>
+        <div className="user-list">{visibleUsers.map((user) => <div className="user-row" key={user.id}><Avatar user={user} /><div className="grow"><strong>{user.displayName}</strong><small>{user.username} · {user.role}{user.isPrimaryAdmin ? ' · primary administrator' : ''}</small></div><Badge variant={user.role === 'admin' ? 'success' : 'outline'}>{user.role}</Badge><Badge variant={user.status === 'active' ? 'success' : 'destructive'}>{user.status}</Badge><span className="session-count">{user.activeSessions} sessions</span><Button variant="outline" size="sm" onClick={() => setEditTarget(user)}>Edit</Button>{user.role === 'admin' ? <Button variant="outline" size="sm" disabled={user.id === currentUser.id || user.isPrimaryAdmin} onClick={() => setRoleTarget(user)}>Make member</Button> : <Button variant="outline" size="sm" onClick={() => setRoleTarget(user)}>Make admin</Button>}<Button variant="outline" size="sm" onClick={async () => setActivity({ user, events: await serverApi.userActivity(user.id) })}>Activity</Button><Button variant="outline" size="sm" onClick={() => setResetTarget(user)}>Reset password</Button>{user.status === 'disabled' ? <Button variant="outline" size="sm" disabled={user.isPrimaryAdmin} onClick={() => setDisabled(user, false)}>Re-enable</Button> : <Button variant="outline" size="sm" disabled={user.id === currentUser.id || user.isPrimaryAdmin} onClick={() => setDisabled(user, true)}>Disable</Button>}<Button variant="outline" size="sm" onClick={async () => { await serverApi.revokeSessions(user.id); await load(); }}>Revoke sessions</Button><Button variant="destructive" size="sm" disabled={user.id === currentUser.id || user.isPrimaryAdmin} onClick={() => setConfirmDelete(user)}>Delete account</Button></div>)}{visibleUsers.length === 0 && <p className="subtle">No users match this search.</p>}</div>
       </Panel>
       <Panel title={`${invitations.length} invitations`} icon={<KeyRound size={17} />}><div className="audit-list">{invitations.map((invitation) => <div className="audit-row" key={invitation.id}><div className="grow"><strong>{invitation.displayName}</strong><small>{invitation.username} · expires {new Date(invitation.expiresAt).toLocaleString()}</small></div><span className="request-chip">{invitation.acceptedAt ? 'accepted' : invitation.revokedAt ? 'revoked' : new Date(invitation.expiresAt) < new Date() ? 'expired' : 'pending'}</span></div>)}</div></Panel>
       {activity && (
@@ -954,6 +970,21 @@ function UsersPage({ currentUser }: { currentUser: ServerUser }) {
           onSaved={() => { setEditTarget(null); void load(); }}
         />
       )}
+      {roleTarget && (
+        <ConfirmDialog
+          title={roleTarget.role === 'admin' ? `Demote ${roleTarget.username} to member?` : `Promote ${roleTarget.username} to administrator?`}
+          description={roleTarget.role === 'admin'
+            ? 'They lose access to every server administration capability and can only use Collab as a member.'
+            : 'They gain full server administration access, including users, vaults, permissions, backups, and settings.'}
+          confirmLabel={roleTarget.role === 'admin' ? 'Make member' : 'Make administrator'}
+          onCancel={() => setRoleTarget(null)}
+          onConfirm={() => {
+            const user = roleTarget;
+            setRoleTarget(null);
+            void setRole(user, user.role === 'admin' ? 'member' : 'admin');
+          }}
+        />
+      )}
     </>
   );
 }
@@ -963,6 +994,7 @@ function VaultsPage() {
   const [selectedVaultId, setSelectedVaultId] = useState<string | null>(null);
   const [showCreate, setShowCreate] = useState(false);
   const [forceDelete, setForceDelete] = useState<HostedVaultSummary | null>(null);
+  const [search, setSearch] = useState('');
   const [error, setError] = useState('');
   const load = useCallback(() => serverApi.vaults().then((data) => { setVaults(data); setError(''); }).catch((reason) => setError(String(reason))), []);
   useEffect(() => void load(), [load]);
@@ -982,6 +1014,10 @@ function VaultsPage() {
   if (selectedVaultId) {
     return <VaultDetailPage vaultId={selectedVaultId} onBack={() => { setSelectedVaultId(null); void load(); }} />;
   }
+  const query = search.trim().toLowerCase();
+  const visibleVaults = query
+    ? vaults.filter((vault) => vault.name.toLowerCase().includes(query) || vault.ownerDisplayName.toLowerCase().includes(query))
+    : vaults;
   return (
     <>
       <PageHeader
@@ -1000,12 +1036,25 @@ function VaultsPage() {
           <p className="subtle">You become the vault owner and can add members from the vault detail view.</p>
         </Panel>
       )}
+      {vaults.length > 0 && (
+        <StorageBreakdown
+          title="Storage by vault"
+          icon={<Database size={17} />}
+          unitLabel="vaults"
+          emptyLabel="No vault is using storage yet."
+          segments={vaults.map((vault) => ({ label: vault.name, bytes: vault.storageBytes }))}
+        />
+      )}
       {vaults.length === 0 ? (
-        <div className="empty-state"><Boxes size={34} /><h2>No hosted vaults yet</h2><p>Create a vault here or through the Phase 3 API and it will appear in this inventory.</p></div>
+        <div className="empty-state"><Boxes size={34} /><h2>No hosted vaults yet</h2><p>Create a vault here or from a connected Collab client and it will appear in this inventory.</p></div>
       ) : (
         <Panel title={`${vaults.length} hosted vaults`} icon={<Boxes size={17} />}>
+          <label className="list-search">
+            <Search size={15} />
+            <Input type="search" value={search} placeholder="Search vaults by name or owner" aria-label="Search vaults" onChange={(event) => setSearch(event.target.value)} />
+          </label>
           <div className="audit-list">
-            {vaults.map((vault) => (
+            {visibleVaults.map((vault) => (
               <div className="audit-row" key={vault.id}>
                 <div className="grow"><strong>{vault.name}</strong><small>{vault.ownerDisplayName} · {vault.members} members · {formatBytes(vault.storageBytes)}</small></div>
                 <span className={`status ${vault.status === 'active' ? 'active' : 'disabled'}`}>{vault.status.replace('_', ' ')}</span>
@@ -1015,6 +1064,7 @@ function VaultsPage() {
                 )}
               </div>
             ))}
+            {visibleVaults.length === 0 && <p className="subtle">No vaults match this search.</p>}
           </div>
         </Panel>
       )}
@@ -1207,6 +1257,17 @@ function VaultDetailPage({ vaultId, onBack }: { vaultId: string; onBack: () => v
     });
   }
 
+  // Move an active file or folder to the vault trash (recoverable from the Trash
+  // section below).
+  async function trashEntry(file: HostedFileEntry) {
+    await serverApi.moveFile(vaultId, {
+      clientOperationId: crypto.randomUUID(),
+      baseManifestSequence: manifestSequence,
+      operationType: 'trash',
+      targetFileId: file.id,
+    });
+  }
+
   function handleDropOnTarget(targetParentId: string | null) {
     const fileId = draggingFileId;
     setDraggingFileId(null);
@@ -1215,6 +1276,24 @@ function VaultDetailPage({ vaultId, onBack }: { vaultId: string; onBack: () => v
   }
 
   const filesById = useMemo(() => new Map(files.map((file) => [file.id, file])), [files]);
+  // Aggregate each folder's size from its active descendant files by walking the
+  // parent chain of every active file once.
+  const folderSizes = useMemo(() => {
+    const totals = new Map<string, number>();
+    for (const file of files) {
+      if (file.state !== 'active' || file.kind === 'folder') continue;
+      const bytes = file.currentRevision?.sizeBytes ?? 0;
+      if (!bytes) continue;
+      let parentId = file.parentId ?? null;
+      const guard = new Set<string>();
+      while (parentId && !guard.has(parentId)) {
+        guard.add(parentId);
+        totals.set(parentId, (totals.get(parentId) ?? 0) + bytes);
+        parentId = filesById.get(parentId)?.parentId ?? null;
+      }
+    }
+    return totals;
+  }, [files, filesById]);
   const currentFolder = currentFolderId ? filesById.get(currentFolderId) : null;
   const breadcrumbs = useMemo(() => {
     const folders: HostedFileEntry[] = [];
@@ -1227,6 +1306,12 @@ function VaultDetailPage({ vaultId, onBack }: { vaultId: string; onBack: () => v
   }, [currentFolder, filesById]);
   const normalizedSearch = fileSearch.trim().toLocaleLowerCase();
   const activeFiles = useMemo(() => files.filter((file) => file.state === 'active'), [files]);
+  const largestFiles = useMemo(
+    () => activeFiles
+      .filter((file) => file.kind !== 'folder' && (file.currentRevision?.sizeBytes ?? 0) > 0)
+      .map((file) => ({ label: file.relativePath, bytes: file.currentRevision?.sizeBytes ?? 0 })),
+    [activeFiles],
+  );
   const visibleFiles = useMemo(() => {
     const matching = normalizedSearch
       ? activeFiles.filter((file) => file.relativePath.toLocaleLowerCase().includes(normalizedSearch))
@@ -1294,22 +1379,28 @@ function VaultDetailPage({ vaultId, onBack }: { vaultId: string; onBack: () => v
           <Metric icon={<Users />} label="Members" value={detail.members} detail="Persisted vault memberships" />
           <Metric icon={<Activity />} label="Manifest sequence" value={detail.manifestSequence} detail={`Updated ${new Date(detail.updatedAt).toLocaleString()}`} />
         </div>
-        <Panel title="Vault settings" icon={<Settings size={17} />}>
-          <div className="settings-row">
-            <div>
-              <strong>Require offline copy</strong>
-              <p className="subtle">Ask native clients to prepare this vault for offline use whenever they open it.</p>
+        <div className="detail-columns">
+          <Panel title="Vault settings" icon={<Settings size={17} />}>
+            <div className="settings-row">
+              <div>
+                <strong>Require offline copy</strong>
+                <p className="subtle">Ask native clients to prepare this vault for offline use whenever they open it.</p>
+              </div>
+              <Button
+                size="sm"
+                variant={detail.requireOfflineCopy ? 'default' : 'outline'}
+                disabled={pendingDelete}
+                onClick={() => run(() => serverApi.updateVault(vaultId, { requireOfflineCopy: !detail.requireOfflineCopy }))}
+              >
+                {detail.requireOfflineCopy ? 'Offline copy required' : 'Require offline copy'}
+              </Button>
             </div>
-            <Button
-              size="sm"
-              variant={detail.requireOfflineCopy ? 'default' : 'outline'}
-              disabled={pendingDelete}
-              onClick={() => run(() => serverApi.updateVault(vaultId, { requireOfflineCopy: !detail.requireOfflineCopy }))}
-            >
-              {detail.requireOfflineCopy ? 'Offline copy required' : 'Require offline copy'}
-            </Button>
-          </div>
-        </Panel>
+          </Panel>
+          <Panel title="Vault files" icon={<Folder size={17} />}>
+            <p className="subtle">{detail.activeFiles} active {detail.activeFiles === 1 ? 'file' : 'files'} · {detail.trashedFiles} in trash. Open the browser to navigate folders, move, download, delete, and manage trashed items.</p>
+            <div className="panel-actions"><Button size="sm" onClick={() => setFilesOpen(true)}><FolderOpen size={16} />Browse files</Button></div>
+          </Panel>
+        </div>
         <Panel title="Storage and transfer" icon={<Database size={17} />}>
           {storage ? (
             <div className="storage-grid">
@@ -1340,10 +1431,13 @@ function VaultDetailPage({ vaultId, onBack }: { vaultId: string; onBack: () => v
           </div>
           <p className="subtle">Import requires an empty active vault. Server administrators can transfer content across every hosted vault.</p>
         </Panel>
-        <Panel title="Vault files" icon={<Folder size={17} />}>
-          <p className="subtle">{detail.activeFiles} active {detail.activeFiles === 1 ? 'file' : 'files'} · {detail.trashedFiles} in trash. Open the browser to navigate folders, move, download, and manage trashed items.</p>
-          <div className="panel-actions"><Button size="sm" onClick={() => setFilesOpen(true)}><FolderOpen size={16} />Browse files</Button></div>
-        </Panel>
+        <StorageBreakdown
+          title="Largest files"
+          icon={<Database size={17} />}
+          unitLabel="files"
+          emptyLabel="No file content to chart yet."
+          segments={largestFiles}
+        />
         {filesOpen && (
           <DialogShell
             title="Vault files"
@@ -1402,6 +1496,20 @@ function VaultDetailPage({ vaultId, onBack }: { vaultId: string; onBack: () => v
             <div className="file-row file-header">
               <span>{normalizedSearch ? 'Path' : 'Name'}</span><span>Size</span><span>Modified</span><span>State</span><span>Actions</span>
             </div>
+            {!normalizedSearch && currentFolder && (
+              <div
+                className={['file-row', 'file-row-up', dropTargetId === (currentFolder.parentId ?? '__root__') && draggingFileId ? 'drop-target' : ''].filter(Boolean).join(' ')}
+                onDragOver={(event) => { if (draggingFileId) { event.preventDefault(); setDropTargetId(currentFolder.parentId ?? '__root__'); } }}
+                onDragLeave={() => setDropTargetId((current) => (current === (currentFolder.parentId ?? '__root__') ? null : current))}
+                onDrop={(event) => { event.preventDefault(); handleDropOnTarget(currentFolder.parentId ?? null); }}
+              >
+                <div className="file-name">
+                  <FolderOpen size={16} />
+                  <span><button type="button" className="file-open-button" onClick={() => openFolder(currentFolder.parentId ?? null)}>.. (up one level)</button></span>
+                </div>
+                <span>—</span><span>—</span><span /><span />
+              </div>
+            )}
             {visibleFiles.map((file) => {
               const draggable = file.state === 'active' && !normalizedSearch;
               const isFolderDropTarget = file.kind === 'folder' && dropTargetId === file.id && draggingFileId !== null && draggingFileId !== file.id;
@@ -1427,7 +1535,7 @@ function VaultDetailPage({ vaultId, onBack }: { vaultId: string; onBack: () => v
                       <small>{file.kind}{file.documentType ? ` · ${file.documentType}` : ''}</small>
                     </span>
                   </div>
-                  <span>{file.currentRevision ? formatBytes(file.currentRevision.sizeBytes) : '—'}</span>
+                  <span>{file.kind === 'folder' ? (folderSizes.has(file.id) ? formatBytes(folderSizes.get(file.id) ?? 0) : '—') : file.currentRevision ? formatBytes(file.currentRevision.sizeBytes) : '—'}</span>
                   <span>{new Date(file.updatedAt).toLocaleString()}</span>
                   <Badge variant={file.state === 'active' ? 'success' : 'destructive'}>{file.state}</Badge>
                   <div className="actions">
@@ -1441,6 +1549,22 @@ function VaultDetailPage({ vaultId, onBack }: { vaultId: string; onBack: () => v
                         onRestored={() => void load()}
                       />
                     )}
+                    <Button
+                      aria-label={`Delete ${file.relativePath}`}
+                      variant="destructive"
+                      size="sm"
+                      disabled={pendingDelete || file.state !== 'active'}
+                      onClick={() => setConfirm({
+                        title: `Move ${file.name} to trash?`,
+                        description: file.kind === 'folder'
+                          ? 'The folder and its contents move to the vault trash. You can restore them from the Trash section.'
+                          : 'The file moves to the vault trash. You can restore it from the Trash section.',
+                        label: 'Move to trash',
+                        action: () => trashEntry(file),
+                      })}
+                    >
+                      <Trash2 size={15} />Delete
+                    </Button>
                   </div>
                 </div>
               );
@@ -1858,10 +1982,48 @@ function VaultActivityPanel({ activity }: { activity: HostedVaultActivityEvent[]
 
 function AuditPage() {
   const [events, setEvents] = useState<AuditEvent[]>([]);
+  const [search, setSearch] = useState('');
+  const [actionFilter, setActionFilter] = useState('all');
+  const [resultFilter, setResultFilter] = useState('all');
   const load = useCallback(() => serverApi.auditEvents().then(setEvents).catch(() => undefined), []);
   useEffect(() => void load(), [load]);
   useAutoRefresh(load);
-  return <><PageHeader eyebrow="SECURITY" title="Audit log" subtitle="Redacted authentication and administration events." /><Panel title="Recent events" icon={<ShieldCheck size={17} />}><AuditTable events={events} /></Panel></>;
+
+  const actionOptions = useMemo(() => {
+    const actions = Array.from(new Set(events.map((event) => event.action))).sort();
+    return [{ value: 'all', label: 'All events' }, ...actions.map((action) => ({ value: action, label: action.replaceAll('.', ' ') }))];
+  }, [events]);
+  const resultOptions = useMemo(() => {
+    const results = Array.from(new Set(events.map((event) => event.result))).sort();
+    return [{ value: 'all', label: 'All results' }, ...results.map((result) => ({ value: result, label: result }))];
+  }, [events]);
+  const query = search.trim().toLowerCase();
+  const visibleEvents = useMemo(() => events.filter((event) => {
+    if (actionFilter !== 'all' && event.action !== actionFilter) return false;
+    if (resultFilter !== 'all' && event.result !== resultFilter) return false;
+    if (!query) return true;
+    return event.action.toLowerCase().includes(query)
+      || (event.actorDisplayName?.toLowerCase().includes(query) ?? false)
+      || (event.targetType?.toLowerCase().includes(query) ?? false)
+      || (event.targetId?.toLowerCase().includes(query) ?? false);
+  }), [events, actionFilter, resultFilter, query]);
+
+  return (
+    <>
+      <PageHeader eyebrow="SECURITY" title="Audit log" subtitle="Redacted authentication and administration events." />
+      <Panel title={`${visibleEvents.length} of ${events.length} events`} icon={<ShieldCheck size={17} />}>
+        <div className="audit-filters">
+          <label className="list-search">
+            <Search size={15} />
+            <Input type="search" value={search} placeholder="Search by action, actor, or target" aria-label="Search audit events" onChange={(event) => setSearch(event.target.value)} />
+          </label>
+          <SelectMenu label="Filter by event" value={actionFilter} options={actionOptions} onChange={setActionFilter} />
+          <SelectMenu label="Filter by result" value={resultFilter} options={resultOptions} onChange={setResultFilter} />
+        </div>
+        <AuditTable events={visibleEvents} />
+      </Panel>
+    </>
+  );
 }
 
 function AuditTable({ events }: { events: AuditEvent[] }) {
@@ -2863,6 +3025,102 @@ function AccountDialog({
   );
 }
 
+// Distinct, theme-friendly palette for storage chart segments. The final entry
+// is reserved for an aggregated "Other" slice.
+const STORAGE_CHART_COLORS = ['#a78bfa', '#60a5fa', '#34d399', '#fb7185', '#fb923c', '#22d3ee', '#fbbf24', '#f472b6'];
+const STORAGE_CHART_OTHER_COLOR = '#94a3b8';
+
+interface StorageSegment { label: string; bytes: number }
+
+/**
+ * Renders a proportional storage breakdown as an SVG donut ("cake") plus a
+ * legend with per-entry bars. Caps the number of slices, aggregating the
+ * remainder into a muted "Other" segment so a long inventory stays readable.
+ */
+function StorageBreakdown({
+  title,
+  icon,
+  emptyLabel,
+  unitLabel,
+  segments,
+  maxSlices = 8,
+}: {
+  title: string;
+  icon: React.ReactNode;
+  emptyLabel: string;
+  unitLabel: string;
+  segments: StorageSegment[];
+  maxSlices?: number;
+}) {
+  const sorted = [...segments].filter((segment) => segment.bytes > 0).sort((left, right) => right.bytes - left.bytes);
+  const total = sorted.reduce((sum, segment) => sum + segment.bytes, 0);
+  const sliced = sorted.slice(0, maxSlices);
+  const remainder = sorted.slice(maxSlices);
+  const rows = sliced.map((segment, index) => ({ ...segment, color: STORAGE_CHART_COLORS[index % STORAGE_CHART_COLORS.length] }));
+  if (remainder.length > 0) {
+    rows.push({ label: `Other (${remainder.length})`, bytes: remainder.reduce((sum, segment) => sum + segment.bytes, 0), color: STORAGE_CHART_OTHER_COLOR });
+  }
+
+  if (total === 0) {
+    return <Panel title={title} icon={icon}><p className="subtle">{emptyLabel}</p></Panel>;
+  }
+
+  const radius = 56;
+  const stroke = 22;
+  const circumference = 2 * Math.PI * radius;
+  let offset = 0;
+  return (
+    <Panel title={title} icon={icon}>
+      <div className="storage-chart">
+        <svg className="storage-donut" viewBox="0 0 140 140" role="img" aria-label={`${title}: ${formatBytes(total)} across ${rows.length} ${unitLabel}`}>
+          <circle className="storage-donut-track" cx="70" cy="70" r={radius} strokeWidth={stroke} fill="none" transform="rotate(-90 70 70)" />
+          {rows.map((row) => {
+            const fraction = row.bytes / total;
+            const dash = fraction * circumference;
+            const circle = (
+              <circle
+                key={row.label}
+                cx="70"
+                cy="70"
+                r={radius}
+                fill="none"
+                stroke={row.color}
+                strokeWidth={stroke}
+                strokeDasharray={`${dash} ${circumference - dash}`}
+                strokeDashoffset={-offset}
+                transform="rotate(-90 70 70)"
+              >
+                <title>{row.label}: {formatBytes(row.bytes)} ({(fraction * 100).toFixed(1)}%)</title>
+              </circle>
+            );
+            offset += dash;
+            return circle;
+          })}
+          <text className="storage-donut-total" x="70" y="66" textAnchor="middle">{formatBytes(total)}</text>
+          <text className="storage-donut-caption" x="70" y="82" textAnchor="middle">{rows.length} {unitLabel}</text>
+        </svg>
+        <ul className="storage-legend">
+          {rows.map((row) => {
+            const fraction = row.bytes / total;
+            return (
+              <li key={row.label}>
+                <span className="storage-legend-dot" style={{ background: row.color }} />
+                <div className="storage-legend-main">
+                  <div className="storage-legend-head">
+                    <span className="storage-legend-label" title={row.label}>{row.label}</span>
+                    <span className="storage-legend-size">{formatBytes(row.bytes)} · {(fraction * 100).toFixed(1)}%</span>
+                  </div>
+                  <div className="storage-legend-bar"><span style={{ width: `${Math.max(fraction * 100, 1.5)}%`, background: row.color }} /></div>
+                </div>
+              </li>
+            );
+          })}
+        </ul>
+      </div>
+    </Panel>
+  );
+}
+
 function PageHeader({ eyebrow, title, subtitle, action }: { eyebrow: string; title: string; subtitle: string; action?: React.ReactNode }) {
   return <header className="page-header"><div><p className="eyebrow">{eyebrow}</p><h1>{title}</h1><p className="subtle">{subtitle}</p></div>{action}</header>;
 }
@@ -2873,7 +3131,7 @@ function NavButton({ active, icon, label, onClick }: { active: boolean; icon: Re
 function IconButton({ label, children, onClick }: { label: string; children: React.ReactNode; onClick: () => void }) { return <Button variant="outline" size="icon" title={label} aria-label={label} onClick={onClick}>{children}</Button>; }
 function Loading() { return <div className="empty-state"><RefreshCw className="spin" /><p>Loading server data...</p></div>; }
 function CenteredMessage({ title }: { title: string }) { return <main className="auth-page"><Card className="auth-card"><Server size={28} /><h1>{title}</h1></Card></main>; }
-function formatBytes(value: number) { if (value < 1024) return `${value} B`; if (value < 1024 ** 2) return `${(value / 1024).toFixed(1)} KB`; return `${(value / 1024 ** 2).toFixed(1)} MB`; }
+function formatBytes(value: number) { if (value < 1024) return `${value} B`; if (value < 1024 ** 2) return `${(value / 1024).toFixed(1)} KB`; if (value < 1024 ** 3) return `${(value / 1024 ** 2).toFixed(1)} MB`; if (value < 1024 ** 4) return `${(value / 1024 ** 3).toFixed(1)} GB`; return `${(value / 1024 ** 4).toFixed(1)} TB`; }
 // Renders a byte count as the largest binary unit it divides evenly into, so the
 // editable settings round-trip cleanly (e.g. 268435456 -> "256 MiB", 0 -> "0").
 function formatByteSize(value: number) {
