@@ -1,5 +1,9 @@
 # collab
 
+[![Build](https://github.com/Azazel55605/collab/actions/workflows/build.yml/badge.svg)](https://github.com/Azazel55605/collab/actions/workflows/build.yml)
+[![Server Container Build](https://github.com/Azazel55605/collab/actions/workflows/server-container-build.yml/badge.svg)](https://github.com/Azazel55605/collab/actions/workflows/server-container-build.yml)
+[![Security Scan](https://github.com/Azazel55605/collab/actions/workflows/security-scan.yml/badge.svg)](https://github.com/Azazel55605/collab/actions/workflows/security-scan.yml)
+
 Local-first vault-based knowledge work for Markdown notes, canvases, Kanban boards,
 PDFs, images, and collaboration.
 
