@@ -24,6 +24,7 @@ import type { PdfSidecarState } from '../types/pdf';
 import type { UpdateInfo } from '../store/updateStore';
 import type {
   CacheCleanupReport,
+  CachedContentStatus,
   PendingOperation,
   PendingOpStatus,
   ReplicaIntegrityReport,
@@ -382,6 +383,13 @@ export const tauriCommands = {
     invoke<void>('replica_cache_asset', { serverUrl, vaultId, fileId, base64Content }),
   replicaReadCachedAsset: (serverUrl: string, vaultId: string, fileId: string) =>
     invoke<string | null>('replica_read_cached_asset', { serverUrl, vaultId, fileId }),
+  replicaCachedContentStatus: (
+    serverUrl: string,
+    vaultId: string,
+    fileId: string,
+    kind: 'document' | 'asset',
+    expectedSha256?: string | null,
+  ) => invoke<CachedContentStatus>('replica_cached_content_status', { serverUrl, vaultId, fileId, kind, expectedSha256 }),
   replicaCacheCrdtState: (serverUrl: string, vaultId: string, fileId: string, base64Content: string) =>
     invoke<void>('replica_cache_crdt_state', { serverUrl, vaultId, fileId, base64Content }),
   replicaReadCrdtState: (serverUrl: string, vaultId: string, fileId: string) =>

@@ -76,6 +76,7 @@ beforeEach(() => {
   vi.mocked(tauriCommands.replicaReadSyncState).mockResolvedValue({
     manifestSequence: 3,
     lastSyncedAt: '2026-06-18T00:00:00Z',
+    offlineAvailableAt: null,
     status: 'idle',
   });
   vi.mocked(tauriCommands.replicaListPendingOperations).mockResolvedValue([]);
@@ -106,6 +107,7 @@ describe('syncStore', () => {
     expect(state.pending.map((op) => op.id)).toEqual(['a', 'b']);
     expect(state.failed.map((r) => r.operation.id)).toEqual(['c']);
     expect(state.lastSyncedAt).toBe('2026-06-18T00:00:00Z');
+    expect(state.offlineAvailableAt).toBeNull();
   });
 
   it('syncNow runs a manifest delta sync then refreshes', async () => {

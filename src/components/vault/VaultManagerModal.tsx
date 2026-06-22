@@ -680,6 +680,7 @@ function OfflineSyncTab() {
   const {
     status,
     lastSyncedAt,
+    offlineAvailableAt,
     pending,
     failed,
     access,
@@ -707,6 +708,7 @@ function OfflineSyncTab() {
 
   const rollup = syncRollup({ isSyncing, status, pending, failed });
   const lastSyncLabel = lastSyncedAt ? new Date(lastSyncedAt).toLocaleString() : 'Not synced yet';
+  const offlineReadyLabel = offlineAvailableAt ? new Date(offlineAvailableAt).toLocaleString() : null;
   const accessLost = access !== 'ok';
   const progressLabel = progress && progress.total > 0
     ? `${progress.completed} / ${progress.total} files cached`
@@ -722,6 +724,7 @@ function OfflineSyncTab() {
       });
       toast.success(
         `Offline copy ready: ${report.documentsCached} documents and ${report.assetsCached} assets cached`
+        + (report.alreadyCached ? ` (${report.alreadyCached} already cached)` : '')
         + (report.skipped ? ` (${report.skipped} skipped)` : ''),
       );
     } catch (error) {
@@ -774,6 +777,9 @@ function OfflineSyncTab() {
           <p className="text-[11px] font-semibold uppercase tracking-widest text-muted-foreground">Status</p>
           <p className="mt-2 text-sm font-medium capitalize text-foreground">{accessLost ? access : rollup}</p>
           <p className="mt-1 text-xs text-muted-foreground">Last sync: {lastSyncLabel}</p>
+          {offlineReadyLabel && (
+            <p className="mt-1 text-xs text-primary">Offline copy ready: {offlineReadyLabel}</p>
+          )}
         </div>
         <div className="rounded-lg border border-border/50 bg-card/60 p-3">
           <p className="text-[11px] font-semibold uppercase tracking-widest text-muted-foreground">Local changes</p>
@@ -795,11 +801,12 @@ function OfflineSyncTab() {
         <Button
           size="sm"
           className="gap-1.5"
-          disabled={isSyncing || accessLost}
+          disabled={isSyncing || accessLost || !!offlineAvailableAt}
+          title={offlineAvailableAt ? 'This vault already has an offline copy.' : undefined}
           onClick={() => void handleMakeOffline()}
         >
           <HardDriveDownload size={13} />
-          {progressLabel ?? 'Make available offline'}
+          {progressLabel ?? (offlineAvailableAt ? 'Offline copy ready' : 'Make available offline')}
         </Button>
         <Button
           size="sm"

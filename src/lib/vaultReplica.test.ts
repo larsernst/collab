@@ -24,6 +24,7 @@ vi.mock('./tauri', () => ({
     replicaList: vi.fn().mockResolvedValue([]),
     replicaReadManifest: vi.fn(),
     replicaReadSyncState: vi.fn(),
+    replicaWriteSyncState: vi.fn().mockResolvedValue(undefined),
     replicaEnqueueOperation: vi.fn().mockResolvedValue(undefined),
     replicaListPendingOperations: vi.fn().mockResolvedValue([]),
     replicaUpdateOperationStatus: vi.fn().mockResolvedValue(undefined),
@@ -32,6 +33,7 @@ vi.mock('./tauri', () => ({
     hostedVaultAssetDataUrl: vi.fn(),
     replicaCacheDocument: vi.fn().mockResolvedValue(undefined),
     replicaCacheAsset: vi.fn().mockResolvedValue(undefined),
+    replicaCachedContentStatus: vi.fn(),
     replicaReadCachedAsset: vi.fn(),
     replicaCleanup: vi.fn().mockResolvedValue({ removedFiles: 2, freedBytes: 10, remainingBytes: 5 }),
   },
@@ -47,10 +49,23 @@ const hostedVault: HostedVaultMeta = {
   path: 'hosted://hosted-vault',
   lastOpened: 1,
   isEncrypted: false,
+  capabilities: ['vault.read', 'vault.offlineCopy'],
 };
 
 beforeEach(() => {
   vi.clearAllMocks();
+  vi.mocked(tauriCommands.replicaReadSyncState).mockResolvedValue({
+    manifestSequence: 4,
+    lastSyncedAt: '2026-06-17T00:00:00Z',
+    offlineAvailableAt: null,
+    status: 'idle',
+  });
+  vi.mocked(tauriCommands.replicaCachedContentStatus).mockResolvedValue({
+    present: false,
+    matchesExpectedHash: false,
+    actualSha256: null,
+    sizeBytes: null,
+  });
 });
 
 describe('vaultReplica', () => {
@@ -59,6 +74,7 @@ describe('vaultReplica', () => {
     expect(state.manifestSequence).toBe(12);
     expect(state.status).toBe('idle');
     expect(state.lastSyncedAt).not.toBeNull();
+    expect(state.offlineAvailableAt).toBeNull();
   });
 
   it('runs a bounded cache cleanup pass with the default budget', async () => {
@@ -112,7 +128,7 @@ describe('vaultReplica', () => {
       manifest,
       expect.objectContaining({ manifestSequence: 9, status: 'idle' }),
       'editor',
-      [],
+      ['vault.read', 'vault.offlineCopy'],
     );
   });
 
@@ -154,8 +170,74 @@ describe('vaultReplica', () => {
       'asset-1',
       'aW1n',
     );
-    expect(report).toEqual({ documentsCached: 1, assetsCached: 1, skipped: 0 });
+    expect(report).toEqual({ documentsCached: 1, assetsCached: 1, skipped: 0, alreadyCached: 0 });
     expect(progress).toHaveBeenLastCalledWith(2, 2);
+    expect(tauriCommands.replicaWriteSyncState).toHaveBeenCalledWith(
+      hostedVault.serverUrl,
+      hostedVault.hostedVaultId,
+      expect.objectContaining({ manifestSequence: 9, offlineAvailableAt: expect.any(String) }),
+    );
+  });
+
+  it('resumes offline availability by skipping valid cached file bodies', async () => {
+    const manifest = {
+      vaultId: 'hosted-vault',
+      sequence: 9,
+      files: [
+        {
+          id: 'doc-ready',
+          kind: 'document',
+          state: 'active',
+          currentRevision: { contentHash: 'ready-hash' },
+        },
+        {
+          id: 'doc-missing',
+          kind: 'document',
+          state: 'active',
+          currentRevision: { contentHash: 'missing-hash' },
+        },
+      ],
+    };
+    vi.mocked(tauriCommands.hostedVaultRequest)
+      .mockResolvedValueOnce(manifest)
+      .mockResolvedValueOnce({ content: '# Missing' });
+    vi.mocked(tauriCommands.replicaReadManifest).mockResolvedValue(manifest);
+    vi.mocked(tauriCommands.replicaCachedContentStatus)
+      .mockResolvedValueOnce({
+        present: true,
+        matchesExpectedHash: true,
+        actualSha256: 'ready-hash',
+        sizeBytes: 10,
+      })
+      .mockResolvedValueOnce({
+        present: false,
+        matchesExpectedHash: false,
+        actualSha256: null,
+        sizeBytes: null,
+      });
+
+    const report = await makeHostedVaultAvailableOffline(hostedVault);
+
+    expect(tauriCommands.replicaCachedContentStatus).toHaveBeenCalledWith(
+      hostedVault.serverUrl,
+      hostedVault.hostedVaultId,
+      'doc-ready',
+      'document',
+      'ready-hash',
+    );
+    expect(tauriCommands.hostedVaultRequest).not.toHaveBeenCalledWith(
+      hostedVault.serverUrl,
+      'GET',
+      '/api/v1/vaults/hosted-vault/files/doc-ready',
+    );
+    expect(tauriCommands.replicaCacheDocument).toHaveBeenCalledTimes(1);
+    expect(tauriCommands.replicaCacheDocument).toHaveBeenCalledWith(
+      hostedVault.serverUrl,
+      hostedVault.hostedVaultId,
+      'doc-missing',
+      '# Missing',
+    );
+    expect(report).toEqual({ documentsCached: 1, assetsCached: 0, skipped: 0, alreadyCached: 1 });
   });
 
   it('merges manifest delta entries into the cached replica manifest', async () => {
@@ -199,7 +281,7 @@ describe('vaultReplica', () => {
       manifest,
       expect.objectContaining({ manifestSequence: 10, status: 'idle' }),
       'editor',
-      [],
+      ['vault.read', 'vault.offlineCopy'],
     );
   });
 
@@ -370,7 +452,7 @@ describe('vaultReplica', () => {
       seededManifest,
       expect.objectContaining({ manifestSequence: 12, status: 'idle' }),
       'editor',
-      [],
+      ['vault.read', 'vault.offlineCopy'],
     );
   });
 

@@ -225,6 +225,7 @@ pub fn run() {
             commands::replica::replica_read_cached_document,
             commands::replica::replica_cache_asset,
             commands::replica::replica_read_cached_asset,
+            commands::replica::replica_cached_content_status,
             commands::replica::replica_cache_crdt_state,
             commands::replica::replica_read_crdt_state,
             commands::replica::replica_clear_crdt_state,

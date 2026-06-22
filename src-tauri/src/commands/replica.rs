@@ -5,15 +5,68 @@
 
 use super::app_config_dir;
 use crate::replica::{
-    CacheCleanupReport, PendingOpStatus, PendingOperation, ReplicaIntegrityReport, ReplicaStore,
-    ReplicaSummary, ReplicaSyncState, Tombstone,
+    server_key, CacheCleanupReport, CachedContentStatus, PendingOpStatus, PendingOperation,
+    ReplicaIntegrityReport, ReplicaStore, ReplicaSummary, ReplicaSyncState, Tombstone,
 };
+use base64::Engine as _;
 use collab_protocol::HostedVaultManifest;
+use rand::RngCore;
+
+const REPLICA_KEYRING_SERVICE: &str = "collab-replica";
 
 fn existing(server_url: &str, vault_id: &str) -> Result<ReplicaStore, String> {
     let config_root = app_config_dir()?;
-    ReplicaStore::open_existing(&config_root, server_url, vault_id)
-        .ok_or_else(|| format!("No local replica for vault {vault_id}"))
+    let store = ReplicaStore::open_existing(&config_root, server_url, vault_id)
+        .ok_or_else(|| format!("No local replica for vault {vault_id}"))?;
+    let key = replica_key(server_url, vault_id, true)?
+        .ok_or_else(|| "Could not create an offline replica key.".to_string())?;
+    Ok(store.with_encryption_key(key))
+}
+
+fn existing_read(server_url: &str, vault_id: &str) -> Result<Option<ReplicaStore>, String> {
+    let Some(store) = ReplicaStore::open_existing(&app_config_dir()?, server_url, vault_id) else {
+        return Ok(None);
+    };
+    Ok(match replica_key(server_url, vault_id, false)? {
+        Some(key) => Some(store.with_encryption_key(key)),
+        None => Some(store),
+    })
+}
+
+fn replica_keyring_entry(server_url: &str, vault_id: &str) -> Result<keyring::Entry, String> {
+    keyring::Entry::new(
+        REPLICA_KEYRING_SERVICE,
+        &format!("{}:{vault_id}", server_key(server_url)),
+    )
+    .map_err(|_| "The operating system credential store is unavailable.".into())
+}
+
+fn replica_key(server_url: &str, vault_id: &str, create: bool) -> Result<Option<[u8; 32]>, String> {
+    let entry = match replica_keyring_entry(server_url, vault_id) {
+        Ok(entry) => entry,
+        Err(_) if !create => return Ok(None),
+        Err(error) => return Err(error),
+    };
+    let encoded = match entry.get_password() {
+        Ok(encoded) => encoded,
+        Err(_) if create => {
+            let mut key = [0u8; 32];
+            rand::thread_rng().fill_bytes(&mut key);
+            let encoded = base64::engine::general_purpose::STANDARD.encode(key);
+            entry
+                .set_password(&encoded)
+                .map_err(|_| "Could not save the offline replica key in the operating system credential store.".to_string())?;
+            encoded
+        }
+        Err(_) => return Ok(None),
+    };
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(encoded.as_bytes())
+        .map_err(|_| "The saved offline replica key is invalid.".to_string())?;
+    let key: [u8; 32] = bytes
+        .try_into()
+        .map_err(|_| "The saved offline replica key has an invalid length.".to_string())?;
+    Ok(Some(key))
 }
 
 #[tauri::command]
@@ -28,6 +81,8 @@ pub fn replica_seed(
 ) -> Result<(), String> {
     let config_root = app_config_dir()?;
     let capabilities = capabilities.unwrap_or_default();
+    let key = replica_key(&server_url, &vault_id, true)?
+        .ok_or_else(|| "Could not create an offline replica key.".to_string())?;
     let store = ReplicaStore::open_or_create(
         &config_root,
         &server_url,
@@ -35,7 +90,8 @@ pub fn replica_seed(
         &vault_name,
         role.as_deref(),
         &capabilities,
-    )?;
+    )?
+    .with_encryption_key(key);
     store.write_manifest(&manifest)?;
     store.write_sync_state(&sync_state)
 }
@@ -50,7 +106,7 @@ pub fn replica_read_manifest(
     server_url: String,
     vault_id: String,
 ) -> Result<Option<HostedVaultManifest>, String> {
-    match ReplicaStore::open_existing(&app_config_dir()?, &server_url, &vault_id) {
+    match existing_read(&server_url, &vault_id)? {
         Some(store) => store.read_manifest(),
         None => Ok(None),
     }
@@ -61,7 +117,7 @@ pub fn replica_read_sync_state(
     server_url: String,
     vault_id: String,
 ) -> Result<ReplicaSyncState, String> {
-    match ReplicaStore::open_existing(&app_config_dir()?, &server_url, &vault_id) {
+    match existing_read(&server_url, &vault_id)? {
         Some(store) => store.read_sync_state(),
         None => Ok(ReplicaSyncState::default()),
     }
@@ -90,7 +146,7 @@ pub fn replica_list_pending_operations(
     server_url: String,
     vault_id: String,
 ) -> Result<Vec<PendingOperation>, String> {
-    match ReplicaStore::open_existing(&app_config_dir()?, &server_url, &vault_id) {
+    match existing_read(&server_url, &vault_id)? {
         Some(store) => store.list_pending_operations(),
         None => Ok(Vec::new()),
     }
@@ -144,7 +200,7 @@ pub fn replica_list_tombstones(
     server_url: String,
     vault_id: String,
 ) -> Result<Vec<Tombstone>, String> {
-    match ReplicaStore::open_existing(&app_config_dir()?, &server_url, &vault_id) {
+    match existing_read(&server_url, &vault_id)? {
         Some(store) => store.list_tombstones(),
         None => Ok(Vec::new()),
     }
@@ -175,7 +231,7 @@ pub fn replica_read_cached_document(
     vault_id: String,
     file_id: String,
 ) -> Result<Option<String>, String> {
-    match ReplicaStore::open_existing(&app_config_dir()?, &server_url, &vault_id) {
+    match existing_read(&server_url, &vault_id)? {
         Some(store) => store.read_cached_document(&file_id),
         None => Ok(None),
     }
@@ -201,12 +257,30 @@ pub fn replica_read_cached_asset(
     vault_id: String,
     file_id: String,
 ) -> Result<Option<String>, String> {
-    use base64::Engine;
-    let bytes = match ReplicaStore::open_existing(&app_config_dir()?, &server_url, &vault_id) {
+    let bytes = match existing_read(&server_url, &vault_id)? {
         Some(store) => store.read_cached_asset(&file_id)?,
         None => None,
     };
     Ok(bytes.map(|bytes| base64::engine::general_purpose::STANDARD.encode(bytes)))
+}
+
+#[tauri::command]
+pub fn replica_cached_content_status(
+    server_url: String,
+    vault_id: String,
+    file_id: String,
+    kind: String,
+    expected_sha256: Option<String>,
+) -> Result<CachedContentStatus, String> {
+    match existing_read(&server_url, &vault_id)? {
+        Some(store) => store.cached_content_status(&file_id, &kind, expected_sha256.as_deref()),
+        None => Ok(CachedContentStatus {
+            present: false,
+            matches_expected_hash: false,
+            actual_sha256: None,
+            size_bytes: None,
+        }),
+    }
 }
 
 #[tauri::command]
@@ -229,8 +303,7 @@ pub fn replica_read_crdt_state(
     vault_id: String,
     file_id: String,
 ) -> Result<Option<String>, String> {
-    use base64::Engine;
-    let bytes = match ReplicaStore::open_existing(&app_config_dir()?, &server_url, &vault_id) {
+    let bytes = match existing_read(&server_url, &vault_id)? {
         Some(store) => store.read_cached_crdt_state(&file_id)?,
         None => None,
     };
@@ -243,7 +316,7 @@ pub fn replica_clear_crdt_state(
     vault_id: String,
     file_id: String,
 ) -> Result<(), String> {
-    match ReplicaStore::open_existing(&app_config_dir()?, &server_url, &vault_id) {
+    match existing_read(&server_url, &vault_id)? {
         Some(store) => store.clear_cached_crdt_state(&file_id),
         None => Ok(()),
     }
@@ -254,7 +327,7 @@ pub fn replica_verify(
     server_url: String,
     vault_id: String,
 ) -> Result<ReplicaIntegrityReport, String> {
-    match ReplicaStore::open_existing(&app_config_dir()?, &server_url, &vault_id) {
+    match existing_read(&server_url, &vault_id)? {
         Some(store) => store.verify(),
         None => Ok(ReplicaIntegrityReport {
             ok: true,
@@ -268,7 +341,7 @@ pub fn replica_rebuild(
     server_url: String,
     vault_id: String,
 ) -> Result<ReplicaIntegrityReport, String> {
-    match ReplicaStore::open_existing(&app_config_dir()?, &server_url, &vault_id) {
+    match existing_read(&server_url, &vault_id)? {
         Some(store) => store.rebuild(),
         None => Ok(ReplicaIntegrityReport {
             ok: true,
@@ -283,7 +356,7 @@ pub fn replica_cleanup(
     vault_id: String,
     budget_bytes: u64,
 ) -> Result<CacheCleanupReport, String> {
-    match ReplicaStore::open_existing(&app_config_dir()?, &server_url, &vault_id) {
+    match existing_read(&server_url, &vault_id)? {
         Some(store) => store.cleanup(budget_bytes),
         None => Ok(CacheCleanupReport {
             removed_files: 0,
@@ -297,6 +370,9 @@ pub fn replica_cleanup(
 pub fn replica_delete(server_url: String, vault_id: String) -> Result<(), String> {
     if let Some(store) = ReplicaStore::open_existing(&app_config_dir()?, &server_url, &vault_id) {
         store.delete()?;
+    }
+    if let Ok(entry) = replica_keyring_entry(&server_url, &vault_id) {
+        let _ = entry.delete_credential();
     }
     Ok(())
 }

@@ -521,6 +521,26 @@ export class HostedVaultClient implements VaultClient {
     return manifest ? asHostedManifest(manifest) : this.manifest();
   }
 
+  private async shouldMaintainOfflineContentCache(): Promise<boolean> {
+    if (!vaultCan(this.vault, 'vault.offlineCopy')) return false;
+    try {
+      const syncState = await tauriCommands.replicaReadSyncState(this.vault.serverUrl, this.vault.hostedVaultId);
+      return !!syncState.offlineAvailableAt;
+    } catch {
+      return false;
+    }
+  }
+
+  private async cacheDocumentForOfflineCopy(fileId: string, content: string): Promise<void> {
+    if (!(await this.shouldMaintainOfflineContentCache())) return;
+    await tauriCommands.replicaCacheDocument(this.vault.serverUrl, this.vault.hostedVaultId, fileId, content).catch(() => {});
+  }
+
+  private async cacheAssetForOfflineCopy(fileId: string, contentBase64: string): Promise<void> {
+    if (!(await this.shouldMaintainOfflineContentCache())) return;
+    await tauriCommands.replicaCacheAsset(this.vault.serverUrl, this.vault.hostedVaultId, fileId, contentBase64).catch(() => {});
+  }
+
   private findByPath(manifest: HostedManifest, relativePath: string, state: HostedFileState = 'active') {
     const file = manifest.files.find((entry) => entry.relativePath === relativePath && entry.state === state);
     if (!file) throw new Error(`Hosted vault item not found: ${relativePath}`);
@@ -572,11 +592,10 @@ export class HostedVaultClient implements VaultClient {
       if (cached === null) throw error;
       return { file, content: cached };
     });
-    // Write through to the offline replica cache (best-effort; never blocks the
-    // read, and a missing/unseeded replica is silently ignored).
-    tauriCommands
-      .replicaCacheDocument(this.vault.serverUrl, this.vault.hostedVaultId, file.id, document.content)
-      .catch(() => {});
+    // Keep a full offline copy current after online reads. This is gated by the
+    // explicit offline-copy capability/marker so plain viewers do not build up
+    // durable local content caches merely by opening files.
+    void this.cacheDocumentForOfflineCopy(file.id, document.content);
     return {
       relativePath: document.file.relativePath,
       content: document.content,
@@ -586,7 +605,7 @@ export class HostedVaultClient implements VaultClient {
   }
 
   async resolveLiveSession(relativePath: string): Promise<LiveSessionTarget | null> {
-    const manifest = await this.manifest();
+    const manifest = await this.onlineOrCachedManifest();
     const file = this.findByPath(manifest, relativePath);
     return {
       serverUrl: this.vault.serverUrl,
@@ -629,6 +648,7 @@ export class HostedVaultClient implements VaultClient {
         content,
       };
     });
+    void this.cacheDocumentForOfflineCopy(file.id, content);
     return { version: String(document.file.currentRevision?.sequence ?? expectedSequence + 1) };
   }
 
@@ -646,6 +666,9 @@ export class HostedVaultClient implements VaultClient {
       if (!isLikelyConnectivityError(error)) throw error;
       return this.queueOfflineCreate(manifest, relativePath, payload);
     });
+    if (file.kind === 'document') {
+      void this.cacheDocumentForOfflineCopy(file.id, payload.content);
+    }
     return toNoteFile(file);
   }
 
@@ -1119,6 +1142,7 @@ export class HostedVaultClient implements VaultClient {
         targetFolder,
       });
     });
+    void this.cacheAssetForOfflineCopy(file.id, contentBase64);
     return file.relativePath;
   }
 

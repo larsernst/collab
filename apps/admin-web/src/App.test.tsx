@@ -25,6 +25,8 @@ vi.mock('./api', () => ({
     runBackup: vi.fn(),
     verifyBackup: vi.fn(),
     restoreBackup: vi.fn(),
+    exportBackup: vi.fn(),
+    importBackup: vi.fn(),
     deleteBackup: vi.fn(),
     users: vi.fn(),
     createUser: vi.fn(),
@@ -261,6 +263,11 @@ describe('admin application', () => {
   });
 
   it('manages backup artifacts from the administration UI', async () => {
+    vi.stubGlobal('URL', {
+      createObjectURL: vi.fn(() => 'blob:backup'),
+      revokeObjectURL: vi.fn(),
+    });
+    vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => undefined);
     vi.mocked(serverApi.bootstrapStatus).mockResolvedValue({ required: false });
     vi.mocked(serverApi.me).mockResolvedValue(admin);
     vi.mocked(serverApi.backups).mockResolvedValue({
@@ -288,6 +295,25 @@ describe('admin application', () => {
       artifacts: [
         { path: 'postgres.dump', expectedSha256: 'a'.repeat(64), actualSha256: 'a'.repeat(64), ok: true, error: null },
       ],
+    });
+    vi.mocked(serverApi.exportBackup).mockResolvedValue(new Blob(['backup archive'], { type: 'application/gzip' }));
+    vi.mocked(serverApi.importBackup).mockResolvedValue({
+      backupDir: '/backups',
+      backupCommandConfigured: false,
+      restoreCommandConfigured: false,
+      schedule: { enabled: true, intervalSeconds: 86_400, retentionDays: 14, mode: 'server-scheduler' },
+      exportTarget: { configured: true, path: '/backup-export', writable: true, message: 'Backups are copied to this mounted export target after creation.' },
+      settings: { scheduleEnabled: true, intervalSeconds: 86_400, retentionDays: 14, exportDir: '/backup-export', locks: unlockedBackupLocks },
+      backups: [{
+        name: 'collab-backup-20260619T111501Z',
+        createdAt: '2026-06-19T11:15:01Z',
+        sizeBytes: 4096,
+        hasPostgresDump: true,
+        hasBlobArchive: true,
+        hasManifest: true,
+        hasConfig: true,
+        hasChecksums: true,
+      }],
     });
     vi.mocked(serverApi.deleteBackup).mockResolvedValue(undefined);
     vi.mocked(serverApi.updateBackupSettings).mockResolvedValue({
@@ -329,9 +355,18 @@ describe('admin application', () => {
     await waitFor(() => expect(serverApi.verifyBackup).toHaveBeenCalledWith('collab-backup-20260618T111501Z'));
     expect(await screen.findByText('Verified')).toBeTruthy();
 
+    fireEvent.click(screen.getByRole('button', { name: 'Export' }));
+    await waitFor(() => expect(serverApi.exportBackup).toHaveBeenCalledWith('collab-backup-20260618T111501Z'));
+
+    const importInput = document.querySelector('input[type="file"][accept*=".tar.gz"]') as HTMLInputElement;
+    const archive = new window.File([new Uint8Array([31, 139])], 'collab-backup-20260619T111501Z.tar.gz', { type: 'application/gzip' });
+    fireEvent.change(importInput, { target: { files: [archive] } });
+    await waitFor(() => expect(serverApi.importBackup).toHaveBeenCalledWith('H4s='));
+    expect(await screen.findByText('collab-backup-20260619T111501Z')).toBeTruthy();
+
     fireEvent.click(screen.getByRole('button', { name: 'Delete' }));
     fireEvent.click(await screen.findByRole('button', { name: 'Delete backup' }));
-    await waitFor(() => expect(serverApi.deleteBackup).toHaveBeenCalledWith('collab-backup-20260618T111501Z'));
+    await waitFor(() => expect(serverApi.deleteBackup).toHaveBeenCalledWith('collab-backup-20260619T111501Z'));
   });
 
   it('does not render administration pages for a non-admin user', async () => {

@@ -27,6 +27,7 @@ interface SyncStoreState {
   /** Replica sync-state status from the last refresh. */
   status: SyncStatus;
   lastSyncedAt: string | null;
+  offlineAvailableAt: string | null;
   /** Queued operations not yet confirmed by the server (pending + inflight). */
   pending: PendingOperation[];
   /** Operations whose replay failed and need user recovery. */
@@ -57,6 +58,7 @@ export const useSyncStore = create<SyncStoreState>((set, get) => ({
   vaultKey: null,
   status: 'idle',
   lastSyncedAt: null,
+  offlineAvailableAt: null,
   pending: [],
   failed: [],
   access: 'ok',
@@ -74,6 +76,7 @@ export const useSyncStore = create<SyncStoreState>((set, get) => ({
         vaultKey: key,
         status: syncState.status,
         lastSyncedAt: syncState.lastSyncedAt,
+        offlineAvailableAt: syncState.offlineAvailableAt ?? null,
         pending: operations.filter((operation) => operation.status !== 'failed'),
         failed: recoveries,
         // Reflect access loss already recorded by a failed replay. A clean queue
@@ -82,7 +85,7 @@ export const useSyncStore = create<SyncStoreState>((set, get) => ({
       });
     } catch {
       // A read failure (e.g. no replica yet) leaves a clean snapshot for the key.
-      set({ vaultKey: key, status: 'idle', lastSyncedAt: null, pending: [], failed: [], access: 'ok' });
+      set({ vaultKey: key, status: 'idle', lastSyncedAt: null, offlineAvailableAt: null, pending: [], failed: [], access: 'ok' });
     }
   },
 
@@ -140,7 +143,7 @@ export const useSyncStore = create<SyncStoreState>((set, get) => ({
   },
 
   clear: () =>
-    set({ vaultKey: null, status: 'idle', lastSyncedAt: null, pending: [], failed: [], access: 'ok', isSyncing: false }),
+    set({ vaultKey: null, status: 'idle', lastSyncedAt: null, offlineAvailableAt: null, pending: [], failed: [], access: 'ok', isSyncing: false }),
 }));
 
 /** Derives the coarse rollup from a snapshot for the status-bar indicator. */

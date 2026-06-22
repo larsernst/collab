@@ -338,6 +338,12 @@ pub struct ImportVaultZipRequest {
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct ImportBackupArchiveRequest {
+    pub archive_base64: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct RestoreBackupRequest {
     pub confirmation: String,
 }
@@ -4668,6 +4674,118 @@ pub async fn admin_restore_backup(
     Ok(Json(DataResponse::new(result?)))
 }
 
+pub async fn admin_export_backup_archive(
+    State(state): State<AppState>,
+    Extension(request_id): Extension<String>,
+    headers: HeaderMap,
+    Path(backup_name): Path<String>,
+) -> Result<Response, ApiFailure> {
+    require_admin(&state, &headers, &request_id).await?;
+    let backup_dir = resolve_backup_dir(&state.config.backup_dir, &backup_name, &request_id)?;
+    let verification = verify_backup(&backup_name, &backup_dir, &request_id)?;
+    if !verification.ok {
+        return Err(ApiFailure::validation(
+            "Backup checksum verification failed; refusing export.",
+            request_id,
+        ));
+    }
+    validate_backup_manifest_version(&backup_dir, &request_id)?;
+    let temp = tempfile::NamedTempFile::new_in(&state.config.backup_dir)
+        .map_err(|_| ApiFailure::server(request_id.clone()))?;
+    let output = Command::new("tar")
+        .arg("-C")
+        .arg(&state.config.backup_dir)
+        .arg("-czf")
+        .arg(temp.path())
+        .arg(&backup_name)
+        .output()
+        .await
+        .map_err(|_| ApiFailure::server(request_id.clone()))?;
+    if !output.status.success() {
+        return Err(ApiFailure::validation(
+            format!(
+                "Backup export failed: {}{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            )
+            .trim()
+            .to_owned(),
+            request_id,
+        ));
+    }
+    let bytes = fs::read(temp.path()).map_err(|_| ApiFailure::server(request_id.clone()))?;
+    let mut response = Response::new(Body::from(bytes));
+    response.headers_mut().insert(
+        header::CONTENT_TYPE,
+        HeaderValue::from_static("application/gzip"),
+    );
+    response.headers_mut().insert(
+        header::CONTENT_DISPOSITION,
+        HeaderValue::from_str(&format!("attachment; filename=\"{backup_name}.tar.gz\""))
+            .unwrap_or_else(|_| {
+                HeaderValue::from_static("attachment; filename=\"collab-backup.tar.gz\"")
+            }),
+    );
+    Ok(response)
+}
+
+pub async fn admin_import_backup_archive(
+    State(state): State<AppState>,
+    Extension(request_id): Extension<String>,
+    headers: HeaderMap,
+    Json(payload): Json<ImportBackupArchiveRequest>,
+) -> Result<Json<DataResponse<AdminBackupOverview>>, ApiFailure> {
+    let actor = require_admin_csrf(&state, &headers, &request_id).await?;
+    let archive = STANDARD
+        .decode(payload.archive_base64.as_bytes())
+        .map_err(|_| {
+            ApiFailure::validation("Backup archive is not valid base64.", request_id.clone())
+        })?;
+    let max_backup_archive_bytes = state.config.max_import_bytes as u64;
+    if archive.is_empty() || archive.len() as u64 > max_backup_archive_bytes {
+        return Err(ApiFailure::validation(
+            format!(
+                "Backup archive must be between 1 byte and {}.",
+                format_bytes(max_backup_archive_bytes)
+            ),
+            request_id,
+        ));
+    }
+    fs::create_dir_all(&state.config.backup_dir)
+        .map_err(|_| ApiFailure::server(request_id.clone()))?;
+    let import_root = tempfile::Builder::new()
+        .prefix(".import-")
+        .tempdir_in(&state.config.backup_dir)
+        .map_err(|_| ApiFailure::server(request_id.clone()))?;
+    let archive_path = import_root.path().join("backup.tar.gz");
+    fs::write(&archive_path, archive).map_err(|_| ApiFailure::server(request_id.clone()))?;
+    let listed = list_backup_archive_entries(&archive_path, &request_id)?;
+    let archive_root = validate_backup_archive_entries(&listed, &request_id)?;
+    extract_backup_archive(&archive_path, import_root.path(), &request_id)?;
+    let extracted_dir = import_root.path().join(&archive_root);
+    validate_imported_backup_dir(&archive_root, &extracted_dir, &request_id)?;
+    let target_dir = state.config.backup_dir.join(&archive_root);
+    if target_dir.exists() {
+        return Err(ApiFailure::validation(
+            "A backup with that name already exists.",
+            request_id,
+        ));
+    }
+    fs::rename(&extracted_dir, &target_dir).map_err(|_| ApiFailure::server(request_id.clone()))?;
+    record_audit(
+        &state.database,
+        Some(&actor.user.id),
+        "admin.backup.import",
+        Some("backup"),
+        Some(&archive_root),
+        "success",
+        &request_id,
+        json!({"bytes": payload.archive_base64.len()}),
+    )
+    .await?;
+    Ok(Json(DataResponse::new(load_backup_overview(&state))))
+}
+
 pub async fn admin_delete_backup(
     State(state): State<AppState>,
     Extension(request_id): Extension<String>,
@@ -4676,7 +4794,12 @@ pub async fn admin_delete_backup(
 ) -> Result<StatusCode, ApiFailure> {
     let actor = require_admin_csrf(&state, &headers, &request_id).await?;
     let backup_dir = resolve_backup_dir(&state.config.backup_dir, &backup_name, &request_id)?;
-    fs::remove_dir_all(&backup_dir).map_err(|_| ApiFailure::server(request_id.clone()))?;
+    let delete_mode = delete_or_quarantine_backup_dir(
+        &state.config.backup_dir,
+        &backup_name,
+        &backup_dir,
+        &request_id,
+    )?;
     record_audit(
         &state.database,
         Some(&actor.user.id),
@@ -4685,7 +4808,7 @@ pub async fn admin_delete_backup(
         Some(&backup_name),
         "success",
         &request_id,
-        json!({}),
+        json!({"mode": delete_mode}),
     )
     .await?;
     Ok(StatusCode::NO_CONTENT)
@@ -7091,6 +7214,195 @@ fn resolve_backup_dir(root: &FsPath, name: &str, request_id: &str) -> Result<Pat
     Ok(dir)
 }
 
+fn delete_or_quarantine_backup_dir(
+    root: &FsPath,
+    name: &str,
+    dir: &FsPath,
+    request_id: &str,
+) -> Result<&'static str, ApiFailure> {
+    match fs::remove_dir_all(dir) {
+        Ok(()) => return Ok("deleted"),
+        Err(remove_error) => {
+            let quarantine = root.join(format!(".deleted-{name}-{request_id}"));
+            match fs::rename(dir, &quarantine) {
+                Ok(()) => Ok("quarantined"),
+                Err(rename_error) => Err(ApiFailure::validation(
+                    format!(
+                        "Backup could not be deleted. Remove failed with: {remove_error}. Quarantine failed with: {rename_error}."
+                    ),
+                    request_id.to_owned(),
+                )),
+            }
+        }
+    }
+}
+
+fn list_backup_archive_entries(
+    archive_path: &FsPath,
+    request_id: &str,
+) -> Result<Vec<String>, ApiFailure> {
+    let output = std::process::Command::new("tar")
+        .arg("-tzf")
+        .arg(archive_path)
+        .output()
+        .map_err(|_| ApiFailure::server(request_id.to_owned()))?;
+    if !output.status.success() {
+        return Err(ApiFailure::validation(
+            format!(
+                "Backup archive could not be listed: {}{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            )
+            .trim()
+            .to_owned(),
+            request_id.to_owned(),
+        ));
+    }
+    Ok(String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .map(str::to_owned)
+        .collect())
+}
+
+fn validate_backup_archive_entries(
+    entries: &[String],
+    request_id: &str,
+) -> Result<String, ApiFailure> {
+    if entries.is_empty() {
+        return Err(ApiFailure::validation(
+            "Backup archive is empty.",
+            request_id.to_owned(),
+        ));
+    }
+    let mut root: Option<String> = None;
+    for entry in entries {
+        if entry.starts_with('/') || entry.contains('\\') {
+            return Err(ApiFailure::validation(
+                "Backup archive contains an unsafe path.",
+                request_id.to_owned(),
+            ));
+        }
+        let mut parts = entry.split('/').filter(|part| !part.is_empty());
+        let Some(first) = parts.next() else {
+            return Err(ApiFailure::validation(
+                "Backup archive contains an empty path.",
+                request_id.to_owned(),
+            ));
+        };
+        if first == "." || first == ".." || entry.split('/').any(|part| part == "..") {
+            return Err(ApiFailure::validation(
+                "Backup archive contains a path traversal entry.",
+                request_id.to_owned(),
+            ));
+        }
+        if !is_safe_backup_name(first) {
+            return Err(ApiFailure::validation(
+                "Backup archive root is not a valid Collab backup name.",
+                request_id.to_owned(),
+            ));
+        }
+        match root.as_deref() {
+            Some(existing) if existing != first => {
+                return Err(ApiFailure::validation(
+                    "Backup archive must contain exactly one backup directory.",
+                    request_id.to_owned(),
+                ));
+            }
+            None => root = Some(first.to_owned()),
+            _ => {}
+        }
+    }
+    root.ok_or_else(|| ApiFailure::validation("Backup archive is empty.", request_id.to_owned()))
+}
+
+fn extract_backup_archive(
+    archive_path: &FsPath,
+    destination: &FsPath,
+    request_id: &str,
+) -> Result<(), ApiFailure> {
+    let output = std::process::Command::new("tar")
+        .arg("-xzf")
+        .arg(archive_path)
+        .arg("-C")
+        .arg(destination)
+        .output()
+        .map_err(|_| ApiFailure::server(request_id.to_owned()))?;
+    if output.status.success() {
+        return Ok(());
+    }
+    Err(ApiFailure::validation(
+        format!(
+            "Backup archive could not be extracted: {}{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        )
+        .trim()
+        .to_owned(),
+        request_id.to_owned(),
+    ))
+}
+
+fn validate_backup_manifest_version(dir: &FsPath, request_id: &str) -> Result<(), ApiFailure> {
+    let manifest = fs::read_to_string(dir.join("manifest.txt")).map_err(|_| {
+        ApiFailure::validation("Backup manifest is missing.", request_id.to_owned())
+    })?;
+    let version = manifest
+        .lines()
+        .find_map(|line| line.strip_prefix("collab_backup_version="))
+        .map(str::trim)
+        .ok_or_else(|| {
+            ApiFailure::validation(
+                "Backup manifest does not declare a version.",
+                request_id.to_owned(),
+            )
+        })?;
+    if version != "1" {
+        return Err(ApiFailure::validation(
+            format!("Backup version {version} is not compatible with this server."),
+            request_id.to_owned(),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_imported_backup_dir(
+    name: &str,
+    dir: &FsPath,
+    request_id: &str,
+) -> Result<(), ApiFailure> {
+    if !dir.is_dir() {
+        return Err(ApiFailure::validation(
+            "Backup archive did not contain the expected backup directory.",
+            request_id.to_owned(),
+        ));
+    }
+    for artifact in [
+        "postgres.dump",
+        "blobs.tar.gz",
+        "manifest.txt",
+        "config.env",
+        "checksums.sha256",
+    ] {
+        if !dir.join(artifact).is_file() {
+            return Err(ApiFailure::validation(
+                format!("Backup archive is missing {artifact}."),
+                request_id.to_owned(),
+            ));
+        }
+    }
+    validate_backup_manifest_version(dir, request_id)?;
+    let verification = verify_backup(name, dir, request_id)?;
+    if !verification.ok {
+        return Err(ApiFailure::validation(
+            "Backup checksum verification failed; refusing import.",
+            request_id.to_owned(),
+        ));
+    }
+    Ok(())
+}
+
 fn is_safe_backup_name(name: &str) -> bool {
     name.starts_with("collab-backup-")
         && name.len() <= 96
@@ -7222,10 +7534,20 @@ pub(crate) async fn run_operator_command(
         String::from_utf8_lossy(&output.stderr)
     ));
     if !output.status.success() {
-        return Err(ApiFailure::validation(
-            "The backup command failed.",
-            request_id.to_owned(),
-        ));
+        let code = output
+            .status
+            .code()
+            .map(|code| code.to_string())
+            .unwrap_or_else(|| "signal".into());
+        let message = if combined.trim().is_empty() {
+            format!("The backup command failed with exit status {code}.")
+        } else {
+            format!(
+                "The backup command failed with exit status {code}: {}",
+                combined.trim()
+            )
+        };
+        return Err(ApiFailure::validation(message, request_id.to_owned()));
     }
     Ok(AdminBackupCommandResult {
         status: "ok".into(),
@@ -10218,9 +10540,11 @@ impl IntoResponse for ApiFailure {
 #[cfg(test)]
 mod tests {
     use super::{
-        cookie, indexed_note_tags, indexed_note_title, is_safe_backup_name,
-        parse_backup_created_at, parse_vault_zip, quota_added_bytes, quota_would_exceed,
-        search_excerpt, sha256_file, verify_backup, Capability, STANDARD,
+        cookie, delete_or_quarantine_backup_dir, indexed_note_tags, indexed_note_title,
+        is_safe_backup_name, parse_backup_created_at, parse_vault_zip, quota_added_bytes,
+        quota_would_exceed, run_operator_command, search_excerpt, sha256_file,
+        validate_backup_archive_entries, validate_backup_manifest_version, verify_backup,
+        BackupRuntimeSettings, Capability, STANDARD,
     };
     use crate::auth::hash_secret;
     use crate::{
@@ -10242,6 +10566,7 @@ mod tests {
     use std::{
         io::{Cursor, Read, Write},
         sync::Arc,
+        time::Duration,
     };
     use tower::ServiceExt;
     use uuid::Uuid;
@@ -10358,6 +10683,98 @@ mod tests {
         assert!(parse_backup_created_at("20260618T111501Z").is_some());
         assert!(parse_backup_created_at("2026-06-18T11:15:01Z").is_some());
         assert!(parse_backup_created_at("not-a-timestamp").is_none());
+    }
+
+    #[test]
+    fn backup_import_validation_rejects_unsafe_archives_and_versions() {
+        let root = validate_backup_archive_entries(
+            &[
+                "collab-backup-20260618T111501Z/".into(),
+                "collab-backup-20260618T111501Z/postgres.dump".into(),
+                "collab-backup-20260618T111501Z/blobs.tar.gz".into(),
+            ],
+            "request",
+        )
+        .unwrap();
+        assert_eq!(root, "collab-backup-20260618T111501Z");
+
+        assert!(validate_backup_archive_entries(
+            &["collab-backup-20260618T111501Z/../evil".into()],
+            "request",
+        )
+        .is_err());
+        assert!(validate_backup_archive_entries(
+            &[
+                "collab-backup-20260618T111501Z/postgres.dump".into(),
+                "collab-backup-20260618T111502Z/postgres.dump".into(),
+            ],
+            "request",
+        )
+        .is_err());
+
+        let temp = tempfile::tempdir().unwrap();
+        let backup_dir = temp.path().join("collab-backup-20260618T111501Z");
+        std::fs::create_dir(&backup_dir).unwrap();
+        std::fs::write(
+            backup_dir.join("manifest.txt"),
+            b"collab_backup_version=1\n",
+        )
+        .unwrap();
+        validate_backup_manifest_version(&backup_dir, "request").unwrap();
+        std::fs::write(
+            backup_dir.join("manifest.txt"),
+            b"collab_backup_version=2\n",
+        )
+        .unwrap();
+        assert!(validate_backup_manifest_version(&backup_dir, "request").is_err());
+    }
+
+    #[test]
+    fn backup_delete_helper_removes_backup_directories() {
+        let temp = tempfile::tempdir().unwrap();
+        let backup_dir = temp.path().join("collab-backup-20260618T111501Z");
+        std::fs::create_dir(&backup_dir).unwrap();
+        std::fs::write(
+            backup_dir.join("manifest.txt"),
+            b"created_at=20260618T111501Z\n",
+        )
+        .unwrap();
+
+        let mode = delete_or_quarantine_backup_dir(
+            temp.path(),
+            "collab-backup-20260618T111501Z",
+            &backup_dir,
+            "request",
+        )
+        .unwrap();
+
+        assert_eq!(mode, "deleted");
+        assert!(!backup_dir.exists());
+    }
+
+    #[tokio::test]
+    async fn operator_command_failure_includes_captured_output() {
+        let temp = tempfile::tempdir().unwrap();
+        let settings = BackupRuntimeSettings {
+            schedule_enabled: false,
+            interval_seconds: 60,
+            retention_days: 0,
+            export_dir: None,
+        };
+        let failure = run_operator_command(
+            "echo backup stdout; echo backup stderr >&2; exit 7",
+            temp.path(),
+            None,
+            &settings,
+            Duration::from_secs(5),
+            "request",
+        )
+        .await
+        .expect_err("command should fail");
+
+        assert!(failure.message().contains("exit status 7"));
+        assert!(failure.message().contains("backup stdout"));
+        assert!(failure.message().contains("backup stderr"));
     }
 
     #[test]

@@ -51,6 +51,10 @@ pub struct ReplicaSyncState {
     pub manifest_sequence: i64,
     /// ISO-8601 timestamp of the last successful synchronization, if any.
     pub last_synced_at: Option<String>,
+    /// Set after the user explicitly downloads active document/asset bodies.
+    /// A manifest-only replica leaves this empty.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub offline_available_at: Option<String>,
     pub status: SyncStatus,
 }
 
@@ -77,6 +81,7 @@ impl Default for ReplicaSyncState {
         Self {
             manifest_sequence: 0,
             last_synced_at: None,
+            offline_available_at: None,
             status: SyncStatus::Idle,
         }
     }
@@ -161,4 +166,16 @@ pub struct CacheCleanupReport {
     pub freed_bytes: u64,
     /// Total cached content bytes remaining after cleanup.
     pub remaining_bytes: u64,
+}
+
+/// Whether a cached document/asset body exists and matches a known revision
+/// digest. Used to resume large offline-copy downloads without re-fetching
+/// content that was already cached by a previous interrupted run.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct CachedContentStatus {
+    pub present: bool,
+    pub matches_expected_hash: bool,
+    pub actual_sha256: Option<String>,
+    pub size_bytes: Option<u64>,
 }

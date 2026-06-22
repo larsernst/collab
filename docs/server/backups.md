@@ -120,6 +120,28 @@ When `COLLAB_RESTORE_COMMAND` runs, the server sets
 `COLLAB_RESTORE_BACKUP=<backup name>` and `COLLAB_BACKUP_DIR=<backup root>` in
 the command environment.
 
+## Portable Backup Import and Export
+
+Each completed backup can be exported from the Backups page as a portable
+`<backup-name>.tar.gz` archive. Export verifies the backup checksums and the
+backup manifest version before streaming the archive, so incomplete or corrupt
+backup directories are not offered as migration artifacts.
+
+The Backups page can also import a previously exported archive. Import performs
+these checks before publishing the backup into the server backup volume:
+
+- The archive must contain exactly one top-level `collab-backup-*` directory.
+- Archive paths must be relative and must not contain traversal components.
+- Required artifacts must exist: `postgres.dump`, `blobs.tar.gz`,
+  `manifest.txt`, `config.env`, and `checksums.sha256`.
+- `manifest.txt` must declare `collab_backup_version=1`.
+- `checksums.sha256` must verify successfully.
+- A backup with the same name must not already exist on the target server.
+
+After import, use **Verify** once more if desired, then restore through the
+normal restore flow. Restoring remains a destructive operator action and still
+requires `COLLAB_RESTORE_COMMAND` to be configured.
+
 ## External Export Target
 
 Backups are always written to the internal Compose `backups` volume first. To

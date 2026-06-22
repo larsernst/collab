@@ -8,7 +8,7 @@
  */
 
 import { tauriCommands } from './tauri';
-import type { HostedVaultMeta } from '../types/vault';
+import { vaultCan, type HostedVaultMeta } from '../types/vault';
 
 /**
  * Lightweight change notification for the replica's local state (pending-op
@@ -43,6 +43,8 @@ export interface ReplicaSyncState {
   manifestSequence: number;
   /** ISO-8601 timestamp of the last successful synchronization, if any. */
   lastSyncedAt: string | null;
+  /** Set after active document/asset bodies have been cached locally. */
+  offlineAvailableAt?: string | null;
   status: SyncStatus;
 }
 
@@ -89,10 +91,18 @@ export interface CacheCleanupReport {
   remainingBytes: number;
 }
 
+export interface CachedContentStatus {
+  present: boolean;
+  matchesExpectedHash: boolean;
+  actualSha256: string | null;
+  sizeBytes: number | null;
+}
+
 export interface OfflineAvailabilityReport {
   documentsCached: number;
   assetsCached: number;
   skipped: number;
+  alreadyCached?: number;
 }
 
 export interface ReplicaSummary {
@@ -130,6 +140,13 @@ export interface ReplicaManifest {
 export interface ReplicaManifestFile {
   id: string;
   [key: string]: unknown;
+}
+
+function currentRevisionHash(file: ReplicaManifestFile): string | null {
+  const revision = file.currentRevision;
+  if (!revision || typeof revision !== 'object') return null;
+  const contentHash = (revision as { contentHash?: unknown }).contentHash;
+  return typeof contentHash === 'string' && contentHash ? contentHash : null;
 }
 
 export interface ReplicaManifestDelta {
@@ -177,17 +194,20 @@ interface PendingStructuralPayload {
 }
 
 export function initialSyncState(manifestSequence: number): ReplicaSyncState {
-  return { manifestSequence, lastSyncedAt: new Date().toISOString(), status: 'idle' };
+  return { manifestSequence, lastSyncedAt: new Date().toISOString(), offlineAvailableAt: null, status: 'idle' };
 }
 
 export function offlineSyncState(manifestSequence: number): ReplicaSyncState {
-  return { manifestSequence, lastSyncedAt: new Date().toISOString(), status: 'offline' };
+  return { manifestSequence, lastSyncedAt: new Date().toISOString(), offlineAvailableAt: null, status: 'offline' };
 }
 
 export function isLikelyConnectivityError(error: unknown): boolean {
   const message = String(error instanceof Error ? error.message : error).toLowerCase();
   return (
     message.includes('offline') ||
+    message.includes('connect to the collab server') ||
+    message.includes('no saved server session') ||
+    message.includes('no active hosted server session') ||
     message.includes('network') ||
     message.includes('failed to fetch') ||
     message.includes('could not reach') ||
@@ -538,31 +558,51 @@ function dataUrlBase64(dataUrl: string): string {
   return match[1];
 }
 
-/**
- * Downloads the active hosted-vault content into the native replica so the vault
- * can be opened and edited while the server is unreachable. Opening a hosted
- * vault already seeds metadata automatically; this helper is the explicit
- * "make available offline" path that also caches document and asset bodies.
- */
-export async function makeHostedVaultAvailableOffline(
+async function markOfflineAvailable(vault: HostedVaultMeta, manifestSequence: number): Promise<void> {
+  const syncState = await tauriCommands.replicaReadSyncState(vault.serverUrl, vault.hostedVaultId);
+  await tauriCommands.replicaWriteSyncState(vault.serverUrl, vault.hostedVaultId, {
+    ...syncState,
+    manifestSequence,
+    lastSyncedAt: syncState.lastSyncedAt ?? new Date().toISOString(),
+    offlineAvailableAt: new Date().toISOString(),
+  });
+}
+
+async function cacheActiveFilesForOffline(
   vault: HostedVaultMeta,
+  files: ReplicaManifestFile[],
   onProgress?: (completed: number, total: number) => void,
 ): Promise<OfflineAvailabilityReport> {
-  await seedReplicaFromManifest(vault);
-  const manifest = await tauriCommands.replicaReadManifest(vault.serverUrl, vault.hostedVaultId);
-  if (!manifest) throw new Error('Replica manifest was not available after seeding.');
-
-  const activeFiles = manifest.files.filter((file) => file.state === 'active');
-  const cacheableFiles = activeFiles.filter((file) => file.kind === 'document' || file.kind === 'asset');
+  const cacheableFiles = files.filter(
+    (file) => file.state === 'active' && (file.kind === 'document' || file.kind === 'asset'),
+  );
   let completed = 0;
   let documentsCached = 0;
   let assetsCached = 0;
   let skipped = 0;
+  let alreadyCached = 0;
   onProgress?.(completed, cacheableFiles.length);
 
   for (const file of cacheableFiles) {
     try {
-      if (file.kind === 'document') {
+      const kind = file.kind;
+      if (kind !== 'document' && kind !== 'asset') {
+        skipped += 1;
+        continue;
+      }
+      const expectedHash = currentRevisionHash(file);
+      const status = await tauriCommands.replicaCachedContentStatus(
+        vault.serverUrl,
+        vault.hostedVaultId,
+        file.id,
+        kind,
+        expectedHash,
+      );
+      if (status.present && status.matchesExpectedHash) {
+        alreadyCached += 1;
+        continue;
+      }
+      if (kind === 'document') {
         const document = await tauriCommands.hostedVaultRequest<{ content: string }>(
           vault.serverUrl,
           'GET',
@@ -570,7 +610,7 @@ export async function makeHostedVaultAvailableOffline(
         );
         await tauriCommands.replicaCacheDocument(vault.serverUrl, vault.hostedVaultId, file.id, document.content);
         documentsCached += 1;
-      } else if (file.kind === 'asset') {
+      } else if (kind === 'asset') {
         const dataUrl = await tauriCommands.hostedVaultAssetDataUrl(vault.serverUrl, vault.hostedVaultId, file.id);
         await tauriCommands.replicaCacheAsset(vault.serverUrl, vault.hostedVaultId, file.id, dataUrlBase64(dataUrl));
         assetsCached += 1;
@@ -583,9 +623,31 @@ export async function makeHostedVaultAvailableOffline(
     }
   }
 
+  return { documentsCached, assetsCached, skipped, alreadyCached };
+}
+
+/**
+ * Downloads the active hosted-vault content into the native replica so the vault
+ * can be opened and edited while the server is unreachable. Opening a hosted
+ * vault already seeds metadata automatically; this helper is the explicit
+ * "make available offline" path that also caches document and asset bodies.
+ */
+export async function makeHostedVaultAvailableOffline(
+  vault: HostedVaultMeta,
+  onProgress?: (completed: number, total: number) => void,
+): Promise<OfflineAvailabilityReport> {
+  if (!vaultCan(vault, 'vault.offlineCopy')) {
+    throw new Error('You do not have permission to create an offline copy of this vault.');
+  }
+  await seedReplicaFromManifest(vault);
+  const manifest = await tauriCommands.replicaReadManifest(vault.serverUrl, vault.hostedVaultId);
+  if (!manifest) throw new Error('Replica manifest was not available after seeding.');
+
+  const report = await cacheActiveFilesForOffline(vault, manifest.files, onProgress);
+  await markOfflineAvailable(vault, manifest.sequence);
   await cleanupReplicaCache(vault);
   emitReplicaMutated();
-  return { documentsCached, assetsCached, skipped };
+  return report;
 }
 
 export async function syncReplicaManifestDelta(vault: HostedVaultMeta): Promise<ReplicaManifest> {
@@ -596,10 +658,17 @@ export async function syncReplicaManifestDelta(vault: HostedVaultMeta): Promise<
     tauriCommands.replicaReadManifest(vault.serverUrl, vault.hostedVaultId),
     tauriCommands.replicaReadSyncState(vault.serverUrl, vault.hostedVaultId),
   ]);
+  const shouldMaintainOfflineCache = !!syncState.offlineAvailableAt && vaultCan(vault, 'vault.offlineCopy');
+
   if (!cachedManifest || syncState.manifestSequence > cachedManifest.sequence) {
     await seedReplicaFromManifest(vault);
     const seeded = await tauriCommands.replicaReadManifest(vault.serverUrl, vault.hostedVaultId);
     if (!seeded) throw new Error('Replica manifest was not available after seeding.');
+    if (shouldMaintainOfflineCache) {
+      await cacheActiveFilesForOffline(vault, seeded.files);
+      await markOfflineAvailable(vault, seeded.sequence);
+      await cleanupReplicaCache(vault);
+    }
     return seeded;
   }
 
@@ -612,6 +681,11 @@ export async function syncReplicaManifestDelta(vault: HostedVaultMeta): Promise<
     await seedReplicaFromManifest(vault);
     const seeded = await tauriCommands.replicaReadManifest(vault.serverUrl, vault.hostedVaultId);
     if (!seeded) throw new Error('Replica manifest was not available after seeding.');
+    if (shouldMaintainOfflineCache) {
+      await cacheActiveFilesForOffline(vault, seeded.files);
+      await markOfflineAvailable(vault, seeded.sequence);
+      await cleanupReplicaCache(vault);
+    }
     return seeded;
   }
 
@@ -634,6 +708,11 @@ export async function syncReplicaManifestDelta(vault: HostedVaultMeta): Promise<
     vault.role,
     vault.capabilities ?? [],
   );
+  if (shouldMaintainOfflineCache) {
+    await cacheActiveFilesForOffline(vault, delta.changedFiles);
+    await markOfflineAvailable(vault, delta.sequence);
+    await cleanupReplicaCache(vault);
+  }
   emitReplicaMutated();
   return nextManifest;
 }

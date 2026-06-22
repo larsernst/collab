@@ -116,6 +116,13 @@ export const serverApi = {
       method: 'POST',
       body: JSON.stringify({ confirmation: 'restore' }),
     }),
+  exportBackup: (name: string) =>
+    apiBlob(`/api/v1/admin/backups/${encodeURIComponent(name)}/archive`),
+  importBackup: (archiveBase64: string) =>
+    api<AdminBackupOverview>('/api/v1/admin/backups/import', {
+      method: 'POST',
+      body: JSON.stringify({ archiveBase64 }),
+    }),
   deleteBackup: (name: string) =>
     api<void>(`/api/v1/admin/backups/${encodeURIComponent(name)}`, { method: 'DELETE' }),
   users: () => api<ServerUser[]>('/api/v1/admin/users'),

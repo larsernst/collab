@@ -569,6 +569,7 @@ function BackupsPage() {
   const [verification, setVerification] = useState<Record<string, AdminBackupVerification>>({});
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
   const [confirmRestore, setConfirmRestore] = useState<string | null>(null);
+  const importInputRef = useRef<HTMLInputElement | null>(null);
   const [settingsDraft, setSettingsDraft] = useState({
     scheduleEnabled: false,
     intervalSeconds: 86_400,
@@ -612,6 +613,47 @@ function BackupsPage() {
     try {
       const result = await serverApi.verifyBackup(name);
       setVerification((current) => ({ ...current, [name]: result }));
+    } catch (reason) {
+      setError(String(reason));
+    } finally {
+      setBusy('');
+    }
+  }
+
+  async function exportBackup(name: string) {
+    setBusy(`export:${name}`);
+    setError('');
+    setMessage('');
+    try {
+      const blob = await serverApi.exportBackup(name);
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = `${name}.tar.gz`;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      URL.revokeObjectURL(url);
+      setMessage(`Exported ${name}.`);
+    } catch (reason) {
+      setError(String(reason));
+    } finally {
+      setBusy('');
+    }
+  }
+
+  async function importBackup(event: ChangeEvent<HTMLInputElement>) {
+    const file = event.target.files?.[0];
+    event.target.value = '';
+    if (!file) return;
+    setBusy('import');
+    setMessage('');
+    setError('');
+    try {
+      const archiveBase64 = await fileToBase64(file);
+      const next = await serverApi.importBackup(archiveBase64);
+      applyOverview(next);
+      setMessage(`Imported ${file.name}.`);
     } catch (reason) {
       setError(String(reason));
     } finally {
@@ -681,7 +723,7 @@ function BackupsPage() {
         eyebrow="RECOVERY"
         title="Backups"
         subtitle="Inspect, verify, and manage deployment backups visible to the server."
-        action={<div className="actions"><Button variant="outline" size="sm" onClick={load}><RefreshCw size={16} />Refresh</Button><Button size="sm" disabled={!overview?.backupCommandConfigured || busy === 'run'} onClick={runBackup}><Archive size={16} />Run backup</Button></div>}
+        action={<div className="actions"><input ref={importInputRef} type="file" accept=".tar.gz,.tgz,application/gzip,application/x-gzip" hidden onChange={(event) => void importBackup(event)} /><Button variant="outline" size="sm" disabled={busy === 'import'} onClick={() => importInputRef.current?.click()}><Upload size={16} />Import</Button><Button variant="outline" size="sm" onClick={load}><RefreshCw size={16} />Refresh</Button><Button size="sm" disabled={!overview?.backupCommandConfigured || busy === 'run'} onClick={runBackup}><Archive size={16} />Run backup</Button></div>}
       />
       {error && <div className="error-banner"><CircleAlert size={16} />{error}</div>}
       {message && <div className="success-banner" role="status"><ShieldCheck size={16} />{message}</div>}
@@ -750,6 +792,7 @@ function BackupsPage() {
                     </div>
                     <div className="actions">
                       <Button variant="outline" size="sm" disabled={busy === `verify:${backup.name}`} onClick={() => void verify(backup.name)}>Verify</Button>
+                      <Button variant="outline" size="sm" disabled={!complete || busy === `export:${backup.name}`} onClick={() => void exportBackup(backup.name)}><Download size={14} />Export</Button>
                       <Button variant="outline" size="sm" disabled={!overview.restoreCommandConfigured || busy === `restore:${backup.name}`} onClick={() => setConfirmRestore(backup.name)}>Restore</Button>
                       <Button variant="destructive" size="sm" disabled={busy === `delete:${backup.name}`} onClick={() => setConfirmDelete(backup.name)}>Delete</Button>
                     </div>

@@ -15,7 +15,9 @@ const tauriCommandsMock = vi.hoisted(() => ({
   replicaSeed: vi.fn(),
   replicaReadManifest: vi.fn(),
   replicaReadSyncState: vi.fn(),
+  replicaWriteSyncState: vi.fn(),
   replicaListPendingOperations: vi.fn(),
+  replicaCachedContentStatus: vi.fn(),
   replicaCacheDocument: vi.fn(),
   replicaCacheAsset: vi.fn(),
   replicaCleanup: vi.fn().mockResolvedValue({ removedFiles: 0, freedBytes: 0, remainingBytes: 0 }),
@@ -54,9 +56,17 @@ describe('vaultStore Flatpak reopen fallback', () => {
     tauriCommandsMock.replicaReadSyncState.mockResolvedValue({
       manifestSequence: 0,
       lastSyncedAt: null,
+      offlineAvailableAt: null,
       status: 'idle',
     });
+    tauriCommandsMock.replicaWriteSyncState.mockResolvedValue(undefined);
     tauriCommandsMock.replicaListPendingOperations.mockResolvedValue([]);
+    tauriCommandsMock.replicaCachedContentStatus.mockResolvedValue({
+      present: false,
+      matchesExpectedHash: false,
+      actualSha256: null,
+      sizeBytes: null,
+    });
     tauriCommandsMock.replicaCacheDocument.mockResolvedValue(undefined);
     tauriCommandsMock.replicaCacheAsset.mockResolvedValue(undefined);
     tauriCommandsMock.hostedVaultAssetDataUrl.mockResolvedValue('data:image/png;base64,YXNzZXQ=');

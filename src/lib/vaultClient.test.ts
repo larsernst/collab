@@ -44,6 +44,7 @@ vi.mock('./tauri', () => ({
     replicaCacheDocument: vi.fn().mockResolvedValue(undefined),
     replicaReadManifest: vi.fn(),
     replicaReadSyncState: vi.fn(),
+    replicaWriteSyncState: vi.fn().mockResolvedValue(undefined),
     replicaSeed: vi.fn().mockResolvedValue(undefined),
     replicaEnqueueOperation: vi.fn().mockResolvedValue(undefined),
     replicaListPendingOperations: vi.fn().mockResolvedValue([]),
@@ -83,6 +84,7 @@ const hostedVault: HostedVaultMeta = {
   path: 'hosted://hosted-vault',
   lastOpened: 1,
   isEncrypted: false,
+  capabilities: ['vault.read', 'vault.offlineCopy'],
 };
 
 const rootFolder = {
@@ -341,16 +343,41 @@ describe('HostedVaultClient', () => {
     vi.mocked(tauriCommands.hostedVaultRequest)
       .mockResolvedValueOnce(mockHostedManifest())
       .mockResolvedValueOnce({ file: hostedDocument, content: '# Test' });
+    vi.mocked(tauriCommands.replicaReadSyncState).mockResolvedValue({
+      manifestSequence: 8,
+      lastSyncedAt: '2026-06-17T00:00:00Z',
+      offlineAvailableAt: '2026-06-17T00:05:00Z',
+      status: 'idle',
+    });
     const client = new HostedVaultClient(hostedVault);
 
     await client.readDocument('Notes/Test.md');
 
-    expect(tauriCommands.replicaCacheDocument).toHaveBeenCalledWith(
-      'https://collab.example.test',
-      'hosted-vault',
-      'file-1',
-      '# Test',
+    await vi.waitFor(() =>
+      expect(tauriCommands.replicaCacheDocument).toHaveBeenCalledWith(
+        'https://collab.example.test',
+        'hosted-vault',
+        'file-1',
+        '# Test',
+      ),
     );
+  });
+
+  it('does not build durable content caches before an offline copy is enabled', async () => {
+    vi.mocked(tauriCommands.hostedVaultRequest)
+      .mockResolvedValueOnce(mockHostedManifest())
+      .mockResolvedValueOnce({ file: hostedDocument, content: '# Test' });
+    vi.mocked(tauriCommands.replicaReadSyncState).mockResolvedValue({
+      manifestSequence: 8,
+      lastSyncedAt: '2026-06-17T00:00:00Z',
+      offlineAvailableAt: null,
+      status: 'idle',
+    });
+    const client = new HostedVaultClient(hostedVault);
+
+    await client.readDocument('Notes/Test.md');
+
+    expect(tauriCommands.replicaCacheDocument).not.toHaveBeenCalled();
   });
 
   it('creates documents by resolving their hosted parent folder ID', async () => {
@@ -437,7 +464,7 @@ describe('HostedVaultClient', () => {
       }),
       expect.objectContaining({ manifestSequence: 8, status: 'offline' }),
       'editor',
-      [],
+      ['vault.read', 'vault.offlineCopy'],
     );
     expect(tauriCommands.replicaEnqueueOperation).toHaveBeenCalledWith(
       'https://collab.example.test',
@@ -498,7 +525,7 @@ describe('HostedVaultClient', () => {
       }),
       expect.objectContaining({ status: 'offline' }),
       'editor',
-      [],
+      ['vault.read', 'vault.offlineCopy'],
     );
     expect(tauriCommands.replicaEnqueueOperation).toHaveBeenCalledWith(
       'https://collab.example.test',
@@ -558,7 +585,7 @@ describe('HostedVaultClient', () => {
       }),
       expect.objectContaining({ status: 'offline' }),
       'editor',
-      [],
+      ['vault.read', 'vault.offlineCopy'],
     );
     expect(tauriCommands.replicaEnqueueOperation).toHaveBeenCalledWith(
       'https://collab.example.test',
@@ -788,7 +815,20 @@ describe('HostedVaultClient', () => {
     vi.mocked(tauriCommands.hostedVaultRequest).mockReset();
     vi.mocked(tauriCommands.hostedVaultRequest)
       .mockResolvedValueOnce({ ...mockHostedManifest(), files: [rootFolder, pictures, hostedDocument] })
-      .mockResolvedValueOnce({ ...hostedDocument, name: 'diagram.png', relativePath: 'Pictures/diagram.png' });
+      .mockResolvedValueOnce({
+        ...hostedDocument,
+        id: 'asset-1',
+        kind: 'asset',
+        documentType: null,
+        name: 'diagram.png',
+        relativePath: 'Pictures/diagram.png',
+      });
+    vi.mocked(tauriCommands.replicaReadSyncState).mockResolvedValue({
+      manifestSequence: 8,
+      lastSyncedAt: '2026-06-17T00:00:00Z',
+      offlineAvailableAt: '2026-06-17T00:05:00Z',
+      status: 'idle',
+    });
     const client = new HostedVaultClient(hostedVault);
 
     await expect(
@@ -806,6 +846,14 @@ describe('HostedVaultClient', () => {
         contentBase64: 'aW1n',
         expectedHash: 'abc123',
       },
+    );
+    await vi.waitFor(() =>
+      expect(tauriCommands.replicaCacheAsset).toHaveBeenCalledWith(
+        'https://collab.example.test',
+        'hosted-vault',
+        'asset-1',
+        'aW1n',
+      ),
     );
   });
 
@@ -856,7 +904,7 @@ describe('HostedVaultClient', () => {
       }),
       expect.objectContaining({ status: 'offline' }),
       'editor',
-      [],
+      ['vault.read', 'vault.offlineCopy'],
     );
     expect(tauriCommands.replicaEnqueueOperation).toHaveBeenCalledWith(
       'https://collab.example.test',

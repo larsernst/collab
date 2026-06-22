@@ -18,6 +18,7 @@ vi.mock('sonner', () => ({ toast: { error: vi.fn(), success: vi.fn() } }));
 
 const syncStoreMock = vi.hoisted(() => ({
   makeAvailableOffline: vi.fn(),
+  offlineAvailableAt: null as string | null,
 }));
 
 const replicaMock = vi.hoisted(() => ({
@@ -30,6 +31,7 @@ vi.mock('../../store/syncStore', () => ({
   useSyncStore: () => ({
     status: 'idle',
     lastSyncedAt: '2026-06-18T00:00:00Z',
+    offlineAvailableAt: syncStoreMock.offlineAvailableAt,
     pending: [],
     failed: [],
     access: 'ok',
@@ -113,6 +115,7 @@ function connect(connected: boolean) {
 describe('VaultManagerModal hosted vaults', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    syncStoreMock.offlineAvailableAt = null;
     replicaMock.listHostedVaultReplicas.mockResolvedValue([]);
     replicaMock.deleteHostedVaultReplica.mockResolvedValue(undefined);
     vi.spyOn(window, 'confirm').mockReturnValue(true);
@@ -180,6 +183,17 @@ describe('VaultManagerModal hosted vaults', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Make available offline' }));
 
     await waitFor(() => expect(syncStoreMock.makeAvailableOffline).toHaveBeenCalledWith(openHostedVaultMeta, expect.any(Function)));
+  });
+
+  it('disables offline copy creation once the hosted vault is already available offline', async () => {
+    syncStoreMock.offlineAvailableAt = '2026-06-18T00:05:00Z';
+    useVaultStore.setState({ vault: openHostedVaultMeta } as never);
+    render(<VaultManagerModal />);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Offline Sync' }));
+
+    const button = screen.getByRole('button', { name: 'Offline copy ready' });
+    expect(button.hasAttribute('disabled')).toBe(true);
   });
 
   it('lists offline hosted copies from multiple servers and opens one', async () => {

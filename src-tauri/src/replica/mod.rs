@@ -13,7 +13,7 @@ pub mod store;
 // types (e.g. PendingOpKind, SyncStatus, ReplicaMeta) and the path helpers remain
 // reachable via `replica::models::` / `replica::store::` for later increments.
 pub use models::{
-    CacheCleanupReport, PendingOpStatus, PendingOperation, ReplicaIntegrityReport,
-    ReplicaSummary, ReplicaSyncState, Tombstone,
+    CacheCleanupReport, CachedContentStatus, PendingOpStatus, PendingOperation,
+    ReplicaIntegrityReport, ReplicaSummary, ReplicaSyncState, Tombstone,
 };
-pub use store::ReplicaStore;
+pub use store::{server_key, ReplicaStore};

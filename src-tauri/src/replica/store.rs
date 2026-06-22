@@ -7,9 +7,11 @@
 //! recorded in `integrity.json`.
 
 use super::models::{
-    CacheCleanupReport, PendingOpStatus, PendingOperation, ReplicaIntegrityReport, ReplicaMeta,
-    ReplicaSummary, ReplicaSyncState, Tombstone, REPLICA_SCHEMA_VERSION,
+    CacheCleanupReport, CachedContentStatus, PendingOpStatus, PendingOperation,
+    ReplicaIntegrityReport, ReplicaMeta, ReplicaSummary, ReplicaSyncState, Tombstone,
+    REPLICA_SCHEMA_VERSION,
 };
+use crate::crypto;
 use collab_protocol::HostedVaultManifest;
 use serde::de::DeserializeOwned;
 use serde::Serialize;
@@ -69,6 +71,7 @@ fn now_iso() -> String {
 /// A managed on-disk replica of a single hosted vault.
 pub struct ReplicaStore {
     root: PathBuf,
+    encryption_key: Option<[u8; 32]>,
 }
 
 /// A single cached-content file considered during bounded cache cleanup.
@@ -104,7 +107,10 @@ impl ReplicaStore {
         ] {
             std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
         }
-        let store = Self { root };
+        let store = Self {
+            root,
+            encryption_key: None,
+        };
 
         let now = now_iso();
         let created_at = store
@@ -125,6 +131,13 @@ impl ReplicaStore {
         Ok(store)
     }
 
+    /// Return a store that encrypts sensitive cached payloads and pending
+    /// operation bodies with an authenticated per-replica key.
+    pub fn with_encryption_key(mut self, key: [u8; 32]) -> Self {
+        self.encryption_key = Some(key);
+        self
+    }
+
     /// Open an existing replica without creating or mutating it. Returns `None`
     /// when no replica directory exists for the target.
     pub fn open_existing(config_root: &Path, server_url: &str, vault_id: &str) -> Option<Self> {
@@ -133,7 +146,10 @@ impl ReplicaStore {
             .join(server_key(server_url))
             .join(vault_segment);
         if root.join(META_FILE).is_file() {
-            Some(Self { root })
+            Some(Self {
+                root,
+                encryption_key: None,
+            })
         } else {
             None
         }
@@ -165,7 +181,10 @@ impl ReplicaStore {
                 if !vault_path.join(META_FILE).is_file() {
                     continue;
                 }
-                let store = Self { root: vault_path };
+                let store = Self {
+                    root: vault_path,
+                    encryption_key: None,
+                };
                 let Some(meta) = store.read_json::<ReplicaMeta>(META_FILE)? else {
                     continue;
                 };
@@ -232,11 +251,13 @@ impl ReplicaStore {
 
     pub fn list_pending_operations(&self) -> Result<Vec<PendingOperation>, String> {
         let path = self.root.join(PENDING_OPS_FILE);
-        let raw = match std::fs::read_to_string(&path) {
+        let raw = match std::fs::read(&path) {
             Ok(raw) => raw,
             Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
             Err(err) => return Err(err.to_string()),
         };
+        let raw = self.decrypt_persisted(&raw)?;
+        let raw = String::from_utf8(raw).map_err(|e| e.to_string())?;
         let mut ops = Vec::new();
         for line in raw.lines() {
             let line = line.trim();
@@ -301,7 +322,8 @@ impl ReplicaStore {
             body.push_str(&serde_json::to_string(op).map_err(|e| e.to_string())?);
             body.push('\n');
         }
-        self.write_atomic(PENDING_OPS_FILE, body.as_bytes())
+        let bytes = self.encrypt_persisted(body.as_bytes())?;
+        self.write_atomic(PENDING_OPS_FILE, &bytes)
     }
 
     // ---- tombstones -----------------------------------------------------
@@ -330,13 +352,19 @@ impl ReplicaStore {
 
     pub fn cache_document(&self, file_id: &str, content: &str) -> Result<(), String> {
         let path = self.root.join(DOCUMENTS_DIR).join(safe_segment(file_id)?);
-        write_file_atomic(&path, content.as_bytes())
+        let bytes = self.encrypt_persisted(content.as_bytes())?;
+        write_file_atomic(&path, &bytes)
     }
 
     pub fn read_cached_document(&self, file_id: &str) -> Result<Option<String>, String> {
         let path = self.root.join(DOCUMENTS_DIR).join(safe_segment(file_id)?);
-        match std::fs::read_to_string(&path) {
-            Ok(content) => Ok(Some(content)),
+        match std::fs::read(&path) {
+            Ok(bytes) => {
+                let bytes = self.decrypt_persisted(&bytes)?;
+                String::from_utf8(bytes)
+                    .map(Some)
+                    .map_err(|e| e.to_string())
+            }
             Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(None),
             Err(err) => Err(err.to_string()),
         }
@@ -344,16 +372,52 @@ impl ReplicaStore {
 
     pub fn cache_asset(&self, file_id: &str, bytes: &[u8]) -> Result<(), String> {
         let path = self.root.join(ASSETS_DIR).join(safe_segment(file_id)?);
-        write_file_atomic(&path, bytes)
+        let bytes = self.encrypt_persisted(bytes)?;
+        write_file_atomic(&path, &bytes)
     }
 
     pub fn read_cached_asset(&self, file_id: &str) -> Result<Option<Vec<u8>>, String> {
         let path = self.root.join(ASSETS_DIR).join(safe_segment(file_id)?);
         match std::fs::read(&path) {
-            Ok(bytes) => Ok(Some(bytes)),
+            Ok(bytes) => self.decrypt_persisted(&bytes).map(Some),
             Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(None),
             Err(err) => Err(err.to_string()),
         }
+    }
+
+    pub fn cached_content_status(
+        &self,
+        file_id: &str,
+        kind: &str,
+        expected_sha256: Option<&str>,
+    ) -> Result<CachedContentStatus, String> {
+        let path = match kind {
+            "document" => self.root.join(DOCUMENTS_DIR).join(safe_segment(file_id)?),
+            "asset" => self.root.join(ASSETS_DIR).join(safe_segment(file_id)?),
+            _ => return Err(format!("Unsupported cached content kind: {kind}")),
+        };
+        let bytes = match std::fs::read(path) {
+            Ok(bytes) => self.decrypt_persisted(&bytes)?,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+                return Ok(CachedContentStatus {
+                    present: false,
+                    matches_expected_hash: false,
+                    actual_sha256: None,
+                    size_bytes: None,
+                });
+            }
+            Err(err) => return Err(err.to_string()),
+        };
+        let actual_sha256 = sha256_hex(&bytes);
+        let matches_expected_hash = expected_sha256
+            .map(|expected| expected.eq_ignore_ascii_case(&actual_sha256))
+            .unwrap_or(true);
+        Ok(CachedContentStatus {
+            present: true,
+            matches_expected_hash,
+            actual_sha256: Some(actual_sha256),
+            size_bytes: Some(bytes.len() as u64),
+        })
     }
 
     /// Persist the encoded CRDT (Yjs) document state for a file. This is the
@@ -361,13 +425,14 @@ impl ReplicaStore {
     /// it to resume synchronization via state vectors after reconnecting.
     pub fn cache_crdt_state(&self, file_id: &str, bytes: &[u8]) -> Result<(), String> {
         let path = self.crdt_path(file_id)?;
-        write_file_atomic(&path, bytes)
+        let bytes = self.encrypt_persisted(bytes)?;
+        write_file_atomic(&path, &bytes)
     }
 
     pub fn read_cached_crdt_state(&self, file_id: &str) -> Result<Option<Vec<u8>>, String> {
         let path = self.crdt_path(file_id)?;
         match std::fs::read(&path) {
-            Ok(bytes) => Ok(Some(bytes)),
+            Ok(bytes) => self.decrypt_persisted(&bytes).map(Some),
             Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(None),
             Err(err) => Err(err.to_string()),
         }
@@ -645,6 +710,23 @@ impl ReplicaStore {
         let bytes = serde_json::to_vec_pretty(integrity).map_err(|e| e.to_string())?;
         write_file_atomic(&self.root.join(INTEGRITY_FILE), &bytes)
     }
+
+    fn encrypt_persisted(&self, plaintext: &[u8]) -> Result<Vec<u8>, String> {
+        match self.encryption_key.as_ref() {
+            Some(key) => crypto::encrypt_bytes(key, plaintext),
+            None => Ok(plaintext.to_vec()),
+        }
+    }
+
+    fn decrypt_persisted(&self, bytes: &[u8]) -> Result<Vec<u8>, String> {
+        if !crypto::is_encrypted_data(bytes) {
+            return Ok(bytes.to_vec());
+        }
+        let key = self.encryption_key.as_ref().ok_or_else(|| {
+            "This offline replica is encrypted but its local key is unavailable.".to_string()
+        })?;
+        crypto::decrypt_bytes(key, bytes)
+    }
 }
 
 /// Write `bytes` to `path` via a temp file + rename so readers never observe a
@@ -743,6 +825,7 @@ mod tests {
             .write_sync_state(&ReplicaSyncState {
                 manifest_sequence: 7,
                 last_synced_at: Some("2026-06-17T00:00:00Z".into()),
+                offline_available_at: Some("2026-06-17T00:05:00Z".into()),
                 status: SyncStatus::Offline,
             })
             .unwrap();
@@ -789,6 +872,7 @@ mod tests {
             .write_sync_state(&ReplicaSyncState {
                 manifest_sequence: 3,
                 last_synced_at: Some("2026-06-21T10:00:00Z".into()),
+                offline_available_at: None,
                 status: SyncStatus::Offline,
             })
             .unwrap();
@@ -903,6 +987,91 @@ mod tests {
         );
 
         assert!(store.cache_document("../escape", "x").is_err());
+    }
+
+    #[test]
+    fn cached_content_status_reports_presence_and_revision_hash_match() {
+        let dir = TempDir::new().unwrap();
+        let store = open(&dir).with_encryption_key([3u8; 32]);
+        let missing = store
+            .cached_content_status("missing", "document", Some("abc"))
+            .unwrap();
+        assert!(!missing.present);
+        assert!(!missing.matches_expected_hash);
+
+        store.cache_document("file-1", "# Hello").unwrap();
+        let expected = sha256_hex(b"# Hello");
+        let matching = store
+            .cached_content_status("file-1", "document", Some(&expected))
+            .unwrap();
+        assert!(matching.present);
+        assert!(matching.matches_expected_hash);
+        assert_eq!(matching.actual_sha256.as_deref(), Some(expected.as_str()));
+        assert_eq!(matching.size_bytes, Some(7));
+
+        let stale = store
+            .cached_content_status("file-1", "document", Some("not-the-current-hash"))
+            .unwrap();
+        assert!(stale.present);
+        assert!(!stale.matches_expected_hash);
+    }
+
+    #[test]
+    fn encrypted_replica_payloads_round_trip_and_reject_tampering() {
+        let dir = TempDir::new().unwrap();
+        let key = [7u8; 32];
+        let store = open(&dir).with_encryption_key(key);
+
+        store.cache_document("file-1", "# secret").unwrap();
+        store.cache_asset("asset-1", b"asset-bytes").unwrap();
+        store.cache_crdt_state("crdt-1", b"crdt-bytes").unwrap();
+        store
+            .enqueue_operation(&PendingOperation {
+                id: "op-1".into(),
+                kind: PendingOpKind::Edit,
+                file_id: Some("file-1".into()),
+                relative_path: Some("Notes/secret.md".into()),
+                base_manifest_sequence: 1,
+                payload: json!({ "content": "# secret" }),
+                created_at: "2026-06-17T00:00:00Z".into(),
+                status: PendingOpStatus::Pending,
+                failure_code: None,
+                failure_message: None,
+            })
+            .unwrap();
+
+        let raw_document = std::fs::read(store.root().join(DOCUMENTS_DIR).join("file-1")).unwrap();
+        let raw_asset = std::fs::read(store.root().join(ASSETS_DIR).join("asset-1")).unwrap();
+        let raw_crdt = std::fs::read(store.root().join(CRDT_DIR).join("crdt-1.bin")).unwrap();
+        let raw_pending = std::fs::read(store.root().join(PENDING_OPS_FILE)).unwrap();
+        assert!(crypto::is_encrypted_data(&raw_document));
+        assert!(crypto::is_encrypted_data(&raw_asset));
+        assert!(crypto::is_encrypted_data(&raw_crdt));
+        assert!(crypto::is_encrypted_data(&raw_pending));
+        assert!(!String::from_utf8_lossy(&raw_pending).contains("# secret"));
+
+        assert_eq!(
+            store.read_cached_document("file-1").unwrap().as_deref(),
+            Some("# secret")
+        );
+        assert_eq!(
+            store.read_cached_asset("asset-1").unwrap(),
+            Some(b"asset-bytes".to_vec())
+        );
+        assert_eq!(
+            store.read_cached_crdt_state("crdt-1").unwrap(),
+            Some(b"crdt-bytes".to_vec())
+        );
+        assert_eq!(store.list_pending_operations().unwrap().len(), 1);
+
+        let mut tampered = raw_document;
+        let last = tampered.len() - 1;
+        tampered[last] ^= 0xff;
+        std::fs::write(store.root().join(DOCUMENTS_DIR).join("file-1"), tampered).unwrap();
+        let err = store
+            .read_cached_document("file-1")
+            .expect_err("tampered ciphertext should fail authentication");
+        assert!(err.contains("incorrect password or corrupted file"));
     }
 
     #[test]

@@ -215,6 +215,14 @@ pub fn build_router(state: AppState) -> Router {
             post(api::admin_verify_backup),
         )
         .route(
+            "/api/v1/admin/backups/import",
+            post(api::admin_import_backup_archive),
+        )
+        .route(
+            "/api/v1/admin/backups/{backup_name}/archive",
+            get(api::admin_export_backup_archive),
+        )
+        .route(
             "/api/v1/admin/backups/{backup_name}/restore",
             post(api::admin_restore_backup),
         )
