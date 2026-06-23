@@ -633,6 +633,33 @@ describe('HostedVaultClient', () => {
     );
   });
 
+  it('serves cached asset bytes when the asset fetch fails offline', async () => {
+    vi.mocked(tauriCommands.hostedVaultRequest).mockResolvedValueOnce(mockHostedManifest());
+    vi.mocked(tauriCommands.hostedVaultAssetDataUrl).mockRejectedValue(
+      new Error('NetworkError when attempting to fetch resource.'),
+    );
+    vi.mocked(tauriCommands.replicaReadCachedAsset).mockResolvedValue('UERG');
+    const client = new HostedVaultClient(hostedVault);
+
+    await expect(client.readAssetDataUrl('doc.pdf')).resolves.toBe('data:application/pdf;base64,UERG');
+    expect(tauriCommands.replicaReadCachedAsset).toHaveBeenCalledWith(
+      'https://collab.example.test',
+      'hosted-vault',
+      'pdf-1',
+    );
+  });
+
+  it('rethrows when an asset is offline and not cached', async () => {
+    vi.mocked(tauriCommands.hostedVaultRequest).mockResolvedValueOnce(mockHostedManifest());
+    vi.mocked(tauriCommands.hostedVaultAssetDataUrl).mockRejectedValue(
+      new Error('NetworkError when attempting to fetch resource.'),
+    );
+    vi.mocked(tauriCommands.replicaReadCachedAsset).mockResolvedValue(null);
+    const client = new HostedVaultClient(hostedVault);
+
+    await expect(client.readAssetDataUrl('doc.pdf')).rejects.toThrow(/NetworkError/);
+  });
+
   it('maps structural previews, root trash entries, and hosted search results', async () => {
     const trashedFolder = { ...rootFolder, state: 'trashed' as const, updatedAt: '2026-06-11T10:00:00Z' };
     const trashedChild = {

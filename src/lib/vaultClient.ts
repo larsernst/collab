@@ -326,6 +326,40 @@ function extension(path: string): string {
   return dot > 0 ? name.slice(dot + 1).toLowerCase() : '';
 }
 
+// Mirrors the backend `guess_mime_type` in src-tauri/src/commands/files.rs so a
+// data URL rebuilt from replica-cached asset bytes (which are stored without a
+// MIME prefix) declares the same content type the server would have returned.
+function guessAssetMime(relativePath: string): string {
+  switch (extension(relativePath)) {
+    case 'png':
+      return 'image/png';
+    case 'jpg':
+    case 'jpeg':
+      return 'image/jpeg';
+    case 'gif':
+      return 'image/gif';
+    case 'webp':
+      return 'image/webp';
+    case 'svg':
+      return 'image/svg+xml';
+    case 'bmp':
+      return 'image/bmp';
+    case 'ico':
+      return 'image/x-icon';
+    case 'avif':
+      return 'image/avif';
+    case 'pdf':
+      return 'application/pdf';
+    default:
+      return 'application/octet-stream';
+  }
+}
+
+function assetDataUrlBase64(dataUrl: string): string | null {
+  const match = /^data:[^;]+;base64,(.*)$/s.exec(dataUrl);
+  return match ? match[1] : null;
+}
+
 function documentTypeForPath(path: string): HostedDocumentType {
   const ext = extension(path);
   if (ext === 'kanban') return 'kanban';
@@ -1054,10 +1088,34 @@ export class HostedVaultClient implements VaultClient {
   }
 
   async readAssetDataUrl(relativePath: string): Promise<string> {
-    const manifest = await this.manifest();
+    const manifest = await this.onlineOrCachedManifest();
     const file = this.findByPath(manifest, relativePath);
     if (file.kind === 'folder') throw new Error('Folders cannot be downloaded as assets.');
-    return tauriCommands.hostedVaultAssetDataUrl(this.vault.serverUrl, this.vault.hostedVaultId, file.id);
+    try {
+      const dataUrl = await tauriCommands.hostedVaultAssetDataUrl(
+        this.vault.serverUrl,
+        this.vault.hostedVaultId,
+        file.id,
+      );
+      // Keep a full offline copy current after online reads. Gated by the
+      // offline-copy capability/marker so plain viewers do not build up durable
+      // local content caches merely by opening files.
+      const base64 = assetDataUrlBase64(dataUrl);
+      if (base64 !== null) void this.cacheAssetForOfflineCopy(file.id, base64);
+      return dataUrl;
+    } catch (error) {
+      // Offline (or a flaky connection): serve the asset from the replica cache
+      // if it was made available offline. Without this, PDFs and images failed
+      // to open even though their bytes were cached locally.
+      if (!isLikelyConnectivityError(error)) throw error;
+      const cached = await tauriCommands.replicaReadCachedAsset(
+        this.vault.serverUrl,
+        this.vault.hostedVaultId,
+        file.id,
+      );
+      if (cached === null) throw error;
+      return `data:${guessAssetMime(relativePath)};base64,${cached}`;
+    }
   }
 
   async readPdfAnnotations(relativePath: string): Promise<VaultPdfAnnotations> {
