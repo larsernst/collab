@@ -172,7 +172,6 @@ describe('serverStore.restoreSession', () => {
     localStorage.setItem('collab-hosted-server-url', 'https://collab.example.test');
     localStorage.setItem('collab-hosted-allow-invalid-certificates', 'true');
     vi.mocked(tauriCommands.serverConnectionStatus).mockResolvedValue({ ...connected, connected: false });
-    vi.mocked(tauriCommands.serverHasSavedSession).mockResolvedValue(true);
     vi.mocked(tauriCommands.reconnectServer).mockResolvedValue(connected);
     vi.mocked(tauriCommands.hostedVaultRequest).mockResolvedValue([hostedVault]);
 
@@ -183,16 +182,15 @@ describe('serverStore.restoreSession', () => {
   it('skips without error when a saved URL has no stored credential', async () => {
     localStorage.setItem('collab-hosted-server-url', 'https://collab.example.test');
     vi.mocked(tauriCommands.serverConnectionStatus).mockResolvedValue({ ...connected, connected: false });
-    vi.mocked(tauriCommands.serverHasSavedSession).mockResolvedValue(false);
+    vi.mocked(tauriCommands.reconnectServer).mockRejectedValue(new Error('No saved server session was found.'));
 
     expect(await useServerStore.getState().restoreSession()).toBe('skipped');
-    expect(tauriCommands.reconnectServer).not.toHaveBeenCalled();
+    expect(tauriCommands.reconnectServer).toHaveBeenCalledTimes(1);
   });
 
   it('deduplicates concurrent restore attempts into a single reconnect', async () => {
     localStorage.setItem('collab-hosted-server-url', 'https://collab.example.test');
     vi.mocked(tauriCommands.serverConnectionStatus).mockResolvedValue({ ...connected, connected: false });
-    vi.mocked(tauriCommands.serverHasSavedSession).mockResolvedValue(true);
     vi.mocked(tauriCommands.reconnectServer).mockResolvedValue(connected);
     vi.mocked(tauriCommands.hostedVaultRequest).mockResolvedValue([hostedVault]);
 
@@ -207,7 +205,6 @@ describe('serverStore.restoreSession', () => {
   it('reports failure when a stored credential exists but the reconnect fails', async () => {
     localStorage.setItem('collab-hosted-server-url', 'https://collab.example.test');
     vi.mocked(tauriCommands.serverConnectionStatus).mockResolvedValue({ ...connected, connected: false });
-    vi.mocked(tauriCommands.serverHasSavedSession).mockResolvedValue(true);
     vi.mocked(tauriCommands.reconnectServer).mockRejectedValue(new Error('expired'));
 
     expect(await useServerStore.getState().restoreSession()).toBe('failed');

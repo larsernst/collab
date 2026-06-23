@@ -5,6 +5,7 @@ import type { HostedVaultSummary } from '../types/vault';
 
 const SERVER_URL_KEY = 'collab-hosted-server-url';
 const ALLOW_INVALID_CERTIFICATES_KEY = 'collab-hosted-allow-invalid-certificates';
+const NO_SAVED_SESSION_MESSAGE = 'No saved server session was found.';
 
 export type RestoreSessionResult = 'connected' | 'failed' | 'skipped';
 
@@ -105,19 +106,11 @@ export const useServerStore = create<ServerState>()((set, get) => ({
     } catch {
       // Fall through to a refresh-token reconnect.
     }
-    // Only attempt a reconnect when a refresh token actually exists in the OS
-    // credential store. A stale saved server URL with no stored credential (e.g.
-    // left over after a disconnect, or never successfully authenticated) must not
-    // surface a spurious "could not restore session" error.
-    try {
-      if (!(await tauriCommands.serverHasSavedSession(serverUrl))) return 'skipped';
-    } catch {
-      return 'skipped';
-    }
     try {
       await get().reconnect(serverUrl, allowInvalidCertificates);
       return 'connected';
-    } catch {
+    } catch (error) {
+      if (String(error).includes(NO_SAVED_SESSION_MESSAGE)) return 'skipped';
       return 'failed';
     }
   },
