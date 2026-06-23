@@ -30,6 +30,9 @@ pub struct MaintenancePolicy {
     /// revision and any snapshot-pinned revision are always kept). `0` keeps all
     /// history.
     pub revision_history_limit: u32,
+    /// When non-zero, deletes oldest unpinned historical revisions until total
+    /// retained revision bytes are at or below this target.
+    pub revision_storage_target_bytes: u64,
 }
 
 impl MaintenancePolicy {
@@ -37,6 +40,7 @@ impl MaintenancePolicy {
         Self {
             audit_retention_days: config.audit_retention_days,
             revision_history_limit: config.revision_history_limit,
+            revision_storage_target_bytes: 0,
         }
     }
 }
@@ -83,7 +87,12 @@ pub async fn run_maintenance(
             delete_count_older_than(db, "hosted_vault_activity_events", days, "activity").await;
     }
 
-    report.pruned_revisions = reclaim_revisions(db, policy.revision_history_limit).await;
+    report.pruned_revisions = reclaim_revisions(
+        db,
+        policy.revision_history_limit,
+        policy.revision_storage_target_bytes,
+    )
+    .await;
 
     let (reclaimed_blobs, reclaimed_blob_bytes) = garbage_collect_blobs(db, blobs).await;
     report.reclaimed_blobs = reclaimed_blobs;
@@ -120,7 +129,7 @@ async fn delete_count_older_than(db: &PgPool, table: &str, days: i64, label: &st
 /// files, and—when a history limit is set—every revision of a live file beyond
 /// the newest `limit`, always preserving the file's current revision and any
 /// snapshot-pinned revision.
-async fn reclaim_revisions(db: &PgPool, history_limit: u32) -> u64 {
+async fn reclaim_revisions(db: &PgPool, history_limit: u32, storage_target_bytes: u64) -> u64 {
     let mut pruned = 0;
 
     // Tombstoned files are purged: detach the current-revision pointer, then drop
@@ -172,6 +181,45 @@ async fn reclaim_revisions(db: &PgPool, history_limit: u32) -> u64 {
         {
             Ok(result) => pruned += result.rows_affected(),
             Err(error) => tracing::warn!(?error, "revision history compaction failed"),
+        }
+    }
+
+    if storage_target_bytes > 0 {
+        let sql = "
+            WITH total AS (
+                SELECT COALESCE(SUM(size_bytes), 0)::bigint AS bytes
+                FROM hosted_file_revisions
+            ),
+            candidates AS (
+                SELECT r.id,
+                       r.size_bytes,
+                       SUM(r.size_bytes) OVER (ORDER BY r.created_at ASC, r.sequence ASC, r.id ASC) AS cumulative_bytes,
+                       total.bytes AS total_bytes
+                FROM hosted_file_revisions r
+                CROSS JOIN total
+                WHERE r.id NOT IN (
+                    SELECT current_revision_id FROM hosted_file_entries
+                    WHERE current_revision_id IS NOT NULL
+                )
+                  AND NOT EXISTS (SELECT 1 FROM hosted_snapshots s WHERE s.revision_id = r.id)
+            ),
+            doomed AS (
+                SELECT id
+                FROM candidates
+                WHERE total_bytes > $1
+                  AND cumulative_bytes <= (total_bytes - $1)
+            )
+            DELETE FROM hosted_file_revisions r
+            USING doomed
+            WHERE r.id = doomed.id
+        ";
+        match sqlx::query(sql)
+            .bind(storage_target_bytes as i64)
+            .execute(db)
+            .await
+        {
+            Ok(result) => pruned += result.rows_affected(),
+            Err(error) => tracing::warn!(?error, "revision storage target compaction failed"),
         }
     }
 
@@ -420,6 +468,7 @@ mod tests {
             MaintenancePolicy {
                 audit_retention_days: 30,
                 revision_history_limit: 2,
+                revision_storage_target_bytes: 0,
             },
         )
         .await;

@@ -148,11 +148,15 @@ pub fn build_router(state: AppState) -> Router {
         )
         .route(
             "/api/v1/vaults/{vault_id}/files/{file_id}/revisions",
-            get(api::list_file_revisions).post(api::write_text_revision),
+            get(api::list_file_revisions)
+                .post(api::write_text_revision)
+                .delete(api::delete_file_revisions),
         )
         .route(
             "/api/v1/vaults/{vault_id}/files/{file_id}/revisions/{revision_id}",
-            get(api::get_text_revision).post(api::restore_file_revision),
+            get(api::get_text_revision)
+                .post(api::restore_file_revision)
+                .delete(api::delete_file_revision),
         )
         .route(
             "/api/v1/vaults/{vault_id}/files/{file_id}/snapshots",
@@ -397,7 +401,7 @@ pub fn spawn_maintenance_worker(state: AppState) {
         // A short initial delay lets startup settle before the first sweep.
         sleep(Duration::from_secs(30)).await;
         loop {
-            let policy = crate::retention::MaintenancePolicy::from_config(&state.config);
+            let policy = crate::api::maintenance_policy_from_settings(&state.config);
             let report =
                 crate::retention::run_maintenance(&state.database, state.blobs.as_ref(), policy)
                     .await;

@@ -265,6 +265,8 @@ pub struct AdminRuntimeSettings {
     pub max_import_expanded_bytes: AdminRuntimeSetting<u64>,
     pub storage_warning_bytes: AdminRuntimeSetting<u64>,
     pub storage_quota_bytes: AdminRuntimeSetting<u64>,
+    pub revision_history_limit: AdminRuntimeSetting<u64>,
+    pub revision_storage_target_bytes: AdminRuntimeSetting<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

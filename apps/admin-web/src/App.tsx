@@ -1,6 +1,7 @@
 import {
   Activity,
   Archive,
+  Ban,
   Boxes,
   CircleAlert,
   ChevronDown,
@@ -15,6 +16,7 @@ import {
   KeyRound,
   LogOut,
   MessageSquare,
+  Pencil,
   Plus,
   RefreshCw,
   RotateCcw,
@@ -25,9 +27,13 @@ import {
   SunMoon,
   Trash2,
   Upload,
+  UserCheck,
+  UserCog,
+  UserX,
   Users,
 } from 'lucide-react';
 import { ChangeEvent, FormEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { serverApi } from './api';
 import { useAutoRefresh } from './useAutoRefresh';
 import { useAdminAppearance, type AdminAccent, type AdminTheme } from './theme';
@@ -326,6 +332,8 @@ function ServerConfigurationPanel() {
     maxImportExpandedBytes: '2 GiB',
     storageWarningBytes: '10 GiB',
     storageQuotaBytes: '0',
+    revisionHistoryLimit: 0,
+    revisionStorageTargetBytes: '0',
     scheduleEnabled: false,
     intervalSeconds: 86_400,
     retentionDays: 14,
@@ -351,6 +359,8 @@ function ServerConfigurationPanel() {
       maxImportExpandedBytes: formatByteSize(next.runtime.maxImportExpandedBytes.value),
       storageWarningBytes: formatByteSize(next.runtime.storageWarningBytes.value),
       storageQuotaBytes: formatByteSize(next.runtime.storageQuotaBytes.value),
+      revisionHistoryLimit: next.runtime.revisionHistoryLimit.value,
+      revisionStorageTargetBytes: formatByteSize(next.runtime.revisionStorageTargetBytes.value),
       scheduleEnabled: next.backup.scheduleEnabled,
       intervalSeconds: next.backup.intervalSeconds,
       retentionDays: next.backup.retentionDays,
@@ -379,6 +389,8 @@ function ServerConfigurationPanel() {
           maxImportExpandedBytes: draft.maxImportExpandedBytes,
           storageWarningBytes: draft.storageWarningBytes,
           storageQuotaBytes: draft.storageQuotaBytes,
+          revisionHistoryLimit: draft.revisionHistoryLimit,
+          revisionStorageTargetBytes: draft.revisionStorageTargetBytes,
         },
         backup: {
           scheduleEnabled: draft.scheduleEnabled,
@@ -442,6 +454,8 @@ function ServerConfigurationPanel() {
           <SettingField label="Max expanded ZIP size" setting={runtime.maxImportExpandedBytes} type="text" placeholder="e.g. 2 GiB" value={draft.maxImportExpandedBytes} onChange={(event) => setDraft((current) => ({ ...current, maxImportExpandedBytes: event.target.value }))} />
           <SettingField label="Storage warning size" setting={runtime.storageWarningBytes} type="text" placeholder="e.g. 10 GiB" value={draft.storageWarningBytes} onChange={(event) => setDraft((current) => ({ ...current, storageWarningBytes: event.target.value }))} />
           <SettingField label="Storage quota (0 = unlimited)" setting={runtime.storageQuotaBytes} type="text" placeholder="e.g. 50 GiB or 0" value={draft.storageQuotaBytes} onChange={(event) => setDraft((current) => ({ ...current, storageQuotaBytes: event.target.value }))} />
+          <SettingField label="File history versions (0 = unlimited)" setting={runtime.revisionHistoryLimit} type="number" min={0} max={1_000_000} value={draft.revisionHistoryLimit} onChange={(event) => setDraft((current) => ({ ...current, revisionHistoryLimit: Number(event.target.value) || 0 }))} />
+          <SettingField label="File history storage target (0 = disabled)" setting={runtime.revisionStorageTargetBytes} type="text" placeholder="e.g. 20 GiB or 0" value={draft.revisionStorageTargetBytes} onChange={(event) => setDraft((current) => ({ ...current, revisionStorageTargetBytes: event.target.value }))} />
         </div>
         <Separator />
         <div className="settings-grid">
@@ -914,7 +928,7 @@ function UsersPage({ currentUser }: { currentUser: ServerUser }) {
           <Search size={15} />
           <Input type="search" value={search} placeholder="Search users by name or username" aria-label="Search users" onChange={(event) => setSearch(event.target.value)} />
         </label>
-        <div className="user-list">{visibleUsers.map((user) => <div className="user-row" key={user.id}><Avatar user={user} /><div className="grow"><strong>{user.displayName}</strong><small>{user.username} · {user.role}{user.isPrimaryAdmin ? ' · primary administrator' : ''}</small></div><Badge variant={user.role === 'admin' ? 'success' : 'outline'}>{user.role}</Badge><Badge variant={user.status === 'active' ? 'success' : 'destructive'}>{user.status}</Badge><span className="session-count">{user.activeSessions} sessions</span><Button variant="outline" size="sm" onClick={() => setEditTarget(user)}>Edit</Button>{user.role === 'admin' ? <Button variant="outline" size="sm" disabled={user.id === currentUser.id || user.isPrimaryAdmin} onClick={() => setRoleTarget(user)}>Make member</Button> : <Button variant="outline" size="sm" onClick={() => setRoleTarget(user)}>Make admin</Button>}<Button variant="outline" size="sm" onClick={async () => setActivity({ user, events: await serverApi.userActivity(user.id) })}>Activity</Button><Button variant="outline" size="sm" onClick={() => setResetTarget(user)}>Reset password</Button>{user.status === 'disabled' ? <Button variant="outline" size="sm" disabled={user.isPrimaryAdmin} onClick={() => setDisabled(user, false)}>Re-enable</Button> : <Button variant="outline" size="sm" disabled={user.id === currentUser.id || user.isPrimaryAdmin} onClick={() => setDisabled(user, true)}>Disable</Button>}<Button variant="outline" size="sm" onClick={async () => { await serverApi.revokeSessions(user.id); await load(); }}>Revoke sessions</Button><Button variant="destructive" size="sm" disabled={user.id === currentUser.id || user.isPrimaryAdmin} onClick={() => setConfirmDelete(user)}>Delete account</Button></div>)}{visibleUsers.length === 0 && <p className="subtle">No users match this search.</p>}</div>
+        <div className="user-list">{visibleUsers.map((user) => <div className="user-row" key={user.id}><Avatar user={user} /><div className="grow"><strong>{user.displayName}</strong><small>{user.username} · {user.role}{user.isPrimaryAdmin ? ' · primary administrator' : ''}</small></div><Badge variant={user.role === 'admin' ? 'success' : 'outline'}>{user.role}</Badge><Badge variant={user.status === 'active' ? 'success' : 'destructive'}>{user.status}</Badge><span className="session-count">{user.activeSessions} sessions</span><div className="compact-actions user-actions"><Button aria-label="Edit" title="Edit" variant="outline" size="icon" onClick={() => setEditTarget(user)}><Pencil size={15} /></Button>{user.role === 'admin' ? <Button aria-label="Make member" title="Make member" variant="outline" size="icon" disabled={user.id === currentUser.id || user.isPrimaryAdmin} onClick={() => setRoleTarget(user)}><UserCog size={15} /></Button> : <Button aria-label="Make admin" title="Make admin" variant="outline" size="icon" onClick={() => setRoleTarget(user)}><ShieldCheck size={15} /></Button>}<Button aria-label="Activity" title="Activity" variant="outline" size="icon" onClick={async () => setActivity({ user, events: await serverApi.userActivity(user.id) })}><Activity size={15} /></Button><Button aria-label="Reset password" title="Reset password" variant="outline" size="icon" onClick={() => setResetTarget(user)}><KeyRound size={15} /></Button>{user.status === 'disabled' ? <Button aria-label="Re-enable" title="Re-enable" variant="outline" size="icon" disabled={user.isPrimaryAdmin} onClick={() => setDisabled(user, false)}><UserCheck size={15} /></Button> : <Button aria-label="Disable" title="Disable" variant="outline" size="icon" disabled={user.id === currentUser.id || user.isPrimaryAdmin} onClick={() => setDisabled(user, true)}><Ban size={15} /></Button>}<Button aria-label="Revoke sessions" title="Revoke sessions" variant="outline" size="icon" onClick={async () => { await serverApi.revokeSessions(user.id); await load(); }}><LogOut size={15} /></Button><Button aria-label="Delete account" title="Delete account" variant="destructive" size="icon" disabled={user.id === currentUser.id || user.isPrimaryAdmin} onClick={() => setConfirmDelete(user)}><UserX size={15} /></Button></div></div>)}{visibleUsers.length === 0 && <p className="subtle">No users match this search.</p>}</div>
       </Panel>
       <Panel title={`${invitations.length} invitations`} icon={<KeyRound size={17} />}><div className="audit-list">{invitations.map((invitation) => <div className="audit-row" key={invitation.id}><div className="grow"><strong>{invitation.displayName}</strong><small>{invitation.username} · expires {new Date(invitation.expiresAt).toLocaleString()}</small></div><span className="request-chip">{invitation.acceptedAt ? 'accepted' : invitation.revokedAt ? 'revoked' : new Date(invitation.expiresAt) < new Date() ? 'expired' : 'pending'}</span></div>)}</div></Panel>
       {activity && (
@@ -1097,6 +1111,7 @@ function VaultDetailPage({ vaultId, onBack }: { vaultId: string; onBack: () => v
   const [manifestSequence, setManifestSequence] = useState(0);
   const [currentFolderId, setCurrentFolderId] = useState<string | null>(null);
   const [fileSearch, setFileSearch] = useState('');
+  const [fileBrowserTab, setFileBrowserTab] = useState<'files' | 'trash'>('files');
   const [draggingFileId, setDraggingFileId] = useState<string | null>(null);
   const [dropTargetId, setDropTargetId] = useState<string | null | '__root__'>(null);
   const [users, setUsers] = useState<ServerUser[]>([]);
@@ -1395,6 +1410,21 @@ function VaultDetailPage({ vaultId, onBack }: { vaultId: string; onBack: () => v
                 {detail.requireOfflineCopy ? 'Offline copy required' : 'Require offline copy'}
               </Button>
             </div>
+            <div className="settings-row">
+              <div>
+                <strong>File history</strong>
+                <p className="subtle">
+                  {storage ? `${storage.revisionCount} retained versions using ${formatBytes(storage.retainedRevisionBytes)}. Manage individual file versions from the History menu.` : 'Manage retained document versions from the file browser.'}
+                </p>
+              </div>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => { setFileBrowserTab('files'); setFilesOpen(true); }}
+              >
+                <History size={15} />Manage versions
+              </Button>
+            </div>
           </Panel>
           <Panel title="Vault files" icon={<Folder size={17} />}>
             <p className="subtle">{detail.activeFiles} active {detail.activeFiles === 1 ? 'file' : 'files'} · {detail.trashedFiles} in trash. Open the browser to navigate folders, move, download, delete, and manage trashed items.</p>
@@ -1486,13 +1516,36 @@ function VaultDetailPage({ vaultId, onBack }: { vaultId: string; onBack: () => v
               />
             </label>
           </div>
+          <div className="file-browser-tabs" role="tablist" aria-label="Vault file browser sections">
+            <Button
+              type="button"
+              variant={fileBrowserTab === 'files' ? 'default' : 'outline'}
+              size="sm"
+              role="tab"
+              aria-selected={fileBrowserTab === 'files'}
+              onClick={() => setFileBrowserTab('files')}
+            >
+              <Folder size={15} />Files
+            </Button>
+            <Button
+              type="button"
+              variant={fileBrowserTab === 'trash' ? 'default' : 'outline'}
+              size="sm"
+              role="tab"
+              aria-selected={fileBrowserTab === 'trash'}
+              onClick={() => setFileBrowserTab('trash')}
+            >
+              <Trash2 size={15} />Trash ({trashedFiles.length})
+            </Button>
+          </div>
           <div className="files-modal-body">
-          <p className="subtle file-browser-summary">
-            {normalizedSearch
-              ? `${visibleFiles.length} matches across the vault`
-              : `${visibleFiles.length} entries in ${currentFolder?.relativePath ?? 'Vault root'} · drag a row onto a folder to move it`}
-          </p>
-          <div className="file-browser">
+          {fileBrowserTab === 'files' && <>
+            <p className="subtle file-browser-summary">
+              {normalizedSearch
+                ? `${visibleFiles.length} matches across the vault`
+                : `${visibleFiles.length} entries in ${currentFolder?.relativePath ?? 'Vault root'} · drag a row onto a folder to move it`}
+            </p>
+            <div className="file-browser">
             <div className="file-row file-header">
               <span>{normalizedSearch ? 'Path' : 'Name'}</span><span>Size</span><span>Modified</span><span>State</span><span>Actions</span>
             </div>
@@ -1538,9 +1591,8 @@ function VaultDetailPage({ vaultId, onBack }: { vaultId: string; onBack: () => v
                   <span>{file.kind === 'folder' ? (folderSizes.has(file.id) ? formatBytes(folderSizes.get(file.id) ?? 0) : '—') : file.currentRevision ? formatBytes(file.currentRevision.sizeBytes) : '—'}</span>
                   <span>{new Date(file.updatedAt).toLocaleString()}</span>
                   <Badge variant={file.state === 'active' ? 'success' : 'destructive'}>{file.state}</Badge>
-                  <div className="actions">
-                    <Button aria-label={`Download ${file.relativePath}`} variant="outline" size="sm" disabled={file.state !== 'active'} onClick={() => void downloadEntry(file)}><Download size={15} />{file.kind === 'folder' ? 'Download ZIP' : 'Download'}</Button>
-                    {file.kind === 'document' && (
+                  <div className="compact-actions file-actions">
+                    {file.kind === 'document' ? (
                       <FileHistoryMenu
                         vaultId={vaultId}
                         file={file}
@@ -1548,11 +1600,15 @@ function VaultDetailPage({ vaultId, onBack }: { vaultId: string; onBack: () => v
                         onError={setError}
                         onRestored={() => void load()}
                       />
+                    ) : (
+                      <span className="file-history-placeholder" aria-hidden="true" />
                     )}
+                    <Button aria-label={`Download ${file.relativePath}`} title={file.kind === 'folder' ? 'Download ZIP' : 'Download'} variant="outline" size="icon" disabled={file.state !== 'active'} onClick={() => void downloadEntry(file)}><Download size={15} /></Button>
                     <Button
                       aria-label={`Delete ${file.relativePath}`}
+                      title="Delete"
                       variant="destructive"
-                      size="sm"
+                      size="icon"
                       disabled={pendingDelete || file.state !== 'active'}
                       onClick={() => setConfirm({
                         title: `Move ${file.name} to trash?`,
@@ -1563,16 +1619,16 @@ function VaultDetailPage({ vaultId, onBack }: { vaultId: string; onBack: () => v
                         action: () => trashEntry(file),
                       })}
                     >
-                      <Trash2 size={15} />Delete
+                      <Trash2 size={15} />
                     </Button>
                   </div>
                 </div>
               );
             })}
             {visibleFiles.length === 0 && <div className="file-browser-empty">{normalizedSearch ? 'No files match this search.' : 'This folder is empty.'}</div>}
-          </div>
-          <div className="ui-dialog-section">
-            <h3>Trash ({trashedFiles.length})</h3>
+            </div>
+          </>}
+          {fileBrowserTab === 'trash' && <div className="ui-dialog-section">
             <p className="subtle">Trashed top-level items are kept separately from active vault files. Restoring a folder also restores its contents.</p>
             <div className="file-browser">
               <div className="file-row trash-file-row file-header">
@@ -1614,7 +1670,7 @@ function VaultDetailPage({ vaultId, onBack }: { vaultId: string; onBack: () => v
               ))}
               {trashedFiles.length === 0 && <div className="file-browser-empty">Trash is empty.</div>}
             </div>
-          </div>
+          </div>}
           </div>
           <div className="ui-dialog-actions"><Button variant="outline" onClick={() => setFilesOpen(false)}>Close</Button></div>
           </DialogShell>
@@ -1822,12 +1878,19 @@ function FileHistoryMenu({
   const [open, setOpen] = useState(false);
   const [revisions, setRevisions] = useState<HostedFileRevision[]>([]);
   const [loading, setLoading] = useState(false);
+  const [manageOpen, setManageOpen] = useState(false);
+  const [selectedRevisionIds, setSelectedRevisionIds] = useState<string[]>([]);
+  const [deleting, setDeleting] = useState(false);
+  const [menuPosition, setMenuPosition] = useState<{ top: number; left: number; width: number } | null>(null);
   const containerRef = useRef<HTMLDivElement>(null);
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  const listRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     if (!open) return;
     const onPointerDown = (event: PointerEvent) => {
-      if (!containerRef.current?.contains(event.target as Node)) setOpen(false);
+      const target = event.target as Node;
+      if (!containerRef.current?.contains(target) && !listRef.current?.contains(target)) setOpen(false);
     };
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key === 'Escape') setOpen(false);
@@ -1844,6 +1907,14 @@ function FileHistoryMenu({
     if (open) {
       setOpen(false);
       return;
+    }
+    const rect = triggerRef.current?.getBoundingClientRect();
+    if (rect) {
+      setMenuPosition({
+        top: rect.bottom + 4,
+        left: Math.max(8, rect.right - 340),
+        width: Math.min(340, Math.max(280, window.innerWidth - 16)),
+      });
     }
     setOpen(true);
     setLoading(true);
@@ -1867,9 +1938,87 @@ function FileHistoryMenu({
     }
   }
 
+  async function deleteRevision(revision: HostedFileRevision) {
+    setDeleting(true);
+    try {
+      setRevisions(await serverApi.deleteFileRevision(vaultId, file.id, revision.id));
+      onRestored();
+    } catch (reason) {
+      onError(String(reason));
+    } finally {
+      setDeleting(false);
+    }
+  }
+
+  async function deleteSelected(all = false) {
+    setDeleting(true);
+    try {
+      setRevisions(await serverApi.deleteFileRevisions(vaultId, file.id, all ? { all: true } : { revisionIds: selectedRevisionIds }));
+      setSelectedRevisionIds([]);
+      setManageOpen(false);
+      onRestored();
+    } catch (reason) {
+      onError(String(reason));
+    } finally {
+      setDeleting(false);
+    }
+  }
+
+  const currentRevisionId = file.currentRevision?.id ?? null;
+  const deletableRevisions = revisions.filter((revision) => revision.id !== currentRevisionId);
+  const historyMenu = open && menuPosition ? createPortal(
+    <div
+      ref={listRef}
+      className="history-menu-list"
+      role="menu"
+      aria-label={`Revision history for ${file.name}`}
+      style={{ top: menuPosition.top, left: menuPosition.left, width: menuPosition.width }}
+    >
+      <div className="history-menu-head">
+        <strong>{file.name}</strong>
+        <Button variant="outline" size="sm" disabled={loading || revisions.length === 0} onClick={() => setManageOpen(true)}>Manage</Button>
+      </div>
+      {loading && <p className="subtle history-menu-empty">Loading revisions...</p>}
+      {!loading && revisions.length === 0 && <p className="subtle history-menu-empty">No revisions recorded.</p>}
+      {!loading && revisions.map((revision) => {
+        const isCurrent = revision.id === currentRevisionId;
+        return (
+          <div className="history-menu-row" key={revision.id}>
+            <div className="grow">
+              <strong>Revision {revision.sequence}{isCurrent ? ' · current' : ''}</strong>
+              <small>{formatBytes(revision.sizeBytes)} · {revision.createdByDisplayName ?? 'System'} · {new Date(revision.createdAt).toLocaleString()}</small>
+            </div>
+            <div className="compact-actions">
+              <Button
+                variant="outline"
+                size="sm"
+                disabled={isCurrent || !canRestore}
+                onClick={() => void restore(revision)}
+              >
+                Restore
+              </Button>
+              <Button
+                aria-label={`Delete revision ${revision.sequence}`}
+                title="Delete revision"
+                variant="destructive"
+                size="icon"
+                disabled={isCurrent || deleting}
+                onClick={() => void deleteRevision(revision)}
+              >
+                <Trash2 size={14} />
+              </Button>
+            </div>
+          </div>
+        );
+      })}
+    </div>,
+    document.body,
+  ) : null;
+
   return (
     <div ref={containerRef} className="history-menu">
       <Button
+        ref={triggerRef}
         aria-label={`History ${file.relativePath}`}
         aria-haspopup="menu"
         aria-expanded={open}
@@ -1880,27 +2029,40 @@ function FileHistoryMenu({
       >
         <History size={15} />History<ChevronDown size={13} />
       </Button>
-      {open && (
-        <div className="history-menu-list" role="menu" aria-label={`Revision history for ${file.name}`}>
-          {loading && <p className="subtle history-menu-empty">Loading revisions...</p>}
-          {!loading && revisions.length === 0 && <p className="subtle history-menu-empty">No revisions recorded.</p>}
-          {!loading && revisions.map((revision) => (
-            <div className="history-menu-row" key={revision.id}>
-              <div className="grow">
-                <strong>Revision {revision.sequence}</strong>
-                <small>{formatBytes(revision.sizeBytes)} · {revision.createdByDisplayName ?? 'System'} · {new Date(revision.createdAt).toLocaleString()}</small>
-              </div>
-              <Button
-                variant="outline"
-                size="sm"
-                disabled={revision.id === file.currentRevision?.id || !canRestore}
-                onClick={() => void restore(revision)}
-              >
-                Restore
-              </Button>
-            </div>
-          ))}
-        </div>
+      {historyMenu}
+      {manageOpen && (
+        <DialogShell
+          title={`Manage history for ${file.name}`}
+          description="Delete old file versions. The current revision and snapshot-pinned revisions are protected by the server."
+          onClose={() => setManageOpen(false)}
+          className="ui-dialog-wide"
+        >
+          <div className="history-manage-list">
+            {revisions.map((revision) => {
+              const isCurrent = revision.id === currentRevisionId;
+              const selected = selectedRevisionIds.includes(revision.id);
+              return (
+                <label className="history-manage-row" key={revision.id}>
+                  <Checkbox
+                    disabled={isCurrent || deleting}
+                    checked={selected}
+                    onChange={(event) => setSelectedRevisionIds((current) => event.target.checked ? [...current, revision.id] : current.filter((id) => id !== revision.id))}
+                  />
+                  <div className="grow">
+                    <strong>Revision {revision.sequence}{isCurrent ? ' · current' : ''}</strong>
+                    <small>{formatBytes(revision.sizeBytes)} · {revision.createdByDisplayName ?? 'System'} · {new Date(revision.createdAt).toLocaleString()}</small>
+                  </div>
+                </label>
+              );
+            })}
+            {revisions.length === 0 && <p className="subtle">No revisions recorded.</p>}
+          </div>
+          <div className="ui-dialog-actions">
+            <Button variant="outline" onClick={() => setManageOpen(false)}>Close</Button>
+            <Button variant="outline" disabled={deleting || selectedRevisionIds.length === 0} onClick={() => void deleteSelected(false)}>Delete selected</Button>
+            <Button variant="destructive" disabled={deleting || deletableRevisions.length === 0} onClick={() => void deleteSelected(true)}>Delete all old versions</Button>
+          </div>
+        </DialogShell>
       )}
     </div>
   );

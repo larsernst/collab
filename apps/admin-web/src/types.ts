@@ -144,6 +144,8 @@ export interface AdminServerSettings {
     maxImportExpandedBytes: AdminRuntimeSetting<number>;
     storageWarningBytes: AdminRuntimeSetting<number>;
     storageQuotaBytes: AdminRuntimeSetting<number>;
+    revisionHistoryLimit: AdminRuntimeSetting<number>;
+    revisionStorageTargetBytes: AdminRuntimeSetting<number>;
   };
   backup: AdminBackupSettings;
   maintenance: {

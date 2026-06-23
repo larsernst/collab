@@ -376,6 +376,9 @@ pub struct UpdateRuntimeSettingsRequest {
     pub storage_warning_bytes: Option<u64>,
     #[serde(default, deserialize_with = "deserialize_opt_byte_size")]
     pub storage_quota_bytes: Option<u64>,
+    pub revision_history_limit: Option<u64>,
+    #[serde(default, deserialize_with = "deserialize_opt_byte_size")]
+    pub revision_storage_target_bytes: Option<u64>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -412,6 +415,15 @@ pub struct UpdateServerSettingsRequest {
     pub runtime: Option<UpdateRuntimeSettingsRequest>,
     pub backup: Option<UpdateBackupSettingsRequest>,
     pub maintenance: Option<UpdateMaintenanceModeRequest>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DeleteFileRevisionsRequest {
+    #[serde(default)]
+    pub revision_ids: Vec<Uuid>,
+    #[serde(default)]
+    pub all: bool,
 }
 
 pub async fn bootstrap_status(
@@ -2137,6 +2149,172 @@ pub async fn get_text_revision(
     .await?;
     Ok(Json(DataResponse::new(
         load_text_revision_content(&state, vault_id, file_id, revision_id, &request_id).await?,
+    )))
+}
+
+pub async fn delete_file_revision(
+    State(state): State<AppState>,
+    Extension(request_id): Extension<String>,
+    headers: HeaderMap,
+    Path((vault_id, file_id, revision_id)): Path<(Uuid, Uuid, Uuid)>,
+) -> Result<Json<DataResponse<Vec<HostedFileRevision>>>, ApiFailure> {
+    let actor = require_any_user(&state, &headers, &request_id).await?;
+    delete_file_revisions_inner(
+        &state,
+        &actor.user,
+        vault_id,
+        file_id,
+        vec![revision_id],
+        false,
+        &request_id,
+    )
+    .await
+}
+
+pub async fn delete_file_revisions(
+    State(state): State<AppState>,
+    Extension(request_id): Extension<String>,
+    headers: HeaderMap,
+    Path((vault_id, file_id)): Path<(Uuid, Uuid)>,
+    Json(payload): Json<DeleteFileRevisionsRequest>,
+) -> Result<Json<DataResponse<Vec<HostedFileRevision>>>, ApiFailure> {
+    let actor = require_any_user(&state, &headers, &request_id).await?;
+    delete_file_revisions_inner(
+        &state,
+        &actor.user,
+        vault_id,
+        file_id,
+        payload.revision_ids,
+        payload.all,
+        &request_id,
+    )
+    .await
+}
+
+async fn delete_file_revisions_inner(
+    state: &AppState,
+    actor: &ServerUser,
+    vault_id: Uuid,
+    file_id: Uuid,
+    mut revision_ids: Vec<Uuid>,
+    delete_all: bool,
+    request_id: &str,
+) -> Result<Json<DataResponse<Vec<HostedFileRevision>>>, ApiFailure> {
+    require_active_capability(
+        &state.database,
+        vault_id,
+        actor,
+        Capability::VaultManageSnapshots,
+        request_id,
+    )
+    .await?;
+    if !delete_all && revision_ids.is_empty() {
+        return Err(ApiFailure::validation(
+            "Select at least one revision to delete.",
+            request_id.to_owned(),
+        ));
+    }
+    revision_ids.sort_unstable();
+    revision_ids.dedup();
+    let file_exists = sqlx::query_scalar::<_, bool>(
+        "SELECT EXISTS(SELECT 1 FROM hosted_file_entries WHERE vault_id = $1 AND id = $2)",
+    )
+    .bind(vault_id)
+    .bind(file_id)
+    .fetch_one(&state.database)
+    .await
+    .map_err(|_| ApiFailure::server(request_id.to_owned()))?;
+    if !file_exists {
+        return Err(ApiFailure::not_found(request_id.to_owned()));
+    }
+
+    let rows = if delete_all {
+        sqlx::query(
+            r#"
+            DELETE FROM hosted_file_revisions r
+            WHERE r.vault_id = $1
+              AND r.file_id = $2
+              AND r.id NOT IN (
+                  SELECT current_revision_id FROM hosted_file_entries
+                  WHERE current_revision_id IS NOT NULL
+              )
+              AND NOT EXISTS (SELECT 1 FROM hosted_snapshots s WHERE s.revision_id = r.id)
+            RETURNING r.id
+            "#,
+        )
+        .bind(vault_id)
+        .bind(file_id)
+        .fetch_all(&state.database)
+        .await
+        .map_err(|_| ApiFailure::server(request_id.to_owned()))?
+    } else {
+        let deletable = sqlx::query_scalar::<_, i64>(
+            r#"
+            SELECT COUNT(*)
+            FROM hosted_file_revisions r
+            WHERE r.vault_id = $1
+              AND r.file_id = $2
+              AND r.id = ANY($3)
+              AND r.id NOT IN (
+                  SELECT current_revision_id FROM hosted_file_entries
+                  WHERE current_revision_id IS NOT NULL
+              )
+              AND NOT EXISTS (SELECT 1 FROM hosted_snapshots s WHERE s.revision_id = r.id)
+            "#,
+        )
+        .bind(vault_id)
+        .bind(file_id)
+        .bind(&revision_ids)
+        .fetch_one(&state.database)
+        .await
+        .map_err(|_| ApiFailure::server(request_id.to_owned()))?;
+        if deletable != revision_ids.len() as i64 {
+            return Err(ApiFailure::validation(
+                "Current, missing, or snapshot-pinned revisions cannot be deleted.",
+                request_id.to_owned(),
+            ));
+        }
+        sqlx::query(
+            r#"
+            DELETE FROM hosted_file_revisions r
+            WHERE r.vault_id = $1
+              AND r.file_id = $2
+              AND r.id = ANY($3)
+              AND r.id NOT IN (
+                  SELECT current_revision_id FROM hosted_file_entries
+                  WHERE current_revision_id IS NOT NULL
+              )
+              AND NOT EXISTS (SELECT 1 FROM hosted_snapshots s WHERE s.revision_id = r.id)
+            RETURNING r.id
+            "#,
+        )
+        .bind(vault_id)
+        .bind(file_id)
+        .bind(&revision_ids)
+        .fetch_all(&state.database)
+        .await
+        .map_err(|_| ApiFailure::server(request_id.to_owned()))?
+    };
+
+    let deleted = rows.len() as u64;
+    record_audit(
+        &state.database,
+        Some(&actor.id),
+        "vault.file.revisions.delete",
+        Some("file"),
+        Some(&file_id.to_string()),
+        "success",
+        request_id,
+        json!({
+            "vaultId": vault_id,
+            "fileId": file_id,
+            "deletedRevisions": deleted,
+            "all": delete_all,
+        }),
+    )
+    .await?;
+    Ok(Json(DataResponse::new(
+        load_file_revisions(&state.database, vault_id, file_id, request_id).await?,
     )))
 }
 
@@ -4468,7 +4646,7 @@ pub async fn admin_run_maintenance(
     headers: HeaderMap,
 ) -> Result<Json<DataResponse<MaintenanceReport>>, ApiFailure> {
     let actor = require_admin_csrf(&state, &headers, &request_id).await?;
-    let policy = crate::retention::MaintenancePolicy::from_config(&state.config);
+    let policy = maintenance_policy_from_settings(&state.config);
     let report =
         crate::retention::run_maintenance(&state.database, state.blobs.as_ref(), policy).await;
     record_audit(
@@ -6494,6 +6672,8 @@ struct StoredRuntimeSettings {
     max_import_expanded_bytes: Option<u64>,
     storage_warning_bytes: Option<u64>,
     storage_quota_bytes: Option<u64>,
+    revision_history_limit: Option<u64>,
+    revision_storage_target_bytes: Option<u64>,
 }
 
 #[derive(Debug, Clone)]
@@ -6508,6 +6688,8 @@ pub(crate) struct EffectiveRuntimeSettings {
     max_import_expanded_bytes: usize,
     storage_warning_bytes: u64,
     storage_quota_bytes: u64,
+    revision_history_limit: u64,
+    revision_storage_target_bytes: u64,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -6728,6 +6910,20 @@ pub(crate) fn load_effective_runtime_settings(
                 .storage_quota_bytes
                 .unwrap_or(config.storage_quota_bytes)
         },
+        revision_history_limit: if env_locked("COLLAB_REVISION_HISTORY_LIMIT") {
+            config.revision_history_limit as u64
+        } else {
+            stored
+                .revision_history_limit
+                .unwrap_or(config.revision_history_limit as u64)
+        },
+        revision_storage_target_bytes: if env_locked("COLLAB_REVISION_STORAGE_TARGET_BYTES") {
+            config.revision_storage_target_bytes
+        } else {
+            stored
+                .revision_storage_target_bytes
+                .unwrap_or(config.revision_storage_target_bytes)
+        },
     }
 }
 
@@ -6787,6 +6983,16 @@ fn runtime_settings_to_protocol(
             "COLLAB_STORAGE_QUOTA_BYTES",
             stored.storage_quota_bytes.is_some(),
         ),
+        revision_history_limit: setting_u64(
+            effective.revision_history_limit,
+            "COLLAB_REVISION_HISTORY_LIMIT",
+            stored.revision_history_limit.is_some(),
+        ),
+        revision_storage_target_bytes: setting_u64(
+            effective.revision_storage_target_bytes,
+            "COLLAB_REVISION_STORAGE_TARGET_BYTES",
+            stored.revision_storage_target_bytes.is_some(),
+        ),
     }
 }
 
@@ -6826,6 +7032,17 @@ fn load_server_settings(config: &crate::config::ServerConfig) -> AdminServerSett
         runtime: runtime_settings_to_protocol(config, &effective),
         backup: load_backup_runtime_settings(config).to_protocol(),
         maintenance: maintenance_mode_to_protocol(load_maintenance_mode(config)),
+    }
+}
+
+pub(crate) fn maintenance_policy_from_settings(
+    config: &crate::config::ServerConfig,
+) -> crate::retention::MaintenancePolicy {
+    let effective = load_effective_runtime_settings(config);
+    crate::retention::MaintenancePolicy {
+        audit_retention_days: config.audit_retention_days,
+        revision_history_limit: effective.revision_history_limit.min(1_000_000) as u32,
+        revision_storage_target_bytes: effective.revision_storage_target_bytes,
     }
 }
 
@@ -6951,6 +7168,30 @@ fn apply_runtime_update(
             &mut stored.storage_quota_bytes,
             value,
             "COLLAB_STORAGE_QUOTA_BYTES",
+            request_id,
+        )?;
+    }
+    if let Some(value) = payload.revision_history_limit {
+        validate_range_u64(value, 0, 1_000_000, "Revision history limit", request_id)?;
+        set_if_unlocked_u64(
+            &mut stored.revision_history_limit,
+            value,
+            "COLLAB_REVISION_HISTORY_LIMIT",
+            request_id,
+        )?;
+    }
+    if let Some(value) = payload.revision_storage_target_bytes {
+        validate_range_u64(
+            value,
+            0,
+            64 * 1024 * 1024 * 1024 * 1024,
+            "Revision storage target bytes",
+            request_id,
+        )?;
+        set_if_unlocked_u64(
+            &mut stored.revision_storage_target_bytes,
+            value,
+            "COLLAB_REVISION_STORAGE_TARGET_BYTES",
             request_id,
         )?;
     }

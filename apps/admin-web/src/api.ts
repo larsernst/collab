@@ -190,6 +190,13 @@ export const serverApi = {
       method: 'POST',
       body: JSON.stringify({ expectedRevisionSequence }),
     }),
+  deleteFileRevision: (vaultId: string, fileId: string, revisionId: string) =>
+    api<HostedFileRevision[]>(`/api/v1/vaults/${vaultId}/files/${fileId}/revisions/${revisionId}`, { method: 'DELETE' }),
+  deleteFileRevisions: (vaultId: string, fileId: string, payload: { revisionIds?: string[]; all?: boolean }) =>
+    api<HostedFileRevision[]>(`/api/v1/vaults/${vaultId}/files/${fileId}/revisions`, {
+      method: 'DELETE',
+      body: JSON.stringify(payload),
+    }),
   importVault: (id: string, archiveBase64: string) =>
     api<HostedVaultImportResult>(`/api/v1/vaults/${id}/import`, {
       method: 'POST',

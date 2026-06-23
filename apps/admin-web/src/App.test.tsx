@@ -162,6 +162,8 @@ describe('admin application', () => {
         maxImportExpandedBytes: setting(2_147_483_648, 'COLLAB_MAX_IMPORT_EXPANDED_BYTES'),
         storageWarningBytes: setting(10_737_418_240, 'COLLAB_STORAGE_WARNING_BYTES'),
         storageQuotaBytes: setting(0, 'COLLAB_STORAGE_QUOTA_BYTES'),
+        revisionHistoryLimit: setting(0, 'COLLAB_REVISION_HISTORY_LIMIT'),
+        revisionStorageTargetBytes: setting(0, 'COLLAB_REVISION_STORAGE_TARGET_BYTES'),
       },
       backup: { scheduleEnabled: false, intervalSeconds: 86_400, retentionDays: 14, exportDir: null, locks: unlockedBackupLocks },
       maintenance: { enabled: false, message: null, updatedAt: null },
@@ -178,6 +180,8 @@ describe('admin application', () => {
         maxImportExpandedBytes: setting(2_147_483_648, 'COLLAB_MAX_IMPORT_EXPANDED_BYTES'),
         storageWarningBytes: setting(10_737_418_240, 'COLLAB_STORAGE_WARNING_BYTES'),
         storageQuotaBytes: setting(0, 'COLLAB_STORAGE_QUOTA_BYTES'),
+        revisionHistoryLimit: setting(0, 'COLLAB_REVISION_HISTORY_LIMIT'),
+        revisionStorageTargetBytes: setting(0, 'COLLAB_REVISION_STORAGE_TARGET_BYTES'),
       },
       backup: { scheduleEnabled: false, intervalSeconds: 86_400, retentionDays: 14, exportDir: null, locks: unlockedBackupLocks },
       maintenance: { enabled: true, message: 'Short upgrade window', updatedAt: '2026-06-19T09:00:00Z' },
@@ -739,10 +743,10 @@ describe('admin application', () => {
     fireEvent.click(await screen.findByRole('button', { name: 'Browse files' }));
     expect(await screen.findByRole('button', { name: 'Notes' })).toBeTruthy();
     expect(screen.queryByText('Test.md')).toBeNull();
-    const trashPanel = screen.getByRole('heading', { name: 'Trash (1)' }).closest<HTMLElement>('.ui-dialog-section');
-    expect(trashPanel).toBeTruthy();
-    expect(within(trashPanel!).getByText('Deleted.canvas')).toBeTruthy();
-    expect(within(trashPanel!).getByText('Owner')).toBeTruthy();
+    fireEvent.click(screen.getByRole('tab', { name: 'Trash (1)' }));
+    expect(await screen.findByText('Deleted.canvas')).toBeTruthy();
+    expect(screen.getByText('Owner')).toBeTruthy();
+    fireEvent.click(screen.getByRole('tab', { name: 'Files' }));
 
     fireEvent.click(screen.getByRole('button', { name: 'Notes' }));
     expect(await screen.findByText('Test.md')).toBeTruthy();
@@ -783,12 +787,13 @@ describe('admin application', () => {
     fireEvent.click(screen.getAllByRole('button', { name: 'Restore' })[1]);
     await waitFor(() => expect(serverApi.restoreFileRevision).toHaveBeenCalledWith('vault-1', 'file-1', 'revision-1', 2));
 
-    fireEvent.click(within(trashPanel!).getByRole('button', { name: 'Restore' }));
+    fireEvent.click(screen.getByRole('tab', { name: 'Trash (1)' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Restore' }));
     await waitFor(() => expect(serverApi.moveFile).toHaveBeenCalledWith('vault-1', expect.objectContaining({
       operationType: 'restore', targetFileId: 'trash-1',
     })));
 
-    fireEvent.click(within(trashPanel!).getByRole('button', { name: 'Delete permanently' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Delete permanently' }));
     const purgeDialog = await screen.findByRole('dialog', { name: 'Permanently delete Deleted.canvas?' });
     fireEvent.click(within(purgeDialog).getByRole('button', { name: 'Delete permanently' }));
     await waitFor(() => expect(serverApi.moveFile).toHaveBeenCalledWith('vault-1', expect.objectContaining({
@@ -1137,6 +1142,8 @@ describe('admin application', () => {
         maxImportExpandedBytes: setting(2_147_483_648, 'COLLAB_MAX_IMPORT_EXPANDED_BYTES'),
         storageWarningBytes: setting(10_737_418_240, 'COLLAB_STORAGE_WARNING_BYTES'),
         storageQuotaBytes: setting(0, 'COLLAB_STORAGE_QUOTA_BYTES'),
+        revisionHistoryLimit: setting(0, 'COLLAB_REVISION_HISTORY_LIMIT'),
+        revisionStorageTargetBytes: setting(0, 'COLLAB_REVISION_STORAGE_TARGET_BYTES'),
       },
       backup: { scheduleEnabled: false, intervalSeconds: 86_400, retentionDays: 14, exportDir: null, locks: { ...unlockedBackupLocks, exportDir: true } },
       maintenance: { enabled: false, message: null, updatedAt: null },

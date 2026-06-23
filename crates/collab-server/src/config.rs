@@ -35,6 +35,7 @@ pub struct ServerConfig {
     pub maintenance_interval_seconds: u64,
     pub audit_retention_days: u64,
     pub revision_history_limit: u32,
+    pub revision_storage_target_bytes: u64,
     pub backup_dir: PathBuf,
     pub backup_command: Option<String>,
     pub restore_command: Option<String>,
@@ -69,6 +70,7 @@ impl Default for ServerConfig {
             maintenance_interval_seconds: 3600,
             audit_retention_days: 0,
             revision_history_limit: 0,
+            revision_storage_target_bytes: 0,
             backup_dir: PathBuf::from("server-data/backups"),
             backup_command: None,
             restore_command: None,
@@ -241,6 +243,10 @@ impl ServerConfig {
                 .parse()
                 .map_err(|_| ConfigError::Invalid("COLLAB_REVISION_HISTORY_LIMIT"))?;
         }
+        if let Ok(value) = env::var("COLLAB_REVISION_STORAGE_TARGET_BYTES") {
+            self.revision_storage_target_bytes = parse_byte_size(&value)
+                .map_err(|_| ConfigError::Invalid("COLLAB_REVISION_STORAGE_TARGET_BYTES"))?;
+        }
         if let Ok(value) = env::var("COLLAB_BACKUP_DIR") {
             self.backup_dir = value.into();
         }
@@ -351,6 +357,11 @@ impl ServerConfig {
         }
         if self.revision_history_limit > 1_000_000 {
             return Err(ConfigError::Invalid("COLLAB_REVISION_HISTORY_LIMIT"));
+        }
+        if self.revision_storage_target_bytes > 64 * 1024 * 1024 * 1024 * 1024 {
+            return Err(ConfigError::Invalid(
+                "COLLAB_REVISION_STORAGE_TARGET_BYTES",
+            ));
         }
         Ok(())
     }
