@@ -147,6 +147,7 @@ pub fn run() {
             commands::server::server_has_saved_session,
             commands::server::hosted_vault_request,
             commands::server::hosted_vault_asset_data_url,
+            commands::server::hosted_vault_upload_file,
             commands::server::hosted_user_directory,
             commands::server::hosted_vault_export_zip,
             commands::server::hosted_ws_ticket,

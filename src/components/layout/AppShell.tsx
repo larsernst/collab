@@ -7,6 +7,7 @@ import StatusBar from './StatusBar';
 import { useVaultStore, useEditorStore, useNoteIndexStore, useUiStore } from '../../store';
 import { useServerStore } from '../../store/serverStore';
 import { createVaultClient } from '../../lib/vaultClient';
+import { onReplicaMutated } from '../../lib/vaultReplica';
 import { vaultKind } from '../../types/vault';
 import NoteView from '../../views/NoteView';
 import ImageView from '../../views/ImageView';
@@ -91,22 +92,31 @@ export default function AppShell() {
   useEffect(() => {
     if (!vault) return;
     const unsubs: Array<() => void> = [];
-    const setup = async () => {
-      const u1 = await listen('vault:file-created',  () => refreshFileTree());
-      const u2 = await listen('vault:file-deleted',  () => refreshFileTree());
-      const u3 = await listen('vault:file-renamed',  () => refreshFileTree());
-      const u4 = await listen('vault:file-modified', async () => {
+    let refreshTimer: number | null = null;
+    const refreshVisibleFiles = () => {
+      if (refreshTimer !== null) window.clearTimeout(refreshTimer);
+      refreshTimer = window.setTimeout(async () => {
+        refreshTimer = null;
         try {
-          // Refresh tree so new/deleted files from other clients appear immediately.
-          // Also rebuild the index for wikilink/search updates.
           await refreshFileTree();
           setNotes(await createVaultClient(vault).buildNoteIndex());
         } catch {}
-      });
+      }, 150);
+    };
+    const setup = async () => {
+      const u1 = await listen('vault:file-created',  refreshVisibleFiles);
+      const u2 = await listen('vault:file-deleted',  refreshVisibleFiles);
+      const u3 = await listen('vault:file-renamed',  refreshVisibleFiles);
+      const u4 = await listen('vault:file-modified', refreshVisibleFiles);
       unsubs.push(u1, u2, u3, u4);
     };
     setup();
-    return () => unsubs.forEach((u) => u());
+    const unsubscribeReplica = onReplicaMutated(refreshVisibleFiles);
+    return () => {
+      if (refreshTimer !== null) window.clearTimeout(refreshTimer);
+      unsubscribeReplica();
+      unsubs.forEach((u) => u());
+    };
   }, [vault?.path]);
 
   // Hosted role/capability grants are server-authoritative and can change while

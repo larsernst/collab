@@ -128,7 +128,7 @@ export function useImageDocumentSession({
   // editing persistence is disabled for them; the image still opens read-only.
   const supportsImageEditing = useMemo(
     () => (vault ? createVaultClient(vault).capabilities.nativeFilesystem : false),
-    [vault],
+    [vault?.path],
   );
   const overlaySignature = useMemo(() => getOverlaySignature(overlayDoc), [overlayDoc]);
   const overlayDirty = overlayLoaded && overlaySignature !== persistedOverlaySignature;
@@ -246,7 +246,7 @@ export function useImageDocumentSession({
     setTextInteraction,
     setZoomPercent,
     supportsImageEditing,
-    vault,
+    vault?.path,
   ]);
 
   useEffect(() => {
@@ -295,7 +295,7 @@ export function useImageDocumentSession({
     }, 450);
 
     return () => window.clearTimeout(timeout);
-  }, [overlayDoc, overlayLoaded, relativePath, setPersistedOverlaySignature, supportsImageEditing, vault]);
+  }, [overlayDoc, overlayLoaded, relativePath, setPersistedOverlaySignature, supportsImageEditing, vault?.path]);
 
   useEffect(() => {
     if (mode !== 'permanent' || !image || !previewCanvasRef.current) return;

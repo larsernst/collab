@@ -619,7 +619,7 @@ export default function PdfView({ relativePath }: Props) {
   // vaults have no sidecar endpoint, so viewer state is in-memory only there.
   const supportsSidecars = useMemo(
     () => (vault ? createVaultClient(vault).capabilities.nativeFilesystem : false),
-    [vault],
+    [vault?.path],
   );
   // Annotation-editing permissions. Local vaults are always fully capable; hosted
   // vaults consult the caller's effective capabilities so commenters/viewers do
@@ -792,7 +792,7 @@ export default function PdfView({ relativePath }: Props) {
     return () => {
       cancelled = true;
     };
-  }, [relativePath, supportsSidecars, vault]);
+  }, [relativePath, supportsSidecars, vault?.path]);
 
   useEffect(() => {
     if (!vault || !relativePath || !sidecarLoaded || !supportsSidecars) return;
@@ -817,7 +817,7 @@ export default function PdfView({ relativePath }: Props) {
         viewerState: latestViewerStateRef.current,
       }).catch(() => {});
     };
-  }, [bookmarksOpen, layoutMode, pageNumber, pdfState, relativePath, rotation, sidecarLoaded, supportsSidecars, vault, zoom, zoomMode]);
+  }, [bookmarksOpen, layoutMode, pageNumber, pdfState, relativePath, rotation, sidecarLoaded, supportsSidecars, vault?.path, zoom, zoomMode]);
 
   // Hosted vaults persist only the shared annotation collections (not per-user
   // viewer state) through the permission-enforced server endpoint, with

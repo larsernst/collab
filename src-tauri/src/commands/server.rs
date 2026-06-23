@@ -4,10 +4,25 @@ use collab_protocol::{DataResponse, ErrorResponse, NativeSession, ServerUser};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::error::Error as _;
+use std::sync::LazyLock;
 use tauri::State;
+use tokio::io::AsyncWriteExt;
 use url::Url;
 
 const KEYRING_SERVICE: &str = "collab-server";
+
+static SERVER_CLIENT: LazyLock<Result<reqwest::Client, String>> = LazyLock::new(|| {
+    reqwest::Client::builder()
+        .build()
+        .map_err(|_| "Could not initialize the Collab server connection.".to_string())
+});
+
+static INSECURE_SERVER_CLIENT: LazyLock<Result<reqwest::Client, String>> = LazyLock::new(|| {
+    reqwest::Client::builder()
+        .danger_accept_invalid_certs(true)
+        .build()
+        .map_err(|_| "Could not initialize the Collab server connection.".to_string())
+});
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -238,6 +253,39 @@ pub async fn hosted_vault_asset_data_url(
     ))
 }
 
+#[tauri::command]
+pub async fn hosted_vault_upload_file(
+    state: State<'_, AppState>,
+    server_url: String,
+    vault_id: String,
+    parent_id: Option<String>,
+    source_path: String,
+) -> Result<Value, String> {
+    validate_identifier(&vault_id)?;
+    if let Some(parent_id) = parent_id.as_deref() {
+        validate_identifier(parent_id)?;
+    }
+    let session = state.server_session.read().clone().ok_or_else(|| {
+        "Connect to the Collab server before uploading hosted assets.".to_string()
+    })?;
+    require_connected_server(&session, &server_url)?;
+    let payload = super::files::read_file_for_upload(source_path)?;
+    let response = server_client(session.allow_invalid_certificates)?
+        .post(format!("{}/api/v1/vaults/{vault_id}/uploads", session.server_url))
+        .bearer_auth(&session.access_token)
+        .json(&serde_json::json!({
+            "parentId": parent_id,
+            "name": payload.name,
+            "mediaType": payload.media_type,
+            "contentBase64": payload.content_base64,
+            "expectedHash": payload.expected_hash,
+        }))
+        .send()
+        .await
+        .map_err(server_request_error)?;
+    decode_hosted_json_response(response).await
+}
+
 /// Read-only authenticated user directory used when adding hosted vault members.
 /// This is the one non-`/vaults` route the native client may reach; the bearer
 /// token stays in Rust and only the resolved directory entries reach the webview.
@@ -287,11 +335,21 @@ pub async fn hosted_vault_export_zip(
     if !response.status().is_success() {
         return Err(decode_hosted_error(response).await);
     }
-    let bytes = response
-        .bytes()
+    let mut file = tokio::fs::File::create(&destination_path)
         .await
-        .map_err(|_| "The server returned an invalid export response.".to_string())?;
-    std::fs::write(&destination_path, &bytes)
+        .map_err(|_| "Could not write the exported vault archive to disk.".to_string())?;
+    let mut response = response;
+    while let Some(chunk) = response
+        .chunk()
+        .await
+        .map_err(|_| "The server returned an invalid export response.".to_string())?
+    {
+        file.write_all(&chunk)
+            .await
+            .map_err(|_| "Could not write the exported vault archive to disk.".to_string())?;
+    }
+    file.flush()
+        .await
         .map_err(|_| "Could not write the exported vault archive to disk.".to_string())?;
     Ok(())
 }
@@ -314,10 +372,12 @@ fn validate_server_url(value: &str) -> Result<String, String> {
 }
 
 fn server_client(allow_invalid_certificates: bool) -> Result<reqwest::Client, String> {
-    reqwest::Client::builder()
-        .danger_accept_invalid_certs(allow_invalid_certificates)
-        .build()
-        .map_err(|_| "Could not initialize the Collab server connection.".to_string())
+    let client = if allow_invalid_certificates {
+        &*INSECURE_SERVER_CLIENT
+    } else {
+        &*SERVER_CLIENT
+    };
+    client.clone()
 }
 
 fn server_request_error(error: reqwest::Error) -> String {

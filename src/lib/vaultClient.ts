@@ -301,6 +301,12 @@ function timestamp(value: string): number {
   return Number.isFinite(parsed) ? parsed : 0;
 }
 
+function isLikelyManifestConflict(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  const lower = message.toLowerCase();
+  return lower.includes('manifest_conflict') || lower.includes('manifest has changed');
+}
+
 function asArray<T>(value: unknown): T[] {
   return Array.isArray(value) ? (value as T[]) : [];
 }
@@ -549,6 +555,11 @@ export class HostedVaultClient implements VaultClient {
     });
   }
 
+  private async cachedOrOnlineManifest(): Promise<HostedManifest> {
+    const manifest = await readCachedReplicaManifest(this.vault).catch(() => null);
+    return manifest ? asHostedManifest(manifest) : this.manifest();
+  }
+
   private async replicaSyncedManifest(): Promise<HostedManifest> {
     const manifest = await syncReplicaManifestDelta(this.vault)
       .catch(() => readCachedReplicaManifest(this.vault));
@@ -570,9 +581,62 @@ export class HostedVaultClient implements VaultClient {
     await tauriCommands.replicaCacheDocument(this.vault.serverUrl, this.vault.hostedVaultId, fileId, content).catch(() => {});
   }
 
+  private async readCurrentCachedDocument(file: HostedFileEntry): Promise<string | null> {
+    if (file.kind !== 'document') return null;
+    const expectedHash = file.currentRevision?.contentHash ?? null;
+    if (!expectedHash) return null;
+    if (expectedHash !== 'offline') {
+      const status = await tauriCommands.replicaCachedContentStatus(
+        this.vault.serverUrl,
+        this.vault.hostedVaultId,
+        file.id,
+        'document',
+        expectedHash,
+      );
+      if (!status.present || !status.matchesExpectedHash) return null;
+    }
+    return tauriCommands.replicaReadCachedDocument(this.vault.serverUrl, this.vault.hostedVaultId, file.id);
+  }
+
+  private refreshDocumentCacheInBackground(fileId: string): void {
+    void this.request<HostedTextDocument>('GET', `/files/${fileId}`)
+      .then((document) => this.cacheDocumentForOfflineCopy(fileId, document.content))
+      .catch(() => {});
+  }
+
+  private vaultDocumentFromHosted(file: HostedFileEntry, content: string): VaultDocument {
+    return {
+      relativePath: file.relativePath,
+      content,
+      version: String(file.currentRevision?.sequence ?? 0),
+      modifiedAt: timestamp(file.updatedAt),
+    };
+  }
+
   private async cacheAssetForOfflineCopy(fileId: string, contentBase64: string): Promise<void> {
     if (!(await this.shouldMaintainOfflineContentCache())) return;
     await tauriCommands.replicaCacheAsset(this.vault.serverUrl, this.vault.hostedVaultId, fileId, contentBase64).catch(() => {});
+  }
+
+  private async cacheUploadedFileForOfflineCopy(fileId: string, sourcePath: string): Promise<void> {
+    if (!(await this.shouldMaintainOfflineContentCache())) return;
+    const payload = await tauriCommands.readFileForUpload(sourcePath);
+    await tauriCommands.replicaCacheAsset(this.vault.serverUrl, this.vault.hostedVaultId, fileId, payload.contentBase64).catch(() => {});
+  }
+
+  private async readCurrentCachedAsset(file: HostedFileEntry): Promise<string | null> {
+    if (file.kind !== 'asset' && file.kind !== 'document') return null;
+    const expectedHash = file.currentRevision?.contentHash ?? null;
+    if (!expectedHash || expectedHash === 'offline') return null;
+    const status = await tauriCommands.replicaCachedContentStatus(
+      this.vault.serverUrl,
+      this.vault.hostedVaultId,
+      file.id,
+      'asset',
+      expectedHash,
+    );
+    if (!status.present || !status.matchesExpectedHash) return null;
+    return tauriCommands.replicaReadCachedAsset(this.vault.serverUrl, this.vault.hostedVaultId, file.id);
   }
 
   private findByPath(manifest: HostedManifest, relativePath: string, state: HostedFileState = 'active') {
@@ -618,6 +682,21 @@ export class HostedVaultClient implements VaultClient {
   }
 
   async readDocument(relativePath: string): Promise<VaultDocument> {
+    const cachedManifest = await readCachedReplicaManifest(this.vault).catch(() => null);
+    if (cachedManifest) {
+      try {
+        const cachedFile = this.findByPath(asHostedManifest(cachedManifest), relativePath);
+        const cachedContent = await this.readCurrentCachedDocument(cachedFile);
+        if (cachedContent !== null) {
+          this.refreshDocumentCacheInBackground(cachedFile.id);
+          return this.vaultDocumentFromHosted(cachedFile, cachedContent);
+        }
+      } catch {
+        // Cache misses or corrupt cached content should not block the normal
+        // online read path.
+      }
+    }
+
     const manifest = await this.onlineOrCachedManifest();
     const file = this.findByPath(manifest, relativePath);
     const document = await this.request<HostedTextDocument>('GET', `/files/${file.id}`).catch(async (error) => {
@@ -630,16 +709,11 @@ export class HostedVaultClient implements VaultClient {
     // explicit offline-copy capability/marker so plain viewers do not build up
     // durable local content caches merely by opening files.
     void this.cacheDocumentForOfflineCopy(file.id, document.content);
-    return {
-      relativePath: document.file.relativePath,
-      content: document.content,
-      version: String(document.file.currentRevision?.sequence ?? 0),
-      modifiedAt: timestamp(document.file.updatedAt),
-    };
+    return this.vaultDocumentFromHosted(document.file, document.content);
   }
 
   async resolveLiveSession(relativePath: string): Promise<LiveSessionTarget | null> {
-    const manifest = await this.onlineOrCachedManifest();
+    const manifest = await this.cachedOrOnlineManifest();
     const file = this.findByPath(manifest, relativePath);
     return {
       serverUrl: this.vault.serverUrl,
@@ -654,7 +728,7 @@ export class HostedVaultClient implements VaultClient {
     expectedVersion?: string,
     _baseContent?: string,
   ): Promise<VaultWriteResult> {
-    const manifest = await this.onlineOrCachedManifest();
+    const manifest = await this.cachedOrOnlineManifest();
     const file = this.findByPath(manifest, relativePath);
     const currentSequence = file.currentRevision?.sequence ?? 0;
     const expectedSequence = expectedVersion === undefined ? currentSequence : Number(expectedVersion);
@@ -683,11 +757,19 @@ export class HostedVaultClient implements VaultClient {
       };
     });
     void this.cacheDocumentForOfflineCopy(file.id, content);
+    void writeOptimisticReplicaManifest(
+      this.vault,
+      {
+        ...manifest,
+        sequence: Math.max(manifest.sequence, document.file.currentRevision?.sequence ?? manifest.sequence),
+        files: manifest.files.map((entry) => entry.id === file.id ? document.file : entry),
+      } as unknown as ReplicaManifest,
+    ).catch(() => {});
     return { version: String(document.file.currentRevision?.sequence ?? expectedSequence + 1) };
   }
 
   async createDocument(relativePath: string): Promise<NoteFile> {
-    const manifest = await this.onlineOrCachedManifest();
+    const manifest = await this.cachedOrOnlineManifest();
     const destination = splitDestination(relativePath);
     const payload = {
       parentId: this.parentId(manifest, destination.parentPath),
@@ -700,6 +782,10 @@ export class HostedVaultClient implements VaultClient {
       if (!isLikelyConnectivityError(error)) throw error;
       return this.queueOfflineCreate(manifest, relativePath, payload);
     });
+    void writeOptimisticReplicaManifest(
+      this.vault,
+      { ...manifest, files: [...manifest.files.filter((entry) => entry.id !== file.id), file] } as unknown as ReplicaManifest,
+    ).catch(() => {});
     if (file.kind === 'document') {
       void this.cacheDocumentForOfflineCopy(file.id, payload.content);
     }
@@ -707,7 +793,7 @@ export class HostedVaultClient implements VaultClient {
   }
 
   async createFolder(relativePath: string): Promise<void> {
-    const manifest = await this.onlineOrCachedManifest();
+    const manifest = await this.cachedOrOnlineManifest();
     const destination = splitDestination(relativePath);
     const payload = {
       parentId: this.parentId(manifest, destination.parentPath),
@@ -716,10 +802,14 @@ export class HostedVaultClient implements VaultClient {
       documentType: null,
       content: '',
     } as const;
-    await this.request<HostedFileEntry>('POST', '/files', payload).catch(async (error) => {
+    const file = await this.request<HostedFileEntry>('POST', '/files', payload).catch(async (error) => {
       if (!isLikelyConnectivityError(error)) throw error;
-      await this.queueOfflineCreate(manifest, relativePath, payload);
+      return this.queueOfflineCreate(manifest, relativePath, payload);
     });
+    void writeOptimisticReplicaManifest(
+      this.vault,
+      { ...manifest, files: [...manifest.files.filter((entry) => entry.id !== file.id), file] } as unknown as ReplicaManifest,
+    ).catch(() => {});
   }
 
   private async queueOfflineCreate(
@@ -772,7 +862,7 @@ export class HostedVaultClient implements VaultClient {
   }
 
   async previewRenameMove(oldPath: string, newPath: string): Promise<PathChangePreview> {
-    const manifest = await this.manifest();
+    const manifest = await this.cachedOrOnlineManifest();
     const target = this.findByPath(manifest, oldPath);
     const destination = splitDestination(newPath);
     const operation = pathOperation(oldPath, newPath);
@@ -825,7 +915,17 @@ export class HostedVaultClient implements VaultClient {
     operationType: 'rename' | 'move' | 'trash' | 'restore' | 'purge',
     options: { name?: string; parentPath?: string; removeReferences?: boolean },
   ) {
-    const manifest = await this.onlineOrCachedManifest();
+    const manifest = await this.cachedOrOnlineManifest();
+    return this.applyOperationWithManifest(manifest, relativePath, operationType, options, true);
+  }
+
+  private async applyOperationWithManifest(
+    manifest: HostedManifest,
+    relativePath: string,
+    operationType: 'rename' | 'move' | 'trash' | 'restore' | 'purge',
+    options: { name?: string; parentPath?: string; removeReferences?: boolean },
+    allowManifestRetry: boolean,
+  ): Promise<unknown> {
     const target = this.findByPath(
       manifest,
       relativePath,
@@ -841,8 +941,30 @@ export class HostedVaultClient implements VaultClient {
       removeReferences: options.removeReferences ?? false,
     };
     try {
-      return await this.request('POST', '/operations', payload);
+      const result = await this.request<{ resultManifestSequence?: number }>('POST', '/operations', payload);
+      const optimistic = this.optimisticManifestForOperation(manifest, target, operationType, {
+        name: payload.name,
+        parentId: payload.parentId,
+      });
+      await writeOptimisticReplicaManifest(
+        this.vault,
+        {
+          ...optimistic,
+          sequence: result.resultManifestSequence ?? Math.max(manifest.sequence, payload.baseManifestSequence + 1),
+        } as unknown as ReplicaManifest,
+      ).catch(() => {});
+      return result;
     } catch (error) {
+      if (allowManifestRetry && isLikelyManifestConflict(error)) {
+        const freshManifest = await this.replicaSyncedManifest();
+        return this.applyOperationWithManifest(
+          freshManifest,
+          relativePath,
+          operationType,
+          options,
+          false,
+        );
+      }
       if (!isLikelyConnectivityError(error)) throw error;
       const optimistic = this.optimisticManifestForOperation(manifest, target, operationType, {
         name: payload.name,
@@ -1088,9 +1210,13 @@ export class HostedVaultClient implements VaultClient {
   }
 
   async readAssetDataUrl(relativePath: string): Promise<string> {
-    const manifest = await this.onlineOrCachedManifest();
+    const manifest = await this.cachedOrOnlineManifest();
     const file = this.findByPath(manifest, relativePath);
     if (file.kind === 'folder') throw new Error('Folders cannot be downloaded as assets.');
+    const cached = await this.readCurrentCachedAsset(file).catch(() => null);
+    if (cached !== null) {
+      return `data:${guessAssetMime(relativePath)};base64,${cached}`;
+    }
     try {
       const dataUrl = await tauriCommands.hostedVaultAssetDataUrl(
         this.vault.serverUrl,
@@ -1157,8 +1283,38 @@ export class HostedVaultClient implements VaultClient {
    * the relative path of the created hosted asset.
    */
   private async uploadExternalAsset(sourcePath: string, targetFolder = 'Pictures'): Promise<string> {
-    const payload = await tauriCommands.readFileForUpload(sourcePath);
-    return this.uploadAsset(payload.name, payload.mediaType, payload.contentBase64, payload.expectedHash, targetFolder);
+    const parentId = targetFolder ? await this.ensureFolder(targetFolder) : null;
+    try {
+      const file = await tauriCommands.hostedVaultUploadFile<HostedFileEntry>(
+        this.vault.serverUrl,
+        this.vault.hostedVaultId,
+        parentId,
+        sourcePath,
+      );
+      void readCachedReplicaManifest(this.vault)
+        .then((manifest) => manifest
+          ? writeOptimisticReplicaManifest(this.vault, {
+            ...asHostedManifest(manifest),
+            files: [...asHostedManifest(manifest).files.filter((entry) => entry.id !== file.id), file],
+          } as unknown as ReplicaManifest)
+          : undefined)
+        .catch(() => {});
+      void this.cacheUploadedFileForOfflineCopy(file.id, sourcePath).catch(() => {});
+      return file.relativePath;
+    } catch (error) {
+      if (!isLikelyConnectivityError(error)) throw error;
+      const payload = await tauriCommands.readFileForUpload(sourcePath);
+      const manifest = await this.cachedManifest();
+      const file = await this.queueOfflineAssetUpload(manifest, {
+        parentId,
+        name: payload.name,
+        mediaType: payload.mediaType,
+        contentBase64: payload.contentBase64,
+        expectedHash: payload.expectedHash,
+        targetFolder,
+      });
+      return file.relativePath;
+    }
   }
 
   private async uploadDataUrl(dataUrl: string, suggestedName: string, targetFolder = 'Pictures'): Promise<string> {
@@ -1181,6 +1337,17 @@ export class HostedVaultClient implements VaultClient {
     targetFolder: string,
   ): Promise<string> {
     const parentId = targetFolder ? await this.ensureFolder(targetFolder) : null;
+    return this.uploadAssetWithParent(parentId, name, mediaType, contentBase64, expectedHash, targetFolder);
+  }
+
+  private async uploadAssetWithParent(
+    parentId: string | null,
+    name: string,
+    mediaType: string,
+    contentBase64: string,
+    expectedHash: string,
+    targetFolder: string,
+  ): Promise<string> {
     const payload = {
       parentId,
       name,

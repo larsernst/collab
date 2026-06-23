@@ -309,6 +309,8 @@ export const tauriCommands = {
     invoke<T>('hosted_vault_request', { serverUrl, method, path, body: body ?? null }),
   hostedVaultAssetDataUrl: (serverUrl: string, vaultId: string, fileId: string) =>
     invoke<string>('hosted_vault_asset_data_url', { serverUrl, vaultId, fileId }),
+  hostedVaultUploadFile: <T>(serverUrl: string, vaultId: string, parentId: string | null, sourcePath: string) =>
+    invoke<T>('hosted_vault_upload_file', { serverUrl, vaultId, parentId, sourcePath }),
   hostedUserDirectory: (serverUrl: string, query: string) =>
     invoke<UserDirectoryEntry[]>('hosted_user_directory', { serverUrl, query }),
   hostedVaultExportZip: (serverUrl: string, vaultId: string, destinationPath: string) =>

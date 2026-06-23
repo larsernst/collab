@@ -9412,29 +9412,67 @@ async fn load_vault_manifest_delta(
     since: i64,
     request_id: &str,
 ) -> Result<HostedVaultManifestDelta, ApiFailure> {
-    let manifest = load_vault_manifest(pool, vault_id, request_id).await?;
+    let sequence =
+        sqlx::query_scalar::<_, i64>("SELECT manifest_sequence FROM hosted_vaults WHERE id = $1")
+            .bind(vault_id)
+            .fetch_optional(pool)
+            .await
+            .map_err(|_| ApiFailure::server(request_id.to_owned()))?
+            .ok_or_else(|| ApiFailure::not_found(request_id.to_owned()))?;
     let rows = sqlx::query(
-        "SELECT id FROM hosted_file_entries WHERE vault_id = $1 AND manifest_sequence > $2",
+        r#"
+        WITH RECURSIVE changed AS (
+          SELECT id
+          FROM hosted_file_entries
+          WHERE vault_id = $1 AND manifest_sequence > $2
+        ),
+        ancestors AS (
+          SELECT f.id AS target_id, f.id, f.parent_id, f.name, 0 AS depth
+          FROM hosted_file_entries f
+          JOIN changed c ON c.id = f.id
+          WHERE f.vault_id = $1
+          UNION ALL
+          SELECT child.target_id, parent.id, parent.parent_id, parent.name, child.depth + 1
+          FROM hosted_file_entries parent
+          JOIN ancestors child ON child.parent_id = parent.id
+          WHERE parent.vault_id = $1
+        ),
+        paths AS (
+          SELECT target_id, string_agg(name, '/' ORDER BY depth DESC) AS relative_path
+          FROM ancestors
+          GROUP BY target_id
+        )
+        SELECT f.id, f.parent_id, f.name, f.kind::text AS kind,
+               f.document_type::text AS document_type, f.state::text AS state,
+               f.created_at, f.updated_at, paths.relative_path,
+               trash.trashed_at, trasher.display_name AS trashed_by_display_name,
+               r.id AS revision_id, r.sequence AS revision_sequence,
+               r.content_hash, r.size_bytes, r.created_at AS revision_created_at,
+               creator.display_name AS revision_creator_display_name
+        FROM hosted_file_entries f
+        JOIN changed c ON c.id = f.id
+        JOIN paths ON paths.target_id = f.id
+        LEFT JOIN hosted_file_revisions r ON r.id = f.current_revision_id
+        LEFT JOIN users creator ON creator.id = r.created_by
+        LEFT JOIN hosted_trash_records trash ON trash.file_id = f.id
+        LEFT JOIN users trasher ON trasher.id = trash.trashed_by
+        WHERE f.vault_id = $1
+        ORDER BY f.created_at ASC
+        "#,
     )
     .bind(vault_id)
     .bind(since)
     .fetch_all(pool)
     .await
     .map_err(|_| ApiFailure::server(request_id.to_owned()))?;
-    let changed_ids = rows
+    let changed_files = rows
         .iter()
-        .map(|row| row.get::<Uuid, _>("id").to_string())
-        .collect::<HashSet<_>>();
-    let changed_files = manifest
-        .files
-        .iter()
-        .filter(|file| changed_ids.contains(&file.id))
-        .cloned()
+        .map(file_entry_from_single_row)
         .collect();
     Ok(HostedVaultManifestDelta {
         vault_id: vault_id.to_string(),
         base_sequence: since,
-        sequence: manifest.sequence,
+        sequence,
         changed_files,
     })
 }
@@ -9492,18 +9530,75 @@ fn revision_from_current_row(row: &sqlx::postgres::PgRow) -> Option<HostedFileRe
     })
 }
 
+fn file_entry_from_single_row(row: &sqlx::postgres::PgRow) -> HostedFileEntry {
+    HostedFileEntry {
+        id: row.get::<Uuid, _>("id").to_string(),
+        parent_id: row
+            .get::<Option<Uuid>, _>("parent_id")
+            .map(|value| value.to_string()),
+        name: row.get("name"),
+        relative_path: row.get("relative_path"),
+        kind: parse_file_kind(row.get::<String, _>("kind").as_str()),
+        document_type: parse_document_type(row.get("document_type")),
+        state: parse_file_state(row.get::<String, _>("state").as_str()),
+        current_revision: revision_from_current_row(row),
+        trashed_by_display_name: row.get("trashed_by_display_name"),
+        trashed_at: row
+            .get::<Option<chrono::DateTime<chrono::Utc>>, _>("trashed_at")
+            .map(|value| value.to_rfc3339()),
+        created_at: row
+            .get::<chrono::DateTime<chrono::Utc>, _>("created_at")
+            .to_rfc3339(),
+        updated_at: row
+            .get::<chrono::DateTime<chrono::Utc>, _>("updated_at")
+            .to_rfc3339(),
+    }
+}
+
 async fn load_vault_file_entry(
     pool: &PgPool,
     vault_id: Uuid,
     file_id: Uuid,
     request_id: &str,
 ) -> Result<HostedFileEntry, ApiFailure> {
-    load_vault_manifest(pool, vault_id, request_id)
-        .await?
-        .files
-        .into_iter()
-        .find(|file| file.id == file_id.to_string())
-        .ok_or_else(|| ApiFailure::not_found(request_id.to_owned()))
+    let row = sqlx::query(
+        r#"
+        WITH RECURSIVE ancestors AS (
+          SELECT f.id, f.parent_id, f.name, 0 AS depth
+          FROM hosted_file_entries f
+          WHERE f.vault_id = $1 AND f.id = $2
+          UNION ALL
+          SELECT parent.id, parent.parent_id, parent.name, child.depth + 1
+          FROM hosted_file_entries parent
+          JOIN ancestors child ON child.parent_id = parent.id
+          WHERE parent.vault_id = $1
+        )
+        SELECT f.id, f.parent_id, f.name, f.kind::text AS kind,
+               f.document_type::text AS document_type, f.state::text AS state,
+               f.created_at, f.updated_at,
+               (
+                 SELECT string_agg(name, '/' ORDER BY depth DESC)
+                 FROM ancestors
+               ) AS relative_path,
+               trash.trashed_at, trasher.display_name AS trashed_by_display_name,
+               r.id AS revision_id, r.sequence AS revision_sequence,
+               r.content_hash, r.size_bytes, r.created_at AS revision_created_at,
+               creator.display_name AS revision_creator_display_name
+        FROM hosted_file_entries f
+        LEFT JOIN hosted_file_revisions r ON r.id = f.current_revision_id
+        LEFT JOIN users creator ON creator.id = r.created_by
+        LEFT JOIN hosted_trash_records trash ON trash.file_id = f.id
+        LEFT JOIN users trasher ON trasher.id = trash.trashed_by
+        WHERE f.vault_id = $1 AND f.id = $2
+        "#,
+    )
+    .bind(vault_id)
+    .bind(file_id)
+    .fetch_optional(pool)
+    .await
+    .map_err(|_| ApiFailure::server(request_id.to_owned()))?
+    .ok_or_else(|| ApiFailure::not_found(request_id.to_owned()))?;
+    Ok(file_entry_from_single_row(&row))
 }
 
 async fn load_file_revisions(

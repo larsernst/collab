@@ -40,6 +40,7 @@ vi.mock('./tauri', () => ({
     saveGeneratedImage: vi.fn(),
     hostedVaultRequest: vi.fn(),
     hostedVaultAssetDataUrl: vi.fn(),
+    hostedVaultUploadFile: vi.fn(),
     hostedUserDirectory: vi.fn(),
     replicaCacheDocument: vi.fn().mockResolvedValue(undefined),
     replicaReadManifest: vi.fn(),
@@ -51,6 +52,7 @@ vi.mock('./tauri', () => ({
     replicaUpdateOperationStatus: vi.fn().mockResolvedValue(undefined),
     replicaRecordOperationFailure: vi.fn().mockResolvedValue(undefined),
     replicaRemoveOperation: vi.fn().mockResolvedValue(undefined),
+    replicaCachedContentStatus: vi.fn(),
     replicaCacheAsset: vi.fn().mockResolvedValue(undefined),
     replicaReadCachedAsset: vi.fn(),
     watchVault: vi.fn(),
@@ -250,6 +252,10 @@ describe('LocalVaultClient', () => {
 describe('HostedVaultClient', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.mocked(tauriCommands.hostedVaultRequest).mockReset();
+    vi.mocked(tauriCommands.hostedVaultAssetDataUrl).mockReset();
+    vi.mocked(tauriCommands.hostedVaultUploadFile).mockReset();
+    vi.mocked(tauriCommands.replicaReadManifest).mockResolvedValue(null);
     vi.mocked(tauriCommands.replicaListPendingOperations).mockResolvedValue([]);
   });
 
@@ -361,6 +367,81 @@ describe('HostedVaultClient', () => {
         '# Test',
       ),
     );
+  });
+
+  it('opens a matching cached hosted document before the network read completes', async () => {
+    let resolveHostedRead: ((value: { file: typeof hostedDocument; content: string }) => void) | undefined;
+    vi.mocked(tauriCommands.replicaReadManifest).mockResolvedValue(mockHostedManifest());
+    vi.mocked(tauriCommands.replicaCachedContentStatus).mockResolvedValue({
+      present: true,
+      matchesExpectedHash: true,
+      actualSha256: 'hash-3',
+      sizeBytes: 8,
+    });
+    vi.mocked(tauriCommands.replicaReadCachedDocument).mockResolvedValue('# Cached');
+    vi.mocked(tauriCommands.hostedVaultRequest).mockImplementation((_serverUrl, _method, path) => {
+      if (path.endsWith('/files/file-1')) {
+        return new Promise((resolve) => {
+          resolveHostedRead = resolve;
+        }) as ReturnType<typeof tauriCommands.hostedVaultRequest>;
+      }
+      return Promise.resolve(mockHostedManifest()) as ReturnType<typeof tauriCommands.hostedVaultRequest>;
+    });
+    const client = new HostedVaultClient(hostedVault);
+
+    await expect(client.readDocument('Notes/Test.md')).resolves.toEqual({
+      relativePath: 'Notes/Test.md',
+      content: '# Cached',
+      version: '3',
+      modifiedAt: Date.parse('2026-06-11T08:00:00Z'),
+    });
+
+    expect(tauriCommands.replicaCachedContentStatus).toHaveBeenCalledWith(
+      'https://collab.example.test',
+      'hosted-vault',
+      'file-1',
+      'document',
+      'hash-3',
+    );
+    expect(resolveHostedRead).not.toBeNull();
+
+    vi.mocked(tauriCommands.replicaReadSyncState).mockResolvedValue({
+      manifestSequence: 8,
+      lastSyncedAt: '2026-06-17T00:00:00Z',
+      offlineAvailableAt: '2026-06-17T00:05:00Z',
+      status: 'idle',
+    });
+    if (!resolveHostedRead) throw new Error('Expected hosted document refresh to start.');
+    resolveHostedRead({ file: hostedDocument, content: '# Fresh' });
+    await vi.waitFor(() =>
+      expect(tauriCommands.replicaCacheDocument).toHaveBeenCalledWith(
+        'https://collab.example.test',
+        'hosted-vault',
+        'file-1',
+        '# Fresh',
+      ),
+    );
+  });
+
+  it('ignores cached hosted documents that do not match the current revision hash', async () => {
+    vi.mocked(tauriCommands.replicaReadManifest).mockResolvedValue(mockHostedManifest());
+    vi.mocked(tauriCommands.replicaCachedContentStatus).mockResolvedValue({
+      present: true,
+      matchesExpectedHash: false,
+      actualSha256: 'old-hash',
+      sizeBytes: 8,
+    });
+    vi.mocked(tauriCommands.hostedVaultRequest)
+      .mockResolvedValueOnce(mockHostedManifest())
+      .mockResolvedValueOnce({ file: hostedDocument, content: '# Fresh' });
+    const client = new HostedVaultClient(hostedVault);
+
+    await expect(client.readDocument('Notes/Test.md')).resolves.toMatchObject({
+      content: '# Fresh',
+      version: '3',
+    });
+
+    expect(tauriCommands.replicaReadCachedDocument).not.toHaveBeenCalled();
   });
 
   it('does not build durable content caches before an offline copy is enabled', async () => {
@@ -649,6 +730,29 @@ describe('HostedVaultClient', () => {
     );
   });
 
+  it('opens a matching cached hosted asset before downloading it', async () => {
+    vi.mocked(tauriCommands.replicaReadManifest).mockResolvedValue(mockHostedManifest());
+    vi.mocked(tauriCommands.replicaCachedContentStatus).mockResolvedValue({
+      present: true,
+      matchesExpectedHash: true,
+      actualSha256: 'pdf-hash',
+      sizeBytes: 4,
+    });
+    vi.mocked(tauriCommands.replicaReadCachedAsset).mockResolvedValue('UERG');
+    const client = new HostedVaultClient(hostedVault);
+
+    await expect(client.readAssetDataUrl('doc.pdf')).resolves.toBe('data:application/pdf;base64,UERG');
+
+    expect(tauriCommands.hostedVaultAssetDataUrl).not.toHaveBeenCalled();
+    expect(tauriCommands.replicaCachedContentStatus).toHaveBeenCalledWith(
+      'https://collab.example.test',
+      'hosted-vault',
+      'pdf-1',
+      'asset',
+      'pdf-hash',
+    );
+  });
+
   it('rethrows when an asset is offline and not cached', async () => {
     vi.mocked(tauriCommands.hostedVaultRequest).mockResolvedValueOnce(mockHostedManifest());
     vi.mocked(tauriCommands.hostedVaultAssetDataUrl).mockRejectedValue(
@@ -839,17 +943,17 @@ describe('HostedVaultClient', () => {
       contentBase64: 'aW1n',
       expectedHash: 'abc123',
     });
+    vi.mocked(tauriCommands.hostedVaultUploadFile).mockResolvedValue({
+      ...hostedDocument,
+      id: 'asset-1',
+      kind: 'asset',
+      documentType: null,
+      name: 'diagram.png',
+      relativePath: 'Pictures/diagram.png',
+    });
     vi.mocked(tauriCommands.hostedVaultRequest).mockReset();
     vi.mocked(tauriCommands.hostedVaultRequest)
-      .mockResolvedValueOnce({ ...mockHostedManifest(), files: [rootFolder, pictures, hostedDocument] })
-      .mockResolvedValueOnce({
-        ...hostedDocument,
-        id: 'asset-1',
-        kind: 'asset',
-        documentType: null,
-        name: 'diagram.png',
-        relativePath: 'Pictures/diagram.png',
-      });
+      .mockResolvedValueOnce({ ...mockHostedManifest(), files: [rootFolder, pictures, hostedDocument] });
     vi.mocked(tauriCommands.replicaReadSyncState).mockResolvedValue({
       manifestSequence: 8,
       lastSyncedAt: '2026-06-17T00:00:00Z',
@@ -861,18 +965,11 @@ describe('HostedVaultClient', () => {
     await expect(
       client.runtime.externalAssetImport!.import('/tmp/diagram.png'),
     ).resolves.toBe('Pictures/diagram.png');
-    expect(tauriCommands.readFileForUpload).toHaveBeenCalledWith('/tmp/diagram.png');
-    expect(tauriCommands.hostedVaultRequest).toHaveBeenLastCalledWith(
+    expect(tauriCommands.hostedVaultUploadFile).toHaveBeenCalledWith(
       'https://collab.example.test',
-      'POST',
-      '/api/v1/vaults/hosted-vault/uploads',
-      {
-        parentId: 'folder-pics',
-        name: 'diagram.png',
-        mediaType: 'image/png',
-        contentBase64: 'aW1n',
-        expectedHash: 'abc123',
-      },
+      'hosted-vault',
+      'folder-pics',
+      '/tmp/diagram.png',
     );
     await vi.waitFor(() =>
       expect(tauriCommands.replicaCacheAsset).toHaveBeenCalledWith(
@@ -882,6 +979,7 @@ describe('HostedVaultClient', () => {
         'aW1n',
       ),
     );
+    expect(tauriCommands.readFileForUpload).toHaveBeenCalledWith('/tmp/diagram.png');
   });
 
   it('queues interrupted hosted asset uploads with cached bytes for retry', async () => {
@@ -894,8 +992,10 @@ describe('HostedVaultClient', () => {
     });
     vi.mocked(tauriCommands.hostedVaultRequest).mockReset();
     vi.mocked(tauriCommands.hostedVaultRequest)
-      .mockResolvedValueOnce({ ...mockHostedManifest(), files: [rootFolder, pictures, hostedDocument] })
-      .mockRejectedValueOnce(new Error('NetworkError when attempting to fetch resource.'));
+      .mockResolvedValueOnce({ ...mockHostedManifest(), files: [rootFolder, pictures, hostedDocument] });
+    vi.mocked(tauriCommands.hostedVaultUploadFile).mockRejectedValue(
+      new Error('NetworkError when attempting to fetch resource.'),
+    );
     vi.mocked(tauriCommands.replicaReadManifest).mockResolvedValue({
       ...mockHostedManifest(),
       files: [rootFolder, pictures, hostedDocument],
