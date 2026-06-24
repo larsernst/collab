@@ -7,6 +7,7 @@ import { Button } from '../components/ui/button';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../components/ui/select';
 import { toast } from 'sonner';
 import { cn } from '../lib/utils';
+import SettingsOcrSection from '../components/settings/SettingsOcrSection';
 
 export default function SettingsPage() {
   const { myUserName, myUserColor, setMyProfile, myUserId } = useCollabStore();
@@ -21,6 +22,14 @@ export default function SettingsPage() {
     setCanvasWebCardDefaultMode,
     canvasWebCardAutoLoad,
     setCanvasWebCardAutoLoad,
+    ocrLanguage,
+    setOcrLanguage,
+    ocrModelSource,
+    setOcrModelSource,
+    ocrRenderScale,
+    setOcrRenderScale,
+    ocrPreprocessingMode,
+    setOcrPreprocessingMode,
   } = useUiStore();
   const identity = useCollabIdentity();
   const serverManaged = identity.source === 'server';
@@ -184,6 +193,20 @@ export default function SettingsPage() {
               </span>
             </button>
           </div>
+        </section>
+
+        <section className="mb-8">
+          <h2 className="text-lg font-semibold mb-4">OCR</h2>
+          <SettingsOcrSection
+            ocrLanguage={ocrLanguage}
+            setOcrLanguage={setOcrLanguage}
+            ocrModelSource={ocrModelSource}
+            setOcrModelSource={setOcrModelSource}
+            ocrRenderScale={ocrRenderScale}
+            setOcrRenderScale={setOcrRenderScale}
+            ocrPreprocessingMode={ocrPreprocessingMode}
+            setOcrPreprocessingMode={setOcrPreprocessingMode}
+          />
         </section>
       </div>
     </div>

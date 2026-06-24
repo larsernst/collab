@@ -9,7 +9,7 @@ import { Input } from '../ui/input';
 import { Button } from '../ui/button';
 import { Badge } from '../ui/badge';
 import { cn } from '../../lib/utils';
-import { Palette, Type, User, Monitor, Info, CalendarDays, Keyboard, Search, SlidersHorizontal, Layout, Server } from 'lucide-react';
+import { Palette, Type, User, Monitor, Info, CalendarDays, Keyboard, Search, SlidersHorizontal, Layout, Server, Languages } from 'lucide-react';
 import { toast } from 'sonner';
 import AboutTab from './AboutTab';
 import ShortcutsTab from './ShortcutsTab';
@@ -20,6 +20,7 @@ import SettingsDisplaySection from './SettingsDisplaySection';
 import SettingsGeneralSection from './SettingsGeneralSection';
 import SettingsProfileSection from './SettingsProfileSection';
 import SettingsEditorSection from './SettingsEditorSection';
+import SettingsOcrSection from './SettingsOcrSection';
 import SettingsServerSection from './SettingsServerSection';
 import { useUpdateStore } from '../../store/updateStore';
 
@@ -31,6 +32,7 @@ const TABS = [
   { id: 'editor',     label: 'Editor',     icon: <Type size={15} />, keywords: ['font', 'typing', 'notes', 'indent', 'color preview'] },
   { id: 'display',    label: 'Display',    icon: <Monitor size={15} />, keywords: ['scale', 'motion', 'animation', 'ui'] },
   { id: 'canvas',     label: 'Canvas',     icon: <Layout size={15} />, keywords: ['canvas', 'web card', 'embed', 'preview', 'links'] },
+  { id: 'ocr',        label: 'OCR',        icon: <Languages size={15} />, keywords: ['ocr', 'text recognition', 'language', 'tesseract', 'pdf', 'image'] },
   { id: 'calendar',   label: 'Calendar',   icon: <CalendarDays size={15} />, keywords: ['date', 'week', 'format'] },
   { id: 'profile',    label: 'Profile',    icon: <User size={15} />, keywords: ['name', 'identity', 'presence', 'user'] },
   { id: 'server',     label: 'Server',     icon: <Server size={15} />, keywords: ['hosted', 'login', 'connection', 'account'] },
@@ -72,6 +74,10 @@ export default function SettingsModal() {
     hoverWebLinkPreviewsEnabled, setHoverWebLinkPreviewsEnabled,
     backgroundWebPreviewPrefetchEnabled, setBackgroundWebPreviewPrefetchEnabled,
     fileTreeHoverPreviewsEnabled, setFileTreeHoverPreviewsEnabled,
+    ocrLanguage, setOcrLanguage,
+    ocrModelSource, setOcrModelSource,
+    ocrRenderScale, setOcrRenderScale,
+    ocrPreprocessingMode, setOcrPreprocessingMode,
   } = useUiStore();
 
   const { myUserName, myUserColor, myUserId, setMyProfile } = useCollabStore();
@@ -236,6 +242,19 @@ export default function SettingsModal() {
                 canvasWebCardAutoLoad={canvasWebCardAutoLoad}
                 setCanvasWebCardAutoLoad={setCanvasWebCardAutoLoad}
                 webPreviewsEnabled={webPreviewsEnabled}
+              />
+            )}
+
+            {activeTab === 'ocr' && (
+              <SettingsOcrSection
+                ocrLanguage={ocrLanguage}
+                setOcrLanguage={setOcrLanguage}
+                ocrModelSource={ocrModelSource}
+                setOcrModelSource={setOcrModelSource}
+                ocrRenderScale={ocrRenderScale}
+                setOcrRenderScale={setOcrRenderScale}
+                ocrPreprocessingMode={ocrPreprocessingMode}
+                setOcrPreprocessingMode={setOcrPreprocessingMode}
               />
             )}
 

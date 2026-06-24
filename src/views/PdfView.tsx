@@ -7,6 +7,7 @@ import {
   ChevronLeft,
   ChevronRight,
   Columns2,
+  Copy,
   Crop,
   FileText,
   Highlighter,
@@ -19,6 +20,7 @@ import {
   PanelRightClose,
   PanelRightOpen,
   Plus,
+  RefreshCw,
   RotateCw,
   Rows3,
   Trash2,
@@ -30,10 +32,12 @@ import { Input } from '../components/ui/input';
 import { Textarea } from '../components/ui/textarea';
 import { cn } from '../lib/utils';
 import { tauriCommands } from '../lib/tauri';
+import { readOcrCache, writeOcrCache } from '../lib/ocrCache';
 import { createVaultClient } from '../lib/vaultClient';
 import type { VaultPdfAnnotations } from '../lib/vaultClient';
 import { vaultCan } from '../types/vault';
 import { useEditorStore } from '../store/editorStore';
+import { useUiStore } from '../store/uiStore';
 import { useVaultStore } from '../store/vaultStore';
 import { enqueuePdfRender } from './pdfRenderQueue';
 import type { LayoutMode, ZoomMode } from './pdfViewTypes';
@@ -77,6 +81,67 @@ const ZOOM_STEP = 0.1;
 const DEVICE_SCALE_LIMIT = 2;
 const WORKSPACE_PADDING = 40;
 const PAGE_GAP = 20;
+const OCR_MAX_CANVAS_PIXELS = 24_000_000;
+
+type PdfTextContentItem = {
+  str?: string;
+  hasEOL?: boolean;
+};
+
+function textContentToPlainText(textContent: { items?: unknown[] }): string {
+  const chunks: string[] = [];
+  for (const item of textContent.items ?? []) {
+    if (!item || typeof item !== 'object') continue;
+    const textItem = item as PdfTextContentItem;
+    if (typeof textItem.str !== 'string' || textItem.str.length === 0) continue;
+    chunks.push(textItem.str);
+    chunks.push(textItem.hasEOL ? '\n' : ' ');
+  }
+  return chunks.join('').replace(/[ \t]+\n/g, '\n').replace(/\n{3,}/g, '\n\n').trim();
+}
+
+async function renderPdfPageForOcr(
+  documentProxy: PDFDocumentProxy,
+  pageNumber: number,
+  scale: number,
+  rotation: number,
+): Promise<HTMLCanvasElement> {
+  const page = await documentProxy.getPage(pageNumber);
+  const requestedViewport = page.getViewport({ scale, rotation });
+  const requestedPixels = requestedViewport.width * requestedViewport.height;
+  const safeScale = requestedPixels > OCR_MAX_CANVAS_PIXELS
+    ? scale * Math.sqrt(OCR_MAX_CANVAS_PIXELS / requestedPixels)
+    : scale;
+  const viewport = page.getViewport({ scale: safeScale, rotation });
+  const canvas = document.createElement('canvas');
+  canvas.width = Math.max(1, Math.ceil(viewport.width));
+  canvas.height = Math.max(1, Math.ceil(viewport.height));
+  const context = canvas.getContext('2d');
+  if (!context) throw new Error('Failed to prepare PDF page for OCR');
+  await page.render({ canvas, canvasContext: context, viewport }).promise;
+  return canvas;
+}
+
+function cropRenderedPdfRegion(
+  canvas: HTMLCanvasElement,
+  region: { left: number; top: number; width: number; height: number },
+  surfaceSize: { width: number; height: number },
+): HTMLCanvasElement {
+  const scaleX = canvas.width / Math.max(surfaceSize.width, 1);
+  const scaleY = canvas.height / Math.max(surfaceSize.height, 1);
+  const cropLeft = Math.max(0, Math.round(region.left * scaleX));
+  const cropTop = Math.max(0, Math.round(region.top * scaleY));
+  const cropWidth = Math.max(1, Math.min(Math.round(region.width * scaleX), canvas.width - cropLeft));
+  const cropHeight = Math.max(1, Math.min(Math.round(region.height * scaleY), canvas.height - cropTop));
+  const cropCanvas = document.createElement('canvas');
+  cropCanvas.width = cropWidth;
+  cropCanvas.height = cropHeight;
+  const context = cropCanvas.getContext('2d');
+  if (!context) throw new Error('Failed to prepare PDF region for OCR');
+  context.drawImage(canvas, cropLeft, cropTop, cropWidth, cropHeight, 0, 0, cropWidth, cropHeight);
+  return cropCanvas;
+}
+
 const PDF_CSS_SCALE = PixelsPerInch.PDF_TO_CSS_UNITS;
 const DEFAULT_HIGHLIGHT_COLOR = '#facc15';
 const PDF_TEXT_ANNOTATION_STYLES = [
@@ -121,7 +186,7 @@ interface SelectionActionState {
 
 interface RegionSelectionState {
   page: number;
-  mode: 'snapshot' | 'annotation';
+  mode: 'snapshot' | 'annotation' | 'ocr';
   startX: number;
   startY: number;
   currentX: number;
@@ -139,6 +204,10 @@ interface AnnotationManipulationState {
   originWidth: number;
   originHeight: number;
 }
+
+type PdfOcrRegenerateAction =
+  | { kind: 'page'; page: number }
+  | { kind: 'region'; page: number; region: { left: number; top: number; width: number; height: number } };
 
 type PendingSendAction =
   | { mode: 'quote'; page: number; text: string }
@@ -232,7 +301,7 @@ interface PdfPageCanvasProps {
     mode: 'move' | 'resize',
   ) => void;
   regionSelection: RegionSelectionState | null;
-  interactionMode: 'none' | 'snapshot' | 'annotation';
+  interactionMode: 'none' | 'snapshot' | 'annotation' | 'ocr';
 }
 
 function PdfPageCanvas({
@@ -667,8 +736,18 @@ export default function PdfView({ relativePath }: Props) {
   const [annotationManipulation, setAnnotationManipulation] = useState<AnnotationManipulationState | null>(null);
   const [bookmarksOpen, setBookmarksOpen] = useState(true);
   const [regionSelection, setRegionSelection] = useState<RegionSelectionState | null>(null);
-  const [interactionMode, setInteractionMode] = useState<'none' | 'snapshot' | 'annotation'>('none');
+  const [interactionMode, setInteractionMode] = useState<'none' | 'snapshot' | 'annotation' | 'ocr'>('none');
   const [pendingSendAction, setPendingSendAction] = useState<PendingSendAction | null>(null);
+  const [ocrOpen, setOcrOpen] = useState(false);
+  const [ocrLoading, setOcrLoading] = useState(false);
+  const [ocrText, setOcrText] = useState('');
+  const [ocrPage, setOcrPage] = useState<number | null>(null);
+  const [ocrConfidence, setOcrConfidence] = useState<number | null>(null);
+  const [ocrResultMode, setOcrResultMode] = useState<'pdf-text' | 'ocr'>('ocr');
+  const [ocrProgress, setOcrProgress] = useState<{ progress: number; status: string } | null>(null);
+  const [ocrCached, setOcrCached] = useState(false);
+  const [ocrRegenerateAction, setOcrRegenerateAction] = useState<PdfOcrRegenerateAction | null>(null);
+  const ocrRenderScale = useUiStore((state) => state.ocrRenderScale);
   const documentCacheKey = useMemo(() => {
     const maybeFingerprints = (documentProxy as PDFDocumentProxy & { fingerprints?: string[] } | null)?.fingerprints;
     return maybeFingerprints?.[0] ?? relativePath;
@@ -728,6 +807,12 @@ export default function PdfView({ relativePath }: Props) {
     setBookmarksOpen(true);
     setRegionSelection(null);
     setInteractionMode('none');
+    setOcrOpen(false);
+    setOcrLoading(false);
+    setOcrText('');
+    setOcrPage(null);
+    setOcrConfidence(null);
+    setOcrProgress(null);
 
     const loadClient = createVaultClient(vault);
     void Promise.all([
@@ -1310,6 +1395,171 @@ export default function PdfView({ relativePath }: Props) {
     });
   }, []);
 
+  const runPageOcr = useCallback(async (targetPage: number, force = false) => {
+    setOcrOpen(true);
+    setOcrLoading(true);
+    setOcrPage(targetPage);
+    setOcrText('');
+    setOcrConfidence(null);
+    setOcrResultMode('ocr');
+    setOcrCached(false);
+    setOcrRegenerateAction({ kind: 'page', page: targetPage });
+    setOcrProgress({ progress: 0, status: 'Checking PDF text' });
+    try {
+      const pdfTextCacheScope = {
+        kind: 'pdf-page-text',
+        relativePath,
+        documentCacheKey,
+        page: targetPage,
+      };
+      if (!force) {
+        const cachedPdfText = await readOcrCache(pdfTextCacheScope);
+        if (cachedPdfText) {
+          setOcrText(cachedPdfText.text);
+          setOcrConfidence(cachedPdfText.confidence);
+          setOcrResultMode('pdf-text');
+          setOcrCached(true);
+          setOcrProgress(null);
+          return;
+        }
+      }
+
+      if (documentProxy) {
+        const page = await documentProxy.getPage(targetPage);
+        const textContent = await page.getTextContent();
+        const embeddedText = textContentToPlainText(textContent);
+        if (embeddedText.length > 0) {
+          const result = { text: embeddedText, confidence: null };
+          await writeOcrCache(pdfTextCacheScope, result, 'pdf-text').catch(() => undefined);
+          setOcrText(result.text);
+          setOcrConfidence(null);
+          setOcrResultMode('pdf-text');
+          setOcrCached(false);
+          setOcrProgress(null);
+          return;
+        }
+      }
+
+      if (!documentProxy) {
+        toast.error('PDF document is not ready for OCR yet.');
+        return;
+      }
+      setOcrProgress({ progress: 0, status: `Rendering page at ${ocrRenderScale}x` });
+      const canvas = await enqueuePdfRender(() => renderPdfPageForOcr(documentProxy, targetPage, ocrRenderScale, rotation));
+      setOcrProgress({ progress: 0, status: 'Preparing OCR' });
+      const { recognizeImageText } = await import('../lib/ocr');
+      const result = await recognizeImageText(canvas, (progress, status) => {
+        setOcrProgress({ progress, status });
+      }, {
+        force,
+        cacheScope: {
+          kind: 'pdf-page-ocr',
+          relativePath,
+          documentCacheKey,
+          page: targetPage,
+          rotation,
+          renderScale: ocrRenderScale,
+        },
+      });
+      setOcrText(result.text);
+      setOcrConfidence(result.confidence);
+      setOcrResultMode('ocr');
+      setOcrCached(result.cached === true);
+      setOcrProgress(null);
+    } catch (reason) {
+      setOcrText('');
+      setOcrConfidence(null);
+      setOcrResultMode('ocr');
+      setOcrCached(false);
+      setOcrProgress(null);
+      toast.error(`OCR failed: ${String(reason)}`);
+    } finally {
+      setOcrLoading(false);
+    }
+  }, [documentCacheKey, documentProxy, ocrRenderScale, relativePath, rotation]);
+
+  const runRegionOcr = useCallback(async (
+    targetPage: number,
+    region: { left: number; top: number; width: number; height: number },
+    force = false,
+  ) => {
+    const surface = pageRefs.current[targetPage];
+    if (!surface || !documentProxy) {
+      toast.error('That PDF page is not ready for region OCR yet.');
+      return;
+    }
+    const surfaceRect = surface.getBoundingClientRect();
+    const normalizedRegion = {
+      left: Number((region.left / Math.max(surfaceRect.width, 1)).toFixed(5)),
+      top: Number((region.top / Math.max(surfaceRect.height, 1)).toFixed(5)),
+      width: Number((region.width / Math.max(surfaceRect.width, 1)).toFixed(5)),
+      height: Number((region.height / Math.max(surfaceRect.height, 1)).toFixed(5)),
+    };
+
+    setOcrOpen(true);
+    setOcrLoading(true);
+    setOcrPage(targetPage);
+    setOcrText('');
+    setOcrConfidence(null);
+    setOcrResultMode('ocr');
+    setOcrCached(false);
+    setOcrRegenerateAction({ kind: 'region', page: targetPage, region });
+    setOcrProgress({ progress: 0, status: `Rendering region at ${ocrRenderScale}x` });
+    try {
+      const renderedPage = await enqueuePdfRender(() => renderPdfPageForOcr(documentProxy, targetPage, ocrRenderScale, rotation));
+      const canvas = cropRenderedPdfRegion(renderedPage, region, { width: surfaceRect.width, height: surfaceRect.height });
+      setOcrProgress({ progress: 0, status: 'Preparing OCR' });
+      const { recognizeImageText } = await import('../lib/ocr');
+      const result = await recognizeImageText(canvas, (progress, status) => {
+        setOcrProgress({ progress, status });
+      }, {
+        force,
+        cacheScope: {
+          kind: 'pdf-region-ocr',
+          relativePath,
+          documentCacheKey,
+          page: targetPage,
+          rotation,
+          renderScale: ocrRenderScale,
+          regionLeft: normalizedRegion.left,
+          regionTop: normalizedRegion.top,
+          regionWidth: normalizedRegion.width,
+          regionHeight: normalizedRegion.height,
+        },
+      });
+      setOcrText(result.text);
+      setOcrConfidence(result.confidence);
+      setOcrCached(result.cached === true);
+      setOcrProgress(null);
+    } catch (reason) {
+      setOcrText('');
+      setOcrConfidence(null);
+      setOcrCached(false);
+      setOcrProgress(null);
+      toast.error(`Region OCR failed: ${String(reason)}`);
+    } finally {
+      setOcrLoading(false);
+    }
+  }, [documentCacheKey, documentProxy, ocrRenderScale, relativePath, rotation]);
+
+  const copyOcrText = useCallback(async () => {
+    if (!ocrText) return;
+    const { copyTextToClipboard } = await import('../lib/ocr');
+    await copyTextToClipboard(ocrText);
+  }, [ocrText]);
+
+  const regenerateOcr = useCallback(() => {
+    if (!ocrRegenerateAction) {
+      void runPageOcr(ocrPage ?? pageNumber, true);
+      return;
+    }
+    if (ocrRegenerateAction.kind === 'page') {
+      void runPageOcr(ocrRegenerateAction.page, true);
+      return;
+    }
+    void runRegionOcr(ocrRegenerateAction.page, ocrRegenerateAction.region, true);
+  }, [ocrPage, ocrRegenerateAction, pageNumber, runPageOcr, runRegionOcr]);
+
   const captureRegionSnapshot = useCallback((targetPage: number, region: { left: number; top: number; width: number; height: number }) => {
     const canvas = pageCanvasRefs.current[targetPage];
     const surface = pageRefs.current[targetPage];
@@ -1620,6 +1870,8 @@ export default function PdfView({ relativePath }: Props) {
       if (regionRect && regionRect.width >= 12 && regionRect.height >= 12) {
         if (regionSelection.mode === 'snapshot') {
           captureRegionSnapshot(regionSelection.page, regionRect);
+        } else if (regionSelection.mode === 'ocr') {
+          void runRegionOcr(regionSelection.page, regionRect);
         } else {
           createTextAnnotation(regionSelection);
         }
@@ -1635,7 +1887,7 @@ export default function PdfView({ relativePath }: Props) {
       window.removeEventListener('pointermove', handlePointerMove);
       window.removeEventListener('pointerup', handlePointerUp);
     };
-  }, [captureRegionSnapshot, createTextAnnotation, regionSelection]);
+  }, [captureRegionSnapshot, createTextAnnotation, regionSelection, runRegionOcr]);
 
   useEffect(() => {
     if (!annotationManipulation) return;
@@ -1925,6 +2177,18 @@ export default function PdfView({ relativePath }: Props) {
               <Button
                 size="sm"
                 variant="ghost"
+                className={cn('h-8 gap-1.5 px-2.5 text-xs', interactionMode === 'ocr' && 'bg-accent text-accent-foreground')}
+                onClick={() => {
+                  setInteractionMode((current) => current === 'ocr' ? 'none' : 'ocr');
+                  setRegionSelection(null);
+                }}
+              >
+                <FileText size={14} />
+                Region OCR
+              </Button>
+              <Button
+                size="sm"
+                variant="ghost"
                 className={cn('h-8 gap-1.5 px-2.5 text-xs', interactionMode === 'annotation' && 'bg-accent text-accent-foreground')}
                 onClick={() => {
                   setInteractionMode((current) => current === 'annotation' ? 'none' : 'annotation');
@@ -1937,6 +2201,22 @@ export default function PdfView({ relativePath }: Props) {
               <Button size="sm" variant="ghost" className="h-8 gap-1.5 px-2.5 text-xs" onClick={() => captureFullPageSnapshot(pageNumber)}>
                 <ImagePlus size={14} />
                 Snapshot page
+              </Button>
+              <Button
+                size="sm"
+                variant="ghost"
+                className={cn('h-8 gap-1.5 px-2.5 text-xs', ocrOpen && 'bg-accent text-accent-foreground')}
+                disabled={ocrLoading}
+                onClick={() => {
+                  if (ocrText && ocrPage === pageNumber) {
+                    setOcrOpen((current) => !current);
+                    return;
+                  }
+                  void runPageOcr(pageNumber);
+                }}
+              >
+                {ocrLoading ? <Loader2 size={14} className="animate-spin" /> : <FileText size={14} />}
+                OCR page
               </Button>
               <Button size="sm" variant="ghost" className="h-8 gap-1.5 px-2.5 text-xs" onClick={addPageCommentForCurrentPage}>
                 <MessageSquare size={14} />
@@ -1989,6 +2269,48 @@ export default function PdfView({ relativePath }: Props) {
 
       <div className="relative min-h-0 flex-1">
         <div className="pointer-events-none absolute right-5 top-5 z-20 flex flex-col gap-3">
+          {ocrOpen && (
+            <div className="pointer-events-auto w-[min(380px,calc(100vw-2.5rem))] rounded-2xl border border-border/60 bg-popover/95 p-3 shadow-2xl shadow-black/25">
+              <div className="mb-2 flex items-start justify-between gap-3">
+                <div>
+                  <div className="text-sm font-medium">Recognized text</div>
+                  <div className="text-xs text-muted-foreground">
+                    {ocrLoading && ocrProgress
+                      ? `${ocrProgress.status} · ${Math.round(ocrProgress.progress * 100)}%`
+                      : ocrPage
+                        ? ocrResultMode === 'pdf-text'
+                          ? `Page ${ocrPage} · ${ocrCached ? 'cached ' : ''}extracted PDF text`
+                          : `Page ${ocrPage}${ocrCached ? ' · cached' : ''}${ocrConfidence != null ? ` · confidence ${Math.round(ocrConfidence)}%` : ''}`
+                        : 'PDF OCR'}
+                  </div>
+                </div>
+                <div className="flex items-center gap-1">
+                  <Button size="icon" variant="ghost" className="size-8" disabled={ocrLoading} onClick={regenerateOcr} title="Regenerate OCR">
+                    <RefreshCw size={14} />
+                  </Button>
+                  <Button size="icon" variant="ghost" className="size-8" disabled={!ocrText} onClick={() => void copyOcrText()} title="Copy recognized text">
+                    <Copy size={14} />
+                  </Button>
+                  <Button size="icon" variant="ghost" className="size-8" onClick={() => setOcrOpen(false)} title="Close OCR panel">
+                    <PanelRightClose size={14} />
+                  </Button>
+                </div>
+              </div>
+              {ocrLoading && (
+                <div className="h-1 overflow-hidden rounded-full bg-muted">
+                  <div className="h-full bg-primary transition-all" style={{ width: `${Math.round((ocrProgress?.progress ?? 0) * 100)}%` }} />
+                </div>
+              )}
+              {!ocrLoading && (
+                <textarea
+                  readOnly
+                  value={ocrText || 'No text recognized.'}
+                  className="mt-2 h-52 w-full resize-none rounded-lg border border-input bg-background/70 px-3 py-2 text-xs leading-relaxed outline-none"
+                />
+              )}
+            </div>
+          )}
+
           {selectionAction && (
             <div
               className="pointer-events-auto fixed z-50 flex items-center gap-1 rounded-xl border border-border/60 bg-popover/95 px-2 py-1 shadow-2xl shadow-black/30"
@@ -2204,7 +2526,9 @@ export default function PdfView({ relativePath }: Props) {
           <div className="absolute left-1/2 top-5 z-10 -translate-x-1/2 rounded-full border border-border/60 bg-popover/92 px-4 py-2 text-xs text-muted-foreground shadow-lg">
             {interactionMode === 'snapshot'
               ? 'Drag across a page to capture a region snapshot.'
-              : 'Drag across a page to place a text annotation box.'}
+              : interactionMode === 'ocr'
+                ? 'Drag across a page to recognize text in that region.'
+                : 'Drag across a page to place a text annotation box.'}
           </div>
         )}
 

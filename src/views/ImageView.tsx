@@ -1,8 +1,14 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import {
+  Copy,
+  Crop as CropIcon,
+  FileText,
   Image as ImageIcon,
+  Loader2,
   Minus,
+  PanelRightClose,
   Plus,
+  RefreshCw,
 } from 'lucide-react';
 import { useEditorStore } from '../store/editorStore';
 import { useVaultStore } from '../store/vaultStore';
@@ -333,6 +339,13 @@ export default function ImageView({ relativePath }: Props) {
   const [saving, setSaving] = useState(false);
   const [zoomPercent, setZoomPercent] = useState(100);
   const [annotationsOpen, setAnnotationsOpen] = useState(false);
+  const [ocrText, setOcrText] = useState('');
+  const [ocrConfidence, setOcrConfidence] = useState<number | null>(null);
+  const [ocrOpen, setOcrOpen] = useState(false);
+  const [ocrLoading, setOcrLoading] = useState(false);
+  const [ocrProgress, setOcrProgress] = useState<{ progress: number; status: string } | null>(null);
+  const [ocrCached, setOcrCached] = useState(false);
+  const [lastOcrRegion, setLastOcrRegion] = useState<ImageCropRect | null>(null);
   const [editingTextId, setEditingTextId] = useState<string | null>(null);
   const [textInteraction, setTextInteraction] = useState<TextInteraction | null>(null);
   const [arrowInteraction, setArrowInteraction] = useState<ArrowInteraction | null>(null);
@@ -498,6 +511,70 @@ export default function ImageView({ relativePath }: Props) {
   const annotationItems = overlayDoc?.items ?? [];
   const activeColor = selectedItem?.color ?? overlayColor;
 
+  useEffect(() => {
+    setOcrText('');
+    setOcrConfidence(null);
+    setOcrProgress(null);
+    setOcrCached(false);
+    setLastOcrRegion(null);
+    setOcrOpen(false);
+  }, [relativePath, src]);
+
+  const runImageOcr = async (force = false, region: ImageCropRect | null = null) => {
+    if (!src) return;
+    setOcrOpen(true);
+    setOcrLoading(true);
+    setLastOcrRegion(region);
+    setOcrProgress({ progress: 0, status: 'Preparing OCR' });
+    try {
+      const { recognizeImageText } = await import('../lib/ocr');
+      const { hashOcrCacheString } = await import('../lib/ocrCache');
+      const sourceHash = await hashOcrCacheString(src);
+      let ocrInput: string | HTMLCanvasElement = src;
+      if (region && image) {
+        const rotated = buildRotatedCanvas(image, permanentEdits.rotation);
+        const cropCanvas = createCanvas(region.width, region.height);
+        const context = cropCanvas.getContext('2d');
+        if (!context) throw new Error('Failed to prepare image region for OCR');
+        context.drawImage(rotated, region.x, region.y, region.width, region.height, 0, 0, cropCanvas.width, cropCanvas.height);
+        ocrInput = cropCanvas;
+      }
+      const result = await recognizeImageText(ocrInput, (progress, status) => {
+        setOcrProgress({ progress, status });
+      }, {
+        force,
+        cacheScope: {
+          kind: region ? 'image-region' : 'image',
+          relativePath,
+          sourceHash,
+          regionX: region?.x ?? null,
+          regionY: region?.y ?? null,
+          regionWidth: region?.width ?? null,
+          regionHeight: region?.height ?? null,
+          rotation: region ? permanentEdits.rotation : null,
+        },
+      });
+      setOcrText(result.text);
+      setOcrConfidence(result.confidence);
+      setOcrCached(result.cached === true);
+      setOcrProgress(null);
+    } catch (reason) {
+      setOcrText('');
+      setOcrConfidence(null);
+      setOcrCached(false);
+      setOcrProgress(null);
+      setError(`OCR failed: ${reason}`);
+    } finally {
+      setOcrLoading(false);
+    }
+  };
+
+  const copyOcrText = async () => {
+    if (!ocrText) return;
+    const { copyTextToClipboard } = await import('../lib/ocr');
+    await copyTextToClipboard(ocrText);
+  };
+
   return (
     <div className="flex h-full w-full flex-col overflow-hidden bg-background app-fade-slide-in">
       <DocumentTopBar
@@ -636,6 +713,34 @@ export default function ImageView({ relativePath }: Props) {
 
           <div className={documentTopBarGroupClass}>
             <Button
+              size="sm"
+              variant="ghost"
+              className={cn('h-8 gap-1.5 px-2.5 text-xs', ocrOpen && 'bg-accent text-accent-foreground')}
+              onClick={() => {
+                if (ocrText) {
+                  setOcrOpen((current) => !current);
+                  return;
+                }
+                void runImageOcr();
+              }}
+              disabled={!src || ocrLoading}
+            >
+              {ocrLoading ? <Loader2 size={14} className="animate-spin" /> : <FileText size={14} />}
+              OCR
+            </Button>
+            {cropDraft && (
+              <Button
+                size="sm"
+                variant="ghost"
+                className="h-8 gap-1.5 px-2.5 text-xs"
+                onClick={() => void runImageOcr(false, cropDraft)}
+                disabled={!src || !image || ocrLoading}
+              >
+                {ocrLoading ? <Loader2 size={14} className="animate-spin" /> : <CropIcon size={14} />}
+                OCR crop
+              </Button>
+            )}
+            <Button
               size="icon"
               variant="ghost"
               className="size-8"
@@ -695,6 +800,46 @@ export default function ImageView({ relativePath }: Props) {
                 placeholder="Annotation text"
               />
             </div>
+          </div>
+        )}
+
+        {ocrOpen && (
+          <div className="absolute right-4 top-4 z-30 w-[min(360px,calc(100%-2rem))] rounded-xl border border-border/60 bg-popover/95 p-3 shadow-2xl shadow-black/25 backdrop-blur-sm-webkit">
+            <div className="mb-2 flex items-start justify-between gap-3">
+              <div>
+                <div className="text-sm font-medium">Recognized text</div>
+                <div className="text-xs text-muted-foreground">
+                  {ocrLoading && ocrProgress
+                    ? `${ocrProgress.status} · ${Math.round(ocrProgress.progress * 100)}%`
+                    : ocrConfidence != null
+                      ? `${ocrCached ? 'Cached · ' : ''}Confidence ${Math.round(ocrConfidence)}%`
+                      : 'Image OCR'}
+                </div>
+              </div>
+              <div className="flex items-center gap-1">
+                <Button size="icon" variant="ghost" className="size-8" disabled={!src || ocrLoading} onClick={() => void runImageOcr(true, lastOcrRegion)} title="Regenerate OCR">
+                  <RefreshCw size={14} />
+                </Button>
+                <Button size="icon" variant="ghost" className="size-8" disabled={!ocrText} onClick={() => void copyOcrText()} title="Copy recognized text">
+                  <Copy size={14} />
+                </Button>
+                <Button size="icon" variant="ghost" className="size-8" onClick={() => setOcrOpen(false)} title="Close OCR panel">
+                  <PanelRightClose size={14} />
+                </Button>
+              </div>
+            </div>
+            {ocrLoading && (
+              <div className="h-1 overflow-hidden rounded-full bg-muted">
+                <div className="h-full bg-primary transition-all" style={{ width: `${Math.round((ocrProgress?.progress ?? 0) * 100)}%` }} />
+              </div>
+            )}
+            {!ocrLoading && (
+              <textarea
+                readOnly
+                value={ocrText || 'No text recognized.'}
+                className="mt-2 h-48 w-full resize-none rounded-lg border border-input bg-background/70 px-3 py-2 text-xs leading-relaxed outline-none"
+              />
+            )}
           </div>
         )}
 

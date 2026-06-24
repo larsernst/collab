@@ -59,6 +59,22 @@ export interface ServerConnectionStatus {
   accessExpiresAt: string | null;
 }
 
+export interface OcrLanguagePack {
+  code: string;
+  label: string;
+  bundled: boolean;
+  installed: boolean;
+  sizeBytes: number | null;
+  sha256: string | null;
+  installedAt: string | null;
+  sourceUrl: string;
+}
+
+export interface OcrLanguagePackData {
+  code: string;
+  dataBase64: string;
+}
+
 export const tauriCommands = {
   // Vault
   openVault: (path: string) => invoke<VaultMeta>('open_vault', { path }),
@@ -174,6 +190,12 @@ export const tauriCommands = {
     invoke<void>('rename_note', { vaultPath, oldPath, newPath, updateReferences: updateReferences ?? null }),
   createFolder: (vaultPath: string, relativePath: string) => invoke<void>('create_folder', { vaultPath, relativePath }),
   fetchLinkPreview: (url: string) => invoke<LinkPreviewData>('fetch_link_preview', { url }),
+  listOcrLanguagePacks: () => invoke<OcrLanguagePack[]>('list_ocr_language_packs'),
+  installOcrLanguagePack: (code: string) => invoke<OcrLanguagePack>('install_ocr_language_pack', { code }),
+  removeOcrLanguagePack: (code: string) => invoke<OcrLanguagePack>('remove_ocr_language_pack', { code }),
+  readOcrLanguagePackData: (code: string) => invoke<OcrLanguagePackData>('read_ocr_language_pack_data', { code }),
+  recognizeImageDataUrl: (dataUrl: string, language?: string) =>
+    invoke<string>('recognize_image_data_url', { dataUrl, language: language ?? null }),
 
   // Kanban templates
   listKanbanTemplates: (vaultPath?: string | null) =>

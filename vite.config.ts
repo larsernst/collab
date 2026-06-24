@@ -23,6 +23,10 @@ export default defineConfig(async () => ({
   // of the dev server feeling "mind-numbingly slow". Listing them here keeps the
   // cost to one cold prebundle that is then cached under node_modules/.vite.
   optimizeDeps: {
+    exclude: [
+      "tesseract.js",
+      "tesseract.js-core",
+    ],
     include: [
       "react",
       "react-dom",

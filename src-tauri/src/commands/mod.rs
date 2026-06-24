@@ -2,6 +2,7 @@ pub mod collab;
 pub mod crypto;
 pub mod files;
 pub mod index;
+pub mod ocr;
 pub mod replica;
 pub mod server;
 pub mod templates;

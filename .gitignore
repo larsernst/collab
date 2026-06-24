@@ -10,6 +10,7 @@ lerna-debug.log*
 node_modules
 dist
 dist-ssr
+public/ocr-assets/
 *.local
 /target/
 /server-data/
@@ -37,3 +38,4 @@ flatpak-repo/
 flatpak-distribution-plan.md
 .directory
 COLLAB_SERVER_PERMISSIONSYSTEM.md
+docs/ocr-implementation-plan.md

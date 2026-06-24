@@ -139,6 +139,12 @@ pub fn run() {
             commands::files::create_folder,
             // web
             commands::web::fetch_link_preview,
+            // ocr
+            commands::ocr::list_ocr_language_packs,
+            commands::ocr::install_ocr_language_pack,
+            commands::ocr::remove_ocr_language_pack,
+            commands::ocr::read_ocr_language_pack_data,
+            commands::ocr::recognize_image_data_url,
             // hosted server connection
             commands::server::connect_server,
             commands::server::reconnect_server,

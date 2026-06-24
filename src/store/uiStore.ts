@@ -14,6 +14,9 @@ export type DateFormat    = 'MMM_D_YYYY' | 'D_MMM_YYYY' | 'YYYY_MM_DD' | 'MM_DD_
 export type WeekStart     = 0 | 1; // 0 = Sunday, 1 = Monday
 export type AnimationSpeed = 'slow' | 'normal' | 'fast';
 export type CanvasWebCardDefaultMode = 'preview' | 'embed';
+export type OcrModelSource = 'official-fast';
+export type OcrRenderScale = 1 | 2 | 3;
+export type OcrPreprocessingMode = 'none' | 'grayscale' | 'contrast' | 'threshold' | 'invert';
 
 /** Map accent name → oklch(L C H) string (used for --primary in dark/light) */
 export const ACCENT_COLORS: Record<AccentColor, { label: string; oklch: string; hex: string }> = {
@@ -80,6 +83,14 @@ function isEditorFont(value: unknown): value is EditorFont {
   return typeof value === 'string' && value in EDITOR_FONTS;
 }
 
+function isOcrModelSource(value: unknown): value is OcrModelSource {
+  return value === 'official-fast';
+}
+
+function isOcrPreprocessingMode(value: unknown): value is OcrPreprocessingMode {
+  return value === 'none' || value === 'grayscale' || value === 'contrast' || value === 'threshold' || value === 'invert';
+}
+
 function normalizeFontSize(value: unknown, fallback: number): number {
   return typeof value === 'number' && Number.isFinite(value) ? value : fallback;
 }
@@ -117,6 +128,10 @@ function normalizePersistedUiState(
     interfaceFontSize: normalizeFontSize(state.interfaceFontSize ?? legacyFontSize, DEFAULT_INTERFACE_FONT_SIZE),
     editorFont,
     editorFontSize: normalizeFontSize(state.editorFontSize, DEFAULT_EDITOR_FONT_SIZE),
+    ocrLanguage: typeof state.ocrLanguage === 'string' && state.ocrLanguage.length > 0 ? state.ocrLanguage : 'eng',
+    ocrModelSource: isOcrModelSource(state.ocrModelSource) ? state.ocrModelSource : 'official-fast',
+    ocrRenderScale: state.ocrRenderScale === 1 || state.ocrRenderScale === 2 || state.ocrRenderScale === 3 ? state.ocrRenderScale : 2,
+    ocrPreprocessingMode: isOcrPreprocessingMode(state.ocrPreprocessingMode) ? state.ocrPreprocessingMode : 'none',
     fileTreeCollapsedPathsByVault: (
       legacyCollapsedPaths.length > 0 && lastOpenedVaultPath && !fileTreeCollapsedPathsByVault[lastOpenedVaultPath]
     )
@@ -211,6 +226,10 @@ interface UiState {
   hoverWebLinkPreviewsEnabled: boolean;
   backgroundWebPreviewPrefetchEnabled: boolean;
   fileTreeHoverPreviewsEnabled: boolean;
+  ocrLanguage: string;
+  ocrModelSource: OcrModelSource;
+  ocrRenderScale: OcrRenderScale;
+  ocrPreprocessingMode: OcrPreprocessingMode;
 
   // Actions
   setActiveView:    (view: ActiveView) => void;
@@ -251,6 +270,10 @@ interface UiState {
   setHoverWebLinkPreviewsEnabled: (value: boolean) => void;
   setBackgroundWebPreviewPrefetchEnabled: (value: boolean) => void;
   setFileTreeHoverPreviewsEnabled: (value: boolean) => void;
+  setOcrLanguage: (language: string) => void;
+  setOcrModelSource: (source: OcrModelSource) => void;
+  setOcrRenderScale: (scale: OcrRenderScale) => void;
+  setOcrPreprocessingMode: (mode: OcrPreprocessingMode) => void;
 }
 
 export const useUiStore = create<UiState>()(
@@ -294,6 +317,10 @@ export const useUiStore = create<UiState>()(
       hoverWebLinkPreviewsEnabled: true,
       backgroundWebPreviewPrefetchEnabled: true,
       fileTreeHoverPreviewsEnabled: true,
+      ocrLanguage: 'eng',
+      ocrModelSource: 'official-fast',
+      ocrRenderScale: 2,
+      ocrPreprocessingMode: 'none',
 
       setActiveView:   (activeView)   => set({ activeView }),
       setSidebarPanel: (sidebarPanel) => set({ sidebarPanel }),
@@ -341,6 +368,10 @@ export const useUiStore = create<UiState>()(
       setHoverWebLinkPreviewsEnabled: (hoverWebLinkPreviewsEnabled) => set({ hoverWebLinkPreviewsEnabled }),
       setBackgroundWebPreviewPrefetchEnabled: (backgroundWebPreviewPrefetchEnabled) => set({ backgroundWebPreviewPrefetchEnabled }),
       setFileTreeHoverPreviewsEnabled: (fileTreeHoverPreviewsEnabled) => set({ fileTreeHoverPreviewsEnabled }),
+      setOcrLanguage: (ocrLanguage) => set({ ocrLanguage }),
+      setOcrModelSource: (ocrModelSource) => set({ ocrModelSource }),
+      setOcrRenderScale: (ocrRenderScale) => set({ ocrRenderScale }),
+      setOcrPreprocessingMode: (ocrPreprocessingMode) => set({ ocrPreprocessingMode }),
     }),
     {
       name: 'ui-storage',
@@ -382,6 +413,10 @@ export const useUiStore = create<UiState>()(
         hoverWebLinkPreviewsEnabled: s.hoverWebLinkPreviewsEnabled,
         backgroundWebPreviewPrefetchEnabled: s.backgroundWebPreviewPrefetchEnabled,
         fileTreeHoverPreviewsEnabled: s.fileTreeHoverPreviewsEnabled,
+        ocrLanguage: s.ocrLanguage,
+        ocrModelSource: s.ocrModelSource,
+        ocrRenderScale: s.ocrRenderScale,
+        ocrPreprocessingMode: s.ocrPreprocessingMode,
       }),
     }
   )
