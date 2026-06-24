@@ -145,6 +145,7 @@ pub fn run() {
             commands::ocr::remove_ocr_language_pack,
             commands::ocr::read_ocr_language_pack_data,
             commands::ocr::recognize_image_data_url,
+            commands::ocr::recognize_image_data_url_words,
             // hosted server connection
             commands::server::connect_server,
             commands::server::reconnect_server,

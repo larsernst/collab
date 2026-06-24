@@ -75,6 +75,20 @@ export interface OcrLanguagePackData {
   dataBase64: string;
 }
 
+export interface NativeOcrWord {
+  text: string;
+  confidence: number;
+  x0: number;
+  y0: number;
+  x1: number;
+  y1: number;
+}
+
+export interface NativeOcrResult {
+  text: string;
+  words: NativeOcrWord[];
+}
+
 export const tauriCommands = {
   // Vault
   openVault: (path: string) => invoke<VaultMeta>('open_vault', { path }),
@@ -196,6 +210,8 @@ export const tauriCommands = {
   readOcrLanguagePackData: (code: string) => invoke<OcrLanguagePackData>('read_ocr_language_pack_data', { code }),
   recognizeImageDataUrl: (dataUrl: string, language?: string) =>
     invoke<string>('recognize_image_data_url', { dataUrl, language: language ?? null }),
+  recognizeImageDataUrlWords: (dataUrl: string, language?: string) =>
+    invoke<NativeOcrResult>('recognize_image_data_url_words', { dataUrl, language: language ?? null }),
 
   // Kanban templates
   listKanbanTemplates: (vaultPath?: string | null) =>

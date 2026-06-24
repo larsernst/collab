@@ -3,6 +3,7 @@ import { Check, X } from 'lucide-react';
 
 import type { ImageCropRect } from '../../types/image';
 import { Button } from '../ui/button';
+import type { SelectableImageOcrWord } from './ImageAdditiveStage';
 import { getRelativePoint, type Point } from './ImageViewUtils';
 
 const CROP_RESIZE_HANDLES = [
@@ -31,6 +32,7 @@ interface ImagePermanentStageProps {
     startPointer: Point;
     startRect: ImageCropRect;
   }) => void;
+  ocrWords?: SelectableImageOcrWord[];
 }
 
 export function ImagePermanentStage({
@@ -44,6 +46,7 @@ export function ImagePermanentStage({
   onCropPointerMove,
   onCropPointerEnd,
   onCropResizeStart,
+  ocrWords = [],
 }: ImagePermanentStageProps) {
   return (
     <div
@@ -51,6 +54,27 @@ export function ImagePermanentStage({
       style={{ width: displayWidth, height: displayHeight }}
     >
       <canvas ref={previewCanvasRef} className="rounded-xl" />
+
+      {ocrWords.length > 0 && (
+        <div className="pointer-events-none absolute inset-0 z-[1] select-text" aria-label="OCR text layer">
+          {ocrWords.map((word, index) => (
+            <span
+              key={`${word.text}-${index}`}
+              className="pointer-events-auto absolute flex cursor-text items-center overflow-hidden whitespace-pre rounded-[2px] border border-primary/45 bg-background/80 px-[1px] text-foreground shadow-sm selection:bg-primary/35"
+              style={{
+                left: `${word.left * 100}%`,
+                top: `${word.top * 100}%`,
+                width: `${word.width * 100}%`,
+                height: `${word.height * 100}%`,
+                fontSize: `${Math.max(6, word.height * displayHeight * 0.82)}px`,
+                lineHeight: 1,
+              }}
+            >
+              {word.text}
+            </span>
+          ))}
+        </div>
+      )}
 
       {cropMode && (
         <div

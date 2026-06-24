@@ -2,6 +2,8 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Copy,
   Crop as CropIcon,
+  Eye,
+  EyeOff,
   FileText,
   Image as ImageIcon,
   Loader2,
@@ -11,6 +13,7 @@ import {
   RefreshCw,
 } from 'lucide-react';
 import { useEditorStore } from '../store/editorStore';
+import { useUiStore } from '../store/uiStore';
 import { useVaultStore } from '../store/vaultStore';
 import type {
   ImageArrowOverlay,
@@ -40,7 +43,7 @@ import {
 } from '../components/layout/DocumentTopBar';
 import { ImageAnnotationsPopover } from '../components/image/ImageAnnotationsPopover';
 import { ImageAdditiveToolbar } from '../components/image/ImageAdditiveToolbar';
-import { ImageAdditiveStage } from '../components/image/ImageAdditiveStage';
+import { ImageAdditiveStage, type SelectableImageOcrWord } from '../components/image/ImageAdditiveStage';
 import { ImageCropFooter, ImagePermanentStage } from '../components/image/ImagePermanentStage';
 import { ImagePermanentToolbar } from '../components/image/ImagePermanentToolbar';
 import { useImageDocumentSession } from '../components/image/useImageDocumentSession';
@@ -97,6 +100,10 @@ type CropInteraction =
       startPointer: Point;
       startRect: ImageCropRect;
     };
+
+type ImageOcrOverlay =
+  | { surface: 'additive'; words: SelectableImageOcrWord[] }
+  | { surface: 'permanent'; words: SelectableImageOcrWord[] };
 
 function generateId() {
   return Math.random().toString(36).slice(2, 10);
@@ -169,6 +176,23 @@ function buildPermanentCanvas(
   const resizedCtx = resized.getContext('2d');
   resizedCtx?.drawImage(cropped, 0, 0, resized.width, resized.height);
   return { canvas: resized, sourceSize: rotatedSize };
+}
+
+function normalizeImageOcrWords(
+  result: { words?: Array<{ text: string; x0: number; y0: number; x1: number; y1: number }>; sourceWidth?: number; sourceHeight?: number },
+  offset: { left: number; top: number; width: number; height: number } = { left: 0, top: 0, width: 1, height: 1 },
+): SelectableImageOcrWord[] {
+  const sourceWidth = Math.max(result.sourceWidth ?? 0, 1);
+  const sourceHeight = Math.max(result.sourceHeight ?? 0, 1);
+  return (result.words ?? [])
+    .map((word) => ({
+      text: word.text,
+      left: offset.left + (word.x0 / sourceWidth) * offset.width,
+      top: offset.top + (word.y0 / sourceHeight) * offset.height,
+      width: Math.max(0.001, ((word.x1 - word.x0) / sourceWidth) * offset.width),
+      height: Math.max(0.001, ((word.y1 - word.y0) / sourceHeight) * offset.height),
+    }))
+    .filter((word) => word.text.trim().length > 0);
 }
 
 function drawArrowHead(ctx: CanvasRenderingContext2D, from: Point, to: Point, size: number) {
@@ -339,6 +363,8 @@ export default function ImageView({ relativePath }: Props) {
   const [saving, setSaving] = useState(false);
   const [zoomPercent, setZoomPercent] = useState(100);
   const [annotationsOpen, setAnnotationsOpen] = useState(false);
+  const ocrOverlayVisible = useUiStore((state) => state.ocrOverlayVisible);
+  const setOcrOverlayVisible = useUiStore((state) => state.setOcrOverlayVisible);
   const [ocrText, setOcrText] = useState('');
   const [ocrConfidence, setOcrConfidence] = useState<number | null>(null);
   const [ocrOpen, setOcrOpen] = useState(false);
@@ -346,6 +372,7 @@ export default function ImageView({ relativePath }: Props) {
   const [ocrProgress, setOcrProgress] = useState<{ progress: number; status: string } | null>(null);
   const [ocrCached, setOcrCached] = useState(false);
   const [lastOcrRegion, setLastOcrRegion] = useState<ImageCropRect | null>(null);
+  const [ocrOverlay, setOcrOverlay] = useState<ImageOcrOverlay | null>(null);
   const [editingTextId, setEditingTextId] = useState<string | null>(null);
   const [textInteraction, setTextInteraction] = useState<TextInteraction | null>(null);
   const [arrowInteraction, setArrowInteraction] = useState<ArrowInteraction | null>(null);
@@ -517,6 +544,7 @@ export default function ImageView({ relativePath }: Props) {
     setOcrProgress(null);
     setOcrCached(false);
     setLastOcrRegion(null);
+    setOcrOverlay(null);
     setOcrOpen(false);
   }, [relativePath, src]);
 
@@ -525,6 +553,7 @@ export default function ImageView({ relativePath }: Props) {
     setOcrOpen(true);
     setOcrLoading(true);
     setLastOcrRegion(region);
+    setOcrOverlay(null);
     setOcrProgress({ progress: 0, status: 'Preparing OCR' });
     try {
       const { recognizeImageText } = await import('../lib/ocr');
@@ -557,11 +586,25 @@ export default function ImageView({ relativePath }: Props) {
       setOcrText(result.text);
       setOcrConfidence(result.confidence);
       setOcrCached(result.cached === true);
+      if (region) {
+        setOcrOverlay({
+          surface: 'permanent',
+          words: normalizeImageOcrWords(result, {
+            left: region.x / Math.max(rotatedDimensions.width, 1),
+            top: region.y / Math.max(rotatedDimensions.height, 1),
+            width: region.width / Math.max(rotatedDimensions.width, 1),
+            height: region.height / Math.max(rotatedDimensions.height, 1),
+          }),
+        });
+      } else if (mode !== 'permanent') {
+        setOcrOverlay({ surface: 'additive', words: normalizeImageOcrWords(result) });
+      }
       setOcrProgress(null);
     } catch (reason) {
       setOcrText('');
       setOcrConfidence(null);
       setOcrCached(false);
+      setOcrOverlay(null);
       setOcrProgress(null);
       setError(`OCR failed: ${reason}`);
     } finally {
@@ -817,6 +860,17 @@ export default function ImageView({ relativePath }: Props) {
                 </div>
               </div>
               <div className="flex items-center gap-1">
+                {(ocrOverlay?.words.length ?? 0) > 0 && (
+                  <Button
+                    size="icon"
+                    variant="ghost"
+                    className={cn('size-8', ocrOverlayVisible && 'text-primary')}
+                    onClick={() => setOcrOverlayVisible(!ocrOverlayVisible)}
+                    title={ocrOverlayVisible ? 'Hide text boxes on image' : 'Show text boxes on image'}
+                  >
+                    {ocrOverlayVisible ? <Eye size={14} /> : <EyeOff size={14} />}
+                  </Button>
+                )}
                 <Button size="icon" variant="ghost" className="size-8" disabled={!src || ocrLoading} onClick={() => void runImageOcr(true, lastOcrRegion)} title="Regenerate OCR">
                   <RefreshCw size={14} />
                 </Button>
@@ -912,6 +966,7 @@ export default function ImageView({ relativePath }: Props) {
                   : entry
                 ));
               }}
+              ocrWords={ocrOverlayVisible && ocrOverlay?.surface === 'additive' ? ocrOverlay.words : []}
             />
           </div>
         )}
@@ -944,6 +999,7 @@ export default function ImageView({ relativePath }: Props) {
                   startRect,
                 });
               }}
+              ocrWords={ocrOverlayVisible && ocrOverlay?.surface === 'permanent' ? ocrOverlay.words : []}
             />
           </div>
         )}

@@ -6,9 +6,21 @@ export interface OcrResult {
   text: string;
   confidence: number | null;
   cached?: boolean;
+  words?: OcrWordBox[];
+  sourceWidth?: number;
+  sourceHeight?: number;
 }
 
 export type OcrProgress = (progress: number, status: string) => void;
+
+export interface OcrWordBox {
+  text: string;
+  confidence: number;
+  x0: number;
+  y0: number;
+  x1: number;
+  y1: number;
+}
 
 export interface RecognizeImageTextOptions {
   cacheScope?: OcrCacheScope;
@@ -30,6 +42,12 @@ let activeProgress: OcrProgress | undefined;
 function imageToDataUrl(image: string | HTMLCanvasElement): string {
   if (typeof image === 'string') return image;
   return image.toDataURL('image/png');
+}
+
+async function getImageSize(image: string | HTMLCanvasElement): Promise<{ width: number; height: number }> {
+  if (image instanceof HTMLCanvasElement) return { width: image.width, height: image.height };
+  const element = await loadImageElement(image);
+  return { width: element.naturalWidth, height: element.naturalHeight };
 }
 
 function assetUrl(path: string): string {
@@ -196,6 +214,53 @@ async function getWorker(language: string): Promise<Tesseract.Worker> {
   return worker;
 }
 
+function wordsFromBlocks(blocks: Tesseract.Block[] | null | undefined): OcrWordBox[] {
+  return (blocks ?? []).flatMap((block) =>
+    (block.paragraphs ?? []).flatMap((paragraph) =>
+      (paragraph.lines ?? []).flatMap((line) =>
+        (line.words ?? [])
+          .filter((word) => word.bbox && word.text.trim().length > 0)
+          .map((word) => ({
+            text: word.text,
+            confidence: word.confidence,
+            x0: word.bbox.x0,
+            y0: word.bbox.y0,
+            x1: word.bbox.x1,
+            y1: word.bbox.y1,
+          })),
+      ),
+    ),
+  );
+}
+
+// Tesseract TSV columns: level, page, block, par, line, word, left, top, width, height, conf, text.
+// level 5 is a word. This is more reliable across core builds than the hierarchical blocks JSON.
+function wordsFromTsv(tsv: string | null | undefined): OcrWordBox[] {
+  if (!tsv) return [];
+  const words: OcrWordBox[] = [];
+  for (const row of tsv.split('\n')) {
+    const cols = row.split('\t');
+    if (cols.length < 12 || cols[0] !== '5') continue;
+    const text = cols.slice(11).join('\t').trim();
+    if (text.length === 0) continue;
+    const left = Number(cols[6]);
+    const top = Number(cols[7]);
+    const width = Number(cols[8]);
+    const height = Number(cols[9]);
+    const conf = Number(cols[10]);
+    if (![left, top, width, height].every(Number.isFinite)) continue;
+    words.push({
+      text,
+      confidence: Number.isFinite(conf) ? conf : 0,
+      x0: left,
+      y0: top,
+      x1: left + width,
+      y1: top + height,
+    });
+  }
+  return words;
+}
+
 async function recognizeWithWasm(
   image: string | HTMLCanvasElement,
   language: string,
@@ -204,10 +269,16 @@ async function recognizeWithWasm(
   activeProgress = onProgress;
   const worker = await getWorker(language);
   try {
-    const result = await worker.recognize(image);
+    const result = await worker.recognize(image, {}, { text: true, blocks: true, tsv: true });
+    const blockWords = wordsFromBlocks(result.data.blocks);
+    const words = blockWords.length > 0 ? blockWords : wordsFromTsv(result.data.tsv);
+    const size = await getImageSize(image);
     return {
       text: result.data.text.trim(),
       confidence: typeof result.data.confidence === 'number' ? result.data.confidence : null,
+      words,
+      sourceWidth: size.width,
+      sourceHeight: size.height,
     };
   } finally {
     activeProgress = undefined;
@@ -221,9 +292,16 @@ async function recognizeWithNativeFallback(
   onProgress?: OcrProgress,
 ): Promise<OcrResult> {
   onProgress?.(0.1, 'Preparing native OCR');
-  const text = await tauriCommands.recognizeImageDataUrl(imageToDataUrl(image), language);
+  const result = await tauriCommands.recognizeImageDataUrlWords(imageToDataUrl(image), language);
   onProgress?.(1, 'OCR complete');
-  return { text: text.trim(), confidence: null };
+  const size = await getImageSize(image);
+  return {
+    text: result.text.trim(),
+    confidence: null,
+    words: result.words.filter((word) => word.text.trim().length > 0),
+    sourceWidth: size.width,
+    sourceHeight: size.height,
+  };
 }
 
 export async function recognizeImageText(
@@ -247,7 +325,14 @@ export async function recognizeImageText(
     const cached = await readOcrCache(cacheScope);
     if (cached) {
       onProgress?.(1, 'Loaded cached OCR');
-      return { text: cached.text, confidence: cached.confidence, cached: true };
+      return {
+        text: cached.text,
+        confidence: cached.confidence,
+        words: cached.words,
+        sourceWidth: cached.sourceWidth,
+        sourceHeight: cached.sourceHeight,
+        cached: true,
+      };
     }
   }
 

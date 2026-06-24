@@ -2,7 +2,10 @@ import type { OcrResult } from './ocr';
 
 const OCR_RESULT_CACHE_DB = 'collab-ocr-results';
 const OCR_RESULT_CACHE_STORE = 'results';
-const OCR_RESULT_CACHE_VERSION = 1;
+// v2: cached OCR results now also persist word bounding boxes and source dimensions
+// for the selectable OCR overlay. Bumping the version invalidates older word-less
+// entries so the overlay can render on the next recognition.
+const OCR_RESULT_CACHE_VERSION = 2;
 
 export type OcrCacheScope = Record<string, string | number | boolean | null | undefined>;
 

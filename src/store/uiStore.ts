@@ -132,6 +132,7 @@ function normalizePersistedUiState(
     ocrModelSource: isOcrModelSource(state.ocrModelSource) ? state.ocrModelSource : 'official-fast',
     ocrRenderScale: state.ocrRenderScale === 1 || state.ocrRenderScale === 2 || state.ocrRenderScale === 3 ? state.ocrRenderScale : 2,
     ocrPreprocessingMode: isOcrPreprocessingMode(state.ocrPreprocessingMode) ? state.ocrPreprocessingMode : 'none',
+    ocrOverlayVisible: typeof state.ocrOverlayVisible === 'boolean' ? state.ocrOverlayVisible : true,
     fileTreeCollapsedPathsByVault: (
       legacyCollapsedPaths.length > 0 && lastOpenedVaultPath && !fileTreeCollapsedPathsByVault[lastOpenedVaultPath]
     )
@@ -230,6 +231,7 @@ interface UiState {
   ocrModelSource: OcrModelSource;
   ocrRenderScale: OcrRenderScale;
   ocrPreprocessingMode: OcrPreprocessingMode;
+  ocrOverlayVisible: boolean;
 
   // Actions
   setActiveView:    (view: ActiveView) => void;
@@ -274,6 +276,7 @@ interface UiState {
   setOcrModelSource: (source: OcrModelSource) => void;
   setOcrRenderScale: (scale: OcrRenderScale) => void;
   setOcrPreprocessingMode: (mode: OcrPreprocessingMode) => void;
+  setOcrOverlayVisible: (visible: boolean) => void;
 }
 
 export const useUiStore = create<UiState>()(
@@ -321,6 +324,7 @@ export const useUiStore = create<UiState>()(
       ocrModelSource: 'official-fast',
       ocrRenderScale: 2,
       ocrPreprocessingMode: 'none',
+      ocrOverlayVisible: true,
 
       setActiveView:   (activeView)   => set({ activeView }),
       setSidebarPanel: (sidebarPanel) => set({ sidebarPanel }),
@@ -372,6 +376,7 @@ export const useUiStore = create<UiState>()(
       setOcrModelSource: (ocrModelSource) => set({ ocrModelSource }),
       setOcrRenderScale: (ocrRenderScale) => set({ ocrRenderScale }),
       setOcrPreprocessingMode: (ocrPreprocessingMode) => set({ ocrPreprocessingMode }),
+      setOcrOverlayVisible: (ocrOverlayVisible) => set({ ocrOverlayVisible }),
     }),
     {
       name: 'ui-storage',
@@ -417,6 +422,7 @@ export const useUiStore = create<UiState>()(
         ocrModelSource: s.ocrModelSource,
         ocrRenderScale: s.ocrRenderScale,
         ocrPreprocessingMode: s.ocrPreprocessingMode,
+        ocrOverlayVisible: s.ocrOverlayVisible,
       }),
     }
   )

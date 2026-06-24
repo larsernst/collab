@@ -9,6 +9,8 @@ import {
   Columns2,
   Copy,
   Crop,
+  Eye,
+  EyeOff,
   FileText,
   Highlighter,
   ImagePlus,
@@ -142,6 +144,31 @@ function cropRenderedPdfRegion(
   return cropCanvas;
 }
 
+interface SelectableOcrWord {
+  text: string;
+  left: number;
+  top: number;
+  width: number;
+  height: number;
+}
+
+function normalizeOcrWords(
+  result: { words?: Array<{ text: string; x0: number; y0: number; x1: number; y1: number }>; sourceWidth?: number; sourceHeight?: number },
+  offset: { left: number; top: number; width: number; height: number } = { left: 0, top: 0, width: 1, height: 1 },
+): SelectableOcrWord[] {
+  const sourceWidth = Math.max(result.sourceWidth ?? 0, 1);
+  const sourceHeight = Math.max(result.sourceHeight ?? 0, 1);
+  return (result.words ?? [])
+    .map((word) => ({
+      text: word.text,
+      left: offset.left + (word.x0 / sourceWidth) * offset.width,
+      top: offset.top + (word.y0 / sourceHeight) * offset.height,
+      width: Math.max(0.001, ((word.x1 - word.x0) / sourceWidth) * offset.width),
+      height: Math.max(0.001, ((word.y1 - word.y0) / sourceHeight) * offset.height),
+    }))
+    .filter((word) => word.text.trim().length > 0);
+}
+
 const PDF_CSS_SCALE = PixelsPerInch.PDF_TO_CSS_UNITS;
 const DEFAULT_HIGHLIGHT_COLOR = '#facc15';
 const PDF_TEXT_ANNOTATION_STYLES = [
@@ -203,6 +230,11 @@ interface AnnotationManipulationState {
   originTop: number;
   originWidth: number;
   originHeight: number;
+}
+
+interface PdfOcrOverlay {
+  page: number;
+  words: SelectableOcrWord[];
 }
 
 type PdfOcrRegenerateAction =
@@ -302,6 +334,7 @@ interface PdfPageCanvasProps {
   ) => void;
   regionSelection: RegionSelectionState | null;
   interactionMode: 'none' | 'snapshot' | 'annotation' | 'ocr';
+  ocrWords: SelectableOcrWord[];
 }
 
 function PdfPageCanvas({
@@ -325,6 +358,7 @@ function PdfPageCanvas({
   onTextAnnotationPointerDown,
   regionSelection,
   interactionMode,
+  ocrWords,
 }: PdfPageCanvasProps) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
@@ -583,6 +617,27 @@ function PdfPageCanvas({
         <div ref={textLayerRef} className="pdf-text-layer textLayer" />
       </div>
 
+      {ocrWords.length > 0 && (
+        <div className="pointer-events-none absolute inset-0 z-[2] select-text" aria-label="OCR text layer">
+          {ocrWords.map((word, index) => (
+            <span
+              key={`${word.text}-${index}`}
+              className="pointer-events-auto absolute flex cursor-text items-center overflow-hidden whitespace-pre rounded-[2px] border border-primary/45 bg-background/80 px-[1px] text-foreground shadow-sm selection:bg-primary/35"
+              style={{
+                left: `${word.left * 100}%`,
+                top: `${word.top * 100}%`,
+                width: `${word.width * 100}%`,
+                height: `${word.height * 100}%`,
+                fontSize: `${Math.max(6, word.height * visibleHeight * 0.82)}px`,
+                lineHeight: 1,
+              }}
+            >
+              {word.text}
+            </span>
+          ))}
+        </div>
+      )}
+
       <div className="pointer-events-none absolute inset-0 z-[3]">
         {expandPdfHighlightRects(highlights).map(({ highlight, rect, index }) => (
           <button
@@ -746,8 +801,11 @@ export default function PdfView({ relativePath }: Props) {
   const [ocrResultMode, setOcrResultMode] = useState<'pdf-text' | 'ocr'>('ocr');
   const [ocrProgress, setOcrProgress] = useState<{ progress: number; status: string } | null>(null);
   const [ocrCached, setOcrCached] = useState(false);
+  const [ocrOverlay, setOcrOverlay] = useState<PdfOcrOverlay | null>(null);
   const [ocrRegenerateAction, setOcrRegenerateAction] = useState<PdfOcrRegenerateAction | null>(null);
   const ocrRenderScale = useUiStore((state) => state.ocrRenderScale);
+  const ocrOverlayVisible = useUiStore((state) => state.ocrOverlayVisible);
+  const setOcrOverlayVisible = useUiStore((state) => state.setOcrOverlayVisible);
   const documentCacheKey = useMemo(() => {
     const maybeFingerprints = (documentProxy as PDFDocumentProxy & { fingerprints?: string[] } | null)?.fingerprints;
     return maybeFingerprints?.[0] ?? relativePath;
@@ -1403,6 +1461,7 @@ export default function PdfView({ relativePath }: Props) {
     setOcrConfidence(null);
     setOcrResultMode('ocr');
     setOcrCached(false);
+    setOcrOverlay(null);
     setOcrRegenerateAction({ kind: 'page', page: targetPage });
     setOcrProgress({ progress: 0, status: 'Checking PDF text' });
     try {
@@ -1465,12 +1524,14 @@ export default function PdfView({ relativePath }: Props) {
       setOcrConfidence(result.confidence);
       setOcrResultMode('ocr');
       setOcrCached(result.cached === true);
+      setOcrOverlay({ page: targetPage, words: normalizeOcrWords(result) });
       setOcrProgress(null);
     } catch (reason) {
       setOcrText('');
       setOcrConfidence(null);
       setOcrResultMode('ocr');
       setOcrCached(false);
+      setOcrOverlay(null);
       setOcrProgress(null);
       toast.error(`OCR failed: ${String(reason)}`);
     } finally {
@@ -1503,6 +1564,7 @@ export default function PdfView({ relativePath }: Props) {
     setOcrConfidence(null);
     setOcrResultMode('ocr');
     setOcrCached(false);
+    setOcrOverlay(null);
     setOcrRegenerateAction({ kind: 'region', page: targetPage, region });
     setOcrProgress({ progress: 0, status: `Rendering region at ${ocrRenderScale}x` });
     try {
@@ -1530,11 +1592,13 @@ export default function PdfView({ relativePath }: Props) {
       setOcrText(result.text);
       setOcrConfidence(result.confidence);
       setOcrCached(result.cached === true);
+      setOcrOverlay({ page: targetPage, words: normalizeOcrWords(result, normalizedRegion) });
       setOcrProgress(null);
     } catch (reason) {
       setOcrText('');
       setOcrConfidence(null);
       setOcrCached(false);
+      setOcrOverlay(null);
       setOcrProgress(null);
       toast.error(`Region OCR failed: ${String(reason)}`);
     } finally {
@@ -2285,6 +2349,17 @@ export default function PdfView({ relativePath }: Props) {
                   </div>
                 </div>
                 <div className="flex items-center gap-1">
+                  {(ocrOverlay?.words.length ?? 0) > 0 && (
+                    <Button
+                      size="icon"
+                      variant="ghost"
+                      className={cn('size-8', ocrOverlayVisible && 'text-primary')}
+                      onClick={() => setOcrOverlayVisible(!ocrOverlayVisible)}
+                      title={ocrOverlayVisible ? 'Hide text boxes on page' : 'Show text boxes on page'}
+                    >
+                      {ocrOverlayVisible ? <Eye size={14} /> : <EyeOff size={14} />}
+                    </Button>
+                  )}
                   <Button size="icon" variant="ghost" className="size-8" disabled={ocrLoading} onClick={regenerateOcr} title="Regenerate OCR">
                     <RefreshCw size={14} />
                   </Button>
@@ -2581,6 +2656,7 @@ export default function PdfView({ relativePath }: Props) {
                   onTextAnnotationPointerDown={handleTextAnnotationPointerDown}
                   regionSelection={regionSelection}
                   interactionMode={interactionMode}
+                  ocrWords={ocrOverlayVisible && ocrOverlay?.page === renderedPage ? ocrOverlay.words : []}
                 />
               ))}
             </div>

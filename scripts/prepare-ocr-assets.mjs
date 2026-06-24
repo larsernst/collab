@@ -15,6 +15,13 @@ const assets = [
     join(publicDir, 'tesseract-core-lstm.wasm.js'),
   ],
   [
+    // The .wasm.js glue fetches this binary at runtime; without it the WASM
+    // engine fails to initialize and OCR falls back to the native CLI (which
+    // returns plain text only, with no word bounding boxes for the overlay).
+    join(root, 'node_modules', 'tesseract.js-core', 'tesseract-core-lstm.wasm'),
+    join(publicDir, 'tesseract-core-lstm.wasm'),
+  ],
+  [
     join(root, 'node_modules', '@tesseract.js-data', 'eng', '4.0.0', 'eng.traineddata.gz'),
     join(publicDir, 'eng.traineddata.gz'),
   ],

@@ -46,6 +46,15 @@ interface ImageAdditiveStageProps {
     edges?: { left: boolean; right: boolean; top: boolean; bottom: boolean };
   }) => void;
   onTextChange: (id: string, value: string) => void;
+  ocrWords?: SelectableImageOcrWord[];
+}
+
+export interface SelectableImageOcrWord {
+  text: string;
+  left: number;
+  top: number;
+  width: number;
+  height: number;
 }
 
 const TEXT_RESIZE_HANDLES = [
@@ -77,6 +86,7 @@ export function ImageAdditiveStage({
   onStartArrowInteraction,
   onStartTextInteraction,
   onTextChange,
+  ocrWords = [],
 }: ImageAdditiveStageProps) {
   return (
     <div
@@ -89,6 +99,27 @@ export function ImageAdditiveStage({
         className="block h-full w-full rounded-xl select-none"
         draggable={false}
       />
+
+      {ocrWords.length > 0 && (
+        <div className="pointer-events-none absolute inset-0 z-[1] select-text" aria-label="OCR text layer">
+          {ocrWords.map((word, index) => (
+            <span
+              key={`${word.text}-${index}`}
+              className="pointer-events-auto absolute flex cursor-text items-center overflow-hidden whitespace-pre rounded-[2px] border border-primary/45 bg-background/80 px-[1px] text-foreground shadow-sm selection:bg-primary/35"
+              style={{
+                left: `${word.left * 100}%`,
+                top: `${word.top * 100}%`,
+                width: `${word.width * 100}%`,
+                height: `${word.height * 100}%`,
+                fontSize: `${Math.max(6, word.height * additiveDisplayDimensions.height * 0.82)}px`,
+                lineHeight: 1,
+              }}
+            >
+              {word.text}
+            </span>
+          ))}
+        </div>
+      )}
 
       <div
         data-image-stage="additive"

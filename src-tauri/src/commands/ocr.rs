@@ -312,3 +312,159 @@ pub async fn recognize_image_data_url(data_url: String, language: Option<String>
     .await
     .map_err(|e| format!("OCR task failed: {e}"))?
 }
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NativeOcrWord {
+    text: String,
+    confidence: f32,
+    x0: f32,
+    y0: f32,
+    x1: f32,
+    y1: f32,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NativeOcrResult {
+    text: String,
+    words: Vec<NativeOcrWord>,
+}
+
+// Parse Tesseract TSV output into word boxes. Columns are:
+// level page block par line word left top width height conf text
+// level 5 is a recognized word.
+fn parse_tesseract_tsv(tsv: &str) -> Vec<NativeOcrWord> {
+    let mut words = Vec::new();
+    for line in tsv.lines() {
+        let cols: Vec<&str> = line.split('\t').collect();
+        if cols.len() < 12 || cols[0] != "5" {
+            continue;
+        }
+        let text = cols[11..].join("\t").trim().to_string();
+        if text.is_empty() {
+            continue;
+        }
+        let (Ok(left), Ok(top), Ok(width), Ok(height)) = (
+            cols[6].parse::<f32>(),
+            cols[7].parse::<f32>(),
+            cols[8].parse::<f32>(),
+            cols[9].parse::<f32>(),
+        ) else {
+            continue;
+        };
+        let confidence = cols[10].parse::<f32>().unwrap_or(0.0);
+        words.push(NativeOcrWord {
+            text,
+            confidence,
+            x0: left,
+            y0: top,
+            x1: left + width,
+            y1: top + height,
+        });
+    }
+    words
+}
+
+/// Native OCR that also returns per-word bounding boxes (in source-image pixel
+/// coordinates) so the selectable/visible OCR overlay can render when the
+/// bundled WASM engine is unavailable.
+#[tauri::command]
+pub async fn recognize_image_data_url_words(
+    data_url: String,
+    language: Option<String>,
+) -> Result<NativeOcrResult, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let (bytes, extension) = decode_image_data_url(&data_url)?;
+        let language = normalize_ocr_language(language)?;
+        let mut input = tempfile::Builder::new()
+            .prefix("collab-ocr-")
+            .suffix(&format!(".{extension}"))
+            .tempfile()
+            .map_err(|e| format!("Failed to prepare OCR image: {e}"))?;
+        input
+            .write_all(&bytes)
+            .map_err(|e| format!("Failed to write OCR image: {e}"))?;
+        input
+            .flush()
+            .map_err(|e| format!("Failed to flush OCR image: {e}"))?;
+
+        let out_dir = tempfile::Builder::new()
+            .prefix("collab-ocr-out-")
+            .tempdir()
+            .map_err(|e| format!("Failed to prepare OCR output: {e}"))?;
+        let out_base = out_dir.path().join("result");
+
+        let mut command = Command::new("tesseract");
+        command
+            .arg(input.path())
+            .arg(&out_base)
+            .arg("-l")
+            .arg(&language)
+            .arg("txt")
+            .arg("tsv");
+        if !language.split('+').any(|code| code == "eng") {
+            command.env("TESSDATA_PREFIX", language_pack_dir()?);
+        }
+
+        let output = command.output().map_err(|e| {
+            if e.kind() == std::io::ErrorKind::NotFound {
+                "OCR requires the tesseract command to be installed.".to_string()
+            } else {
+                format!("Failed to start OCR: {e}")
+            }
+        })?;
+
+        if !output.status.success() {
+            let detail = String::from_utf8_lossy(&output.stderr).trim().to_string();
+            return Err(if detail.is_empty() {
+                "OCR failed.".to_string()
+            } else {
+                format!("OCR failed: {detail}")
+            });
+        }
+
+        let text = std::fs::read_to_string(out_base.with_extension("txt"))
+            .map(|value| value.trim().to_string())
+            .unwrap_or_default();
+        let words = std::fs::read_to_string(out_base.with_extension("tsv"))
+            .map(|tsv| parse_tesseract_tsv(&tsv))
+            .unwrap_or_default();
+
+        Ok(NativeOcrResult { text, words })
+    })
+    .await
+    .map_err(|e| format!("OCR task failed: {e}"))?
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_word_rows_and_skips_non_words() {
+        let tsv = "level\tpage_num\tblock_num\tpar_num\tline_num\tword_num\tleft\ttop\twidth\theight\tconf\ttext\n\
+1\t1\t0\t0\t0\t0\t0\t0\t640\t480\t-1\t\n\
+5\t1\t1\t1\t1\t1\t10\t20\t30\t12\t96\tHello\n\
+5\t1\t1\t1\t1\t2\t50\t20\t40\t12\t95\tworld\n\
+5\t1\t1\t1\t1\t3\t0\t0\t0\t0\t-1\t   ";
+        let words = parse_tesseract_tsv(tsv);
+        assert_eq!(words.len(), 2);
+        assert_eq!(words[0].text, "Hello");
+        assert_eq!(words[0].x0, 10.0);
+        assert_eq!(words[0].y0, 20.0);
+        assert_eq!(words[0].x1, 40.0);
+        assert_eq!(words[0].y1, 32.0);
+        assert_eq!(words[1].text, "world");
+        assert_eq!(words[1].x1, 90.0);
+    }
+
+    #[test]
+    fn tolerates_text_containing_tabs_and_short_rows() {
+        let tsv = "5\t1\t1\t1\t1\t1\t5\t5\t20\t10\t90\ta\tb\n\
+garbage\trow";
+        let words = parse_tesseract_tsv(tsv);
+        assert_eq!(words.len(), 1);
+        assert_eq!(words[0].text, "a\tb");
+    }
+}
