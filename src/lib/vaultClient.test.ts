@@ -423,6 +423,71 @@ describe('HostedVaultClient', () => {
     );
   });
 
+  it('updates the cached manifest when a background hosted document refresh finds a newer revision', async () => {
+    const freshDocument = {
+      ...hostedDocument,
+      updatedAt: '2026-06-11T09:00:00Z',
+      currentRevision: {
+        ...hostedDocument.currentRevision,
+        id: 'revision-4',
+        sequence: 4,
+        contentHash: 'hash-4',
+        sizeBytes: 7,
+      },
+    };
+    let resolveHostedRead: ((value: { file: typeof freshDocument; content: string }) => void) | undefined;
+    vi.mocked(tauriCommands.replicaReadManifest).mockResolvedValue(mockHostedManifest());
+    vi.mocked(tauriCommands.replicaCachedContentStatus).mockResolvedValue({
+      present: true,
+      matchesExpectedHash: true,
+      actualSha256: 'hash-3',
+      sizeBytes: 8,
+    });
+    vi.mocked(tauriCommands.replicaReadCachedDocument).mockResolvedValue('# Cached');
+    vi.mocked(tauriCommands.replicaReadSyncState).mockResolvedValue({
+      manifestSequence: 8,
+      lastSyncedAt: '2026-06-17T00:00:00Z',
+      offlineAvailableAt: '2026-06-17T00:05:00Z',
+      status: 'idle',
+    });
+    vi.mocked(tauriCommands.hostedVaultRequest).mockImplementation((_serverUrl, _method, path) => {
+      if (path.endsWith('/files/file-1')) {
+        return new Promise((resolve) => {
+          resolveHostedRead = resolve;
+        }) as ReturnType<typeof tauriCommands.hostedVaultRequest>;
+      }
+      return Promise.resolve(mockHostedManifest()) as ReturnType<typeof tauriCommands.hostedVaultRequest>;
+    });
+    const client = new HostedVaultClient(hostedVault);
+
+    await expect(client.readDocument('Notes/Test.md')).resolves.toMatchObject({
+      content: '# Cached',
+      version: '3',
+    });
+
+    if (!resolveHostedRead) throw new Error('Expected hosted document refresh to start.');
+    resolveHostedRead({ file: freshDocument, content: '# Fresh' });
+
+    await vi.waitFor(() =>
+      expect(tauriCommands.replicaSeed).toHaveBeenCalledWith(
+        'https://collab.example.test',
+        'hosted-vault',
+        'Hosted vault',
+        expect.objectContaining({
+          files: expect.arrayContaining([
+            expect.objectContaining({
+              id: 'file-1',
+              currentRevision: expect.objectContaining({ sequence: 4, contentHash: 'hash-4' }),
+            }),
+          ]),
+        }),
+        expect.objectContaining({ manifestSequence: 8, status: 'idle' }),
+        'editor',
+        ['vault.read', 'vault.offlineCopy'],
+      ),
+    );
+  });
+
   it('ignores cached hosted documents that do not match the current revision hash', async () => {
     vi.mocked(tauriCommands.replicaReadManifest).mockResolvedValue(mockHostedManifest());
     vi.mocked(tauriCommands.replicaCachedContentStatus).mockResolvedValue({

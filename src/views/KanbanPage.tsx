@@ -12,6 +12,7 @@ import { ReadOnlyBanner } from '../components/layout/ReadOnlyBanner';
 import { useEditorStore } from '../store/editorStore';
 import { useDocumentSessionState } from '../lib/documentSession';
 import { openLiveJsonSession, type LiveJsonSession, type JsonObject } from '../lib/liveJsonDocument';
+import { onReplicaMutated } from '../lib/vaultReplica';
 import { useCollabContext } from '../components/collaboration/CollabProvider';
 import { buildKanbanCardEditors, useLivePeers, type LivePeer, type LiveAwarenessUser } from '../lib/liveAwareness';
 import { useKanbanStore } from '../store/kanbanStore';
@@ -341,6 +342,14 @@ export default function KanbanPage({ relativePath }: { relativePath: string | nu
     }).then(u => { unsub = u; });
     return () => { unsub?.(); };
   }, [client, relativePath, loadBoard, lastWriteRef]);
+
+  useEffect(() => {
+    if (!client || client.kind !== 'hosted' || !relativePath) return;
+    return onReplicaMutated(() => {
+      if (isDirtyRef.current || liveSessionRef.current) return;
+      void loadBoard(false);
+    });
+  }, [client, loadBoard, relativePath]);
 
   // ── Known users (for assignee picker) ────────────────────────────────────
 

@@ -4,6 +4,7 @@ import type { Node as FlowNode, Viewport } from '@xyflow/react';
 
 import { createVaultClient } from '../../lib/vaultClient';
 import { openLiveJsonSession, type LiveJsonSession, type JsonObject } from '../../lib/liveJsonDocument';
+import { onReplicaMutated } from '../../lib/vaultReplica';
 import type { CanvasData, CanvasEdge } from '../../types/canvas';
 import type { VaultMeta } from '../../types/vault';
 import type { CanvasNodeData } from './CanvasNodeTypes';
@@ -415,6 +416,14 @@ export function useCanvasDocumentSession({
       unsub?.();
     };
   }, [client, isDirtyRef, lastWriteRef, loadCanvas, relativePath]);
+
+  useEffect(() => {
+    if (!client || client.kind !== 'hosted' || !relativePath) return;
+    return onReplicaMutated(() => {
+      if (isDirtyRef.current || liveSession) return;
+      void loadCanvas(false);
+    });
+  }, [client, isDirtyRef, liveSession, loadCanvas, relativePath]);
 
   const saveCanvas = useCallback(async () => {
     if (!client || !relativePath || readOnly) return;

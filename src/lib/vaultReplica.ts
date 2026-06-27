@@ -689,6 +689,10 @@ export async function syncReplicaManifestDelta(vault: HostedVaultMeta): Promise<
     return seeded;
   }
 
+  if (delta.sequence === cachedManifest.sequence && delta.changedFiles.length === 0) {
+    return cachedManifest;
+  }
+
   const filesById = new Map(cachedManifest.files.map((file) => [file.id, file]));
   for (const file of delta.changedFiles) {
     filesById.set(file.id, file);

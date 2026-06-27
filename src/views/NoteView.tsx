@@ -18,6 +18,7 @@ import { useUiStore } from '../store/uiStore';
 import { extractHttpUrls, prefetchWebPreviews } from '../lib/webPreviewCache';
 import { useDocumentSessionState } from '../lib/documentSession';
 import { openLiveNoteSession, type LiveDocumentSession } from '../lib/liveDocumentSession';
+import { onReplicaMutated } from '../lib/vaultReplica';
 import { useLivePeers } from '../lib/liveAwareness';
 import LivePeers from '../components/collaboration/LivePeers';
 import { yCollab } from 'y-codemirror.next';
@@ -252,6 +253,24 @@ export default function NoteView({ relativePath }: { relativePath: string }) {
     });
     return () => { unlisten.then((u) => u()); };
   }, [client, relativePath, vault?.path]);
+
+  useEffect(() => {
+    if (!client || client.kind !== 'hosted') return;
+    return onReplicaMutated(async () => {
+      if (isDirtyRef.current || liveSession) return;
+      try {
+        const doc = await client.readDocument(relativePath);
+        if (doc.version !== hashRef.current) {
+          setContent(doc.content);
+          savedContentRef.current = doc.content;
+          markLoaded(doc.version);
+          setSavedHash(relativePath, doc.version);
+        }
+      } catch {
+        // Replica refreshes are best-effort; the current editor state remains usable.
+      }
+    });
+  }, [client, liveSession, markLoaded, relativePath, setSavedHash]);
 
   const handleChange = (newContent: string) => {
     setContent(newContent);

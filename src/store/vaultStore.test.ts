@@ -255,10 +255,9 @@ describe('vaultStore Flatpak reopen fallback', () => {
 
     expect(useVaultStore.getState().vault).toEqual(hosted);
     expect(useVaultStore.getState().lastOpenedVaultPath).toBeNull();
-    expect(tauriCommandsMock.hostedVaultRequest).toHaveBeenCalledWith(
+    expect(tauriCommandsMock.replicaReadManifest).toHaveBeenCalledWith(
       'https://collab.example.test',
-      'GET',
-      '/api/v1/vaults/hosted-vault/manifest/delta?since=1',
+      'hosted-vault',
     );
     expect(tauriCommandsMock.openVault).not.toHaveBeenCalled();
     expect(tauriCommandsMock.watchVault).not.toHaveBeenCalled();

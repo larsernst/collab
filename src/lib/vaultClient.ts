@@ -19,6 +19,7 @@ import { vaultCan, vaultKind } from '../types/vault';
 import { tauriCommands } from './tauri';
 import {
   enqueuePendingOperation,
+  emitReplicaMutated,
   isLikelyConnectivityError,
   readCachedReplicaManifest,
   syncReplicaManifestDelta,
@@ -566,6 +567,15 @@ export class HostedVaultClient implements VaultClient {
     return manifest ? asHostedManifest(manifest) : this.manifest();
   }
 
+  private async cachedFirstManifest(): Promise<HostedManifest> {
+    const cached = await readCachedReplicaManifest(this.vault).catch(() => null);
+    if (cached) {
+      void syncReplicaManifestDelta(this.vault).catch(() => {});
+      return asHostedManifest(cached);
+    }
+    return this.replicaSyncedManifest();
+  }
+
   private async shouldMaintainOfflineContentCache(): Promise<boolean> {
     if (!vaultCan(this.vault, 'vault.offlineCopy')) return false;
     try {
@@ -598,9 +608,42 @@ export class HostedVaultClient implements VaultClient {
     return tauriCommands.replicaReadCachedDocument(this.vault.serverUrl, this.vault.hostedVaultId, file.id);
   }
 
+  private async updateCachedManifestFile(file: HostedFileEntry): Promise<void> {
+    const cached = await readCachedReplicaManifest(this.vault).catch(() => null);
+    if (!cached) return;
+    const manifest = asHostedManifest(cached);
+    const existing = manifest.files.find((entry) => entry.id === file.id);
+    if (
+      existing &&
+      existing.currentRevision?.sequence === file.currentRevision?.sequence &&
+      existing.currentRevision?.contentHash === file.currentRevision?.contentHash &&
+      existing.relativePath === file.relativePath &&
+      existing.updatedAt === file.updatedAt
+    ) {
+      return;
+    }
+    const syncState = await tauriCommands.replicaReadSyncState(this.vault.serverUrl, this.vault.hostedVaultId);
+    await tauriCommands.replicaSeed(
+      this.vault.serverUrl,
+      this.vault.hostedVaultId,
+      this.vault.name,
+      {
+        ...manifest,
+        files: [...manifest.files.filter((entry) => entry.id !== file.id), file],
+      } as unknown as ReplicaManifest,
+      syncState,
+      this.vault.role,
+      this.vault.capabilities ?? [],
+    );
+    emitReplicaMutated();
+  }
+
   private refreshDocumentCacheInBackground(fileId: string): void {
     void this.request<HostedTextDocument>('GET', `/files/${fileId}`)
-      .then((document) => this.cacheDocumentForOfflineCopy(fileId, document.content))
+      .then(async (document) => {
+        await this.cacheDocumentForOfflineCopy(document.file.id, document.content);
+        await this.updateCachedManifestFile(document.file);
+      })
       .catch(() => {});
   }
 
@@ -653,7 +696,7 @@ export class HostedVaultClient implements VaultClient {
   }
 
   async listFiles() {
-    const manifest = await this.replicaSyncedManifest();
+    const manifest = await this.cachedFirstManifest();
     return buildFileTree(manifest.files);
   }
 
@@ -661,7 +704,7 @@ export class HostedVaultClient implements VaultClient {
     // Hosted vaults derive a lightweight index from the manifest. Content-derived
     // fields (wikilinks, tags, word count) are not populated here; hosted full-text
     // search is served separately by the server search endpoint.
-    const manifest = await this.replicaSyncedManifest();
+    const manifest = await this.cachedFirstManifest();
     const entries = manifest.files;
     return entries
       .filter(
