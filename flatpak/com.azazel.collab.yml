@@ -8,6 +8,7 @@ sdk-extensions:
 command: collab
 finish-args:
   - --share=ipc
+  - --share=network
   - --socket=wayland
   - --socket=fallback-x11
   - --device=dri
@@ -15,6 +16,8 @@ finish-args:
 build-options:
   append-path: /usr/lib/sdk/node20/bin:/usr/lib/sdk/rust-stable/bin
   build-args:
+    # Build-time dependency resolution also needs network access; runtime
+    # server connectivity is granted separately through finish-args above.
     - --share=network
   env:
     CARGO_REGISTRIES_CRATES_IO_PROTOCOL: sparse

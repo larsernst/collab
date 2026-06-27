@@ -42,6 +42,7 @@ flatpak run com.azazel.collab
 - Flatpak builds disable the in-app updater.
 - Standalone `.flatpak` bundle installs are updated by installing a newer bundle again.
 - Repo- or Flathub-based installs should update through their Flatpak remote or software center.
+- The runtime sandbox grants `--share=network` so the installed app can reach hosted Collab servers.
 - The initial sandbox grants `--filesystem=home` so vault folders behave the same way as the native Linux packages during early testing.
 
 ## CI
