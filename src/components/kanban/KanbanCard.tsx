@@ -67,7 +67,7 @@ const KanbanCardInner = memo(function KanbanCardInner({
         'hover:border-border/70 hover:shadow-sm transition-all select-none app-sortable-enter',
         isDragging ? 'cursor-grabbing' : 'cursor-grab',
         card.isDone && 'opacity-60',
-        isOverlay && 'shadow-2xl rotate-1 border-primary/40 scale-105 cursor-grabbing',
+        isOverlay && 'shadow-2xl border-primary/40 cursor-grabbing',
       )}
     >
       <div className="p-2.5">

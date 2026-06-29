@@ -1,4 +1,5 @@
 import { useEffect, useState, useMemo, useCallback, useRef } from 'react';
+import { createPortal } from 'react-dom';
 import {
   DndContext,
   DragOverlay,
@@ -602,6 +603,27 @@ export default function KanbanBoardView() {
     [activeFilterSpec, board, knownUsers],
   );
   const boardStats = useMemo(() => getKanbanBoardStats(board), [board]);
+  const dragOverlay = (
+    <DragOverlay dropAnimation={null}>
+      {activeCard && (
+        <KanbanCardView card={activeCard} columnId="" isOverlay />
+      )}
+      {activeColumn && (
+        <div className="w-[272px] bg-card/80 border border-border/50 rounded-lg shadow-2xl opacity-90 px-3 py-2.5 flex items-center gap-2">
+          <div
+            className="w-3 h-3 rounded-full shrink-0"
+            style={{ backgroundColor: activeColumn.color ?? '#64748b' }}
+          />
+          <span className="text-sm font-semibold text-foreground truncate flex-1">
+            {activeColumn.title}
+          </span>
+          <span className="text-[11px] text-muted-foreground tabular-nums">
+            {activeColumn.cards.length}
+          </span>
+        </div>
+      )}
+    </DragOverlay>
+  );
   const archivedEditingCard = useMemo(() => {
     if (boardPath !== relativePath || !editingCardId || !editingColumnId) return null;
     const column = board.columns.find((entry) => entry.id === editingColumnId);
@@ -1340,6 +1362,12 @@ export default function KanbanBoardView() {
             onDragStart={onDragStart}
             onDragOver={onDragOver}
             onDragEnd={onDragEnd}
+            onDragCancel={() => {
+              dragStartColRef.current = null;
+              lastOverIdRef.current = null;
+              setActiveCard(null);
+              setActiveColumn(null);
+            }}
           >
             <div className="flex gap-3 h-full p-4 w-max min-w-full items-start">
               <SortableContext items={columnIds} strategy={horizontalListSortingStrategy}>
@@ -1392,25 +1420,7 @@ export default function KanbanBoardView() {
               )}
             </div>
 
-            <DragOverlay adjustScale dropAnimation={null}>
-              {activeCard && (
-                <KanbanCardView card={activeCard} columnId="" isOverlay />
-              )}
-              {activeColumn && (
-                <div className="w-[272px] bg-card/80 border border-border/50 rounded-lg shadow-2xl opacity-90 px-3 py-2.5 flex items-center gap-2">
-                  <div
-                    className="w-3 h-3 rounded-full shrink-0"
-                    style={{ backgroundColor: activeColumn.color ?? '#64748b' }}
-                  />
-                  <span className="text-sm font-semibold text-foreground truncate flex-1">
-                    {activeColumn.title}
-                  </span>
-                  <span className="text-[11px] text-muted-foreground tabular-nums">
-                    {activeColumn.cards.length}
-                  </span>
-                </div>
-              )}
-            </DragOverlay>
+            {createPortal(dragOverlay, document.body)}
           </DndContext>
         </div>
       </div>}

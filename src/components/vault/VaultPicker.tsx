@@ -159,7 +159,7 @@ export default function VaultPicker() {
         </div>
 
         {/* Glass card */}
-        <div className="glass rounded-xl p-5 shadow-2xl app-fade-scale-in">
+        <div className="vault-picker-glass glass rounded-xl p-5 shadow-2xl app-fade-scale-in">
           <div className="flex flex-col gap-2.5">
             <Button
               onClick={handleOpenDialog}
