@@ -98,7 +98,7 @@ function CanvasCardFrame({
     <div
       style={style}
       className={cn(
-        'flex h-full w-full flex-col overflow-hidden rounded-2xl border bg-card/96 text-card-foreground shadow-lg backdrop-blur-xs-webkit transition-[transform,width,height,box-shadow,border-color] app-motion-fast',
+        'flex h-full w-full flex-col overflow-hidden rounded-2xl border bg-card/96 text-card-foreground shadow-lg backdrop-blur-xs-webkit transition-[transform,width,height,box-shadow,border-color] app-motion-fast app-node-enter',
         selected
           ? 'border-primary/60 shadow-primary/15'
           : 'border-border/70 shadow-black/12 hover:shadow-black/18',

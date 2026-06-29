@@ -64,7 +64,7 @@ const KanbanCardInner = memo(function KanbanCardInner({
     <div
       className={cn(
         'relative bg-card border border-border/40 rounded-md',
-        'hover:border-border/70 hover:shadow-sm transition-all select-none',
+        'hover:border-border/70 hover:shadow-sm transition-all select-none app-sortable-enter',
         isDragging ? 'cursor-grabbing' : 'cursor-grab',
         card.isDone && 'opacity-60',
         isOverlay && 'shadow-2xl rotate-1 border-primary/40 scale-105 cursor-grabbing',
@@ -195,18 +195,40 @@ interface Props {
   isOverlay?: boolean;
 }
 
-export default function KanbanCardView({ card, columnId, isOverlay }: Props) {
+export default function KanbanCardView(props: Props) {
+  return props.isOverlay ? <KanbanCardOverlay {...props} /> : <SortableKanbanCard {...props} />;
+}
+
+function KanbanCardOverlay({ card, columnId }: Props) {
+  const { knownUsers, board } = useKanbanContext();
+  const { dateFormat } = useUiStore();
+  const colColor = board.columns.find(c => c.id === columnId)?.color ?? '#64748b';
+
+  return (
+    <KanbanCardInner
+      card={card}
+      colColor={colColor}
+      knownUsers={knownUsers}
+      dateFormat={dateFormat}
+      isDragging
+      isOverlay
+      onToggleDone={(event) => event.stopPropagation()}
+    />
+  );
+}
+
+function SortableKanbanCard({ card, columnId }: Props) {
   const { knownUsers, updateBoard, board, relativePath, caps, remoteCardEditors } = useKanbanContext();
   const { myUserId, myUserName } = useCollabStore();
   const { dateFormat } = useUiStore();
   const { boardPath, cardId: editingCardId, setEditing, clearEditing } = useKanbanStore();
   const [destPicker, setDestPicker] = useState<KanbanColumn[] | null>(null);
 
-  const dialogOpen = !isOverlay && editingCardId === card.id && boardPath === relativePath;
+  const dialogOpen = editingCardId === card.id && boardPath === relativePath;
 
   // A remote live co-editor currently has this card open. Surfaced as an
   // ephemeral ring + avatar so concurrent edits are visible.
-  const remoteEditor = isOverlay ? undefined : remoteCardEditors.get(card.id);
+  const remoteEditor = remoteCardEditors.get(card.id);
 
   const colColor = board.columns.find(c => c.id === columnId)?.color ?? '#64748b';
 
@@ -215,7 +237,7 @@ export default function KanbanCardView({ card, columnId, isOverlay }: Props) {
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } =
     useSortable({ id: card.id, disabled: !caps.move });
 
-  const style = isOverlay ? undefined : {
+  const style = {
     transform: CSS.Transform.toString(transform),
     transition,
     opacity: isDragging ? 0.35 : undefined,
@@ -226,8 +248,8 @@ export default function KanbanCardView({ card, columnId, isOverlay }: Props) {
   // This is the key trick: React.memo on KanbanCardInner compares props by
   // reference; if onToggleDone never changes, memo bails out on every drag
   // tick where card data is identical.
-  const stateRef = useRef({ card, board, columnId, isOverlay, updateBoard, setDestPicker });
-  stateRef.current = { card, board, columnId, isOverlay, updateBoard, setDestPicker };
+  const stateRef = useRef({ card, board, columnId, isOverlay: false, updateBoard, setDestPicker });
+  stateRef.current = { card, board, columnId, isOverlay: false, updateBoard, setDestPicker };
 
   const moveCardToColumn = useCallback((destColId: string, options?: { forceDone?: boolean; autoApplyTags?: boolean }) => {
     const { card, columnId, updateBoard, setDestPicker } = stateRef.current;
@@ -373,7 +395,7 @@ export default function KanbanCardView({ card, columnId, isOverlay }: Props) {
         className={remoteEditor ? 'relative' : undefined}
         {...attributes}
         {...listeners}
-        onClick={() => !isOverlay && openDialog()}
+        onClick={openDialog}
       >
         {remoteEditor && (
           <div
@@ -390,7 +412,6 @@ export default function KanbanCardView({ card, columnId, isOverlay }: Props) {
           knownUsers={knownUsers}
           dateFormat={dateFormat}
           isDragging={isDragging}
-          isOverlay={isOverlay}
           onToggleDone={onToggleDone}
         />
       </div>

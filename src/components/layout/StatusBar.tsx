@@ -77,7 +77,7 @@ export default function StatusBar() {
             title="Update available — open Settings → About"
             className="flex items-center gap-1 text-primary/80 hover:text-primary transition-colors app-motion-fast"
           >
-            <div className={cn('w-1.5 h-1.5 rounded-full bg-primary app-pulse-soft')} />
+            <div className={cn('w-1.5 h-1.5 rounded-full bg-primary app-status-breathe')} />
             <span className="text-[10px]">Update</span>
           </button>
         )}

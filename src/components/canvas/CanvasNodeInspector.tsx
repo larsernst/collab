@@ -102,7 +102,7 @@ export function CanvasNodeInspector({
   };
 
   return (
-    <div className="pointer-events-auto flex max-w-[min(420px,calc(100vw-220px))] flex-col gap-2 rounded-2xl border border-border/60 bg-popover/90 p-2.5 shadow-xl backdrop-blur-xs-webkit app-fade-scale-in">
+    <div className="pointer-events-auto flex max-w-[min(420px,calc(100vw-220px))] flex-col gap-2 rounded-2xl border border-border/60 bg-popover/90 p-2.5 shadow-xl backdrop-blur-xs-webkit app-panel-enter">
       <div className="flex items-center gap-2 text-xs font-medium text-muted-foreground">
         <Box size={13} />
         Selected node

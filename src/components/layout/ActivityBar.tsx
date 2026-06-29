@@ -1,3 +1,4 @@
+import { useCallback, useLayoutEffect, useRef, useState } from 'react';
 import { Files, GitFork, Layout, LayoutDashboard, Settings, PanelLeftClose, PanelLeft, LayoutGrid, Vault, Users2 } from 'lucide-react';
 import { AppLogo } from '../ui/AppLogo';
 import { cn } from '../../lib/utils';
@@ -13,6 +14,7 @@ const NAV_ITEMS: { view: ActiveView; icon: React.ReactNode; label: string }[] = 
   { view: 'kanban',  icon: <LayoutDashboard size={18} />, label: 'Kanban'     },
   { view: 'grid',    icon: <LayoutGrid      size={18} />, label: 'Grid View'  },
 ];
+const ACTIVITY_INDICATOR_INSET = 2;
 
 // Synthetic paths for singleton view tabs (not real files)
 const VIEW_TAB_PATHS: Partial<Record<ActiveView, string>> = {
@@ -31,6 +33,48 @@ export default function ActivityBar() {
   } = useUiStore();
   const { openTab } = useEditorStore();
   const { peers } = useCollabStore();
+  const activeNavIndex = isSettingsOpen ? -1 : NAV_ITEMS.findIndex((item) => item.view === activeView);
+  const rootRef = useRef<HTMLDivElement | null>(null);
+  const navButtonRefs = useRef<Partial<Record<ActiveView, HTMLButtonElement | null>>>({});
+  const [indicator, setIndicator] = useState<{ top: number; height: number } | null>(null);
+
+  const measureIndicator = useCallback(() => {
+    if (activeNavIndex < 0) {
+      setIndicator(null);
+      return;
+    }
+    const item = NAV_ITEMS[activeNavIndex];
+    const root = rootRef.current;
+    const button = item ? navButtonRefs.current[item.view] : null;
+    if (!root || !button) {
+      setIndicator(null);
+      return;
+    }
+    const rootRect = root.getBoundingClientRect();
+    const buttonRect = button.getBoundingClientRect();
+    const inset = Math.min(ACTIVITY_INDICATOR_INSET, buttonRect.height / 2);
+    const height = Math.max(2, buttonRect.height - inset * 2);
+    setIndicator({
+      top: buttonRect.top - rootRect.top - inset * 2.2,
+      height,
+    });
+  }, [activeNavIndex]);
+
+  useLayoutEffect(() => {
+    measureIndicator();
+    const root = rootRef.current;
+    const activeItem = activeNavIndex >= 0 ? NAV_ITEMS[activeNavIndex] : null;
+    const button = activeItem ? navButtonRefs.current[activeItem.view] : null;
+    if (!root) return;
+    const observer = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(measureIndicator);
+    observer?.observe(root);
+    if (button) observer?.observe(button);
+    window.addEventListener('resize', measureIndicator);
+    return () => {
+      observer?.disconnect();
+      window.removeEventListener('resize', measureIndicator);
+    };
+  }, [activeNavIndex, measureIndicator]);
 
   const handleNavClick = (view: ActiveView) => {
     if (view === 'editor') {
@@ -65,7 +109,17 @@ export default function ActivityBar() {
   };
 
   return (
-    <div className="relative w-11 flex flex-col items-center py-2 gap-0.5 border-r border-border/50 bg-sidebar shrink-0">
+    <div ref={rootRef} className="relative w-11 flex flex-col items-center py-2 gap-0.5 border-r border-border/50 bg-sidebar shrink-0">
+      <span
+        className={cn(
+          'pointer-events-none absolute left-0 z-10 w-0.5 rounded-r-full bg-primary shadow-[0_0_8px_var(--glow-primary)] app-activity-indicator',
+          indicator ? 'opacity-100' : 'opacity-0',
+        )}
+        style={{
+          height: indicator?.height ?? 0,
+          transform: `translateY(${indicator?.top ?? 0}px)`,
+        }}
+      />
       {/* App logo */}
       <div className="w-9 h-9 flex items-center justify-center">
         <AppLogo size={22} className="text-primary/70" />
@@ -96,6 +150,7 @@ export default function ActivityBar() {
           <Tooltip key={view}>
             <TooltipTrigger asChild>
               <button
+                ref={(node) => { navButtonRefs.current[view] = node; }}
                 onClick={() => handleNavClick(view)}
                 onMouseDown={(e) => handleNavMiddleClick(e, view)}
                 className={cn(
@@ -135,7 +190,7 @@ export default function ActivityBar() {
           >
             <Users2 size={17} />
             {peers.length > 0 && (
-              <span className="absolute top-1 right-1 min-w-[14px] h-[14px] bg-primary text-primary-foreground text-[9px] font-bold rounded-full flex items-center justify-center px-0.5">
+              <span key={peers.length} className="absolute top-1 right-1 min-w-[14px] h-[14px] bg-primary text-primary-foreground text-[9px] font-bold rounded-full flex items-center justify-center px-0.5 app-chip-change">
                 {peers.length}
               </span>
             )}

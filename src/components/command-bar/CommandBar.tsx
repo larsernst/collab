@@ -59,7 +59,9 @@ export function CommandBar() {
             </div>
           )}
           <CommandList className="max-h-80">
-            <CommandBarModeContent mode={mode} ctx={ctx} />
+            <div key={mode.type} className="app-command-content-enter">
+              <CommandBarModeContent mode={mode} ctx={ctx} />
+            </div>
           </CommandList>
           <CommandBarModeHints current={mode.type} />
         </Command>

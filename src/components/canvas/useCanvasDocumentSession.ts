@@ -151,12 +151,14 @@ export function useCanvasDocumentSession({
 }: UseCanvasDocumentSessionOptions) {
   const client = useMemo(() => (vault ? createVaultClient(vault) : null), [vault]);
   const saveTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  const refreshPulseTimerRef = useRef<number | null>(null);
   const pendingViewportRef = useRef<Viewport | null>(null);
   const savedCanvasContentRef = useRef<string | null>(null);
   const restCanvasRef = useRef<CanvasData | null>(null);
   const [restLoadedPath, setRestLoadedPath] = useState<string | null>(null);
   const [loadRevision, setLoadRevision] = useState(0);
   const [isLoading, setIsLoading] = useState(false);
+  const [refreshPulse, setRefreshPulse] = useState(false);
   // Live co-editing session for hosted canvases; null = REST optimistic writes.
   const [liveSession, setLiveSession] = useState<LiveJsonSession | null>(null);
   const liveWriteTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
@@ -187,13 +189,13 @@ export function useCanvasDocumentSession({
     applyCanvas(sanitized);
   }, [applyCanvas, buildFlowNode, fromFlowEdge, fromFlowNode, toFlowEdge]);
 
-  const loadCanvas = useCallback(async (isInitial = false) => {
-    if (!client || !relativePath) return;
+  const loadCanvas = useCallback(async (isInitial = false): Promise<boolean> => {
+    if (!client || !relativePath) return false;
     if (isInitial) setIsLoading(true);
 
     try {
       const { content, version } = await client.readDocument(relativePath);
-      if (!isMountedRef.current) return;
+      if (!isMountedRef.current) return false;
 
       let canvas = EMPTY_CANVAS;
       let currentHash = version;
@@ -227,6 +229,7 @@ export function useCanvasDocumentSession({
         savedCanvasContentRef.current = JSON.stringify(blank, null, 2);
       }
 
+      const changed = currentHash !== hashRef.current;
       markLoaded(currentHash);
       restCanvasRef.current = canvas;
       setRestLoadedPath(relativePath);
@@ -238,8 +241,10 @@ export function useCanvasDocumentSession({
       setEdges(canvas.edges.map(toFlowEdge));
       pendingViewportRef.current = canvas.viewport ?? EMPTY_CANVAS.viewport;
       setLoadRevision((prev) => prev + 1);
+      return changed;
     } catch {
       setRestLoadedPath(relativePath);
+      return false;
     } finally {
       if (isMountedRef.current) setIsLoading(false);
     }
@@ -419,11 +424,19 @@ export function useCanvasDocumentSession({
 
   useEffect(() => {
     if (!client || client.kind !== 'hosted' || !relativePath) return;
-    return onReplicaMutated(() => {
+    return onReplicaMutated(async () => {
       if (isDirtyRef.current || liveSession) return;
-      void loadCanvas(false);
+      if (await loadCanvas(false)) {
+        setRefreshPulse(true);
+        if (refreshPulseTimerRef.current !== null) window.clearTimeout(refreshPulseTimerRef.current);
+        refreshPulseTimerRef.current = window.setTimeout(() => setRefreshPulse(false), 420);
+      }
     });
   }, [client, isDirtyRef, liveSession, loadCanvas, relativePath]);
+
+  useEffect(() => () => {
+    if (refreshPulseTimerRef.current !== null) window.clearTimeout(refreshPulseTimerRef.current);
+  }, []);
 
   const saveCanvas = useCallback(async () => {
     if (!client || !relativePath || readOnly) return;
@@ -522,5 +535,5 @@ export function useCanvasDocumentSession({
     };
   }, [edges, isDirtyRef, liveSession, markDirty, nodes, pauseAutosave, readOnly, relativePath, runExclusiveSave, saveCanvas, shouldSkipAutosave, vault, viewport]);
 
-  return { liveSession, isLoading };
+  return { liveSession, isLoading, refreshPulse };
 }

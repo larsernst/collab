@@ -220,12 +220,102 @@
   animation: app-fade-scale-in var(--motion-base) var(--motion-ease-standard) both;
 }
 
+.app-view-enter {
+  animation: app-view-enter var(--motion-base) var(--motion-ease-standard) both;
+}
+
+.app-sidebar-panel-enter {
+  animation: app-sidebar-panel-enter var(--motion-base) var(--motion-ease-standard) both;
+}
+
+.app-tab-enter {
+  animation: app-tab-enter var(--motion-base) var(--motion-ease-emphasized) both;
+}
+
+.app-document-ready {
+  animation: app-document-ready var(--motion-base) var(--motion-ease-standard) both;
+}
+
+.app-refresh-pulse {
+  animation: app-refresh-pulse var(--motion-slower) var(--motion-ease-standard) both;
+}
+
+.app-chip-change {
+  animation: app-chip-change var(--motion-base) var(--motion-ease-standard) both;
+}
+
+.app-command-content-enter {
+  animation: app-command-content-enter var(--motion-base) var(--motion-ease-standard) both;
+}
+
+.app-list-item-enter {
+  animation: app-list-item-enter var(--motion-base) var(--motion-ease-standard) both;
+}
+
+.app-panel-enter {
+  animation: app-panel-enter var(--motion-base) var(--motion-ease-standard) both;
+}
+
+.app-card-enter {
+  animation: app-card-enter var(--motion-base) var(--motion-ease-emphasized) both;
+}
+
+.app-sortable-enter {
+  animation: app-sortable-enter var(--motion-base) var(--motion-ease-standard) both;
+}
+
+.app-node-enter {
+  animation: app-node-enter var(--motion-base) var(--motion-ease-emphasized) both;
+}
+
+.app-activity-indicator {
+  transition:
+    transform var(--motion-base) var(--motion-ease-emphasized),
+    height var(--motion-fast) var(--motion-ease-standard),
+    opacity var(--motion-fast) var(--motion-ease-standard);
+}
+
 .app-pulse-soft {
   animation: app-pulse-soft calc(var(--motion-slower) * 3) ease-in-out infinite;
 }
 
 .app-spin-soft {
   animation: app-spin-soft calc(var(--motion-slower) * 2.5) linear infinite;
+}
+
+.app-logo-mark {
+  animation: app-logo-breathe calc(var(--motion-slower) * 12) ease-in-out infinite;
+}
+
+.app-status-breathe {
+  animation: app-status-breathe calc(var(--motion-slower) * 5) ease-in-out infinite;
+}
+
+.app-progress-sheen::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(90deg, transparent, color-mix(in oklch, var(--primary) 45%, transparent), transparent);
+  transform: translateX(-120%);
+  animation: app-progress-sheen calc(var(--motion-slower) * 5) var(--motion-ease-standard) infinite;
+}
+
+.app-active-glint {
+  overflow: hidden;
+}
+
+.app-active-glint::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: linear-gradient(110deg, transparent 15%, color-mix(in oklch, var(--primary) 9%, transparent) 50%, transparent 85%);
+  transform: translateX(-115%);
+  animation: app-active-glint calc(var(--motion-slower) * 8) var(--motion-ease-standard) infinite;
+}
+
+.app-ambient-drift {
+  animation: app-ambient-drift calc(var(--motion-slower) * 18) ease-in-out infinite alternate;
 }
 
 @keyframes app-fade-slide-in {
@@ -238,6 +328,67 @@
   to   { opacity: 1; transform: scale(1) translateY(0); }
 }
 
+@keyframes app-view-enter {
+  from { opacity: 0; transform: translateY(6px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes app-sidebar-panel-enter {
+  from { opacity: 0; transform: translateX(-6px); }
+  to   { opacity: 1; transform: translateX(0); }
+}
+
+@keyframes app-tab-enter {
+  from { opacity: 0; transform: translateY(5px) scale(0.98); }
+  to   { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+@keyframes app-document-ready {
+  from { opacity: 0; transform: translateY(4px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes app-refresh-pulse {
+  0%   { box-shadow: inset 0 0 0 transparent; }
+  35%  { box-shadow: inset 0 2px 0 var(--primary); }
+  100% { box-shadow: inset 0 0 0 transparent; }
+}
+
+@keyframes app-chip-change {
+  from { opacity: 0.72; transform: translateY(2px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes app-command-content-enter {
+  from { opacity: 0; transform: translateY(5px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes app-list-item-enter {
+  from { opacity: 0; transform: translateX(-3px); }
+  to   { opacity: 1; transform: translateX(0); }
+}
+
+@keyframes app-panel-enter {
+  from { opacity: 0; transform: translateY(6px) scale(0.99); }
+  to   { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+@keyframes app-card-enter {
+  from { opacity: 0; transform: translateY(5px) scale(0.985); }
+  to   { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+@keyframes app-sortable-enter {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+
+@keyframes app-node-enter {
+  from { opacity: 0; transform: scale(0.975); }
+  to   { opacity: 1; transform: scale(1); }
+}
+
 @keyframes app-pulse-soft {
   0%, 100% { opacity: 1; }
   50% { opacity: 0.55; }
@@ -246,6 +397,39 @@
 @keyframes app-spin-soft {
   from { transform: rotate(0deg); }
   to { transform: rotate(360deg); }
+}
+
+@keyframes app-logo-breathe {
+  0%, 100% { filter: drop-shadow(0 0 0 transparent); opacity: 0.86; }
+  50% { filter: drop-shadow(0 0 7px var(--glow-primary-sm)); opacity: 1; }
+}
+
+@keyframes app-status-breathe {
+  0%, 100% {
+    opacity: 0.72;
+    box-shadow: 0 0 0 0 color-mix(in oklch, currentColor 24%, transparent);
+  }
+  50% {
+    opacity: 1;
+    box-shadow: 0 0 0 4px color-mix(in oklch, currentColor 8%, transparent);
+  }
+}
+
+@keyframes app-progress-sheen {
+  0%, 42% { transform: translateX(-120%); opacity: 0; }
+  55% { opacity: 0.85; }
+  72%, 100% { transform: translateX(120%); opacity: 0; }
+}
+
+@keyframes app-active-glint {
+  0%, 58% { transform: translateX(-115%); opacity: 0; }
+  70% { opacity: 1; }
+  86%, 100% { transform: translateX(115%); opacity: 0; }
+}
+
+@keyframes app-ambient-drift {
+  from { opacity: 0.76; filter: saturate(0.95); }
+  to { opacity: 1; filter: saturate(1.12); }
 }
 
 [data-motion='off'] {
@@ -265,6 +449,23 @@
 
 [data-motion='off'] .app-fade-slide-in,
 [data-motion='off'] .app-fade-scale-in,
+[data-motion='off'] .app-view-enter,
+[data-motion='off'] .app-sidebar-panel-enter,
+[data-motion='off'] .app-tab-enter,
+[data-motion='off'] .app-document-ready,
+[data-motion='off'] .app-refresh-pulse,
+[data-motion='off'] .app-chip-change,
+[data-motion='off'] .app-command-content-enter,
+[data-motion='off'] .app-list-item-enter,
+[data-motion='off'] .app-panel-enter,
+[data-motion='off'] .app-card-enter,
+[data-motion='off'] .app-sortable-enter,
+[data-motion='off'] .app-node-enter,
+[data-motion='off'] .app-logo-mark,
+[data-motion='off'] .app-status-breathe,
+[data-motion='off'] .app-progress-sheen::after,
+[data-motion='off'] .app-active-glint::before,
+[data-motion='off'] .app-ambient-drift,
 [data-motion='off'] .grid-cell-enter,
 [data-motion='off'] .split-zones-enter {
   animation: none !important;
@@ -403,20 +604,6 @@
 }
 .glow-primary-sm {
   box-shadow: 0 0 8px var(--glow-primary-sm);
-}
-
-/* ─── Activity bar active indicator ────────────────────────────────────── */
-
-.activity-item-active::before {
-  content: '';
-  position: absolute;
-  left: 0;
-  top: 20%;
-  height: 60%;
-  width: 2px;
-  background: var(--primary);
-  border-radius: 0 2px 2px 0;
-  box-shadow: 0 0 8px var(--glow-primary);
 }
 
 /* ─── Kanban / shared form utilities ───────────────────────────────────── */

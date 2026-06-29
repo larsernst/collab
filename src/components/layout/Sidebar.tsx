@@ -102,7 +102,7 @@ export default function Sidebar() {
       </div>
 
       {/* Panel content */}
-      <div className="flex-1 overflow-hidden">
+      <div key={sidebarPanel} className="flex-1 overflow-hidden app-sidebar-panel-enter">
         {sidebarPanel === 'files'         && <FileTree />}
         {sidebarPanel === 'search'        && <SearchPanel />}
         {sidebarPanel === 'tags'          && <TagsPanel />}

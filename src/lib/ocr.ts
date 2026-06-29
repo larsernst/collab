@@ -39,9 +39,14 @@ let activeWorker:
   | null = null;
 let activeProgress: OcrProgress | undefined;
 
-function imageToDataUrl(image: string | HTMLCanvasElement): string {
-  if (typeof image === 'string') return image;
-  return image.toDataURL('image/png');
+function isNativeOcrSupportedBase64ImageDataUrl(value: string): boolean {
+  return /^data:image\/(?:png|jpe?g|webp);base64,/i.test(value);
+}
+
+async function imageToNativeOcrDataUrl(image: string | HTMLCanvasElement): Promise<string> {
+  if (image instanceof HTMLCanvasElement) return image.toDataURL('image/png');
+  if (isNativeOcrSupportedBase64ImageDataUrl(image)) return image;
+  return (await toCanvas(image)).toDataURL('image/png');
 }
 
 async function getImageSize(image: string | HTMLCanvasElement): Promise<{ width: number; height: number }> {
@@ -292,7 +297,8 @@ async function recognizeWithNativeFallback(
   onProgress?: OcrProgress,
 ): Promise<OcrResult> {
   onProgress?.(0.1, 'Preparing native OCR');
-  const result = await tauriCommands.recognizeImageDataUrlWords(imageToDataUrl(image), language);
+  const dataUrl = await imageToNativeOcrDataUrl(image);
+  const result = await tauriCommands.recognizeImageDataUrlWords(dataUrl, language);
   onProgress?.(1, 'OCR complete');
   const size = await getImageSize(image);
   return {

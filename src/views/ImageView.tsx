@@ -369,6 +369,7 @@ export default function ImageView({ relativePath }: Props) {
   const [ocrConfidence, setOcrConfidence] = useState<number | null>(null);
   const [ocrOpen, setOcrOpen] = useState(false);
   const [ocrLoading, setOcrLoading] = useState(false);
+  const [ocrError, setOcrError] = useState<string | null>(null);
   const [ocrProgress, setOcrProgress] = useState<{ progress: number; status: string } | null>(null);
   const [ocrCached, setOcrCached] = useState(false);
   const [lastOcrRegion, setLastOcrRegion] = useState<ImageCropRect | null>(null);
@@ -541,6 +542,7 @@ export default function ImageView({ relativePath }: Props) {
   useEffect(() => {
     setOcrText('');
     setOcrConfidence(null);
+    setOcrError(null);
     setOcrProgress(null);
     setOcrCached(false);
     setLastOcrRegion(null);
@@ -552,6 +554,7 @@ export default function ImageView({ relativePath }: Props) {
     if (!src) return;
     setOcrOpen(true);
     setOcrLoading(true);
+    setOcrError(null);
     setLastOcrRegion(region);
     setOcrOverlay(null);
     setOcrProgress({ progress: 0, status: 'Preparing OCR' });
@@ -585,6 +588,7 @@ export default function ImageView({ relativePath }: Props) {
       });
       setOcrText(result.text);
       setOcrConfidence(result.confidence);
+      setOcrError(null);
       setOcrCached(result.cached === true);
       if (region) {
         setOcrOverlay({
@@ -603,10 +607,10 @@ export default function ImageView({ relativePath }: Props) {
     } catch (reason) {
       setOcrText('');
       setOcrConfidence(null);
+      setOcrError(`OCR failed: ${reason}`);
       setOcrCached(false);
       setOcrOverlay(null);
       setOcrProgress(null);
-      setError(`OCR failed: ${reason}`);
     } finally {
       setOcrLoading(false);
     }
@@ -619,7 +623,7 @@ export default function ImageView({ relativePath }: Props) {
   };
 
   return (
-    <div className="flex h-full w-full flex-col overflow-hidden bg-background app-fade-slide-in">
+    <div className="flex h-full w-full flex-col overflow-hidden bg-background app-document-ready">
       <DocumentTopBar
         title={getDocumentBaseName(relativePath, 'Image')}
         subtitle={getDocumentFolderPath(relativePath)}
@@ -847,13 +851,15 @@ export default function ImageView({ relativePath }: Props) {
         )}
 
         {ocrOpen && (
-          <div className="absolute right-4 top-4 z-30 w-[min(360px,calc(100%-2rem))] rounded-xl border border-border/60 bg-popover/95 p-3 shadow-2xl shadow-black/25 backdrop-blur-sm-webkit">
+          <div className="absolute right-4 top-4 z-30 w-[min(360px,calc(100%-2rem))] rounded-xl border border-border/60 bg-popover/95 p-3 shadow-2xl shadow-black/25 backdrop-blur-sm-webkit app-panel-enter">
             <div className="mb-2 flex items-start justify-between gap-3">
               <div>
                 <div className="text-sm font-medium">Recognized text</div>
                 <div className="text-xs text-muted-foreground">
                   {ocrLoading && ocrProgress
                     ? `${ocrProgress.status} · ${Math.round(ocrProgress.progress * 100)}%`
+                    : ocrError
+                      ? 'OCR failed'
                     : ocrConfidence != null
                       ? `${ocrCached ? 'Cached · ' : ''}Confidence ${Math.round(ocrConfidence)}%`
                       : 'Image OCR'}
@@ -890,8 +896,11 @@ export default function ImageView({ relativePath }: Props) {
             {!ocrLoading && (
               <textarea
                 readOnly
-                value={ocrText || 'No text recognized.'}
-                className="mt-2 h-48 w-full resize-none rounded-lg border border-input bg-background/70 px-3 py-2 text-xs leading-relaxed outline-none"
+                value={ocrError ?? (ocrText || 'No text recognized.')}
+                className={cn(
+                  'mt-2 h-48 w-full resize-none rounded-lg border border-input bg-background/70 px-3 py-2 text-xs leading-relaxed outline-none',
+                  ocrError && 'border-destructive/40 text-destructive',
+                )}
               />
             )}
           </div>

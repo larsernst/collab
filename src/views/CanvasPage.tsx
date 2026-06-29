@@ -743,7 +743,7 @@ function CanvasBoard({ relativePath }: { relativePath: string | null }) {
     webPreviewsEnabled,
   ]);
 
-  const { liveSession, isLoading: canvasLoading } = useCanvasDocumentSession({
+  const { liveSession, isLoading: canvasLoading, refreshPulse } = useCanvasDocumentSession({
     reactFlow,
     vault,
     relativePath,
@@ -1472,7 +1472,10 @@ function CanvasBoard({ relativePath }: { relativePath: string | null }) {
   }
 
   return (
-    <div className="flex h-full w-full min-h-0 flex-col overflow-hidden bg-background app-fade-slide-in">
+    <div className={cn(
+      'flex h-full w-full min-h-0 flex-col overflow-hidden bg-background app-document-ready',
+      refreshPulse && 'app-refresh-pulse',
+    )}>
       <DocumentTopBar
         title={getDocumentBaseName(relativePath, 'Canvas')}
         subtitle={getDocumentFolderPath(relativePath)}

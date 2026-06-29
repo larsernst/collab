@@ -314,7 +314,7 @@ export default function KanbanColumnView({ column }: Props) {
       <div
         ref={setNodeRef}
         style={style}
-        className="flex flex-col w-[272px] shrink-0"
+        className="flex flex-col w-[272px] shrink-0 app-sortable-enter"
       >
         {/* Column header */}
         <div className="flex items-center gap-1.5 px-2 pb-1.5 select-none">

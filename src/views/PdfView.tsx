@@ -2027,7 +2027,7 @@ export default function PdfView({ relativePath }: Props) {
 
   if (loading) {
     return (
-      <div className="flex h-full items-center justify-center text-muted-foreground">
+      <div className="flex h-full items-center justify-center text-muted-foreground app-fade-scale-in">
         Loading PDF…
       </div>
     );
@@ -2035,7 +2035,7 @@ export default function PdfView({ relativePath }: Props) {
 
   if (error || !documentProxy) {
     return (
-      <div className="flex h-full flex-col items-center justify-center gap-3 text-muted-foreground">
+      <div className="flex h-full flex-col items-center justify-center gap-3 text-muted-foreground app-fade-scale-in">
         <FileText size={36} className="opacity-40" />
         <div className="text-base font-medium">Unable to open PDF</div>
         <div className="max-w-md text-center text-sm opacity-70">{error ?? 'Unknown PDF error'}</div>
@@ -2044,7 +2044,7 @@ export default function PdfView({ relativePath }: Props) {
   }
 
   return (
-    <div className="pdf-view flex h-full min-h-0 flex-col bg-background">
+    <div className="pdf-view flex h-full min-h-0 flex-col bg-background app-document-ready">
       <style>{`
         .pdf-view .pdf-text-layer {
           position: absolute;
@@ -2334,7 +2334,7 @@ export default function PdfView({ relativePath }: Props) {
       <div className="relative min-h-0 flex-1">
         <div className="pointer-events-none absolute right-5 top-5 z-20 flex flex-col gap-3">
           {ocrOpen && (
-            <div className="pointer-events-auto w-[min(380px,calc(100vw-2.5rem))] rounded-2xl border border-border/60 bg-popover/95 p-3 shadow-2xl shadow-black/25">
+            <div className="pointer-events-auto w-[min(380px,calc(100vw-2.5rem))] rounded-2xl border border-border/60 bg-popover/95 p-3 shadow-2xl shadow-black/25 app-panel-enter">
               <div className="mb-2 flex items-start justify-between gap-3">
                 <div>
                   <div className="text-sm font-medium">Recognized text</div>
@@ -2388,7 +2388,7 @@ export default function PdfView({ relativePath }: Props) {
 
           {selectionAction && (
             <div
-              className="pointer-events-auto fixed z-50 flex items-center gap-1 rounded-xl border border-border/60 bg-popover/95 px-2 py-1 shadow-2xl shadow-black/30"
+              className="pointer-events-auto fixed z-50 flex items-center gap-1 rounded-xl border border-border/60 bg-popover/95 px-2 py-1 shadow-2xl shadow-black/30 app-panel-enter"
               style={{
                 left: `${selectionAction.left}px`,
                 top: `${selectionAction.top}px`,
@@ -2417,7 +2417,7 @@ export default function PdfView({ relativePath }: Props) {
           )}
 
           {selectedHighlight && (
-            <div className="pointer-events-auto w-80 rounded-2xl border border-border/60 bg-popover/95 p-3 shadow-2xl shadow-black/25">
+            <div className="pointer-events-auto w-80 rounded-2xl border border-border/60 bg-popover/95 p-3 shadow-2xl shadow-black/25 app-panel-enter">
               <div className="mb-2 flex items-start justify-between gap-3">
                 <div>
                   <div className="text-sm font-medium">Highlight note</div>
@@ -2446,7 +2446,7 @@ export default function PdfView({ relativePath }: Props) {
           )}
 
           {selectedTextAnnotation && (
-            <div className="pointer-events-auto w-80 rounded-2xl border border-border/60 bg-popover/95 p-3 shadow-2xl shadow-black/25">
+            <div className="pointer-events-auto w-80 rounded-2xl border border-border/60 bg-popover/95 p-3 shadow-2xl shadow-black/25 app-panel-enter">
               <div className="mb-2 flex items-start justify-between gap-3">
                 <div>
                   <div className="text-sm font-medium">Text annotation</div>
@@ -2500,7 +2500,7 @@ export default function PdfView({ relativePath }: Props) {
         </div>
 
         {bookmarksOpen && (
-          <aside className="absolute right-5 top-5 z-10 w-72 rounded-2xl border border-border/60 bg-popover/92 p-3 shadow-2xl shadow-black/25 backdrop-blur-sm-webkit">
+          <aside className="absolute right-5 top-5 z-10 w-72 rounded-2xl border border-border/60 bg-popover/92 p-3 shadow-2xl shadow-black/25 backdrop-blur-sm-webkit app-panel-enter">
             <div className="mb-3 flex items-center justify-between gap-3">
               <div>
                 <div className="text-sm font-medium">Bookmarks</div>

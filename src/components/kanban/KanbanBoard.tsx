@@ -1392,7 +1392,7 @@ export default function KanbanBoardView() {
               )}
             </div>
 
-            <DragOverlay dropAnimation={null}>
+            <DragOverlay adjustScale dropAnimation={null}>
               {activeCard && (
                 <KanbanCardView card={activeCard} columnId="" isOverlay />
               )}

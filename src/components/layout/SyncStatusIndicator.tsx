@@ -273,11 +273,16 @@ export default function SyncStatusIndicator() {
           )}
           title="Offline sync status"
         >
-          {chip.icon}
-          <span className="text-[10px]">{chip.label}</span>
+          <span
+            key={`${rollup}:${pending.length}:${failed.length}:${access}:${isSyncing ? 'syncing' : 'idle'}`}
+            className="flex items-center gap-1 app-chip-change"
+          >
+            {chip.icon}
+            <span className="text-[10px]">{chip.label}</span>
+          </span>
         </button>
       </PopoverTrigger>
-      <PopoverContent align="end" side="top" className="w-72 p-0 text-xs">
+      <PopoverContent align="end" side="top" className="w-72 p-0 text-xs app-fade-scale-in">
         <div className="flex items-center justify-between gap-2 border-b border-border/50 px-3 py-2">
           <div className="min-w-0">
             <p className="font-medium text-foreground">

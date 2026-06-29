@@ -376,7 +376,7 @@ export default function GraphView({ notes, onNodeClick }: GraphViewProps) {
 
   return (
     <div className="relative w-full h-full bg-background">
-      <div className="absolute top-4 left-4 z-10 flex items-center gap-2 rounded-xl border border-border/60 bg-background/88 px-2.5 py-2 shadow-lg shadow-black/5 backdrop-blur-xs-webkit">
+      <div className="absolute top-4 left-4 z-10 flex items-center gap-2 rounded-xl border border-border/60 bg-background/88 px-2.5 py-2 shadow-lg shadow-black/5 backdrop-blur-xs-webkit app-panel-enter">
         <Input
           value={searchQuery}
           onChange={(e) => setSearchQuery(e.target.value)}

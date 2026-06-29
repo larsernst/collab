@@ -41,7 +41,7 @@ export function CanvasInsertMenu({ open, x, y, onSelect, onClose }: CanvasInsert
         onClick={onClose}
       />
       <div
-        className="absolute z-30 w-[320px] max-w-[calc(100%-24px)]"
+        className="absolute z-30 w-[320px] max-w-[calc(100%-24px)] app-panel-enter"
         style={{ left: x, top: y }}
       >
         <Command className={cn('rounded-2xl border border-border/70 bg-popover/96 p-1 shadow-2xl ring-1 ring-black/5 backdrop-blur-xs-webkit')}>

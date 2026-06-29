@@ -64,6 +64,7 @@ export default function NoteView({ relativePath }: { relativePath: string }) {
   // hosted vaults, local client identity otherwise.
   const { userId: myUserId, userName: myUserName, userColor: myUserColor } = useCollabIdentity();
   const [content, setContent] = useState<string | null>(null);
+  const [refreshPulse, setRefreshPulse] = useState(false);
   const {
     webPreviewsEnabled,
     hoverWebLinkPreviewsEnabled,
@@ -71,6 +72,7 @@ export default function NoteView({ relativePath }: { relativePath: string }) {
   } = useUiStore();
   const loadSnippets = useNoteSnippetStore((state) => state.loadSnippets);
   const editorRef = useRef<MarkdownEditorHandle | null>(null);
+  const refreshPulseTimerRef = useRef<number | null>(null);
   const savedContentRef = useRef<string | null>(null);
   const client = useMemo(() => (vault ? createVaultClient(vault) : null), [vault]);
   const readOnly = isVaultReadOnly(vault);
@@ -265,12 +267,19 @@ export default function NoteView({ relativePath }: { relativePath: string }) {
           savedContentRef.current = doc.content;
           markLoaded(doc.version);
           setSavedHash(relativePath, doc.version);
+          setRefreshPulse(true);
+          if (refreshPulseTimerRef.current !== null) window.clearTimeout(refreshPulseTimerRef.current);
+          refreshPulseTimerRef.current = window.setTimeout(() => setRefreshPulse(false), 420);
         }
       } catch {
         // Replica refreshes are best-effort; the current editor state remains usable.
       }
     });
   }, [client, liveSession, markLoaded, relativePath, setSavedHash]);
+
+  useEffect(() => () => {
+    if (refreshPulseTimerRef.current !== null) window.clearTimeout(refreshPulseTimerRef.current);
+  }, []);
 
   const handleChange = (newContent: string) => {
     setContent(newContent);
@@ -383,7 +392,7 @@ export default function NoteView({ relativePath }: { relativePath: string }) {
   const editorContent = liveSession ? liveSession.text.toString() : (content ?? '');
 
   return (
-    <div className="flex flex-col h-full overflow-hidden">
+    <div className={`flex flex-col h-full overflow-hidden app-document-ready ${refreshPulse ? 'app-refresh-pulse' : ''}`}>
       {readOnly ? <ReadOnlyBanner /> : <EditorToolbar relativePath={relativePath} editorRef={editorRef} />}
       {/* position:relative establishes the containing block for the absolutely-positioned
           CodeMirror container. This avoids flex % height resolution bugs in WebKitGTK

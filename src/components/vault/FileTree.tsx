@@ -924,6 +924,7 @@ function FileTreeNode({
             style={{ paddingLeft: `${depth * 14 + 6}px` }}
             className={cn(
               'group flex items-center gap-1 py-[3px] pr-2 cursor-pointer rounded-sm mx-1 transition-colors app-motion-fast select-none',
+              'app-list-item-enter',
               isDraggingThis && 'opacity-40',
               isDropTarget && 'bg-primary/20 ring-1 ring-primary/40 ring-inset',
               !isDraggingThis && !isDropTarget && (
@@ -1022,7 +1023,7 @@ function FileTreeNode({
 
           {/* Children */}
           {node.isFolder && !isCollapsed && node.children && (
-            <div>
+            <div className="app-sidebar-panel-enter">
               {node.children.map((child) => (
                 <FileTreeNode
                   key={child.relativePath}

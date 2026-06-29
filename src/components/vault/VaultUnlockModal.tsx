@@ -30,8 +30,8 @@ export default function VaultUnlockModal() {
     <div className="vault-bg flex h-screen items-center justify-center overflow-hidden">
       {/* Ambient glow */}
       <div className="pointer-events-none fixed inset-0 overflow-hidden">
-        <div className="absolute -top-40 left-1/2 -translate-x-1/2 w-[600px] h-[400px] rounded-full bg-primary/8 blur-[120px]" />
-        <div className="absolute bottom-0 right-1/4 w-[400px] h-[300px] rounded-full bg-blue-500/6 blur-[100px]" />
+        <div className="absolute -top-40 left-1/2 -translate-x-1/2 w-[600px] h-[400px] rounded-full bg-primary/8 blur-[120px] app-ambient-drift" />
+        <div className="absolute bottom-0 right-1/4 w-[400px] h-[300px] rounded-full bg-blue-500/6 blur-[100px] app-ambient-drift [animation-delay:-2.4s]" />
       </div>
 
       <div className="relative w-full max-w-sm px-4">

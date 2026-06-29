@@ -19,7 +19,7 @@ export function AppLogo({ size = 24, className }: AppLogoProps) {
       viewBox="0 0 64 64"
       fill="none"
       xmlns="http://www.w3.org/2000/svg"
-      className={className}
+      className={['app-logo-mark', className].filter(Boolean).join(' ')}
       aria-hidden="true"
     >
       <rect x="7" y="10" width="30" height="34" rx="8" fill="currentColor" opacity={backCardOpacity} />

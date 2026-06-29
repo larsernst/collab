@@ -476,9 +476,9 @@ export function CommandBarModeHints({ current }: { current: Mode['type'] }) {
       {hints.map((hint) => (
         <span
           key={hint.mode}
-          className={`rounded px-1.5 py-0.5 text-[10px] font-mono transition-colors ${
+          className={`rounded px-1.5 py-0.5 text-[10px] font-mono transition-[background,color,transform] app-motion-fast ${
             current === hint.mode
-              ? 'bg-primary/20 text-primary'
+              ? 'bg-primary/20 text-primary app-chip-change'
               : 'bg-muted/60 text-muted-foreground'
           }`}
         >

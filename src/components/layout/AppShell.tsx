@@ -8,6 +8,7 @@ import { useVaultStore, useEditorStore, useNoteIndexStore, useUiStore } from '..
 import { useServerStore } from '../../store/serverStore';
 import { createVaultClient } from '../../lib/vaultClient';
 import { onReplicaMutated } from '../../lib/vaultReplica';
+import { cn } from '../../lib/utils';
 import { vaultKind } from '../../types/vault';
 import NoteView from '../../views/NoteView';
 import ImageView from '../../views/ImageView';
@@ -59,6 +60,7 @@ export default function AppShell() {
   const startXRef   = useRef(0);
   const startWRef   = useRef(0);
   const [tabSwitcherIndex, setTabSwitcherIndex] = useState<number | null>(null);
+  const [isResizingSidebar, setIsResizingSidebar] = useState(false);
 
   const getTabIcon = (type: string, size = 16) => {
     if (type === 'canvas')   return <Layout size={size} className="shrink-0" />;
@@ -229,6 +231,7 @@ export default function AppShell() {
   // Sidebar drag-to-resize
   const onResizeStart = useCallback((e: React.MouseEvent) => {
     resizingRef.current = true;
+    setIsResizingSidebar(true);
     startXRef.current   = e.clientX;
     startWRef.current   = sidebarWidth;
     document.body.style.cursor = 'col-resize';
@@ -243,6 +246,7 @@ export default function AppShell() {
     };
     const onUp = () => {
       resizingRef.current = false;
+      setIsResizingSidebar(false);
       document.body.style.cursor = '';
       document.body.style.userSelect = '';
     };
@@ -291,20 +295,28 @@ export default function AppShell() {
         <ActivityBar />
 
         {/* Sidebar + resize handle */}
-        {isSidebarOpen && (
-          <div className="relative flex shrink-0 app-fade-slide-in" style={{ width: sidebarWidth }}>
-            <div className="flex-1 overflow-hidden">
+        <div
+          className={cn(
+            'relative flex shrink-0 overflow-hidden',
+            !isResizingSidebar && 'transition-[width,opacity] app-motion-base',
+            isSidebarOpen ? 'opacity-100' : 'pointer-events-none opacity-0',
+          )}
+          style={{ width: isSidebarOpen ? sidebarWidth : 0 }}
+          aria-hidden={!isSidebarOpen}
+        >
+            <div className="flex-1 overflow-hidden" style={{ width: sidebarWidth, minWidth: sidebarWidth }}>
               <Sidebar />
             </div>
             {/* Resize handle */}
-            <div
-              onMouseDown={onResizeStart}
-              className="absolute right-0 top-0 h-full w-1 cursor-col-resize hover:bg-primary/30 transition-colors app-motion-fast z-10 group"
-            >
-              <div className="absolute right-0 top-1/2 -translate-y-1/2 h-8 w-0.5 rounded-full bg-border/50 group-hover:bg-primary/50 transition-colors app-motion-fast" />
-            </div>
-          </div>
-        )}
+            {isSidebarOpen && (
+              <div
+                onMouseDown={onResizeStart}
+                className="absolute right-0 top-0 h-full w-1 cursor-col-resize hover:bg-primary/30 transition-colors app-motion-fast z-10 group"
+              >
+                <div className="absolute right-0 top-1/2 -translate-y-1/2 h-8 w-0.5 rounded-full bg-border/50 group-hover:bg-primary/50 transition-colors app-motion-fast" />
+              </div>
+            )}
+        </div>
 
         {/* Main pane */}
         <div className="flex flex-col flex-1 min-w-0 overflow-hidden">
@@ -312,7 +324,9 @@ export default function AppShell() {
           {/* position:relative so the split drop zones are positioned inside the content area */}
           <div className="relative flex-1 overflow-hidden">
             <EditorErrorBoundary key={activeTabPath ?? activeView}>
-              {renderMainContent()}
+              <div key={`${activeView}:${activeDocumentKey}`} className="h-full min-h-0 app-view-enter">
+                {renderMainContent()}
+              </div>
             </EditorErrorBoundary>
             {/* Edge drop zones — only visible when a tab is being dragged */}
             {activeView !== 'grid' && <SplitDropZones />}

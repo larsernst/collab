@@ -122,6 +122,7 @@ export default function KanbanPage({ relativePath }: { relativePath: string | nu
   const [liveSession, setLiveSession] = useState<LiveJsonSession | null>(null);
   const liveSessionRef = useRef<LiveJsonSession | null>(null);
   const [isLoadingBoard, setIsLoadingBoard] = useState(false);
+  const [refreshPulse, setRefreshPulse] = useState(false);
   // Mirrors the latest board so live edits and remote merges always derive from
   // the freshest state (including just-applied remote changes).
   const boardRef = useRef(board);
@@ -129,6 +130,7 @@ export default function KanbanPage({ relativePath }: { relativePath: string | nu
   const isMountedRef    = useRef(true);
   const isDirtyRef      = useRef(false);
   const saveTimerRef    = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  const refreshPulseTimerRef = useRef<number | null>(null);
   const savedBoardContentRef = useRef<string | null>(null);
   // Latest board pending a save, so a coalesced trailing save writes current state.
   const latestBoardRef = useRef<KanbanBoard | null>(null);
@@ -136,7 +138,10 @@ export default function KanbanPage({ relativePath }: { relativePath: string | nu
 
   useEffect(() => {
     isMountedRef.current = true;
-    return () => { isMountedRef.current = false; };
+    return () => {
+      isMountedRef.current = false;
+      if (refreshPulseTimerRef.current !== null) window.clearTimeout(refreshPulseTimerRef.current);
+    };
   }, []);
 
   const saveBoard = useCallback(async (newBoard: KanbanBoard) => {
@@ -215,13 +220,14 @@ export default function KanbanPage({ relativePath }: { relativePath: string | nu
     });
   }, [liveSession, markDirty, readOnly, relativePath, runExclusiveSave, saveBoard]);
 
-  const loadBoard = useCallback(async (isInitial = false) => {
-    if (!client || !relativePath) return;
+  const loadBoard = useCallback(async (isInitial = false): Promise<boolean> => {
+    if (!client || !relativePath) return false;
     if (isInitial) setIsLoadingBoard(true);
     try {
       const { content, version } = await client.readDocument(relativePath);
-      if (!isMountedRef.current) return;
-      if (liveSessionRef.current) return;
+      if (!isMountedRef.current) return false;
+      if (liveSessionRef.current) return false;
+      const changed = version !== hashRef.current;
       if (content.trim()) {
         const parsed: KanbanBoard = JSON.parse(content);
         setBoard(runKanbanAutomations(normalizeKanbanBoard(parsed), 'onBoardOpen'));
@@ -240,7 +246,9 @@ export default function KanbanPage({ relativePath }: { relativePath: string | nu
         markLoaded(result.version);
         setSavedHash(relativePath, result.version);
       }
+      return changed;
     } catch {
+      return false;
     } finally {
       if (isMountedRef.current && !liveSessionRef.current) setIsLoadingBoard(false);
     }
@@ -345,9 +353,13 @@ export default function KanbanPage({ relativePath }: { relativePath: string | nu
 
   useEffect(() => {
     if (!client || client.kind !== 'hosted' || !relativePath) return;
-    return onReplicaMutated(() => {
+    return onReplicaMutated(async () => {
       if (isDirtyRef.current || liveSessionRef.current) return;
-      void loadBoard(false);
+      if (await loadBoard(false)) {
+        setRefreshPulse(true);
+        if (refreshPulseTimerRef.current !== null) window.clearTimeout(refreshPulseTimerRef.current);
+        refreshPulseTimerRef.current = window.setTimeout(() => setRefreshPulse(false), 420);
+      }
     });
   }, [client, loadBoard, relativePath]);
 
@@ -385,8 +397,10 @@ export default function KanbanPage({ relativePath }: { relativePath: string | nu
 
   return (
     <KanbanContext.Provider value={{ board, updateBoard, knownUsers, relativePath, readOnly, caps, livePeers, remoteCardEditors }}>
-      {readOnly && <ReadOnlyBanner />}
-      <KanbanBoardView />
+      <div className={`h-full min-h-0 app-document-ready ${refreshPulse ? 'app-refresh-pulse' : ''}`}>
+        {readOnly && <ReadOnlyBanner />}
+        <KanbanBoardView />
+      </div>
     </KanbanContext.Provider>
   );
 }

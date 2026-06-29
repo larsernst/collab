@@ -57,7 +57,7 @@ export default function HostedConnectionStatus() {
 
   if (state === 'online') {
     return (
-      <span className="flex items-center gap-1 text-emerald-500/80" title={`Connected to ${vault.serverUrl}`}>
+      <span key={state} className="flex items-center gap-1 text-emerald-500/80 app-chip-change" title={`Connected to ${vault.serverUrl}`}>
         <Cloud size={11} />
         <span className="text-[10px]">Online</span>
       </span>
@@ -72,13 +72,15 @@ export default function HostedConnectionStatus() {
       title={`${label} — reconnect to ${vault.serverUrl}`}
       className="flex items-center gap-1 text-amber-500/90 hover:text-amber-400 transition-colors app-motion-fast disabled:opacity-60"
     >
-      {busy ? (
-        <RefreshCw size={11} className="app-spin-soft" />
-      ) : (
-        <CloudOff size={11} />
-      )}
-      <span className="text-[10px]">{busy ? 'Reconnecting…' : label}</span>
-      {!busy && <RefreshCw size={9} className={cn('opacity-70')} />}
+      <span key={`${state}:${busy ? 'busy' : 'idle'}`} className="flex items-center gap-1 app-chip-change">
+        {busy ? (
+          <RefreshCw size={11} className="app-spin-soft" />
+        ) : (
+          <CloudOff size={11} />
+        )}
+        <span className="text-[10px]">{busy ? 'Reconnecting…' : label}</span>
+        {!busy && <RefreshCw size={9} className={cn('opacity-70')} />}
+      </span>
     </button>
   );
 }

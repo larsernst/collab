@@ -14,7 +14,7 @@ export default function LivePeers({ peers, max = 5 }: { peers: LivePeer[]; max?:
   return (
     <div className="flex items-center gap-1" data-testid="live-peers">
       <span
-        className="w-1.5 h-1.5 rounded-full bg-emerald-500 flex-shrink-0 animate-pulse"
+        className="w-1.5 h-1.5 rounded-full bg-emerald-500 flex-shrink-0 app-status-breathe"
         aria-hidden
       />
       {users.slice(0, max).map((peer) => (

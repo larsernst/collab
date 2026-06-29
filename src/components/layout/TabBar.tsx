@@ -95,9 +95,9 @@ export default function TabBar() {
             onClick={() => handleTabClick(tab.relativePath, tab.type)}
             className={cn(
               'tab-active relative flex items-center gap-1.5 px-3 h-8 text-xs cursor-pointer whitespace-nowrap',
-              'transition-all duration-150 app-motion-base group min-w-0 max-w-[200px] select-none border-r border-border/30',
+              'transition-all duration-150 app-motion-base app-tab-enter group min-w-0 max-w-[200px] select-none border-r border-border/30',
               isActive
-                ? 'bg-background text-foreground'
+                ? 'bg-background text-foreground app-active-glint'
                 : 'bg-muted/20 text-muted-foreground hover:text-foreground/80 hover:bg-muted/30'
             )}
           >
@@ -114,10 +114,10 @@ export default function TabBar() {
             <span className="truncate">{tab.title}</span>
 
             {tab.isDirty && !isActive && (
-              <span className="w-1.5 h-1.5 rounded-full bg-primary/70 shrink-0" />
+              <span className="w-1.5 h-1.5 rounded-full bg-primary/70 shrink-0 app-status-breathe" />
             )}
             {tab.isDirty && isActive && (
-              <span className="w-1.5 h-1.5 rounded-full bg-primary shrink-0 glow-primary-sm" />
+              <span className="w-1.5 h-1.5 rounded-full bg-primary shrink-0 glow-primary-sm app-status-breathe" />
             )}
 
             <button

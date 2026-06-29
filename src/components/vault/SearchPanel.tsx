@@ -51,6 +51,7 @@ export default function SearchPanel() {
             }}
             className={cn(
               'w-full rounded-xl border border-border/40 bg-card/20 px-2.5 py-2 text-left text-sm transition-colors app-motion-fast',
+              'app-list-item-enter',
               'hover:border-border hover:bg-accent/30',
             )}
           >
@@ -59,7 +60,7 @@ export default function SearchPanel() {
           </button>
         ))}
         {query.length >= 2 && results.length === 0 && (
-          <p className="rounded-lg border border-border/40 bg-card/20 px-3 py-2 text-xs text-muted-foreground">No results found</p>
+          <p className="rounded-lg border border-border/40 bg-card/20 px-3 py-2 text-xs text-muted-foreground app-panel-enter">No results found</p>
         )}
       </div>
     </div>
