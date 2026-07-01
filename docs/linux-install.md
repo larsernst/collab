@@ -35,6 +35,15 @@ sudo dnf install ./collab-<version>.x86_64.rpm
 sudo zypper install ./collab-<version>.x86_64.rpm
 ```
 
+### Arch Linux
+
+An AUR source package is planned. Draft packaging lives in
+[packaging/aur/collab](/home/azazel/Code Projects/collab/packaging/aur/collab)
+until the AUR account and package repository are ready.
+
+Until then, use the Flatpak bundle or the portable tarball. Arch systems need the
+normal Tauri runtime stack, especially `webkit2gtk-4.1` and `gtk3`.
+
 ## Portable Tarball
 
 Use the portable archive when your distro is not covered by the native packages and you still want native scrolling, scaling, and rendering behavior.
