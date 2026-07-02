@@ -23,6 +23,12 @@ function normalizeRelativePath(path: string): string {
   return out.join('/');
 }
 
+function parentPath(path: string): string {
+  const normalized = normalizeRelativePath(path);
+  const index = normalized.lastIndexOf('/');
+  return index >= 0 ? normalized.slice(0, index) : '';
+}
+
 export function isLikelyImagePath(path: string): boolean {
   const cleanPath = path.split(/[?#]/, 1)[0];
   return IMAGE_EXT_RE.test(cleanPath);
@@ -66,8 +72,11 @@ export function resolveNoteAssetTarget(
   const [rawPath, suffix = ''] = unwrapped.match(/^([^?#]*)(.*)$/)?.slice(1) ?? [unwrapped, ''];
   const vaultRelativePath = normalizeRelativePath(rawPath);
   if (fileTree?.length) {
+    const noteDir = parentPath(_noteRelativePath);
+    const noteRelativePath = normalizeRelativePath(noteDir ? `${noteDir}/${rawPath}` : rawPath);
+    const candidates = Array.from(new Set([vaultRelativePath, noteRelativePath]));
     const exactVaultMatch = flattenVaultFiles(fileTree).find((file) => (
-      file.relativePath.toLowerCase() === vaultRelativePath.toLowerCase()
+      candidates.some((candidate) => file.relativePath.toLowerCase() === candidate.toLowerCase())
     ));
     if (exactVaultMatch) {
       return {

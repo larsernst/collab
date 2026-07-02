@@ -5,6 +5,24 @@ import type { NoteFile } from '../types/vault';
 
 const FILES: NoteFile[] = [
   {
+    relativePath: 'Notes',
+    name: 'Notes',
+    extension: '',
+    modifiedAt: 0,
+    size: 0,
+    isFolder: true,
+    children: [
+      {
+        relativePath: 'Notes/local.png',
+        name: 'local.png',
+        extension: 'png',
+        modifiedAt: 0,
+        size: 0,
+        isFolder: false,
+      },
+    ],
+  },
+  {
     relativePath: 'Pictures',
     name: 'Pictures',
     extension: '',
@@ -36,6 +54,13 @@ describe('resolveNoteAssetTarget', () => {
     expect(resolveNoteAssetTarget('Folder/example.png', 'Notes/Sub/demo.md')).toEqual({
       kind: 'vault',
       value: 'Folder/example.png',
+    });
+  });
+
+  it('resolves note-relative image paths when the vault file exists', () => {
+    expect(resolveNoteAssetTarget('local.png', 'Notes/demo.md', FILES)).toEqual({
+      kind: 'vault',
+      value: 'Notes/local.png',
     });
   });
 

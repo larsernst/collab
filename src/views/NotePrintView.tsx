@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Printer, X } from 'lucide-react';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 
@@ -7,11 +7,98 @@ import { createVaultClient } from '../lib/vaultClient';
 import { useVaultStore } from '../store/vaultStore';
 import { Button } from '../components/ui/button';
 import { getVaultDocumentTitle } from '../lib/vaultLinks';
+import { resolveNoteAssetTarget } from '../lib/noteAssets';
+import type { VaultMeta, NoteFile } from '../types/vault';
 
 interface NotePrintViewProps {
   relativePath: string;
   standalone?: boolean;
   onClose?: () => void;
+}
+
+async function waitForPrintableFonts() {
+  const fonts = document.fonts;
+  if (!fonts) return;
+  try {
+    await Promise.race([
+      fonts.ready,
+      new Promise((resolve) => window.setTimeout(resolve, 1600)),
+    ]);
+  } catch {
+    // Font readiness is best-effort; do not block printing forever.
+  }
+}
+
+function stripAssetSuffix(relativePath: string) {
+  return relativePath.split(/[?#]/, 1)[0];
+}
+
+function splitMarkdownImageDestination(raw: string) {
+  const trimmed = raw.trim();
+  if (trimmed.startsWith('<')) {
+    const end = trimmed.indexOf('>');
+    if (end > 0) {
+      return {
+        path: trimmed.slice(1, end),
+        suffix: trimmed.slice(end + 1),
+        wrapped: true,
+      };
+    }
+  }
+  const match = trimmed.match(/^(\S+)([\s\S]*)$/);
+  return {
+    path: match?.[1] ?? trimmed,
+    suffix: match?.[2] ?? '',
+    wrapped: false,
+  };
+}
+
+async function inlinePrintableImages(
+  content: string,
+  vault: VaultMeta,
+  currentDocumentRelativePath: string,
+  fileTree: NoteFile[],
+) {
+  const client = createVaultClient(vault);
+  const replacements = new Map<string, string>();
+
+  async function resolveSource(rawSource: string) {
+    if (replacements.has(rawSource)) return replacements.get(rawSource) ?? rawSource;
+    const target = resolveNoteAssetTarget(rawSource, currentDocumentRelativePath, fileTree);
+    if (!target || target.kind !== 'vault') {
+      replacements.set(rawSource, rawSource);
+      return rawSource;
+    }
+    try {
+      const dataUrl = await client.readAssetDataUrl(stripAssetSuffix(target.value));
+      replacements.set(rawSource, dataUrl);
+      return dataUrl;
+    } catch {
+      replacements.set(rawSource, rawSource);
+      return rawSource;
+    }
+  }
+
+  let next = content;
+  const markdownImages = Array.from(content.matchAll(/!\[([^\]]*)\]\(([^)\n]+)\)/g));
+  for (const match of markdownImages) {
+    const [full, alt, rawDestination] = match;
+    const destination = splitMarkdownImageDestination(rawDestination);
+    const dataUrl = await resolveSource(destination.path);
+    const wrappedDestination = destination.wrapped
+      ? `<${dataUrl}>${destination.suffix}`
+      : `${dataUrl}${destination.suffix}`;
+    next = next.replace(full, `![${alt}](${wrappedDestination})`);
+  }
+
+  const htmlImages = Array.from(next.matchAll(/<img\b([^>]*?)\bsrc=(["'])(.*?)\2([^>]*)>/gi));
+  for (const match of htmlImages) {
+    const [full, before, quote, rawSource, after] = match;
+    const dataUrl = await resolveSource(rawSource);
+    next = next.replace(full, `<img${before}src=${quote}${dataUrl}${quote}${after}>`);
+  }
+
+  return next;
 }
 
 export default function NotePrintView({
@@ -20,9 +107,11 @@ export default function NotePrintView({
   onClose,
 }: NotePrintViewProps) {
   const vault = useVaultStore((state) => state.vault);
+  const fileTree = useVaultStore((state) => state.fileTree);
   const [content, setContent] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [didAutoPrint, setDidAutoPrint] = useState(false);
+  const [previewReady, setPreviewReady] = useState(false);
   const title = useMemo(() => getVaultDocumentTitle(relativePath), [relativePath]);
 
   useEffect(() => {
@@ -39,11 +128,14 @@ export default function NotePrintView({
   useEffect(() => {
     if (!vault) return;
     let cancelled = false;
+    setPreviewReady(false);
 
     createVaultClient(vault).readDocument(relativePath)
-      .then((doc) => {
+      .then(async (doc) => {
         if (cancelled) return;
-        setContent(doc.content);
+        const printableContent = await inlinePrintableImages(doc.content, vault, relativePath, fileTree);
+        if (cancelled) return;
+        setContent(printableContent);
       })
       .catch((err) => {
         if (cancelled) return;
@@ -53,16 +145,25 @@ export default function NotePrintView({
     return () => {
       cancelled = true;
     };
-  }, [relativePath, vault?.path]);
+  }, [fileTree, relativePath, vault]);
+
+  const printWhenReady = useCallback(async () => {
+    await waitForPrintableFonts();
+    window.print();
+  }, []);
+
+  const handlePreviewReady = useCallback(() => {
+    setPreviewReady(true);
+  }, []);
 
   useEffect(() => {
-    if (content === null || didAutoPrint) return;
+    if (content === null || !previewReady || didAutoPrint) return;
     const handle = window.setTimeout(() => {
       setDidAutoPrint(true);
-      window.print();
-    }, 160);
+      void printWhenReady();
+    }, 80);
     return () => window.clearTimeout(handle);
-  }, [content, didAutoPrint]);
+  }, [content, didAutoPrint, previewReady, printWhenReady]);
 
   const handleClose = () => {
     if (standalone) {
@@ -107,7 +208,7 @@ export default function NotePrintView({
           <div className="truncate text-xs text-muted-foreground">{relativePath}</div>
         </div>
         <div className="flex items-center gap-2">
-          <Button type="button" variant="outline" size="sm" onClick={() => window.print()}>
+          <Button type="button" variant="outline" size="sm" onClick={() => void printWhenReady()}>
             <Printer size={14} />
             Print / Save PDF
           </Button>
@@ -133,6 +234,7 @@ export default function NotePrintView({
             content={content}
             currentDocumentRelativePath={relativePath}
             className="note-print-markdown"
+            onReady={handlePreviewReady}
           />
         </div>
       </div>

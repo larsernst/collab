@@ -26,6 +26,9 @@ import { createVaultClient } from '../../lib/vaultClient';
 import { WebLinkPreviewPopover } from '../previews/WebLinkPreviewPopover';
 import { extractHttpUrls, prefetchWebPreviews } from '../../lib/webPreviewCache';
 import { resolveNoteAssetTarget } from '../../lib/noteAssets';
+import { parseMathPlots, type ParsedMathPlots } from './mathPlotSpec';
+import { MathPlot2D } from './MathPlot2D';
+import { MathPlot3D } from './MathPlot3D';
 import 'katex/dist/katex.min.css';
 import 'highlight.js/styles/atom-one-dark.css';
 
@@ -145,6 +148,17 @@ function preprocessMath(src: string): string {
     .replace(/\\\((.+?)\\\)/g, (_: string, m: string) => `$${m}$`);
 }
 
+function preprocessDisplayMathPlots(src: string): { source: string; plotBlocks: ParsedMathPlots[] } {
+  const plotBlocks: ParsedMathPlots[] = [];
+  const source = src.replace(/\$\$([\s\S]+?)\$\$/g, (_match: string, mathSource: string) => {
+    if (!/%plot[23]d\b/.test(mathSource)) return `$$${mathSource}$$`;
+    const parsed = parseMathPlots(mathSource);
+    plotBlocks.push(parsed);
+    return `$$${parsed.mathSource || mathSource}$$\n`;
+  });
+  return { source, plotBlocks };
+}
+
 /** Convert [[Path|Label]] → clickable wikilink spans. */
 function preprocessWikilinks(src: string): string {
   return src.replace(
@@ -184,13 +198,61 @@ interface MarkdownPreviewProps {
   className?: string;
   onWikilinkClick?: (relativePath: string) => void;
   currentDocumentRelativePath?: string;
+  onReady?: () => void;
 }
 
 function isPreviewableHttpUrl(value: string | null | undefined) {
   return !!value && /^https?:\/\//i.test(value);
 }
 
-function PreviewInner({ content, className = '', onWikilinkClick, currentDocumentRelativePath }: MarkdownPreviewProps) {
+function waitForImageLoad(image: HTMLImageElement): Promise<void> {
+  if (image.complete && image.naturalWidth > 0) return Promise.resolve();
+  if (typeof image.decode === 'function') {
+    return image.decode().catch(() => undefined);
+  }
+  return new Promise((resolve) => {
+    image.addEventListener('load', () => resolve(), { once: true });
+    image.addEventListener('error', () => resolve(), { once: true });
+  });
+}
+
+function waitForPlotCanvases(root: HTMLElement, expectedCanvases: number): Promise<void> {
+  if (expectedCanvases === 0) return Promise.resolve();
+  return new Promise((resolve) => {
+    const startedAt = Date.now();
+    const tick = () => {
+      if (root.querySelectorAll('.markdown-preview-plots canvas').length >= expectedCanvases) {
+        resolve();
+        return;
+      }
+      if (Date.now() - startedAt > 5000) {
+        resolve();
+        return;
+      }
+      window.setTimeout(tick, 50);
+    };
+    tick();
+  });
+}
+
+function MathPlotPreviewStack({ parsed }: { parsed: ParsedMathPlots }) {
+  return (
+    <div className="mt-3 space-y-3 text-left">
+      {parsed.errors.map((error, index) => (
+        <div key={`error-${index}`} className="rounded-md border border-destructive/35 bg-destructive/8 px-3 py-2 text-xs text-destructive">
+          {error}
+        </div>
+      ))}
+      {parsed.plots.map((plot, index) => (
+        plot.kind === '2d'
+          ? <MathPlot2D key={`plot-${index}`} spec={plot} />
+          : <MathPlot3D key={`plot-${index}`} spec={plot} />
+      ))}
+    </div>
+  );
+}
+
+function PreviewInner({ content, className = '', onWikilinkClick, currentDocumentRelativePath, onReady }: MarkdownPreviewProps) {
   const { webPreviewsEnabled, hoverWebLinkPreviewsEnabled, backgroundWebPreviewPrefetchEnabled } = useUiStore();
   const vault = useVaultStore((state) => state.vault);
   const client = useMemo(() => (vault ? createVaultClient(vault) : null), [vault]);
@@ -198,18 +260,28 @@ function PreviewInner({ content, className = '', onWikilinkClick, currentDocumen
   const rootRef = useRef<HTMLDivElement | null>(null);
   const [hoveredUrl, setHoveredUrl] = useState<string | null>(null);
   const [hoverRect, setHoverRect] = useState<DOMRect | null>(null);
-  const html = useMemo(() => {
+  const renderedPreview = useMemo(() => {
     try {
       const body = stripFrontmatter(content);
       const withMath  = preprocessMath(body);
-      const withLinks = preprocessWikilinks(withMath);
+      const withPlots = preprocessDisplayMathPlots(withMath);
+      const withLinks = preprocessWikilinks(withPlots.source);
       const rendered  = md.render(withLinks);
-      return DOMPurify.sanitize(rendered, PURIFY_CONFIG) as unknown as string;
+      return {
+        html: DOMPurify.sanitize(rendered, PURIFY_CONFIG) as unknown as string,
+        plotBlocks: withPlots.plotBlocks,
+      };
     } catch (e) {
       console.error('[MarkdownPreview] render error:', e);
-      return `<pre style="color:red;white-space:pre-wrap">${String(e)}</pre>`;
+      return {
+        html: `<pre style="color:red;white-space:pre-wrap">${String(e)}</pre>`,
+        plotBlocks: [],
+      };
     }
   }, [content]);
+
+  const html = renderedPreview.html;
+  const plotBlocks = renderedPreview.plotBlocks;
 
   useEffect(() => {
     if (!webPreviewsEnabled || !hoverWebLinkPreviewsEnabled || !backgroundWebPreviewPrefetchEnabled) return;
@@ -222,35 +294,57 @@ function PreviewInner({ content, className = '', onWikilinkClick, currentDocumen
     const root = rootRef.current;
     if (!root) return;
 
-    const images = Array.from(root.querySelectorAll<HTMLImageElement>('img[src]'));
-    if (images.length === 0) return;
-
     let cancelled = false;
+    const imagePromises: Promise<void>[] = [];
+
+    const images = Array.from(root.querySelectorAll<HTMLImageElement>('img[src]'));
 
     for (const image of images) {
       const rawSrc = image.getAttribute('src');
-      if (!rawSrc || !client || !currentDocumentRelativePath) continue;
+      if (!rawSrc) continue;
+      if (!client || !currentDocumentRelativePath) {
+        imagePromises.push(waitForImageLoad(image));
+        continue;
+      }
       const target = resolveNoteAssetTarget(rawSrc, currentDocumentRelativePath, fileTree);
-      if (!target || target.kind !== 'vault') continue;
+      if (!target || target.kind !== 'vault') {
+        imagePromises.push(waitForImageLoad(image));
+        continue;
+      }
 
       image.dataset.assetKind = 'vault';
       image.dataset.assetValue = target.value;
 
-      void client.readAssetDataUrl(target.value)
+      const imagePromise = client.readAssetDataUrl(target.value)
         .then((dataUrl) => {
           if (cancelled || !image.isConnected) return;
           image.src = dataUrl;
+          return waitForImageLoad(image);
         })
         .catch(() => {
           if (cancelled || !image.isConnected) return;
           image.dataset.previewError = 'true';
         });
+      imagePromises.push(imagePromise.then(() => undefined));
     }
+
+    const expected3dCanvases = plotBlocks.reduce((count, parsed) => (
+      count + parsed.plots.filter((plot) => plot.kind === '3d').length
+    ), 0);
+    const ready = Promise.all([
+      ...imagePromises,
+      waitForPlotCanvases(root, expected3dCanvases),
+      new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))),
+    ]);
+
+    void ready.then(() => {
+      if (!cancelled) onReady?.();
+    });
 
     return () => {
       cancelled = true;
     };
-  }, [client, currentDocumentRelativePath, html]);
+  }, [client, currentDocumentRelativePath, fileTree, html, onReady, plotBlocks]);
 
   function handleClick(e: React.MouseEvent<HTMLDivElement>) {
     if (!onWikilinkClick) return;
@@ -290,13 +384,23 @@ function PreviewInner({ content, className = '', onWikilinkClick, currentDocumen
     <>
       <div
         ref={rootRef}
-        className={`markdown-preview ${className}`}
-        // eslint-disable-next-line react/no-danger
-        dangerouslySetInnerHTML={{ __html: html }}
         onClick={handleClick}
         onMouseMove={handleMouseMove}
         onMouseLeave={handleMouseLeave}
-      />
+      >
+        <div
+          className={`markdown-preview ${className}`}
+          // eslint-disable-next-line react/no-danger
+          dangerouslySetInnerHTML={{ __html: html }}
+        />
+        {plotBlocks.length > 0 && (
+          <div className="markdown-preview-plots">
+            {plotBlocks.map((parsed, index) => (
+              <MathPlotPreviewStack key={index} parsed={parsed} />
+            ))}
+          </div>
+        )}
+      </div>
       <WebLinkPreviewPopover
         anchorRect={hoverRect}
         url={hoveredUrl}
