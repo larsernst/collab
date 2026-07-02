@@ -95,8 +95,8 @@ namcap collab-git-*.pkg.tar.zst
 Validate direct dependencies rather than relying on transitive packages:
 
 ```bash
-ldd src-tauri/target/release/collab
-readelf -d src-tauri/target/release/collab
+ldd target/release/collab
+readelf -d target/release/collab
 ```
 
 ## Publishing later

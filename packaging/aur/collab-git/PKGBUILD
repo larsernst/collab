@@ -82,7 +82,7 @@ check() {
 package() {
   cd "${pkgname}"
 
-  install -Dm755 "src-tauri/target/release/collab" "${pkgdir}/usr/bin/collab"
+  install -Dm755 "target/release/collab" "${pkgdir}/usr/bin/collab"
   install -Dm644 "flatpak/com.azazel.collab.desktop" \
     "${pkgdir}/usr/share/applications/com.azazel.collab.desktop"
   install -Dm644 "flatpak/com.azazel.collab.metainfo.xml" \

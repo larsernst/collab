@@ -63,8 +63,8 @@ until the items below are resolved.
 - Validate direct dependencies rather than relying on transitive packages:
 
   ```bash
-  ldd src-tauri/target/release/collab
-  readelf -d src-tauri/target/release/collab
+  ldd target/release/collab
+  readelf -d target/release/collab
   ```
 
 - Optionally check reproducibility after a successful build with `makerepropkg`
