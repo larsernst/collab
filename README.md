@@ -442,6 +442,22 @@ COLLAB_TEST_DATABASE_URL=postgres://collab:password@127.0.0.1:5432/collab_test \
 The authentication lifecycle test truncates the Phase 2 identity tables, so do
 not point it at a database containing valuable data.
 
+## Security Advisories
+
+Dependencies are scanned in CI by the `Security Scan` workflow
+(`cargo audit`, `pnpm audit`, and Trivy over the server image). Any advisory
+that cannot yet be fixed by an upgrade is an explicit, documented risk
+acceptance rather than a silent suppression: the machine-readable ignore list
+lives in [`.cargo/audit.toml`](./.cargo/audit.toml), and every entry there has a
+matching explanation — dependency path, why it is not reachable, why it is
+unfixed, and the condition to drop it — in
+[docs/security-advisories.md](./docs/security-advisories.md).
+
+Currently accepted: `RUSTSEC-2023-0071` (`rsa`, reachable only through the
+unused MySQL backend) and `RUSTSEC-2026-0194` (`quick-xml`, build-time macOS
+bundling only, blocked on an upstream `plist` release). Keep the tracking doc in
+sync whenever `.cargo/audit.toml` changes.
+
 ## Useful Documents
 
 ### Project And Contribution Guides
@@ -449,6 +465,7 @@ not point it at a database containing valuable data.
 - [CODEBASE.md](./CODEBASE.md) - detailed architecture, component, IPC, and feature map
 - [UI_GUIDE.md](./UI_GUIDE.md) - visual language and interaction patterns
 - [REMAINING_STABILIZATION_STEPS.md](./REMAINING_STABILIZATION_STEPS.md) - outstanding stabilization work
+- [Security advisory tracking](./docs/security-advisories.md) - accepted/ignored dependency advisories and why they are unresolved
 
 ### Collaboration Server
 
