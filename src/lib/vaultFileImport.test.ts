@@ -30,6 +30,7 @@ function makeClient(overrides: Partial<VaultClient> & { importMock?: ReturnType<
 describe('vaultFileImport categorization', () => {
   it('classifies importable extensions', () => {
     expect(importCategoryForName('photo.PNG')).toBe('image');
+    expect(importCategoryForName('icon.svg')).toBe('svg');
     expect(importCategoryForName('scan.pdf')).toBe('pdf');
     expect(importCategoryForName('notes.md')).toBe('markdown');
     expect(importCategoryForName('readme.markdown')).toBe('markdown');
@@ -106,6 +107,24 @@ describe('importExternalFilesIntoVault', () => {
     expect((client as any).createDocument).toHaveBeenCalledWith(`Recovered/${name}`);
     expect((client as any).writeDocument).toHaveBeenCalledWith(`Recovered/${name}`, content, 'v0', '');
     expect(result.imported).toEqual([`Recovered/${name}`]);
+  });
+
+  it('imports SVG as a text document defaulting to Pictures (not a binary asset)', async () => {
+    const { client, importMock } = makeClient();
+    const svg = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10"><rect width="10" height="10"/></svg>';
+    vi.mocked(tauriCommands.readFileForUpload).mockResolvedValue({
+      name: 'icon.svg',
+      mediaType: 'image/svg+xml',
+      contentBase64: btoa(svg),
+      expectedHash: 'hash',
+    });
+
+    const result = await importExternalFilesIntoVault(client, ['/x/icon.svg']);
+
+    expect(importMock).not.toHaveBeenCalled();
+    expect((client as any).createDocument).toHaveBeenCalledWith('Pictures/icon.svg');
+    expect((client as any).writeDocument).toHaveBeenCalledWith('Pictures/icon.svg', svg, 'v0', '');
+    expect(result.imported).toEqual(['Pictures/icon.svg']);
   });
 
   it.each([

@@ -3,13 +3,15 @@ import { tauriCommands } from './tauri';
 
 /**
  * External-file import for vaults. Adding documents/images/notes to a vault is
- * limited to images, PDFs, markdown, canvas, and Kanban so an import never
- * injects an arbitrary or unsupported binary. Images and PDFs are stored as
- * binary assets through the mode-agnostic `externalAssetImport` capability;
- * markdown and Collab structured files become real text documents on both local
- * and hosted vaults.
+ * limited to images, SVG, PDFs, markdown, canvas, and Kanban so an import never
+ * injects an arbitrary or unsupported binary. Raster images and PDFs are stored
+ * as binary assets through the mode-agnostic `externalAssetImport` capability;
+ * markdown, Collab structured files, and SVG become real text documents on both
+ * local and hosted vaults (SVG is text, and the vector editor edits it as a
+ * text document with proper revisions/history — never a raster asset).
  */
-export const IMPORT_IMAGE_EXTENSIONS = ['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg', 'bmp', 'ico', 'avif'];
+export const IMPORT_IMAGE_EXTENSIONS = ['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'ico', 'avif'];
+export const IMPORT_SVG_EXTENSIONS = ['svg'];
 export const IMPORT_PDF_EXTENSIONS = ['pdf'];
 export const IMPORT_MARKDOWN_EXTENSIONS = ['md', 'markdown'];
 export const IMPORT_CANVAS_EXTENSIONS = ['canvas'];
@@ -17,13 +19,14 @@ export const IMPORT_KANBAN_EXTENSIONS = ['kanban'];
 
 export const IMPORTABLE_EXTENSIONS = [
   ...IMPORT_IMAGE_EXTENSIONS,
+  ...IMPORT_SVG_EXTENSIONS,
   ...IMPORT_PDF_EXTENSIONS,
   ...IMPORT_MARKDOWN_EXTENSIONS,
   ...IMPORT_CANVAS_EXTENSIONS,
   ...IMPORT_KANBAN_EXTENSIONS,
 ];
 
-export type ImportableCategory = 'image' | 'pdf' | 'markdown' | 'canvas' | 'kanban';
+export type ImportableCategory = 'image' | 'svg' | 'pdf' | 'markdown' | 'canvas' | 'kanban';
 
 export function fileBaseName(sourcePath: string): string {
   const segments = sourcePath.split(/[/\\]/);
@@ -37,6 +40,7 @@ function extensionOf(name: string): string {
 
 export function importCategoryForName(name: string): ImportableCategory | null {
   const ext = extensionOf(name);
+  if (IMPORT_SVG_EXTENSIONS.includes(ext)) return 'svg';
   if (IMPORT_IMAGE_EXTENSIONS.includes(ext)) return 'image';
   if (IMPORT_PDF_EXTENSIONS.includes(ext)) return 'pdf';
   if (IMPORT_MARKDOWN_EXTENSIONS.includes(ext)) return 'markdown';
@@ -92,11 +96,11 @@ async function importTextDocument(
   client: VaultClient,
   sourcePath: string,
   targetFolder: string | undefined,
-  category: 'markdown' | 'canvas' | 'kanban',
+  category: 'markdown' | 'canvas' | 'kanban' | 'svg',
 ): Promise<string> {
   const payload = await tauriCommands.readFileForUpload(sourcePath);
   const text = decodeUtf8Base64(payload.contentBase64);
-  if (category !== 'markdown') validateStructuredDocument(text, category);
+  if (category === 'canvas' || category === 'kanban') validateStructuredDocument(text, category);
   const targetPath = joinVaultPath(targetFolder, payload.name);
   await client.createDocument(targetPath);
   // A freshly created note starts empty; write the source content as its first
@@ -131,6 +135,14 @@ export async function importExternalFilesIntoVault(
       }
       if (category === 'markdown' || category === 'canvas' || category === 'kanban') {
         result.imported.push(await importTextDocument(client, sourcePath, options.targetFolder, category));
+        continue;
+      }
+      if (category === 'svg') {
+        // SVG is text: store it as a real text document (so the vector editor
+        // can read/write it with revisions), but keep the image convention of
+        // landing in the app-managed Pictures/ folder by default.
+        const folder = options.targetFolder ?? 'Pictures';
+        result.imported.push(await importTextDocument(client, sourcePath, folder, 'svg'));
         continue;
       }
       if (!assetImporter) {

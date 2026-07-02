@@ -12,6 +12,7 @@ import { cn } from '../../lib/utils';
 import { vaultKind } from '../../types/vault';
 import NoteView from '../../views/NoteView';
 import ImageView from '../../views/ImageView';
+import SvgVectorView from '../../views/SvgVectorView';
 import PdfView from '../../views/PdfView';
 
 // ── Editor error boundary ─────────────────────────────────────────────────────
@@ -271,7 +272,9 @@ export default function AppShell() {
     if (activeTab) {
       if (activeTab.type === 'graph')    return <GraphPage />;
       if (activeTab.type === 'settings') return <SettingsPage />;
-      if (activeTab.type === 'image')    return <ImageView key={activeDocumentKey} relativePath={activeTab.relativePath} />;
+      if (activeTab.type === 'image')    return /\.svg$/i.test(activeTab.relativePath ?? '')
+        ? <SvgVectorView key={activeDocumentKey} relativePath={activeTab.relativePath} />
+        : <ImageView key={activeDocumentKey} relativePath={activeTab.relativePath} />;
       if (activeTab.type === 'pdf')      return <PdfView key={activeDocumentKey} relativePath={activeTab.relativePath} />;
       if (activeTab.type === 'canvas')   return <CanvasPage key={activeDocumentKey} relativePath={activeTab.relativePath === '__canvas__' ? null : activeTab.relativePath} />;
       if (activeTab.type === 'kanban')   return <KanbanPage key={activeDocumentKey} relativePath={activeTab.relativePath === '__kanban__' ? null : activeTab.relativePath} />;
