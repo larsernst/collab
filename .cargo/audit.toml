@@ -3,5 +3,13 @@
 # Collab enables PostgreSQL only. The vulnerable RSA implementation is reachable
 # solely through sqlx-mysql and is not compiled into collab-server. No fixed rsa
 # release is currently available for RUSTSEC-2023-0071.
-ignore = ["RUSTSEC-2023-0071"]
+#
+# quick-xml is pulled in transitively only through `plist`, which Tauri uses for
+# macOS Info.plist parsing/bundling. RUSTSEC-2026-0194 is a quadratic-time DoS
+# triggered when parsing attacker-controlled XML with many duplicate attribute
+# names; Collab never feeds untrusted input through plist/quick-xml. The fix is
+# quick-xml >=0.41.0, but `plist` (latest 1.9.0) still caps quick-xml at ^0.39,
+# so there is no upstream path to upgrade yet. Remove this ignore once Tauri's
+# `plist` dependency adopts quick-xml >=0.41.0.
+ignore = ["RUSTSEC-2023-0071", "RUSTSEC-2026-0194"]
 
