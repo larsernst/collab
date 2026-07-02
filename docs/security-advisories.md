@@ -49,46 +49,102 @@ explicit, documented risk acceptance.
   `sqlx` depends on it — or `sqlx` stops pulling `rsa` into the resolved graph
   for the PostgreSQL-only build.
 
-### RUSTSEC-2026-0194 — `quick-xml` 0.38.4 (quadratic-time attribute parsing)
+### RUSTSEC-2026-0194 and RUSTSEC-2026-0195 — `quick-xml` 0.38.4 (XML parsing DoS)
 
-- **Severity:** 7.5 (high). Quadratic run time when checking a start tag for
-  duplicate attribute names — a denial-of-service risk when parsing
+- **Severity:** 7.5 (high) each. Two related denial-of-service advisories:
+  RUSTSEC-2026-0194 is quadratic run time when checking a start tag for duplicate
+  attribute names; RUSTSEC-2026-0195 is unbounded namespace-declaration
+  allocation in `NsReader` (memory exhaustion). Both require parsing
   attacker-controlled XML.
 - **Dependency path:** `quick-xml` is pulled in only through `plist`, which Tauri
-  uses for macOS `Info.plist` parsing during bundling.
+  uses for macOS `Info.plist` parsing during bundling — and only on the macOS
+  build target (`cargo tree` shows it absent from Linux and Windows graphs).
 - **Why it is not reachable here:** the project never parses untrusted,
   attacker-controlled XML through `plist`/`quick-xml`. The usage is build-time,
   macOS-bundling tooling over first-party property lists.
-- **Why it is not fixed:** the fix is `quick-xml` >= 0.41.0, but `plist`
+- **Why it is not fixed:** both are fixed in `quick-xml` >= 0.41.0, but `plist`
   (including the latest `1.9.0`) constrains `quick-xml` to `^0.39`, so no
   lockfile update can reach 0.41. Tauri requires `plist = "^1"`, so we cannot
   bypass `plist`.
-- **Remove the ignore when:** `plist` releases a version that depends on
-  `quick-xml` >= 0.41.0 (and Tauri picks it up).
+- **Remove the ignores when:** `plist` releases a version that depends on
+  `quick-xml` >= 0.41.0 (and Tauri picks it up). Drop both IDs together.
 
 ## Informational warnings (non-failing)
 
-`cargo audit` also reports `unsound` and `yanked` advisories as warnings. They do
-not fail CI, but we still resolve them when an upgrade exists.
+`cargo audit` also reports `unsound`, `unmaintained`, and `yanked` advisories as
+**warnings**. These do **not** fail the scan, so they are deliberately **not**
+added to the `.cargo/audit.toml` ignore list — suppressing them would only hide
+future signal without changing CI. We still fix any that have an upgrade path and
+track the rest here.
 
+### Resolved by upgrade
+
+- **RUSTSEC-2026-0190 — `anyhow` (`unsound`).** `anyhow` 1.0.102 was bumped to
+  **1.0.103** (patched in `>= 1.0.103`). `anyhow` is a direct workspace
+  dependency, so this was a clean fix.
 - **RUSTSEC-2026-0097 — `rand` (`unsound`).** The workspace resolves three `rand`
   versions; the advisory is fixed in `>= 0.8.6` / `>= 0.9.3` / `>= 0.10.1`.
-  - `rand` 0.8.5 was bumped to **0.8.6** (now patched), and the workspace's
-    `rand` 0.9.4 is already in the patched range.
-  - `rand` **0.7.3** still remains via `phf_generator` 0.8.0 →
-    `kuchikiki`/`selectors` → `tauri-utils` (Tauri's build-time HTML parsing
-    tooling). It is pinned by `phf_generator 0.8.0`'s `rand = "^0.7"`
-    requirement, so it cannot be upgraded independently and there is no patched
-    0.7 release. This is a build-time-only warning that does not exercise the
-    affected custom-logger + `thread_rng` reseed pattern; it clears once the
-    upstream Tauri build tooling moves to a newer `phf`.
+  `rand` 0.8.5 was bumped to **0.8.6** and `rand` 0.9.4 is already patched (the
+  residual 0.7.3 instance is tracked below).
 - **`unicode-segmentation` `yanked`.** Bumped from the yanked `1.13.1` to
   **1.13.3**.
+
+### Remaining warnings with no upgrade path
+
+None of these fail the scan; none are in the ignore list. They persist because
+they are transitive dependencies pinned by upstream (mostly Tauri) with no
+maintained drop-in replacement.
+
+- **gtk-rs GTK3 binding crates (`unmaintained` + one `unsound`).** `atk`,
+  `atk-sys`, `gdk`, `gdk-sys`, `gdkwayland-sys`, `gdkx11`, `gdkx11-sys`, `gtk`,
+  `gtk-sys`, `gtk3-macros` (all 0.18.2; RUSTSEC-2024-0411 through
+  RUSTSEC-2024-0420) and `glib` 0.18.5 (`unsound`, RUSTSEC-2024-0429). These are
+  the real Linux WebKitGTK webview runtime and are only in the Linux build graph.
+  - **No upgrade exists.** gtk-rs `0.18` is the final GTK3 binding line; upstream
+    gtk-rs has moved to GTK4, so there is no maintained newer GTK3 binding to
+    move to.
+  - **It is upstream-bound.** The bindings are pulled by `tao` (windowing),
+    `muda` (menus), and `tauri-runtime`, all locked to GTK3 because Tauri 2
+    stable targets `webkit2gtk-4.1` (GTK3). Clearing them requires Tauri/`wry`
+    to migrate to `webkitgtk-6.0` (GTK4), which is not in a stable release. We
+    are already on the latest compatible Tauri/`wry` (`tauri` 2.10.3, `wry`
+    0.54.4 — `cargo update` finds nothing newer), so there is nothing to pull in.
+  - **Collab also depends on `gtk`/`webkit2gtk`/`gtk-sys` directly**
+    (`src-tauri/Cargo.toml`), used in `src-tauri/src/lib.rs` to force WebKit
+    hardware acceleration and install a pinch-to-zoom `GestureZoom` handler on
+    Linux. This is pinned to the same `0.18` line as Tauri, so removing our
+    direct dependency would neither clear the advisories (`tao`/`muda` still
+    pull `0.18`) nor be desirable (we would lose the gesture/HW-accel behavior).
+  - `glib`'s unsound advisory is specifically about the `VariantStrIter`
+    iterator impls, which Collab does not use (we only call
+    `glib::translate::from_glib_none`).
+  - **Clears when:** a stable Tauri release adds GTK4/`webkitgtk-6.0` support and
+    we upgrade (also bumping our direct `gtk`/`webkit2gtk` deps to the GTK4
+    line).
+- **Tauri build-time tooling (`unmaintained`).** `fxhash` 0.2.1
+  (RUSTSEC-2025-0057), `proc-macro-error` 1.0.4 (RUSTSEC-2024-0370), and the
+  `unic-*` 0.9.0 crates — `unic-char-property` (RUSTSEC-2025-0081),
+  `unic-char-range` (RUSTSEC-2025-0075), `unic-common` (RUSTSEC-2025-0080),
+  `unic-ucd-ident` (RUSTSEC-2025-0100), `unic-ucd-version` (RUSTSEC-2025-0098).
+  All are pulled by `tauri-build`/`tauri-utils`/`selectors` and run at build time
+  only; none have a maintained upgrade we can select without an upstream change.
+- **RUSTSEC-2026-0097 — `rand` 0.7.3 (`unsound`).** A second, older `rand`
+  remains via `phf_generator` 0.8.0 → `kuchikiki`/`selectors` → `tauri-utils`
+  (Tauri build tooling). It is pinned by `phf_generator 0.8.0`'s `rand = "^0.7"`
+  requirement and there is no patched 0.7 release. Build-time only, and it does
+  not exercise the affected custom-logger + `thread_rng` reseed pattern; it
+  clears once the upstream tooling moves to a newer `phf`.
+- **RUSTSEC-2025-0052 — `async-std` 1.13.2 (`unmaintained`).** Pulled only as a
+  **dev-dependency** through `httpmock` (test harness). It is not compiled into
+  any shipped artifact. It clears when `httpmock` drops `async-std` or is
+  replaced.
 
 ## Review cadence
 
 Re-check these entries whenever Tauri, `sqlx`, or `plist` are upgraded, and at
 minimum before each tagged release. Drop any ignore whose upstream fix has
-shipped, and delete the corresponding row here.
+shipped, and delete the corresponding entry here. Also re-scan the non-failing
+warnings for newly available upgrades (e.g. a maintained fork or a Tauri release
+that moves off GTK3 / old `phf`).
 
 _Last reviewed: 2026-07-02._

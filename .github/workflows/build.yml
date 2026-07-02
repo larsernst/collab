@@ -135,6 +135,16 @@ jobs:
             Native packages, the Flatpak bundle, and the portable tarball provide the best touchpad scrolling, blur/compositing, and scaling behavior on Linux.
 
             Linux install guide: https://github.com/${{ github.repository }}/blob/${{ github.ref_name }}/docs/linux-install.md
+
+            ---
+
+            macOS (Apple Silicon): the `.dmg` / `.app.tar.gz` builds are **not code-signed or notarized**, so macOS Gatekeeper will refuse to open them by default ("collab is damaged and can't be opened"). After moving `collab.app` to `/Applications`, clear the quarantine flag once:
+
+            ```
+            xattr -cr /Applications/collab.app
+            ```
+
+            Then open the app normally. See the macOS install guide: https://github.com/${{ github.repository }}/blob/${{ github.ref_name }}/docs/macos-install.md
           files: |
             target/${{ matrix.rust-target }}/release/bundle/**/*.deb
             target/${{ matrix.rust-target }}/release/bundle/**/*.deb.sig

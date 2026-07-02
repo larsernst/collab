@@ -454,9 +454,11 @@ unfixed, and the condition to drop it — in
 [docs/security-advisories.md](./docs/security-advisories.md).
 
 Currently accepted: `RUSTSEC-2023-0071` (`rsa`, reachable only through the
-unused MySQL backend) and `RUSTSEC-2026-0194` (`quick-xml`, build-time macOS
-bundling only, blocked on an upstream `plist` release). Keep the tracking doc in
-sync whenever `.cargo/audit.toml` changes.
+unused MySQL backend) and `RUSTSEC-2026-0194` / `RUSTSEC-2026-0195` (`quick-xml`,
+build-time macOS bundling only, blocked on an upstream `plist` release).
+Non-failing `unmaintained`/`unsound` warnings are tracked in the doc but are
+deliberately kept out of the ignore list. Keep the tracking doc in sync whenever
+`.cargo/audit.toml` changes.
 
 ## Useful Documents
 
@@ -489,6 +491,7 @@ sync whenever `.cargo/audit.toml` changes.
 ### Packaging And Installation
 
 - [Linux installation](./docs/linux-install.md)
+- [macOS installation](./docs/macos-install.md) - unsigned Apple Silicon build and the Gatekeeper workaround
 - [Flatpak guide](./docs/flatpak.md)
 - [Flatpak distribution plan](./docs/flatpak-distribution-plan.md)
 
