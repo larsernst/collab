@@ -58,6 +58,7 @@ scraper = "0.24"
 url = "2.5"
 regex = "1"
 tempfile = "3"
+tauri-plugin-drag = "2.1.1"
 
 # Windows/macOS use their native OS keystore (Credential Manager / Keychain),
 # which is silent and durable, so they never pull in the D-Bus dependency.

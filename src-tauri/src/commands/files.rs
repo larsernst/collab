@@ -1638,6 +1638,63 @@ pub fn read_note_asset_data_url(
     Ok(format!("data:{};base64,{}", mime, encoded))
 }
 
+/// Resolves a vault-relative path to its absolute filesystem path (local vaults
+/// only). Used to reveal a file in the OS file manager with correct per-platform
+/// separators.
+#[tauri::command]
+pub fn resolve_vault_file_path(vault_path: String, relative_path: String) -> Result<String, String> {
+    let full = resolve_vault_path(&vault_path, &relative_path)?;
+    Ok(full.to_string_lossy().to_string())
+}
+
+/// Writes decoded bytes to an absolute destination the user chose (via the save
+/// dialog for "Download", or a temp file for drag-out). The path is caller-chosen
+/// and intentionally outside the vault, so this does not use `resolve_vault_path`.
+#[tauri::command]
+pub fn write_downloaded_file(destination_path: String, content_base64: String) -> Result<(), String> {
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(content_base64.as_bytes())
+        .map_err(|e| format!("Failed to decode file contents: {}", e))?;
+    if let Some(parent) = Path::new(&destination_path).parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| format!("Failed to prepare destination folder: {}", e))?;
+    }
+    std::fs::write(&destination_path, bytes)
+        .map_err(|e| format!("Failed to write '{}': {}", destination_path, e))?;
+    Ok(())
+}
+
+/// Materializes decoded bytes into a temporary file so a hosted-vault file can be
+/// dragged out to the OS (native drag needs a real filesystem path). Returns the
+/// absolute temp path. The file name is sanitized to its base name to keep it
+/// inside the per-run temp directory.
+#[tauri::command]
+pub fn write_temp_file_for_drag(file_name: String, content_base64: String) -> Result<String, String> {
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(content_base64.as_bytes())
+        .map_err(|e| format!("Failed to decode file contents: {}", e))?;
+    let safe_name = Path::new(&file_name)
+        .file_name()
+        .and_then(|n| n.to_str())
+        .filter(|n| !n.is_empty())
+        .unwrap_or("file");
+    let mut dir = std::env::temp_dir();
+    dir.push(format!("collab-drag-{}", std::process::id()));
+    dir.push(format!(
+        "{}-{}",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_millis())
+            .unwrap_or(0),
+        safe_name
+    ));
+    if let Some(parent) = dir.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| format!("Failed to prepare temp folder: {}", e))?;
+    }
+    std::fs::write(&dir, bytes).map_err(|e| format!("Failed to write temp file: {}", e))?;
+    Ok(dir.to_string_lossy().to_string())
+}
+
 #[tauri::command]
 pub fn read_image_overlay(
     vault_path: String,

@@ -2,6 +2,7 @@ import { useState, useCallback, useEffect, useMemo, useRef } from 'react';
 import {
   ChevronRight, ChevronDown, FileText, Folder, FolderOpen,
   Plus, FolderPlus, FileUp, Layout, LayoutDashboard, Paperclip, Image as ImageIcon, Trash2,
+  Download, FolderSearch,
 } from 'lucide-react';
 import { cn } from '../../lib/utils';
 import { useVaultStore } from '../../store/vaultStore';
@@ -13,6 +14,7 @@ import { useEditorStore } from '../../store/editorStore';
 import { useCollabStore } from '../../store/collabStore';
 import { useUiStore } from '../../store/uiStore';
 import { createVaultClient } from '../../lib/vaultClient';
+import { nativeVaultPath, startFileDragOut } from '../../lib/dragOut';
 import { isVaultReadOnly, type FileReference, type NoteFile } from '../../types/vault';
 import { getCardAttachmentPaths, type KanbanBoard, type KanbanCard } from '../../types/kanban';
 import { useKanbanStore } from '../../store/kanbanStore';
@@ -295,6 +297,43 @@ export default function FileTree() {
 
   const handleRename = (file: NoteFile) => {
     setDialog({ type: 'rename', file });
+  };
+
+  const isLocalVault = !!vault && vault.kind !== 'hosted';
+
+  const handleReveal = async (file: NoteFile) => {
+    if (!vault || !isLocalVault) return;
+    try {
+      const absolute = await tauriCommands.resolveVaultFilePath(vault.path, file.relativePath);
+      await tauriCommands.revealInFileManager(absolute);
+    } catch (e) {
+      toast.error(`Could not reveal ${file.name}: ${e}`);
+    }
+  };
+
+  // Native drag-out to the OS / another app instance. Local-only: the OS drag
+  // must begin synchronously within the gesture, so we need the file's real path
+  // immediately (hosted files would require an async fetch, and "Download" covers
+  // exporting those). Works for both files and folders on local vaults.
+  const handleDragOut = (file: NoteFile) => {
+    if (!vault || !isLocalVault) return;
+    void startFileDragOut([nativeVaultPath(vault.path, file.relativePath)]).catch((e) =>
+      toast.error(`Could not drag ${file.name}: ${e}`),
+    );
+  };
+
+  const handleDownload = async (file: NoteFile) => {
+    if (!vault || file.isFolder) return;
+    try {
+      const dataUrl = await createVaultClient(vault).readAssetDataUrl(file.relativePath);
+      const base64 = dataUrl.includes(',') ? dataUrl.slice(dataUrl.indexOf(',') + 1) : dataUrl;
+      const dest = await tauriCommands.showDownloadDialog(file.name);
+      if (!dest) return;
+      await tauriCommands.writeDownloadedFile(dest, base64);
+      toast.success(`Downloaded ${file.name}`);
+    } catch (e) {
+      toast.error(`Could not download ${file.name}: ${e}`);
+    }
   };
 
   const closeTabsForFile = (file: NoteFile) => {
@@ -748,6 +787,10 @@ export default function FileTree() {
               onCreateFolder={handleCreateFolder}
               onDelete={handleDelete}
               onRename={handleRename}
+              onReveal={handleReveal}
+              onDownload={handleDownload}
+              onDragOut={handleDragOut}
+              canReveal={isLocalVault}
               onViewHistory={setHistoryModalPath}
               onNodeClick={handleNodeClick}
               selectedPaths={selectedPaths}
@@ -794,6 +837,10 @@ interface FileTreeNodeProps {
   onCreateFolder: (parentPath?: string) => void;
   onDelete: (file: NoteFile) => void;
   onRename: (file: NoteFile) => void;
+  onReveal: (file: NoteFile) => void;
+  onDownload: (file: NoteFile) => void;
+  onDragOut: (file: NoteFile) => void;
+  canReveal: boolean;
   onViewHistory: (relativePath: string) => void;
   onNodeClick: (node: NoteFile, event: { shiftKey: boolean; metaKey: boolean; ctrlKey: boolean }) => void;
   selectedPaths: Set<string>;
@@ -809,7 +856,7 @@ interface FileTreeNodeProps {
 
 function FileTreeNode({
   node, depth, collapsed, setCollapsed,
-  onOpenFile, onCreateNote, onCreateFolder, onDelete, onRename, onViewHistory,
+  onOpenFile, onCreateNote, onCreateFolder, onDelete, onRename, onReveal, onDownload, onDragOut, canReveal, onViewHistory,
   onNodeClick, selectedPaths, onHover,
   draggingPath, dropTargetPath, taskAttachmentsByPath, setDraggingPath, setDropTargetPath, onMove,
   fileTreeHoverPreviewsEnabled,
@@ -820,6 +867,8 @@ function FileTreeNode({
   const { setEditing } = useKanbanStore();
   const [attachmentPopoverOpen, setAttachmentPopoverOpen] = useState(false);
   const [hoverPreviewAnchorRect, setHoverPreviewAnchorRect] = useState<DOMRect | null>(null);
+  const [suppressHtmlDrag, setSuppressHtmlDrag] = useState(false);
+  const dragOutCandidateRef = useRef<{ x: number; y: number } | null>(null);
 
   const isCollapsed = collapsed.has(node.relativePath);
   const isActive = activeTabPath === node.relativePath;
@@ -853,13 +902,50 @@ function FileTreeNode({
     setAttachmentPopoverOpen(false);
   }
 
+  useEffect(() => {
+    if (!suppressHtmlDrag) return;
+    const handleMouseMove = (event: MouseEvent) => {
+      const candidate = dragOutCandidateRef.current;
+      if (!candidate) return;
+      const moved = Math.hypot(event.clientX - candidate.x, event.clientY - candidate.y);
+      if (moved < 4) return;
+      dragOutCandidateRef.current = null;
+      setSuppressHtmlDrag(false);
+      event.preventDefault();
+      event.stopPropagation();
+      setDraggingPath(null);
+      setDropTargetPath(null);
+      onDragOut(node);
+    };
+    const clearCandidate = () => {
+      dragOutCandidateRef.current = null;
+      setSuppressHtmlDrag(false);
+    };
+
+    document.addEventListener('mousemove', handleMouseMove, true);
+    document.addEventListener('mouseup', clearCandidate, true);
+    return () => {
+      document.removeEventListener('mousemove', handleMouseMove, true);
+      document.removeEventListener('mouseup', clearCandidate, true);
+    };
+  }, [node, onDragOut, setDraggingPath, setDropTargetPath, suppressHtmlDrag]);
+
   return (
     <ContextMenu>
       <ContextMenuTrigger>
         <div>
           <div
-            draggable
+            draggable={!suppressHtmlDrag}
             data-tree-folder-path={node.isFolder ? node.relativePath : undefined}
+            onMouseDown={(e) => {
+              const wantsNativeDrag = e.button === 0 && canReveal && (e.ctrlKey || e.metaKey);
+              dragOutCandidateRef.current = wantsNativeDrag ? { x: e.clientX, y: e.clientY } : null;
+              setSuppressHtmlDrag(wantsNativeDrag);
+            }}
+            onMouseUp={() => {
+              dragOutCandidateRef.current = null;
+              setSuppressHtmlDrag(false);
+            }}
             onMouseEnter={(event) => {
               onHover(node.relativePath);
               if (!fileTreeHoverPreviewsEnabled || (!isPdfAsset && !isImageAsset)) return;
@@ -871,12 +957,33 @@ function FileTreeNode({
             }}
             onDragStart={(e) => {
               e.stopPropagation();
+              // Ctrl/Cmd-drag exports out of the app (to the OS or another
+              // instance) via a native drag instead of an intra-tree move.
+              // Gated on a modifier so plain drag keeps moving files between
+              // folders; Ctrl/Cmd is used because Alt-drag moves windows on Linux.
+              const wantsNativeDrag = e.ctrlKey
+                || e.metaKey
+                || e.getModifierState?.('Control')
+                || e.getModifierState?.('Meta')
+                || dragOutCandidateRef.current !== null;
+              if (canReveal && wantsNativeDrag) {
+                e.preventDefault();
+                e.dataTransfer.effectAllowed = 'copy';
+                dragOutCandidateRef.current = null;
+                setSuppressHtmlDrag(false);
+                setDraggingPath(null);
+                setDropTargetPath(null);
+                onDragOut(node);
+                return;
+              }
               setDraggingPath(node.relativePath);
               e.dataTransfer.setData('text/plain', node.relativePath);
               e.dataTransfer.setData('application/x-collab-vault-file', node.relativePath);
               e.dataTransfer.effectAllowed = 'move';
             }}
             onDragEnd={() => {
+              dragOutCandidateRef.current = null;
+              setSuppressHtmlDrag(false);
               setDraggingPath(null);
               setDropTargetPath(null);
             }}
@@ -1036,6 +1143,10 @@ function FileTreeNode({
                   onCreateFolder={onCreateFolder}
                   onDelete={onDelete}
                   onRename={onRename}
+                  onReveal={onReveal}
+                  onDownload={onDownload}
+                  onDragOut={onDragOut}
+                  canReveal={canReveal}
                   onViewHistory={onViewHistory}
                   onNodeClick={onNodeClick}
                   selectedPaths={selectedPaths}
@@ -1064,9 +1175,21 @@ function FileTreeNode({
         )}
         {!isManagedFolder && <ContextMenuItem onClick={() => onRename(node)}>Rename</ContextMenuItem>}
         {supportsVersionHistory && <ContextMenuItem onClick={() => onViewHistory(node.relativePath)}>View version history</ContextMenuItem>}
-        {!isManagedFolder && <ContextMenuSeparator />}
+        {!node.isFolder && (
+          <ContextMenuItem onClick={() => void onDownload(node)}>
+            <Download size={12} /> Download…
+          </ContextMenuItem>
+        )}
+        {canReveal && (
+          <ContextMenuItem onClick={() => void onReveal(node)}>
+            <FolderSearch size={12} /> Reveal in file manager
+          </ContextMenuItem>
+        )}
         {!isManagedFolder && (
-          <ContextMenuItem onClick={() => onDelete(node)} className="text-destructive focus:text-destructive">Delete</ContextMenuItem>
+          <>
+            <ContextMenuSeparator />
+            <ContextMenuItem onClick={() => onDelete(node)} className="text-destructive focus:text-destructive">Delete</ContextMenuItem>
+          </>
         )}
       </ContextMenuContent>
     </ContextMenu>

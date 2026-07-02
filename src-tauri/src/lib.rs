@@ -42,6 +42,7 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init())
+        .plugin(tauri_plugin_drag::init())
         .setup(|app| {
             // On Linux, WebKitGTK's touchpad pinch-to-zoom bypasses the `zoom-level` property
             // entirely — it calls WebPageProxy::scalePage() internally, firing no GObject signals.
@@ -115,6 +116,9 @@ pub fn run() {
             commands::files::list_vault_files,
             commands::files::read_note,
             commands::files::read_note_asset_data_url,
+            commands::files::resolve_vault_file_path,
+            commands::files::write_downloaded_file,
+            commands::files::write_temp_file_for_drag,
             commands::files::read_image_overlay,
             commands::files::write_image_overlay,
             commands::files::delete_image_overlay,

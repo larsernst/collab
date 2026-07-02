@@ -1,6 +1,7 @@
 import { invoke } from '@tauri-apps/api/core';
 import { getVersion } from '@tauri-apps/api/app';
 import { open, save } from '@tauri-apps/plugin-dialog';
+import { revealItemInDir } from '@tauri-apps/plugin-opener';
 
 export const getAppVersion = getVersion;
 import type {
@@ -106,6 +107,20 @@ export const tauriCommands = {
   removeRecentVault: (path: string) => invoke<void>('remove_recent_vault', { path }),
   renameVault: (vaultPath: string, newName: string) => invoke<VaultMeta>('rename_vault', { vaultPath, newName }),
   exportVault: (vaultPath: string, destPath: string) => invoke<void>('export_vault', { vaultPath, destPath }),
+  /** Resolve a vault-relative path to its absolute filesystem path (local only). */
+  resolveVaultFilePath: (vaultPath: string, relativePath: string) =>
+    invoke<string>('resolve_vault_file_path', { vaultPath, relativePath }),
+  /** Reveal a file/folder in the OS file manager (local vaults only). */
+  revealInFileManager: (absolutePath: string) => revealItemInDir(absolutePath),
+  /** Prompt for a destination and return the chosen absolute path (or null). */
+  showDownloadDialog: (defaultName: string) =>
+    save({ title: 'Download a copy', defaultPath: defaultName }),
+  /** Write base64-decoded bytes to a user-chosen absolute path. */
+  writeDownloadedFile: (destinationPath: string, contentBase64: string) =>
+    invoke<void>('write_downloaded_file', { destinationPath, contentBase64 }),
+  /** Materialize bytes to a temp file (for dragging a hosted file out to the OS). */
+  writeTempFileForDrag: (fileName: string, contentBase64: string) =>
+    invoke<string>('write_temp_file_for_drag', { fileName, contentBase64 }),
   showSaveDialog: async (defaultName: string) =>
     save({
       title: 'Export Vault as ZIP',

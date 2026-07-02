@@ -1434,11 +1434,24 @@
   width: min(210mm, 100%);
   min-height: 297mm;
   padding: 18mm 16mm 20mm;
+  --background: #ffffff;
+  --foreground: #111827;
+  --card: #ffffff;
+  --card-foreground: #111827;
+  --muted: #f3f4f6;
+  --muted-foreground: #4b5563;
+  --accent: #eef2ff;
+  --accent-foreground: #111827;
+  --primary: #4f46e5;
+  --primary-foreground: #ffffff;
+  --border: #d1d5db;
   border: 1px solid color-mix(in oklab, var(--border) 72%, transparent);
   border-radius: 22px;
   background: white;
   color: #111827;
   box-shadow: 0 18px 48px rgba(15, 23, 42, 0.14);
+  print-color-adjust: exact;
+  -webkit-print-color-adjust: exact;
 }
 
 .note-print-header {
@@ -1461,8 +1474,27 @@
 }
 
 .note-print-markdown {
+  color: #111827;
   font-size: 0.98rem;
   line-height: 1.7;
+}
+
+.note-print-document .markdown-preview,
+.note-print-document .markdown-preview h1,
+.note-print-document .markdown-preview h2,
+.note-print-document .markdown-preview h3,
+.note-print-document .markdown-preview h4,
+.note-print-document .markdown-preview h5,
+.note-print-document .markdown-preview strong {
+  color: #111827;
+}
+
+.note-print-document .markdown-preview h6,
+.note-print-document .markdown-preview blockquote,
+.note-print-document .markdown-preview .footnotes,
+.note-print-document .markdown-preview dd,
+.note-print-document .markdown-preview del {
+  color: #4b5563;
 }
 
 .note-print-state {
