@@ -4,7 +4,7 @@
   <name>collab</name>
   <summary>Local-first Markdown notes with collaboration</summary>
   <metadata_license>CC0-1.0</metadata_license>
-  <project_license>Proprietary</project_license>
+  <project_license>MIT</project_license>
   <developer id="com.azazel">
     <name>Azazel</name>
   </developer>
@@ -14,7 +14,6 @@
   </description>
   <categories>
     <category>Office</category>
-    <category>Utility</category>
     <category>TextEditor</category>
   </categories>
   <url type="homepage">https://github.com/Azazel55605/collab</url>
