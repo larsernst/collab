@@ -75,10 +75,11 @@ the project ships a root `LICENSE` (`MIT`) and the AppStream metadata declares
 
 ## Build strategy
 
-The draft builds from source with `pnpm tauri build -b none`, then installs the
-compiled Tauri binary plus the desktop entry, AppStream metadata, icons, README,
-and license directly into the package image. `-b none` skips the throwaway
-bundler step and just produces the release binary.
+The draft builds from source with `pnpm tauri build --no-bundle`, then installs
+the compiled Tauri binary plus the desktop entry, AppStream metadata, icons,
+README, and license directly into the package image. `--no-bundle` skips the
+throwaway installer/bundler step and just produces the release binary (Tauri's
+`-b` only accepts `deb`/`rpm`/`appimage`, so there is no `-b none`).
 
 ## Testing locally
 

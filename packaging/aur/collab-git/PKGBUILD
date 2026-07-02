@@ -69,7 +69,7 @@ build() {
   export TAURI_SIGNING_PRIVATE_KEY=
 
   pnpm install --frozen-lockfile --offline
-  pnpm tauri build -b none
+  pnpm tauri build --no-bundle
 }
 
 check() {

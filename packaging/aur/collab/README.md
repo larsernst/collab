@@ -99,11 +99,14 @@ until the items below are resolved.
 
 ## Build strategy
 
-The draft builds from source with `pnpm tauri build -b deb`, then installs the
-compiled Tauri binary plus the desktop entry, AppStream metadata, icons, and
-README directly into the package image.
+The draft builds from source with `pnpm tauri build --no-bundle`, then installs
+the compiled Tauri binary plus the desktop entry, AppStream metadata, icons, and
+README directly into the package image. `--no-bundle` compiles the release binary
+without producing an installer (Tauri's `-b` only accepts `deb`/`rpm`/`appimage`,
+so there is no `-b none`); the AUR package assembles its own `pkgdir` from the
+loose binary and metadata.
 
-This is preferred over unpacking the project `.deb` because it keeps the AUR
+This is preferred over unpacking a project `.deb`/`.rpm` because it keeps the AUR
 package transparent and source-based. If build time becomes too painful, a
 separate binary-style package can be prepared later, but it should use a distinct
 name such as `collab-bin`.
