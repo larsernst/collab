@@ -176,7 +176,18 @@ describe('serverStore.restoreSession', () => {
     vi.mocked(tauriCommands.hostedVaultRequest).mockResolvedValue([hostedVault]);
 
     expect(await useServerStore.getState().restoreSession()).toBe('connected');
-    expect(tauriCommands.reconnectServer).toHaveBeenCalledWith('https://collab.example.test', true);
+    expect(tauriCommands.reconnectServer).toHaveBeenCalledWith('https://collab.example.test', true, false);
+  });
+
+  it('forwards the cross-reboot persistence preference to reconnect', async () => {
+    localStorage.setItem('collab-hosted-server-url', 'https://collab.example.test');
+    localStorage.setItem('collab-hosted-persist-across-reboots', 'true');
+    vi.mocked(tauriCommands.serverConnectionStatus).mockResolvedValue({ ...connected, connected: false });
+    vi.mocked(tauriCommands.reconnectServer).mockResolvedValue(connected);
+    vi.mocked(tauriCommands.hostedVaultRequest).mockResolvedValue([hostedVault]);
+
+    expect(await useServerStore.getState().restoreSession()).toBe('connected');
+    expect(tauriCommands.reconnectServer).toHaveBeenCalledWith('https://collab.example.test', false, true);
   });
 
   it('skips without error when a saved URL has no stored credential', async () => {

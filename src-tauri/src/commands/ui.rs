@@ -5,6 +5,14 @@ pub async fn set_ui_zoom(zoom: f64, window: tauri::WebviewWindow) -> Result<(), 
     window.set_zoom(zoom).map_err(|e| e.to_string())
 }
 
+/// Returns the host operating system (`std::env::consts::OS`, e.g. "linux",
+/// "windows", "macos"). The frontend uses this to show OS-specific controls such
+/// as the Linux-only "keep me signed in across reboots" credential-store choice.
+#[tauri::command]
+pub fn host_os() -> String {
+    std::env::consts::OS.to_string()
+}
+
 /// Returns true when running inside an AppImage bundle.
 /// The frontend uses this to disable CSS backdrop-filter effects that don't
 /// render correctly when DMA-BUF GPU compositing is unavailable.

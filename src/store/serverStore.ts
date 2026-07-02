@@ -5,6 +5,10 @@ import type { HostedVaultSummary } from '../types/vault';
 
 const SERVER_URL_KEY = 'collab-hosted-server-url';
 const ALLOW_INVALID_CERTIFICATES_KEY = 'collab-hosted-allow-invalid-certificates';
+// Linux-only preference: persist the refresh token in the Secret Service (durable
+// across reboots) instead of the default silent keyutils keyring. Ignored on
+// Windows/macOS, whose native keystores are already silent and durable.
+const PERSIST_ACROSS_REBOOTS_KEY = 'collab-hosted-persist-across-reboots';
 const NO_SAVED_SESSION_MESSAGE = 'No saved server session was found.';
 
 export type RestoreSessionResult = 'connected' | 'failed' | 'skipped';
@@ -60,8 +64,8 @@ interface ServerState {
   restoreSession: () => Promise<RestoreSessionResult>;
   /** Internal: the un-deduplicated restore implementation. Use `restoreSession`. */
   _restoreSessionOnce: () => Promise<RestoreSessionResult>;
-  connect: (serverUrl: string, username: string, password: string, allowInvalidCertificates?: boolean) => Promise<void>;
-  reconnect: (serverUrl: string, allowInvalidCertificates?: boolean) => Promise<void>;
+  connect: (serverUrl: string, username: string, password: string, allowInvalidCertificates?: boolean, persistAcrossReboots?: boolean) => Promise<void>;
+  reconnect: (serverUrl: string, allowInvalidCertificates?: boolean, persistAcrossReboots?: boolean) => Promise<void>;
   disconnect: () => Promise<void>;
   loadHostedVaults: () => Promise<void>;
   createHostedVault: (name: string) => Promise<HostedVaultSummary>;
@@ -95,6 +99,7 @@ export const useServerStore = create<ServerState>()((set, get) => ({
     const serverUrl = localStorage.getItem(SERVER_URL_KEY);
     if (!serverUrl) return 'skipped';
     const allowInvalidCertificates = localStorage.getItem(ALLOW_INVALID_CERTIFICATES_KEY) === 'true';
+    const persistAcrossReboots = localStorage.getItem(PERSIST_ACROSS_REBOOTS_KEY) === 'true';
     // A still-live in-memory session (e.g. after a soft reload) needs no refresh.
     try {
       const status = await tauriCommands.serverConnectionStatus();
@@ -107,17 +112,17 @@ export const useServerStore = create<ServerState>()((set, get) => ({
       // Fall through to a refresh-token reconnect.
     }
     try {
-      await get().reconnect(serverUrl, allowInvalidCertificates);
+      await get().reconnect(serverUrl, allowInvalidCertificates, persistAcrossReboots);
       return 'connected';
     } catch (error) {
       if (String(error).includes(NO_SAVED_SESSION_MESSAGE)) return 'skipped';
       return 'failed';
     }
   },
-  connect: async (serverUrl, username, password, allowInvalidCertificates = false) => {
+  connect: async (serverUrl, username, password, allowInvalidCertificates = false, persistAcrossReboots = false) => {
     set({ isLoading: true, error: null });
     try {
-      const status = await tauriCommands.connectServer(serverUrl, username, password, allowInvalidCertificates);
+      const status = await tauriCommands.connectServer(serverUrl, username, password, allowInvalidCertificates, persistAcrossReboots);
       set({ status, isLoading: false });
       await get().loadHostedVaults();
     } catch (error) {
@@ -125,10 +130,10 @@ export const useServerStore = create<ServerState>()((set, get) => ({
       throw error;
     }
   },
-  reconnect: async (serverUrl, allowInvalidCertificates = false) => {
+  reconnect: async (serverUrl, allowInvalidCertificates = false, persistAcrossReboots = false) => {
     set({ isLoading: true, error: null });
     try {
-      const status = await tauriCommands.reconnectServer(serverUrl, allowInvalidCertificates);
+      const status = await tauriCommands.reconnectServer(serverUrl, allowInvalidCertificates, persistAcrossReboots);
       set({ status, isLoading: false });
       await get().loadHostedVaults();
     } catch (error) {

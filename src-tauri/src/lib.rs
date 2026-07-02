@@ -204,6 +204,7 @@ pub fn run() {
             commands::collab::restore_snapshot,
             // ui
             commands::ui::set_ui_zoom,
+            commands::ui::host_os,
             commands::ui::is_appimage,
             commands::ui::is_flatpak,
             commands::ui::should_disable_blur,

@@ -331,15 +331,18 @@ export const tauriCommands = {
 
   // UI
   setUiZoom: (zoom: number) => invoke<void>('set_ui_zoom', { zoom }),
+  hostOs: () => invoke<string>('host_os'),
   isAppImage: () => invoke<boolean>('is_appimage'),
   isFlatpak: () => invoke<boolean>('is_flatpak'),
   shouldDisableBlur: () => invoke<boolean>('should_disable_blur'),
 
-  // Hosted server connection. Refresh credentials remain in the OS credential store.
-  connectServer: (serverUrl: string, username: string, password: string, allowInvalidCertificates = false) =>
-    invoke<ServerConnectionStatus>('connect_server', { serverUrl, username, password, allowInvalidCertificates }),
-  reconnectServer: (serverUrl: string, allowInvalidCertificates = false) =>
-    invoke<ServerConnectionStatus>('reconnect_server', { serverUrl, allowInvalidCertificates }),
+  // Hosted server connection. The refresh token is kept in a per-platform
+  // credential store; `persistAcrossReboots` only affects Linux (keyutils vs
+  // Secret Service) — Windows/macOS always use their native durable keystore.
+  connectServer: (serverUrl: string, username: string, password: string, allowInvalidCertificates = false, persistAcrossReboots = false) =>
+    invoke<ServerConnectionStatus>('connect_server', { serverUrl, username, password, allowInvalidCertificates, persistAcrossReboots }),
+  reconnectServer: (serverUrl: string, allowInvalidCertificates = false, persistAcrossReboots = false) =>
+    invoke<ServerConnectionStatus>('reconnect_server', { serverUrl, allowInvalidCertificates, persistAcrossReboots }),
   disconnectServer: () => invoke<void>('disconnect_server'),
   serverConnectionStatus: () => invoke<ServerConnectionStatus>('server_connection_status'),
   serverHasSavedSession: (serverUrl: string) => invoke<boolean>('server_has_saved_session', { serverUrl }),

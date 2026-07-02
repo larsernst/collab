@@ -11,6 +11,7 @@ vi.mock('../../lib/tauri', () => ({
     reconnectServer: vi.fn(),
     disconnectServer: vi.fn(),
     hostedVaultRequest: vi.fn(),
+    hostOs: vi.fn(() => Promise.resolve('linux')),
   },
 }));
 
@@ -45,7 +46,7 @@ describe('SettingsServerSection', () => {
     fireEvent.change(screen.getByLabelText('Username'), { target: { value: 'alice' } });
     fireEvent.change(screen.getByLabelText('Password'), { target: { value: 'not-stored-password' } });
     fireEvent.click(screen.getByRole('button', { name: 'Connect' }));
-    await waitFor(() => expect(tauriCommands.connectServer).toHaveBeenCalledWith('https://collab.example.com', 'alice', 'not-stored-password', false));
+    await waitFor(() => expect(tauriCommands.connectServer).toHaveBeenCalledWith('https://collab.example.com', 'alice', 'not-stored-password', false, false));
     expect(localStorage.getItem('collab-hosted-server-url')).toBe('https://collab.example.com');
     expect(JSON.stringify(localStorage)).not.toContain('not-stored-password');
   });
@@ -72,8 +73,36 @@ describe('SettingsServerSection', () => {
       'alice',
       'password',
       true,
+      false,
     ));
     expect(localStorage.getItem('collab-hosted-allow-invalid-certificates')).toBe('true');
+  });
+
+  it('opts into cross-reboot credential persistence on Linux', async () => {
+    vi.mocked(tauriCommands.connectServer).mockResolvedValue({
+      connected: true,
+      serverUrl: 'https://collab.example.com',
+      allowInvalidCertificates: false,
+      user: { id: '1', username: 'alice', displayName: 'Alice', role: 'member', status: 'active' },
+      accessExpiresAt: '2026-06-09T12:00:00Z',
+    });
+    vi.mocked(tauriCommands.hostedVaultRequest).mockResolvedValue([]);
+    render(<SettingsServerSection />);
+    await waitFor(() => expect((screen.getByRole('button', { name: 'Connect' }) as HTMLButtonElement).disabled).toBe(false));
+    fireEvent.change(screen.getByLabelText('Server URL'), { target: { value: 'https://collab.example.com' } });
+    fireEvent.change(screen.getByLabelText('Username'), { target: { value: 'alice' } });
+    fireEvent.change(screen.getByLabelText('Password'), { target: { value: 'password' } });
+    fireEvent.click(await screen.findByLabelText('Keep me signed in across reboots'));
+    fireEvent.click(screen.getByRole('button', { name: 'Connect' }));
+
+    await waitFor(() => expect(tauriCommands.connectServer).toHaveBeenCalledWith(
+      'https://collab.example.com',
+      'alice',
+      'password',
+      false,
+      true,
+    ));
+    expect(localStorage.getItem('collab-hosted-persist-across-reboots')).toBe('true');
   });
 
   it('lets the current client always prepare hosted vaults for offline use', async () => {

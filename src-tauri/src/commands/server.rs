@@ -41,6 +41,7 @@ pub async fn connect_server(
     username: String,
     password: String,
     allow_invalid_certificates: bool,
+    persist_across_reboots: bool,
 ) -> Result<ServerConnectionStatus, String> {
     let base = validate_server_url(&server_url)?;
     let response = server_client(allow_invalid_certificates)?
@@ -54,7 +55,7 @@ pub async fn connect_server(
         .await
         .map_err(server_request_error)?;
     let session = decode_session(response).await?;
-    store_refresh_token(&base, &session.refresh_token)?;
+    store_refresh_token(&base, &session.refresh_token, persist_across_reboots)?;
     let status = status_from_session(&base, allow_invalid_certificates, &session);
     *state.server_session.write() = Some(ServerSessionState {
         server_url: base,
@@ -71,11 +72,11 @@ pub async fn reconnect_server(
     state: State<'_, AppState>,
     server_url: String,
     allow_invalid_certificates: bool,
+    persist_across_reboots: bool,
 ) -> Result<ServerConnectionStatus, String> {
     let base = validate_server_url(&server_url)?;
-    let refresh_token = keyring_entry(&base)?
-        .get_password()
-        .map_err(|_| "No saved server session was found.".to_string())?;
+    let refresh_token =
+        read_refresh_token(&base).ok_or_else(|| "No saved server session was found.".to_string())?;
     let response = server_client(allow_invalid_certificates)?
         .post(format!("{base}/api/v1/auth/refresh"))
         .json(&serde_json::json!({ "refreshToken": refresh_token }))
@@ -83,7 +84,7 @@ pub async fn reconnect_server(
         .await
         .map_err(server_request_error)?;
     let session = decode_session(response).await?;
-    store_refresh_token(&base, &session.refresh_token)?;
+    store_refresh_token(&base, &session.refresh_token, persist_across_reboots)?;
     let status = status_from_session(&base, allow_invalid_certificates, &session);
     *state.server_session.write() = Some(ServerSessionState {
         server_url: base,
@@ -106,7 +107,7 @@ pub async fn disconnect_server(state: State<'_, AppState>) -> Result<(), String>
                 .send()
                 .await;
         }
-        let _ = keyring_entry(&session.server_url)?.delete_credential();
+        delete_refresh_token(&session.server_url);
     }
     *state.server_session.write() = None;
     Ok(())
@@ -119,7 +120,7 @@ pub async fn disconnect_server(state: State<'_, AppState>) -> Result<(), String>
 #[tauri::command]
 pub fn server_has_saved_session(server_url: String) -> Result<bool, String> {
     let base = validate_server_url(&server_url)?;
-    Ok(keyring_entry(&base)?.get_password().is_ok())
+    Ok(read_refresh_token(&base).is_some())
 }
 
 #[tauri::command]
@@ -481,17 +482,117 @@ async fn decode_hosted_error(response: reqwest::Response) -> String {
         .unwrap_or_else(|_| "The hosted-vault request failed.".into())
 }
 
-fn keyring_entry(server_url: &str) -> Result<keyring::Entry, String> {
+// Refresh-token storage is per-platform (see `Cargo.toml`).
+//
+// Linux defaults to the kernel keyutils keyring: silent (no D-Bus prompt), never
+// written to disk, and cleared on reboot, which reconnects the "re-login after a
+// reboot" tradeoff. When the user opts into cross-reboot persistence we use the
+// D-Bus Secret Service instead, which is durable but may prompt to unlock the
+// keyring. `persist_across_reboots` selects the Linux backend; on Windows/macOS
+// the native OS keystore (Credential Manager / Keychain) is always used and the
+// flag is ignored, because those stores are already silent and durable.
+
+#[cfg(target_os = "linux")]
+fn keyutils_entry(server_url: &str) -> Result<keyring::Entry, String> {
+    let cred =
+        keyring::keyutils::KeyutilsCredential::new_with_target(None, KEYRING_SERVICE, server_url)
+            .map_err(|_| "The session keyring is unavailable.".to_string())?;
+    Ok(keyring::Entry::new_with_credential(Box::new(cred)))
+}
+
+#[cfg(target_os = "linux")]
+fn secret_service_entry(server_url: &str) -> Result<keyring::Entry, String> {
+    // `new_with_target(None, ..)` uses the "default" target, matching the
+    // attributes written by earlier versions (keyring's default builder), so
+    // tokens saved before this change are still found on upgrade.
+    let cred =
+        keyring::secret_service::SsCredential::new_with_target(None, KEYRING_SERVICE, server_url)
+            .map_err(|_| "The system keyring (Secret Service) is unavailable.".to_string())?;
+    Ok(keyring::Entry::new_with_credential(Box::new(cred)))
+}
+
+#[cfg(target_os = "linux")]
+fn store_refresh_token(
+    server_url: &str,
+    refresh_token: &str,
+    persist_across_reboots: bool,
+) -> Result<(), String> {
+    if persist_across_reboots {
+        secret_service_entry(server_url)?
+            .set_password(refresh_token)
+            .map_err(|_| "Could not save the server session.".to_string())?;
+        // Deleting from keyutils is silent, so clear any stale silent-store copy.
+        if let Ok(entry) = keyutils_entry(server_url) {
+            let _ = entry.delete_credential();
+        }
+    } else {
+        keyutils_entry(server_url)?
+            .set_password(refresh_token)
+            .map_err(|_| "Could not save the server session.".to_string())?;
+        // Intentionally do NOT touch the Secret Service on this default path:
+        // reading or deleting from a locked collection could trigger the unlock
+        // prompt this silent path exists to avoid. A stale Secret Service token
+        // from a previous opt-in is harmless — keyutils is read first, the server
+        // rotates the refresh token on next use, and explicit disconnect clears
+        // both backends.
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+fn read_refresh_token(server_url: &str) -> Option<String> {
+    // Read from both backends so a saved token is found regardless of the
+    // current preference (e.g. after the user flips the toggle, or after
+    // upgrading from a version that only used the Secret Service).
+    keyutils_entry(server_url)
+        .ok()
+        .and_then(|entry| entry.get_password().ok())
+        .or_else(|| {
+            secret_service_entry(server_url)
+                .ok()
+                .and_then(|entry| entry.get_password().ok())
+        })
+}
+
+#[cfg(target_os = "linux")]
+fn delete_refresh_token(server_url: &str) {
+    if let Ok(entry) = keyutils_entry(server_url) {
+        let _ = entry.delete_credential();
+    }
+    if let Ok(entry) = secret_service_entry(server_url) {
+        let _ = entry.delete_credential();
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+fn native_entry(server_url: &str) -> Result<keyring::Entry, String> {
     keyring::Entry::new(KEYRING_SERVICE, server_url)
         .map_err(|_| "The operating system credential store is unavailable.".into())
 }
 
-fn store_refresh_token(server_url: &str, refresh_token: &str) -> Result<(), String> {
-    keyring_entry(server_url)?
-        .set_password(refresh_token)
-        .map_err(|_| {
-            "Could not save the server session in the operating system credential store.".into()
-        })
+#[cfg(not(target_os = "linux"))]
+fn store_refresh_token(
+    server_url: &str,
+    refresh_token: &str,
+    _persist_across_reboots: bool,
+) -> Result<(), String> {
+    native_entry(server_url)?.set_password(refresh_token).map_err(|_| {
+        "Could not save the server session in the operating system credential store.".into()
+    })
+}
+
+#[cfg(not(target_os = "linux"))]
+fn read_refresh_token(server_url: &str) -> Option<String> {
+    native_entry(server_url)
+        .ok()
+        .and_then(|entry| entry.get_password().ok())
+}
+
+#[cfg(not(target_os = "linux"))]
+fn delete_refresh_token(server_url: &str) {
+    if let Ok(entry) = native_entry(server_url) {
+        let _ = entry.delete_credential();
+    }
 }
 
 fn status_from_session(
