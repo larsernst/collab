@@ -1,7 +1,7 @@
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { ArrowLeft, ArrowRight, ArrowUp, ArrowDown } from 'lucide-react';
 import { cn } from '../../lib/utils';
-import { useDragContext } from '../../contexts/DragContext';
+import { useDragContext, type DragPoint } from '../../contexts/DragContext';
 import { useGridStore } from '../../store/gridStore';
 import { useEditorStore } from '../../store/editorStore';
 import { useUiStore } from '../../store/uiStore';
@@ -42,13 +42,14 @@ const ZONE_CONFIG: Record<Direction, {
 };
 
 export default function SplitDropZones() {
-  const { draggingTab, setDraggingTab } = useDragContext();
+  const { draggingTab, subscribePointer, registerDropResolver } = useDragContext();
   const [hoveredZone, setHoveredZone] = useState<Direction | null>(null);
   const { activateSplit } = useGridStore();
   const { activeTabPath, openTabs } = useEditorStore();
   const { activeView, setActiveView } = useUiStore();
 
-  if (!draggingTab) return null;
+  // Live element refs per zone, used to hit-test the pointer during a drag.
+  const zoneRefs = useRef<Map<Direction, HTMLElement>>(new Map());
 
   /** Build content descriptor for "what's currently shown" */
   const getCurrentContent = (): GridCellContent => {
@@ -62,20 +63,53 @@ export default function SplitDropZones() {
     return { type: 'empty', relativePath: null, title: '' };
   };
 
-  const handleDrop = (e: React.DragEvent, direction: Direction) => {
-    e.preventDefault();
-    setDraggingTab(null);
-    setHoveredZone(null);
-
+  // Latest values captured for the stable pointer/drop callbacks below.
+  const draggingTabRef = useRef(draggingTab);
+  draggingTabRef.current = draggingTab;
+  const performSplitRef = useRef<(direction: Direction) => void>(() => {});
+  performSplitRef.current = (direction: Direction) => {
+    const dragging = draggingTabRef.current;
+    if (!dragging) return;
     const draggedContent: GridCellContent = {
-      type: draggingTab.type as any,
-      relativePath: draggingTab.relativePath,
-      title: draggingTab.title,
+      type: dragging.type as any,
+      relativePath: dragging.relativePath,
+      title: dragging.title,
     };
-
     activateSplit(draggedContent, getCurrentContent(), direction);
     setActiveView('grid');
   };
+
+  const zoneAt = (point: DragPoint): Direction | null => {
+    for (const [dir, el] of zoneRefs.current) {
+      const rect = el.getBoundingClientRect();
+      if (
+        point.x >= rect.left && point.x <= rect.right &&
+        point.y >= rect.top && point.y <= rect.bottom
+      ) {
+        return dir;
+      }
+    }
+    return null;
+  };
+
+  // Highlight the zone under the pointer as the drag moves.
+  useEffect(() => {
+    return subscribePointer((point) => {
+      setHoveredZone(point ? zoneAt(point) : null);
+    });
+  }, [subscribePointer]);
+
+  // Activate the split when the drag ends over a zone.
+  useEffect(() => {
+    return registerDropResolver((point) => {
+      const dir = zoneAt(point);
+      if (!dir) return false;
+      performSplitRef.current(dir);
+      return true;
+    });
+  }, [registerDropResolver]);
+
+  if (!draggingTab) return null;
 
   return (
     <div className="absolute inset-0 pointer-events-none z-50">
@@ -85,17 +119,17 @@ export default function SplitDropZones() {
           return (
             <div
               key={dir}
+              ref={(el) => {
+                if (el) zoneRefs.current.set(dir, el);
+                else zoneRefs.current.delete(dir);
+              }}
               className={cn(
-                'absolute pointer-events-auto transition-all duration-150 app-motion-base',
+                'absolute transition-all duration-150 app-motion-base',
                 isHovered
                   ? 'bg-primary/25 backdrop-blur-2px-webkit'
-                  : 'bg-primary/8 hover:bg-primary/15'
+                  : 'bg-primary/8'
               )}
               style={cfg.style}
-              onDragOver={(e) => { e.preventDefault(); e.dataTransfer.dropEffect = 'move'; setHoveredZone(dir); }}
-              onDragEnter={(e) => { e.preventDefault(); setHoveredZone(dir); }}
-              onDragLeave={() => setHoveredZone(null)}
-              onDrop={(e) => handleDrop(e, dir)}
             >
               {/* Always-visible dashed border */}
               <div

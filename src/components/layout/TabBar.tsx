@@ -1,23 +1,69 @@
-import { useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { X, FileText, Layout, LayoutDashboard, GitFork, Settings, Image as ImageIcon } from 'lucide-react';
 import { cn } from '../../lib/utils';
 import { useEditorStore } from '../../store/editorStore';
 import { useUiStore } from '../../store/uiStore';
-import { useDragContext } from '../../contexts/DragContext';
+import { useDragContext, type DragPoint } from '../../contexts/DragContext';
 import {
   ContextMenu, ContextMenuContent, ContextMenuItem,
   ContextMenuSeparator, ContextMenuTrigger,
 } from '../ui/context-menu';
 
+type DropIndicator = { path: string; side: 'left' | 'right' };
+
 export default function TabBar() {
   const { openTabs, activeTabPath, closeTab, setActiveTab, reorderTabs } = useEditorStore();
   const { setActiveView } = useUiStore();
-  const { setDraggingTab } = useDragContext();
+  const { startTabDrag, draggingTab, subscribePointer, registerDropResolver } = useDragContext();
 
-  // Track which tab is being dragged (for intra-bar reorder)
-  const dragSrcRef = useRef<string | null>(null);
+  // Live element refs for each tab, keyed by path, used to hit-test the pointer.
+  const tabRefs = useRef<Map<string, HTMLElement>>(new Map());
   // { path, side } — which tab and which edge the insert line should appear on
-  const [dropIndicator, setDropIndicator] = useState<{ path: string; side: 'left' | 'right' } | null>(null);
+  const [dropIndicator, setDropIndicator] = useState<DropIndicator | null>(null);
+
+  // Latest values captured for the stable pointer/drop callbacks below.
+  const draggingTabRef = useRef(draggingTab);
+  draggingTabRef.current = draggingTab;
+  const reorderRef = useRef(reorderTabs);
+  reorderRef.current = reorderTabs;
+
+  // Resolve which tab (and which edge) the pointer is over.
+  const hitTest = (point: DragPoint): DropIndicator | null => {
+    for (const [path, el] of tabRefs.current) {
+      const rect = el.getBoundingClientRect();
+      if (
+        point.x >= rect.left && point.x <= rect.right &&
+        point.y >= rect.top && point.y <= rect.bottom
+      ) {
+        return { path, side: point.x < rect.left + rect.width / 2 ? 'left' : 'right' };
+      }
+    }
+    return null;
+  };
+
+  // Update the insertion indicator as the pointer moves during a drag.
+  useEffect(() => {
+    return subscribePointer((point) => {
+      const dragging = draggingTabRef.current;
+      if (!point || !dragging) { setDropIndicator(null); return; }
+      const hit = hitTest(point);
+      setDropIndicator(hit && hit.path !== dragging.relativePath ? hit : null);
+    });
+  }, [subscribePointer]);
+
+  // Perform the reorder when the drag ends over the tab bar.
+  useEffect(() => {
+    return registerDropResolver((point) => {
+      const dragging = draggingTabRef.current;
+      if (!dragging) return false;
+      const hit = hitTest(point);
+      if (!hit) return false;
+      if (hit.path !== dragging.relativePath) {
+        reorderRef.current(dragging.relativePath, hit.path, hit.side === 'left');
+      }
+      return true;
+    });
+  }, [registerDropResolver]);
 
   if (openTabs.length === 0) return null;
 
@@ -54,43 +100,14 @@ export default function TabBar() {
           <ContextMenu key={tab.relativePath}>
           <ContextMenuTrigger asChild>
           <div
-            draggable
-            onDragStart={(e) => {
-              dragSrcRef.current = tab.relativePath;
-              setDraggingTab({
-                relativePath: tab.relativePath,
-                title: tab.title,
-                type: tab.type,
-              });
-              e.dataTransfer.setData('text/plain', tab.relativePath);
-              e.dataTransfer.setData('application/x-collab-tab', JSON.stringify({
-                relativePath: tab.relativePath,
-                title: tab.title,
-                type: tab.type,
-              }));
-              e.dataTransfer.effectAllowed = 'move';
+            ref={(el) => {
+              if (el) tabRefs.current.set(tab.relativePath, el);
+              else tabRefs.current.delete(tab.relativePath);
             }}
-            onDragOver={(e) => {
-              if (!dragSrcRef.current || dragSrcRef.current === tab.relativePath) return;
-              e.preventDefault();
-              e.dataTransfer.dropEffect = 'move';
-              const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
-              const side = e.clientX < rect.left + rect.width / 2 ? 'left' : 'right';
-              setDropIndicator({ path: tab.relativePath, side });
-            }}
-            onDragLeave={() => setDropIndicator(null)}
-            onDrop={(e) => {
-              e.preventDefault();
-              const src = dragSrcRef.current;
-              if (!src || src === tab.relativePath || !dropIndicator) return;
-              reorderTabs(src, tab.relativePath, dropIndicator.side === 'left');
-              setDropIndicator(null);
-            }}
-            onDragEnd={() => {
-              dragSrcRef.current = null;
-              setDraggingTab(null);
-              setDropIndicator(null);
-            }}
+            onPointerDown={(e) => startTabDrag(
+              { relativePath: tab.relativePath, title: tab.title, type: tab.type },
+              e,
+            )}
             onMouseDown={(event) => handleTabMiddleClick(event, tab.relativePath)}
             onClick={() => handleTabClick(tab.relativePath, tab.type)}
             className={cn(
@@ -121,6 +138,7 @@ export default function TabBar() {
             )}
 
             <button
+              onPointerDown={(e) => e.stopPropagation()}
               onClick={(e) => { e.stopPropagation(); closeTab(tab.relativePath); }}
               className="ml-auto shrink-0 rounded p-0.5 opacity-0 group-hover:opacity-60 hover:!opacity-100 hover:bg-accent transition-all app-motion-fast"
             >

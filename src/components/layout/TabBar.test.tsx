@@ -1,5 +1,5 @@
 import { fireEvent, render, screen } from '@testing-library/react';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it } from 'vitest';
 
 import { DragProvider, useDragContext } from '../../contexts/DragContext';
 import { useEditorStore } from '../../store/editorStore';
@@ -36,12 +36,7 @@ describe('TabBar middle click', () => {
     expect(useEditorStore.getState().activeTabPath).toBe('Notes/b.md');
   });
 
-  it('starts a native drag without requiring a custom drag image', () => {
-    const dataTransfer = {
-      setData: vi.fn(),
-      effectAllowed: '',
-    };
-
+  it('starts a pointer-driven drag after crossing the movement threshold', () => {
     function DragStateProbe() {
       const { draggingTab } = useDragContext();
       return <div data-testid="drag-state">{draggingTab?.relativePath ?? 'none'}</div>;
@@ -54,18 +49,41 @@ describe('TabBar middle click', () => {
       </DragProvider>,
     );
 
-    fireEvent.dragStart(screen.getByText('a').closest('[draggable="true"]')!, { dataTransfer });
+    const tab = screen.getByText('a').closest('.tab-active')!;
 
-    expect(dataTransfer.setData).toHaveBeenCalledWith('text/plain', 'Notes/a.md');
-    expect(dataTransfer.setData).toHaveBeenCalledWith(
-      'application/x-collab-tab',
-      JSON.stringify({
-        relativePath: 'Notes/a.md',
-        title: 'a',
-        type: 'note',
-      }),
-    );
-    expect(dataTransfer.effectAllowed).toBe('move');
+    // A pointerdown alone (no movement) must not start a drag — a click stays a click.
+    fireEvent.pointerDown(tab, { button: 0, clientX: 10, clientY: 10 });
+    expect(screen.getByTestId('drag-state').textContent).toBe('none');
+
+    // Tiny movement below the threshold still does not start a drag.
+    fireEvent.pointerMove(window, { clientX: 12, clientY: 11 });
+    expect(screen.getByTestId('drag-state').textContent).toBe('none');
+
+    // Crossing the threshold begins the drag.
+    fireEvent.pointerMove(window, { clientX: 40, clientY: 12 });
     expect(screen.getByTestId('drag-state').textContent).toBe('Notes/a.md');
+
+    // Releasing ends the drag.
+    fireEvent.pointerUp(window, { clientX: 40, clientY: 12 });
+    expect(screen.getByTestId('drag-state').textContent).toBe('none');
+  });
+
+  it('does not start a drag on a non-left button', () => {
+    function DragStateProbe() {
+      const { draggingTab } = useDragContext();
+      return <div data-testid="drag-state">{draggingTab?.relativePath ?? 'none'}</div>;
+    }
+
+    render(
+      <DragProvider>
+        <TabBar />
+        <DragStateProbe />
+      </DragProvider>,
+    );
+
+    const tab = screen.getByText('a').closest('.tab-active')!;
+    fireEvent.pointerDown(tab, { button: 2, clientX: 10, clientY: 10 });
+    fireEvent.pointerMove(window, { clientX: 60, clientY: 12 });
+    expect(screen.getByTestId('drag-state').textContent).toBe('none');
   });
 });
