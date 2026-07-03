@@ -1,10 +1,14 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent } from 'react';
 
 import type { MathPlot3DSpec, Sampled3DPlot } from './mathPlotSpec';
 import { samplePlot3D } from './mathPlotSpec';
 
 interface MathPlot3DProps {
   spec: MathPlot3DSpec;
+  /** Render without the bordered card / header chrome (used inside the plot modal). */
+  variant?: 'inline' | 'modal';
+  /** Notify when the plot area is shift-clicked (used to open the modal). */
+  onShiftClick?: () => void;
 }
 
 const INITIAL_VIEW = { yaw: -0.72, pitch: 0.52, distance: 7.1 };
@@ -72,10 +76,37 @@ function buildAxes(THREE: typeof import('three')) {
   return new THREE.LineSegments(geometry, material);
 }
 
-export function MathPlot3D({ spec }: MathPlot3DProps) {
+export function MathPlot3D({ spec, variant = 'inline', onShiftClick }: MathPlot3DProps) {
+  const isModal = variant === 'modal';
+  const plotHeight = isModal ? 540 : 320;
   const mountRef = useRef<HTMLDivElement | null>(null);
   const resetRef = useRef<(() => void) | null>(null);
   const [error, setError] = useState<string | null>(null);
+  // Inline plots are user-resizable via the drag bar below the canvas. The live
+  // renderer follows this height through its ResizeObserver, so we never rebuild
+  // the scene on resize.
+  const [areaHeight, setAreaHeight] = useState(plotHeight);
+  const dragStateRef = useRef<{ startY: number; startHeight: number } | null>(null);
+
+  const handleResizePointerDown = (event: ReactPointerEvent) => {
+    event.preventDefault();
+    event.stopPropagation();
+    event.currentTarget.setPointerCapture(event.pointerId);
+    dragStateRef.current = { startY: event.clientY, startHeight: areaHeight };
+  };
+  const handleResizePointerMove = (event: ReactPointerEvent) => {
+    const state = dragStateRef.current;
+    if (!state) return;
+    const next = Math.max(180, Math.min(900, state.startHeight + (event.clientY - state.startY)));
+    setAreaHeight(next);
+  };
+  const handleResizePointerUp = (event: ReactPointerEvent) => {
+    if (!dragStateRef.current) return;
+    dragStateRef.current = null;
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    }
+  };
 
   useEffect(() => {
     let disposed = false;
@@ -90,14 +121,14 @@ export function MathPlot3D({ spec }: MathPlot3DProps) {
 
         const mount = mountRef.current;
         const width = Math.max(320, Math.floor(mount.clientWidth || 560));
-        const height = 320;
+        const height = Math.max(180, Math.floor(mount.clientHeight || plotHeight));
         const scene = new THREE.Scene();
         const camera = new THREE.PerspectiveCamera(42, width / height, 0.1, 100);
         const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
         renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
         renderer.setSize(width, height);
         renderer.domElement.style.width = '100%';
-        renderer.domElement.style.height = `${height}px`;
+        renderer.domElement.style.height = '100%';
         renderer.domElement.style.touchAction = 'none';
         mount.replaceChildren(renderer.domElement);
 
@@ -176,19 +207,23 @@ export function MathPlot3D({ spec }: MathPlot3DProps) {
           distance = Math.max(3.4, Math.min(12, distance + event.deltaY * 0.006));
           updateCamera();
         };
-        const onResize = () => {
+        // Follow the (possibly user-resized) mount in both dimensions so dragging
+        // the resize handle actually gives the surface more room.
+        const applySize = () => {
           const nextWidth = Math.max(320, Math.floor(mount.clientWidth || 560));
-          camera.aspect = nextWidth / height;
+          const nextHeight = Math.max(180, Math.floor(mount.clientHeight || plotHeight));
+          camera.aspect = nextWidth / nextHeight;
           camera.updateProjectionMatrix();
-          renderer.setSize(nextWidth, height);
+          renderer.setSize(nextWidth, nextHeight);
         };
+        const resizeObserver = new ResizeObserver(applySize);
+        resizeObserver.observe(mount);
 
         renderer.domElement.addEventListener('pointerdown', onPointerDown);
         renderer.domElement.addEventListener('pointermove', onPointerMove);
         renderer.domElement.addEventListener('pointerup', onPointerUp);
         renderer.domElement.addEventListener('pointercancel', onPointerUp);
         renderer.domElement.addEventListener('wheel', onWheel, { passive: false });
-        window.addEventListener('resize', onResize);
 
         const animate = () => {
           if (disposed) return;
@@ -211,7 +246,7 @@ export function MathPlot3D({ spec }: MathPlot3DProps) {
         cleanup = () => {
           resetRef.current = null;
           window.cancelAnimationFrame(frame);
-          window.removeEventListener('resize', onResize);
+          resizeObserver.disconnect();
           renderer.domElement.removeEventListener('pointerdown', onPointerDown);
           renderer.domElement.removeEventListener('pointermove', onPointerMove);
           renderer.domElement.removeEventListener('pointerup', onPointerUp);
@@ -237,18 +272,31 @@ export function MathPlot3D({ spec }: MathPlot3DProps) {
       disposed = true;
       cleanup?.();
     };
-  }, [spec]);
+  }, [spec, plotHeight]);
+
+  const handleClick = onShiftClick
+    ? (event: ReactMouseEvent) => {
+        if (event.shiftKey) {
+          event.preventDefault();
+          onShiftClick();
+        }
+      }
+    : undefined;
 
   return (
-    <div className="rounded-lg border border-border/45 bg-background/45 p-3">
+    <div
+      className={isModal ? '' : 'rounded-lg border border-border/45 bg-background/45 p-3'}
+      onClick={handleClick}
+      title={onShiftClick ? 'Shift-click to open the interactive plot editor' : undefined}
+    >
       <div className="mb-2 flex items-center justify-between gap-3 text-[11px] text-muted-foreground">
-        <span className="font-medium text-foreground/85">3D plot</span>
-        <div className="flex min-w-0 items-center gap-2">
-          <span className="truncate font-mono">z = {spec.expression}</span>
+        {!isModal && <span className="font-medium text-foreground/85">3D plot</span>}
+        <div className={`flex min-w-0 items-center gap-2 ${isModal ? 'ml-auto' : ''}`}>
+          {!isModal && <span className="truncate font-mono">z = {spec.expression}</span>}
           {!error && (
             <button
               type="button"
-              onClick={() => resetRef.current?.()}
+              onClick={(event) => { event.stopPropagation(); resetRef.current?.(); }}
               className="shrink-0 rounded border border-border/50 px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground transition-colors hover:border-border/80 hover:text-foreground"
               title="Reset the camera to its default angle"
             >
@@ -263,8 +311,27 @@ export function MathPlot3D({ spec }: MathPlot3DProps) {
         </div>
       ) : (
         <>
-          <div ref={mountRef} className="h-80 w-full overflow-hidden rounded-md bg-muted/15" />
-          <p className="mt-1.5 text-center text-[10px] text-muted-foreground/70">
+          <div
+            ref={mountRef}
+            className="w-full overflow-hidden rounded-md bg-muted/15"
+            style={{ height: isModal ? plotHeight : areaHeight }}
+          />
+          {!isModal && (
+            <div
+              role="separator"
+              aria-orientation="horizontal"
+              aria-label="Resize plot height"
+              onPointerDown={handleResizePointerDown}
+              onPointerMove={handleResizePointerMove}
+              onPointerUp={handleResizePointerUp}
+              onPointerCancel={handleResizePointerUp}
+              className="group mt-1 flex h-3 w-full cursor-row-resize items-center justify-center rounded-sm hover:bg-muted/40"
+              title="Drag to resize the plot height"
+            >
+              <span className="h-0.5 w-8 rounded-full bg-border/70 transition-colors group-hover:bg-foreground/40" />
+            </div>
+          )}
+          <p className="mt-1 text-center text-[10px] text-muted-foreground/70">
             Drag to rotate · scroll to zoom
           </p>
         </>

@@ -29,6 +29,7 @@ import { resolveNoteAssetTarget } from '../../lib/noteAssets';
 import { parseMathPlots, type ParsedMathPlots } from './mathPlotSpec';
 import { MathPlot2D } from './MathPlot2D';
 import { MathPlot3D } from './MathPlot3D';
+import { openMathPlotModal } from './MathPlotModal';
 import 'katex/dist/katex.min.css';
 import 'highlight.js/styles/atom-one-dark.css';
 
@@ -245,8 +246,8 @@ function MathPlotPreviewStack({ parsed }: { parsed: ParsedMathPlots }) {
       ))}
       {parsed.plots.map((plot, index) => (
         plot.kind === '2d'
-          ? <MathPlot2D key={`plot-${index}`} spec={plot} />
-          : <MathPlot3D key={`plot-${index}`} spec={plot} />
+          ? <MathPlot2D key={`plot-${index}`} spec={plot} onShiftClick={() => openMathPlotModal(plot)} />
+          : <MathPlot3D key={`plot-${index}`} spec={plot} onShiftClick={() => openMathPlotModal(plot)} />
       ))}
     </div>
   );

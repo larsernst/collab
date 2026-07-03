@@ -12,6 +12,8 @@ export interface MathPlot2DSpec {
   expression: string;
   x: MathPlotDomain;
   samples: number;
+  /** Optional manual y-axis limits. When omitted the range is auto-fit to the samples. */
+  yDomain?: MathPlotDomain;
 }
 
 export interface MathPlot3DSpec {
@@ -20,6 +22,8 @@ export interface MathPlot3DSpec {
   x: MathPlotDomain;
   y: MathPlotDomain;
   samples: number;
+  /** Optional manual z-axis limits. When omitted the range is auto-fit to the samples. */
+  zDomain?: MathPlotDomain;
 }
 
 export type MathPlotSpec = MathPlot2DSpec | MathPlot3DSpec;
@@ -43,8 +47,9 @@ export interface Sampled3DPlot {
   finiteCount: number;
 }
 
-const PLOT_2D_MAX_SAMPLES = 1200;
-const PLOT_3D_MAX_SAMPLES = 90;
+export const PLOT_2D_MAX_SAMPLES = 1200;
+export const PLOT_3D_MAX_SAMPLES = 90;
+export const PLOT_MIN_SAMPLES = 16;
 const DEFAULT_2D_DOMAIN: MathPlotDomain = { min: -10, max: 10 };
 const DEFAULT_3D_DOMAIN: MathPlotDomain = { min: -5, max: 5 };
 
@@ -259,12 +264,14 @@ export function samplePlot2D(spec: MathPlot2DSpec): Sampled2DPlot {
   const maxY = Math.max(...yValues);
   const pad = minY === maxY ? 1 : (maxY - minY) * 0.08;
 
+  const autoYDomain: MathPlotDomain = Number.isFinite(minY) && Number.isFinite(maxY)
+    ? { min: minY - pad, max: maxY + pad }
+    : { min: -1, max: 1 };
+
   return {
     spec,
     segments,
-    yDomain: Number.isFinite(minY) && Number.isFinite(maxY)
-      ? { min: minY - pad, max: maxY + pad }
-      : { min: -1, max: 1 },
+    yDomain: spec.yDomain && spec.yDomain.min < spec.yDomain.max ? spec.yDomain : autoYDomain,
   };
 }
 
@@ -300,10 +307,12 @@ export function samplePlot3D(spec: MathPlot3DSpec): Sampled3DPlot {
   const maxZ = Math.max(...zValues);
   const pad = minZ === maxZ ? 1 : (maxZ - minZ) * 0.08;
 
+  const autoZDomain: MathPlotDomain = { min: minZ - pad, max: maxZ + pad };
+
   return {
     spec,
     rows,
-    zDomain: { min: minZ - pad, max: maxZ + pad },
+    zDomain: spec.zDomain && spec.zDomain.min < spec.zDomain.max ? spec.zDomain : autoZDomain,
     finiteCount: zValues.length,
   };
 }

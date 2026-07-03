@@ -68,6 +68,7 @@ import { useVaultStore } from '../../store/vaultStore';
 import { createVaultClient } from '../../lib/vaultClient';
 import { MathPlot2D } from './MathPlot2D';
 import { MathPlot3D } from './MathPlot3D';
+import { openMathPlotModal } from './MathPlotModal';
 import { parseMathPlots } from './mathPlotSpec';
 
 export function buildTaskCheckboxToggleChange(markerFrom: number, markerTo: number, checked: boolean) {
@@ -189,8 +190,8 @@ function MathPlotPreviewStack({ parsed }: { parsed: ReturnType<typeof parseMathP
       )),
       ...parsed.plots.map((plot, index) => (
         plot.kind === '2d'
-          ? React.createElement(MathPlot2D, { key: `plot-${index}`, spec: plot })
-          : React.createElement(MathPlot3D, { key: `plot-${index}`, spec: plot })
+          ? React.createElement(MathPlot2D, { key: `plot-${index}`, spec: plot, onShiftClick: () => openMathPlotModal(plot) })
+          : React.createElement(MathPlot3D, { key: `plot-${index}`, spec: plot, onShiftClick: () => openMathPlotModal(plot) })
       )),
     )
   );

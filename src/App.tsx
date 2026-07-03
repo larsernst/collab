@@ -11,6 +11,7 @@ import SettingsModal from './components/settings/SettingsModal';
 import VaultManagerModal from './components/vault/VaultManagerModal';
 import VaultUnlockModal from './components/vault/VaultUnlockModal';
 import { Toaster } from './components/ui/sonner';
+import { MathPlotModalHost } from './components/editor/MathPlotModal';
 import { tauriCommands } from './lib/tauri';
 import { subscribeMediaQueryChange } from './lib/browserCompat';
 import { useUpdateStore } from './store/updateStore';
@@ -312,6 +313,7 @@ export default function App() {
               : <VaultPicker />)}
         {isSettingsOpen && <SettingsModal />}
         {isVaultManagerOpen && <VaultManagerModal />}
+        <MathPlotModalHost />
         <Toaster richColors position="bottom-right" />
       </div>
       {activePrintNotePath && vault && !isVaultLocked && (

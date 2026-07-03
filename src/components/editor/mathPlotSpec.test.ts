@@ -101,6 +101,32 @@ describe('mathPlotSpec', () => {
     expect(sampled.zDomain.max).toBeGreaterThan(7);
   });
 
+  it('honors a manual y-axis override for 2D plots', () => {
+    const parsed = parseMathPlots('%plot2d x=0..3.14, samples=10\ny=\\sin(x)');
+    const base = parsed.plots[0] as never as import('./mathPlotSpec').MathPlot2DSpec;
+    const sampled = samplePlot2D({ ...base, yDomain: { min: -2, max: 2 } });
+
+    expect(sampled.yDomain).toEqual({ min: -2, max: 2 });
+  });
+
+  it('ignores an inverted manual y-axis override and falls back to auto-fit', () => {
+    const parsed = parseMathPlots('%plot2d x=0..3.14, samples=10\ny=\\sin(x)');
+    const base = parsed.plots[0] as never as import('./mathPlotSpec').MathPlot2DSpec;
+    const sampled = samplePlot2D({ ...base, yDomain: { min: 5, max: 5 } });
+
+    // Auto-fit domain, not the degenerate override.
+    expect(sampled.yDomain.min).toBeLessThan(sampled.yDomain.max);
+    expect(sampled.yDomain).not.toEqual({ min: 5, max: 5 });
+  });
+
+  it('honors a manual z-axis override for 3D plots', () => {
+    const parsed = parseMathPlots('%plot3d z=x^2+y^2, x=-2..2, y=-2..2, samples=20');
+    const base = parsed.plots[0] as never as import('./mathPlotSpec').MathPlot3DSpec;
+    const sampled = samplePlot3D({ ...base, zDomain: { min: 0, max: 4 } });
+
+    expect(sampled.zDomain).toEqual({ min: 0, max: 4 });
+  });
+
   it('builds compact default directives for inferred math bodies', () => {
     expect(buildDefaultPlotDirective('2d', 'y=\\sin(x)')).toBe('%plot2d x=-10..10, samples=600');
     expect(buildDefaultPlotDirective('3d', 'z=x^2+y^2')).toBe('%plot3d x=-5..5, y=-5..5, samples=60');
