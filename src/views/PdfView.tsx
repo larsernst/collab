@@ -4,6 +4,7 @@ import type { PDFDocumentProxy, RenderTask } from 'pdfjs-dist/legacy/build/pdf.m
 import {
   Bookmark,
   BookmarkPlus,
+  ChevronDown,
   ChevronLeft,
   ChevronRight,
   Columns2,
@@ -32,6 +33,18 @@ import { toast } from 'sonner';
 import { Button } from '../components/ui/button';
 import { Input } from '../components/ui/input';
 import { Textarea } from '../components/ui/textarea';
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuRadioGroup,
+  DropdownMenuRadioItem,
+  DropdownMenuSeparator,
+  DropdownMenuSub,
+  DropdownMenuSubContent,
+  DropdownMenuSubTrigger,
+  DropdownMenuTrigger,
+} from '../components/ui/dropdown-menu';
 import { cn } from '../lib/utils';
 import { tauriCommands } from '../lib/tauri';
 import { readOcrCache, writeOcrCache } from '../lib/ocrCache';
@@ -2183,42 +2196,47 @@ export default function PdfView({ relativePath }: Props) {
             </div>
 
             <div className={documentTopBarGroupClass}>
-              <Button
-                size="sm"
-                variant="ghost"
-                className={cn('h-8 gap-1.5 px-2.5 text-xs', zoomMode === 'fit-width' && 'bg-accent text-accent-foreground')}
-                onClick={() => setZoomMode('fit-width')}
-              >
-                <Rows3 size={14} />
-                Fit width
-              </Button>
-              <Button
-                size="sm"
-                variant="ghost"
-                className={cn('h-8 gap-1.5 px-2.5 text-xs', zoomMode === 'fit-height' && 'bg-accent text-accent-foreground')}
-                onClick={() => setZoomMode('fit-height')}
-              >
-                <Columns2 size={14} />
-                Fit height
-              </Button>
-              <Button
-                size="sm"
-                variant="ghost"
-                className={cn('h-8 gap-1.5 px-2.5 text-xs', zoomMode === 'fit-page' && 'bg-accent text-accent-foreground')}
-                onClick={() => setZoomMode('fit-page')}
-              >
-                <Maximize2 size={14} />
-                Fit page
-              </Button>
-              <Button
-                size="sm"
-                variant="ghost"
-                className="h-8 gap-1.5 px-2.5 text-xs"
-                onClick={() => setRotation((current) => (current + 90) % 360)}
-              >
-                <RotateCw size={14} />
-                Rotate
-              </Button>
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <Button size="sm" variant="ghost" className="h-8 gap-1.5 px-2.5 text-xs">
+                    <Maximize2 size={14} />
+                    View
+                    <ChevronDown size={13} className="opacity-60" />
+                  </Button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="start" className="w-44">
+                  <DropdownMenuSub>
+                    <DropdownMenuSubTrigger>
+                      <Maximize2 size={14} className="mr-2" />
+                      Fit
+                    </DropdownMenuSubTrigger>
+                    <DropdownMenuSubContent>
+                      <DropdownMenuRadioGroup
+                        value={zoomMode}
+                        onValueChange={(value) => setZoomMode(value as ZoomMode)}
+                      >
+                        <DropdownMenuRadioItem value="fit-width">
+                          <Rows3 size={14} className="mr-2" />
+                          Fit width
+                        </DropdownMenuRadioItem>
+                        <DropdownMenuRadioItem value="fit-height">
+                          <Columns2 size={14} className="mr-2" />
+                          Fit height
+                        </DropdownMenuRadioItem>
+                        <DropdownMenuRadioItem value="fit-page">
+                          <Maximize2 size={14} className="mr-2" />
+                          Fit page
+                        </DropdownMenuRadioItem>
+                      </DropdownMenuRadioGroup>
+                    </DropdownMenuSubContent>
+                  </DropdownMenuSub>
+                  <DropdownMenuSeparator />
+                  <DropdownMenuItem onClick={() => setRotation((current) => (current + 90) % 360)}>
+                    <RotateCw size={14} className="mr-2" />
+                    Rotate 90°
+                  </DropdownMenuItem>
+                </DropdownMenuContent>
+              </DropdownMenu>
             </div>
 
             <div className={documentTopBarGroupClass}>
@@ -2237,18 +2255,6 @@ export default function PdfView({ relativePath }: Props) {
               >
                 <Crop size={14} />
                 Region snapshot
-              </Button>
-              <Button
-                size="sm"
-                variant="ghost"
-                className={cn('h-8 gap-1.5 px-2.5 text-xs', interactionMode === 'ocr' && 'bg-accent text-accent-foreground')}
-                onClick={() => {
-                  setInteractionMode((current) => current === 'ocr' ? 'none' : 'ocr');
-                  setRegionSelection(null);
-                }}
-              >
-                <FileText size={14} />
-                Region OCR
               </Button>
               <Button
                 size="sm"
@@ -2299,32 +2305,38 @@ export default function PdfView({ relativePath }: Props) {
 
             {pageCount > 1 && (
               <div className={documentTopBarGroupClass}>
-                <Button
-                  size="sm"
-                  variant="ghost"
-                  className={cn('h-8 gap-1.5 px-2.5 text-xs', layoutMode === 'single' && 'bg-accent text-accent-foreground')}
-                  onClick={() => setLayoutMode('single')}
-                >
-                  Single
-                </Button>
-                <Button
-                  size="sm"
-                  variant="ghost"
-                  className={cn('h-8 gap-1.5 px-2.5 text-xs', layoutMode === 'scroll' && 'bg-accent text-accent-foreground')}
-                  onClick={() => setLayoutMode('scroll')}
-                >
-                  <Rows3 size={14} />
-                  Long scroll
-                </Button>
-                <Button
-                  size="sm"
-                  variant="ghost"
-                  className={cn('h-8 gap-1.5 px-2.5 text-xs', layoutMode === 'spread' && 'bg-accent text-accent-foreground')}
-                  onClick={() => setLayoutMode('spread')}
-                >
-                  <Columns2 size={14} />
-                  Side by side
-                </Button>
+                <DropdownMenu>
+                  <DropdownMenuTrigger asChild>
+                    <Button size="sm" variant="ghost" className="h-8 gap-1.5 px-2.5 text-xs">
+                      {layoutMode === 'scroll'
+                        ? <Rows3 size={14} />
+                        : layoutMode === 'spread'
+                          ? <Columns2 size={14} />
+                          : <FileText size={14} />}
+                      {layoutMode === 'scroll' ? 'Long scroll' : layoutMode === 'spread' ? 'Side by side' : 'Single page'}
+                      <ChevronDown size={13} className="opacity-60" />
+                    </Button>
+                  </DropdownMenuTrigger>
+                  <DropdownMenuContent align="start" className="w-44">
+                    <DropdownMenuRadioGroup
+                      value={layoutMode}
+                      onValueChange={(value) => setLayoutMode(value as LayoutMode)}
+                    >
+                      <DropdownMenuRadioItem value="single">
+                        <FileText size={14} className="mr-2" />
+                        Single page
+                      </DropdownMenuRadioItem>
+                      <DropdownMenuRadioItem value="scroll">
+                        <Rows3 size={14} className="mr-2" />
+                        Long scroll
+                      </DropdownMenuRadioItem>
+                      <DropdownMenuRadioItem value="spread">
+                        <Columns2 size={14} className="mr-2" />
+                        Side by side
+                      </DropdownMenuRadioItem>
+                    </DropdownMenuRadioGroup>
+                  </DropdownMenuContent>
+                </DropdownMenu>
               </div>
             )}
           </>
@@ -2371,6 +2383,19 @@ export default function PdfView({ relativePath }: Props) {
                   </Button>
                 </div>
               </div>
+              <Button
+                size="sm"
+                variant="outline"
+                className={cn('mb-2 h-8 w-full gap-1.5 text-xs', interactionMode === 'ocr' && 'border-primary text-primary')}
+                onClick={() => {
+                  setInteractionMode((current) => current === 'ocr' ? 'none' : 'ocr');
+                  setRegionSelection(null);
+                }}
+                title="OCR a selected region of the page"
+              >
+                <Crop size={14} />
+                {interactionMode === 'ocr' ? 'Click & drag a region…' : 'Region OCR'}
+              </Button>
               {ocrLoading && (
                 <div className="h-1 overflow-hidden rounded-full bg-muted">
                   <div className="h-full bg-primary transition-all" style={{ width: `${Math.round((ocrProgress?.progress ?? 0) * 100)}%` }} />

@@ -888,6 +888,23 @@ export default function ImageView({ relativePath }: Props) {
                 </Button>
               </div>
             </div>
+            <Button
+              size="sm"
+              variant="outline"
+              className={cn('mb-2 h-8 w-full gap-1.5 text-xs', (cropMode || !!cropDraft) && 'border-primary text-primary')}
+              disabled={!src || !image || ocrLoading}
+              onClick={() => {
+                if (cropDraft) {
+                  void runImageOcr(false, cropDraft);
+                } else {
+                  beginCrop();
+                }
+              }}
+              title="OCR a selected region of the image"
+            >
+              <CropIcon size={14} />
+              {cropDraft ? 'OCR selected region' : cropMode ? 'Drag to select a region…' : 'Region OCR'}
+            </Button>
             {ocrLoading && (
               <div className="h-1 overflow-hidden rounded-full bg-muted">
                 <div className="h-full bg-primary transition-all" style={{ width: `${Math.round((ocrProgress?.progress ?? 0) * 100)}%` }} />
