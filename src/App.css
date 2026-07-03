@@ -1499,6 +1499,74 @@
   color: #4b5563;
 }
 
+/* Code blocks render on a light background in the exported/printed document
+   (atom-one-light palette), matching the light math plots rather than the
+   editor's dark highlight.js theme. */
+.note-print-document .markdown-preview pre.hljs {
+  background: #f6f8fa !important;
+  color: #383a42;
+  border-color: #d1d5db;
+}
+.note-print-document .markdown-preview .hljs-comment,
+.note-print-document .markdown-preview .hljs-quote {
+  color: #a0a1a7;
+  font-style: italic;
+}
+.note-print-document .markdown-preview .hljs-doctag,
+.note-print-document .markdown-preview .hljs-keyword,
+.note-print-document .markdown-preview .hljs-formula {
+  color: #a626a4;
+}
+.note-print-document .markdown-preview .hljs-section,
+.note-print-document .markdown-preview .hljs-name,
+.note-print-document .markdown-preview .hljs-selector-tag,
+.note-print-document .markdown-preview .hljs-deletion,
+.note-print-document .markdown-preview .hljs-subst {
+  color: #e45649;
+}
+.note-print-document .markdown-preview .hljs-literal {
+  color: #0184bb;
+}
+.note-print-document .markdown-preview .hljs-string,
+.note-print-document .markdown-preview .hljs-regexp,
+.note-print-document .markdown-preview .hljs-addition,
+.note-print-document .markdown-preview .hljs-attribute,
+.note-print-document .markdown-preview .hljs-meta .hljs-string {
+  color: #50a14f;
+}
+.note-print-document .markdown-preview .hljs-attr,
+.note-print-document .markdown-preview .hljs-variable,
+.note-print-document .markdown-preview .hljs-template-variable,
+.note-print-document .markdown-preview .hljs-type,
+.note-print-document .markdown-preview .hljs-selector-class,
+.note-print-document .markdown-preview .hljs-selector-attr,
+.note-print-document .markdown-preview .hljs-selector-pseudo,
+.note-print-document .markdown-preview .hljs-number {
+  color: #986801;
+}
+.note-print-document .markdown-preview .hljs-symbol,
+.note-print-document .markdown-preview .hljs-bullet,
+.note-print-document .markdown-preview .hljs-link,
+.note-print-document .markdown-preview .hljs-meta,
+.note-print-document .markdown-preview .hljs-selector-id,
+.note-print-document .markdown-preview .hljs-title {
+  color: #4078f2;
+}
+.note-print-document .markdown-preview .hljs-built_in,
+.note-print-document .markdown-preview .hljs-title.class_,
+.note-print-document .markdown-preview .hljs-class .hljs-title {
+  color: #c18401;
+}
+.note-print-document .markdown-preview .hljs-emphasis {
+  font-style: italic;
+}
+.note-print-document .markdown-preview .hljs-strong {
+  font-weight: 700;
+}
+.note-print-document .markdown-preview .hljs-link {
+  text-decoration: underline;
+}
+
 .note-print-state {
   display: flex;
   min-height: 100vh;
