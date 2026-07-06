@@ -28,6 +28,8 @@ export interface DocumentStatusPillProps {
    */
   onKeepLocal?: () => void;
   className?: string;
+  hideWhenSaved?: boolean;
+  compact?: boolean;
 }
 
 interface StatusPresentation {
@@ -68,7 +70,8 @@ const TONE_CLASS: Record<StatusPresentation['tone'], string> = {
   live: 'border-emerald-500/40 text-emerald-600 dark:text-emerald-400',
 };
 
-export function DocumentStatusPill({ status, onLoadRemote, onKeepLocal, className }: DocumentStatusPillProps) {
+export function DocumentStatusPill({ status, onLoadRemote, onKeepLocal, className, hideWhenSaved = false, compact = false }: DocumentStatusPillProps) {
+  if (hideWhenSaved && (status === 'idle' || status === 'saved')) return null;
   const { label, icon, tone } = present(status);
   const showActions = status === 'remote-pending' || status === 'conflict';
 
@@ -77,6 +80,7 @@ export function DocumentStatusPill({ status, onLoadRemote, onKeepLocal, classNam
       <span
         className={cn(
           'inline-flex items-center gap-1.5 rounded-full border px-2 py-1 text-[11px] font-medium',
+          compact && 'px-1.5 py-0 text-[10px]',
           TONE_CLASS[tone],
         )}
       >
@@ -89,7 +93,10 @@ export function DocumentStatusPill({ status, onLoadRemote, onKeepLocal, classNam
             <button
               type="button"
               onClick={onLoadRemote}
-              className="rounded-md border border-border/60 px-2 py-1 text-[11px] font-medium text-foreground outline-none transition-colors hover:bg-accent focus-visible:bg-accent"
+              className={cn(
+                'rounded-md border border-border/60 px-2 py-1 text-[11px] font-medium text-foreground outline-none transition-colors hover:bg-accent focus-visible:bg-accent',
+                compact && 'px-1.5 py-0 text-[10px]',
+              )}
             >
               Load latest
             </button>
@@ -98,7 +105,10 @@ export function DocumentStatusPill({ status, onLoadRemote, onKeepLocal, classNam
             <button
               type="button"
               onClick={onKeepLocal}
-              className="rounded-md border border-border/60 px-2 py-1 text-[11px] font-medium text-foreground outline-none transition-colors hover:bg-accent focus-visible:bg-accent"
+              className={cn(
+                'rounded-md border border-border/60 px-2 py-1 text-[11px] font-medium text-foreground outline-none transition-colors hover:bg-accent focus-visible:bg-accent',
+                compact && 'px-1.5 py-0 text-[10px]',
+              )}
             >
               {status === 'conflict' ? 'Keep mine' : 'Keep editing'}
             </button>

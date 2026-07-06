@@ -10,7 +10,6 @@ import {
   getDocumentBaseName,
   getDocumentFolderPath,
 } from '../components/layout/DocumentTopBar';
-import { DocumentStatusPill } from '../components/layout/DocumentStatusPill';
 import { ReadOnlyBanner } from '../components/layout/ReadOnlyBanner';
 import {
   EMPTY_SIZE,
@@ -25,6 +24,7 @@ import { SvgPropertiesPanel } from '../components/image/SvgPropertiesPanel';
 import { useSvgSession } from '../components/image/useSvgSession';
 import { findNode, removeNode, reorderNode, serializeScene, updateNode } from '../lib/svgDocument';
 import type { SvgNode, SvgScene } from '../types/svg';
+import { useDocumentStatusRegistration } from '../store/documentStatusStore';
 
 interface Props {
   relativePath: string | null;
@@ -79,6 +79,13 @@ export default function SvgVectorView({ relativePath }: Props) {
     markDirty,
     markSaved,
   });
+
+  const documentStatus = useMemo(() => (
+    !readOnly
+      ? { status, onLoadRemote: loadRemote, onKeepLocal: keepLocal }
+      : null
+  ), [keepLocal, loadRemote, readOnly, status]);
+  useDocumentStatusRegistration(relativePath, documentStatus);
 
   const [mode, setMode] = useState<SvgMode>('view');
   const [tool, setTool] = useState<SvgTool>('select');
@@ -170,10 +177,7 @@ export default function SvgVectorView({ relativePath }: Props) {
             </div>
 
             {mode === 'edit' && !readOnly && (
-              <>
-                <SvgToolbar tool={tool} onToolChange={setTool} dirty={dirty} saving={saving} onSave={() => void save()} />
-                <DocumentStatusPill status={status} onLoadRemote={loadRemote} onKeepLocal={keepLocal} />
-              </>
+              <SvgToolbar tool={tool} onToolChange={setTool} dirty={dirty} saving={saving} onSave={() => void save()} />
             )}
 
             <div className={documentTopBarGroupClass}>

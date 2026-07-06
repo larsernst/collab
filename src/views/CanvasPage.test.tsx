@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { useCollabStore } from '../store/collabStore';
 import { useEditorStore } from '../store/editorStore';
+import { useDocumentStatusStore } from '../store/documentStatusStore';
 import { useUiStore } from '../store/uiStore';
 import { useVaultStore } from '../store/vaultStore';
 
@@ -235,6 +236,7 @@ describe('CanvasPage save behavior', () => {
 
   afterEach(() => {
     cleanup();
+    useDocumentStatusStore.setState({ statuses: {} });
   });
 
   it('surfaces optimistic-write conflicts through the document status pill', async () => {
@@ -252,10 +254,10 @@ describe('CanvasPage save behavior', () => {
     await screen.findByText(/0 cards and 0 links/i);
     fireEvent.click(screen.getByRole('button', { name: /add text/i }));
 
-    // The controller latches the conflict and pauses autosave; the shared status
-    // pill surfaces it for review instead of the legacy modal dialog.
+    // The controller latches the conflict and publishes it to the central
+    // status bar surface instead of the legacy modal dialog.
     await waitFor(() => {
-      expect(screen.getByText(/Conflict needs review/i)).toBeTruthy();
+      expect(useDocumentStatusStore.getState().statuses['Boards/test.canvas']?.status).toBe('conflict');
     }, { timeout: 2000 });
     expect(tauriMocks.createSnapshot).not.toHaveBeenCalled();
   });

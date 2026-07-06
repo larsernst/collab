@@ -5,6 +5,7 @@ import { Awareness } from 'y-protocols/awareness';
 
 import { useCollabStore } from '../store/collabStore';
 import { useEditorStore } from '../store/editorStore';
+import { useDocumentStatusStore } from '../store/documentStatusStore';
 import { useUiStore } from '../store/uiStore';
 import { useVaultStore } from '../store/vaultStore';
 
@@ -147,6 +148,7 @@ describe('NoteView external reload behavior', () => {
 
   afterEach(() => {
     cleanup();
+    useDocumentStatusStore.setState({ statuses: {} });
   });
 
   it('reloads on external modification when the note is clean', async () => {
@@ -204,11 +206,13 @@ describe('NoteView external reload behavior', () => {
     await noteEvents.fileModifiedHandler?.({ payload: { path: 'Notes/a.md' } });
 
     // A newer remote (hash-2) is queued as pending, not applied over local edits.
-    await waitFor(() => expect(screen.getByText(/Remote changes available/)).toBeTruthy());
+    await waitFor(() => {
+      expect(useDocumentStatusStore.getState().statuses['Notes/a.md']?.status).toBe('remote-pending');
+    });
     expect(screen.getByTestId('editor-content').textContent).not.toBe('external update');
 
     // Load latest applies the queued remote content.
-    fireEvent.click(screen.getByRole('button', { name: /load latest/i }));
+    useDocumentStatusStore.getState().statuses['Notes/a.md']?.onLoadRemote?.();
     await waitFor(() => expect(screen.getByTestId('editor-content').textContent).toBe('external update'));
   });
 

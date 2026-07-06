@@ -82,8 +82,8 @@ import { useVaultStore } from '../store/vaultStore';
 import { createVaultClient } from '../lib/vaultClient';
 import { useDocumentSessionController } from '../lib/documentSessionController';
 import { onReplicaMutated } from '../lib/vaultReplica';
-import { DocumentStatusPill } from '../components/layout/DocumentStatusPill';
 import { isVaultReadOnly } from '../types/vault';
+import { useDocumentStatusRegistration } from '../store/documentStatusStore';
 import {
   createEmptyLogicDiagram,
   normalizeLogicDiagramDocument,
@@ -1261,6 +1261,13 @@ function LogicDiagramEditor({ relativePath }: Props) {
     }
   }, [controller]);
 
+  const documentStatus = useMemo(() => (
+    !readOnly && !loading
+      ? { status: snapshot.status, onLoadRemote: handleLoadRemote, onKeepLocal: handleKeepLocal }
+      : null
+  ), [handleKeepLocal, handleLoadRemote, loading, readOnly, snapshot.status]);
+  useDocumentStatusRegistration(relativePath, documentStatus);
+
   const counts = useMemo(() => {
     const gateCount = nodes.filter((node) => node.data.kind !== 'group').length;
     const groupCount = nodes.length - gateCount;
@@ -1272,13 +1279,6 @@ function LogicDiagramEditor({ relativePath }: Props) {
       <div className="rounded-full border border-border/60 px-2 py-1 text-[11px] text-muted-foreground">
         {counts.gateCount} gates · {counts.groupCount} groups · {edges.length} wires
       </div>
-      {!readOnly && !loading && (
-        <DocumentStatusPill
-          status={snapshot.status}
-          onLoadRemote={handleLoadRemote}
-          onKeepLocal={handleKeepLocal}
-        />
-      )}
     </div>
   );
 

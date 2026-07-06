@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { listen } from '@tauri-apps/api/event';
 import { useVaultStore } from '../store/vaultStore';
 import { useEditorStore } from '../store/editorStore';
@@ -21,13 +21,13 @@ import { openLiveNoteSession, type LiveDocumentSession } from '../lib/liveDocume
 import { onReplicaMutated } from '../lib/vaultReplica';
 import { useLivePeers } from '../lib/liveAwareness';
 import LivePeers from '../components/collaboration/LivePeers';
-import { DocumentStatusPill } from '../components/layout/DocumentStatusPill';
 import { yCollab } from 'y-codemirror.next';
 import { createVaultClient } from '../lib/vaultClient';
 import { isVaultReadOnly } from '../types/vault';
 import { ReadOnlyBanner } from '../components/layout/ReadOnlyBanner';
 import { useNoteSnippetStore } from '../store/noteSnippetStore';
 import { findSearchJumpRange } from '../lib/searchNavigation';
+import { useDocumentStatusRegistration } from '../store/documentStatusStore';
 
 function extractFirstH1(content: string): string | null {
   for (const line of content.split('\n')) {
@@ -383,19 +383,26 @@ export default function NoteView({ relativePath }: { relativePath: string }) {
     }
   };
 
-  const handleLoadRemote = () => {
+  const handleLoadRemote = useCallback(() => {
     if (controller.getSnapshot().conflicted) controller.resolveConflict('load-remote');
     else controller.applyRemoteNow();
-  };
+  }, [controller]);
 
-  const handleKeepLocal = () => {
+  const handleKeepLocal = useCallback(() => {
     if (controller.getSnapshot().conflicted) {
       controller.resolveConflict('keep-local');
       void controller.requestSave('manual');
     } else {
       controller.discardRemoteCandidate();
     }
-  };
+  }, [controller]);
+
+  const documentStatus = useMemo(() => (
+    !readOnly && content !== null
+      ? { status: snapshot.status, onLoadRemote: handleLoadRemote, onKeepLocal: handleKeepLocal }
+      : null
+  ), [content, handleKeepLocal, handleLoadRemote, readOnly, snapshot.status]);
+  useDocumentStatusRegistration(relativePath, documentStatus);
 
   if (content === null && !liveSession) {
     return (
@@ -420,14 +427,6 @@ export default function NoteView({ relativePath }: { relativePath: string }) {
           causes posAtCoords() to be offset by exactly the toolbar height. */}
       <div className="flex-1 min-h-0 relative overflow-hidden">
         <div className="absolute top-2 right-3 z-10 flex items-center gap-2">
-          {!readOnly && content !== null && (
-            <DocumentStatusPill
-              status={snapshot.status}
-              onLoadRemote={handleLoadRemote}
-              onKeepLocal={handleKeepLocal}
-              className="rounded-full bg-card/80 backdrop-blur px-2 py-1 shadow-sm border border-border"
-            />
-          )}
           {livePeers.length > 0 && (
             <div className="rounded-full bg-card/80 backdrop-blur px-2 py-1 shadow-sm border border-border">
               <LivePeers peers={livePeers} />

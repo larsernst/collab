@@ -68,7 +68,6 @@ import {
   getDocumentBaseName,
   getDocumentFolderPath,
 } from '../components/layout/DocumentTopBar';
-import { DocumentStatusPill } from '../components/layout/DocumentStatusPill';
 import type { CanvasData } from '../types/canvas';
 import type {
   PdfBookmark,
@@ -85,6 +84,7 @@ import {
   buildPdfQuoteMarkdown,
   buildPdfSnapshotMarkdown,
 } from '../lib/pdfWorkspace';
+import { useDocumentStatusRegistration } from '../store/documentStatusStore';
 import { PdfSendTargetDialog, type PdfSendTarget } from '../components/pdf/PdfSendTargetDialog';
 import { expandPdfHighlightRects, flattenPdfFiles } from './pdfViewUtils';
 import {
@@ -930,6 +930,13 @@ export default function PdfView({ relativePath }: Props) {
     if (pdfSessionSnapshot.conflicted) pdfSessionController.resolveConflict('keep-local');
     else pdfSessionController.discardRemoteCandidate();
   }, [pdfSessionController, pdfSessionSnapshot.conflicted]);
+
+  const documentStatus = useMemo(() => ({
+    status: pdfSessionSnapshot.status,
+    onLoadRemote: loadRemotePdfSession,
+    onKeepLocal: keepLocalPdfSession,
+  }), [keepLocalPdfSession, loadRemotePdfSession, pdfSessionSnapshot.status]);
+  useDocumentStatusRegistration(relativePath, documentStatus);
 
   const allFiles = useMemo(() => flattenPdfFiles(fileTree).filter((node) => !node.isFolder), [fileTree]);
   const availableNotes = useMemo(() => allFiles.filter((file) => file.extension.toLowerCase() === 'md'), [allFiles]);
@@ -2312,12 +2319,6 @@ export default function PdfView({ relativePath }: Props) {
                 </DropdownMenuContent>
               </DropdownMenu>
             </div>
-
-            <DocumentStatusPill
-              status={pdfSessionSnapshot.status}
-              onLoadRemote={loadRemotePdfSession}
-              onKeepLocal={keepLocalPdfSession}
-            />
 
             <div className={documentTopBarGroupClass}>
               <Button size="sm" variant="ghost" className="h-8 gap-1.5 px-2.5 text-xs" onClick={addBookmarkForCurrentPage}>

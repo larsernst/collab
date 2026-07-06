@@ -21,6 +21,7 @@ import { onReplicaMutated } from '../lib/vaultReplica';
 import { useCollabContext } from '../components/collaboration/CollabProvider';
 import { buildKanbanCardEditors, useLivePeers, type LivePeer, type LiveAwarenessUser } from '../lib/liveAwareness';
 import { useKanbanStore } from '../store/kanbanStore';
+import { useDocumentStatusRegistration } from '../store/documentStatusStore';
 
 // ── Context ───────────────────────────────────────────────────────────────────
 
@@ -308,6 +309,13 @@ export default function KanbanPage({ relativePath }: { relativePath: string | nu
       controller.discardRemoteCandidate();
     }
   }, [controller]);
+
+  const documentStatus = useMemo(() => (
+    !readOnly
+      ? { status: snapshot.status, onLoadRemote, onKeepLocal }
+      : null
+  ), [onKeepLocal, onLoadRemote, readOnly, snapshot.status]);
+  useDocumentStatusRegistration(relativePath, documentStatus);
 
   // Open a live co-editing session for hosted boards; fall back to REST when
   // unavailable. Remote changes (and the initial seeded state) flow in through

@@ -3,9 +3,11 @@ import { useVaultStore } from '../../store/vaultStore';
 import { useNoteIndexStore } from '../../store/noteIndexStore';
 import { useUiStore } from '../../store/uiStore';
 import { useUpdateStore } from '../../store/updateStore';
+import { useDocumentStatusStore } from '../../store/documentStatusStore';
 import PresenceBar from '../collaboration/PresenceBar';
 import HostedConnectionStatus from './HostedConnectionStatus';
 import SyncStatusIndicator from './SyncStatusIndicator';
+import { DocumentStatusPill } from './DocumentStatusPill';
 import { Progress } from '../ui/progress';
 import { BookOpen, Hash, Download, RefreshCw } from 'lucide-react';
 import { cn } from '../../lib/utils';
@@ -17,6 +19,9 @@ export default function StatusBar() {
   const { openVaultManager, openSettings } = useUiStore();
   const activeTab = openTabs.find((t) => t.relativePath === activeTabPath);
   const activeMeta = notes.find((n) => n.relativePath === activeTabPath);
+  const activeDocumentStatus = useDocumentStatusStore((state) =>
+    activeTabPath ? state.statuses[activeTabPath] : undefined,
+  );
 
   const { status, downloadProgress, updaterSupported } = useUpdateStore();
   const isDownloading = status === 'downloading';
@@ -88,6 +93,15 @@ export default function StatusBar() {
           </span>
         )}
         <SyncStatusIndicator />
+        {activeDocumentStatus && (
+          <DocumentStatusPill
+            status={activeDocumentStatus.status}
+            onLoadRemote={activeDocumentStatus.onLoadRemote}
+            onKeepLocal={activeDocumentStatus.onKeepLocal}
+            hideWhenSaved
+            compact
+          />
+        )}
         <HostedConnectionStatus />
         <PresenceBar />
       </div>

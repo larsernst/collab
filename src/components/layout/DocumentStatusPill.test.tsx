@@ -46,4 +46,15 @@ describe('DocumentStatusPill', () => {
     expect(onLoadRemote).toHaveBeenCalledTimes(1);
     expect(onKeepLocal).toHaveBeenCalledTimes(1);
   });
+
+  it('can hide clean saved states for status-bar placement', () => {
+    const { rerender } = render(<DocumentStatusPill status="idle" hideWhenSaved />);
+    expect(screen.queryByText('Saved')).toBeNull();
+
+    rerender(<DocumentStatusPill status="saved" hideWhenSaved />);
+    expect(screen.queryByText('Saved')).toBeNull();
+
+    rerender(<DocumentStatusPill status="dirty" hideWhenSaved />);
+    expect(screen.getByText('Unsaved changes')).toBeTruthy();
+  });
 });

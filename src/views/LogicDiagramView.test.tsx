@@ -3,6 +3,7 @@ import React from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { useEditorStore } from '../store/editorStore';
+import { useDocumentStatusStore } from '../store/documentStatusStore';
 import { useVaultStore } from '../store/vaultStore';
 
 const logicEvents = vi.hoisted(() => ({
@@ -108,7 +109,10 @@ describe('LogicDiagramView safe reload policy', () => {
     tauriMocks.writeNote.mockResolvedValue({ hash: 'v-write' });
   });
 
-  afterEach(cleanup);
+  afterEach(() => {
+    cleanup();
+    useDocumentStatusStore.setState({ statuses: {} });
+  });
 
   it('auto-applies a clean external change from a watcher event', async () => {
     tauriMocks.readNote
@@ -144,7 +148,9 @@ describe('LogicDiagramView safe reload policy', () => {
 
     // Local single-gate edit is preserved; the remote 2-gate state is not applied.
     expect(screen.getByText(/1 gates/)).toBeTruthy();
-    await waitFor(() => expect(screen.getByText(/Remote changes available/)).toBeTruthy());
+    await waitFor(() => {
+      expect(useDocumentStatusStore.getState().statuses[PATH]?.status).toBe('remote-pending');
+    });
   });
 
   it('ignores a stale watcher event whose version matches the loaded version', async () => {

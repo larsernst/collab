@@ -80,7 +80,6 @@ import type {
   PlanningCanvasNode,
 } from '../types/canvas';
 import type { NoteFile } from '../types/vault';
-import { DocumentStatusPill } from '../components/layout/DocumentStatusPill';
 import type { OnConnectStartParams, FinalConnectionState } from '@xyflow/react';
 import { useNoteIndexStore } from '../store/noteIndexStore';
 import { useCollabContext } from '../components/collaboration/CollabProvider';
@@ -88,6 +87,7 @@ import { isVaultReadOnly, type KnownUser } from '../types/vault';
 import { ReadOnlyBanner } from '../components/layout/ReadOnlyBanner';
 import LivePeers from '../components/collaboration/LivePeers';
 import { dedupePeersByUser, useLivePeers } from '../lib/liveAwareness';
+import { useDocumentStatusRegistration } from '../store/documentStatusStore';
 import { cn } from '../lib/utils';
 import { getVaultDocumentTabType } from '../lib/vaultLinks';
 
@@ -762,6 +762,13 @@ function CanvasBoard({ relativePath }: { relativePath: string | null }) {
     pauseAutosave: isCanvasInteracting,
     readOnly,
   });
+
+  const documentStatus = useMemo(() => (
+    !readOnly
+      ? { status: sessionStatus, onLoadRemote, onKeepLocal }
+      : null
+  ), [onKeepLocal, onLoadRemote, readOnly, sessionStatus]);
+  useDocumentStatusRegistration(relativePath, documentStatus);
 
   // ── Live awareness: co-editors and their node selections ─────────────────
   const livePeers = useLivePeers(liveSession);
@@ -1470,13 +1477,6 @@ function CanvasBoard({ relativePath }: { relativePath: string | null }) {
             <span className="shrink-0 text-xs text-muted-foreground">
               {nodes.length} {nodes.length === 1 ? 'card' : 'cards'} and {edges.length} {edges.length === 1 ? 'link' : 'links'}
             </span>
-            {!readOnly && (
-              <DocumentStatusPill
-                status={sessionStatus}
-                onLoadRemote={onLoadRemote}
-                onKeepLocal={onKeepLocal}
-              />
-            )}
             <LivePeers peers={livePeers} />
           </>
         }

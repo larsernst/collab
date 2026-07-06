@@ -41,7 +41,6 @@ import {
   getDocumentBaseName,
   getDocumentFolderPath,
 } from '../components/layout/DocumentTopBar';
-import { DocumentStatusPill } from '../components/layout/DocumentStatusPill';
 import { ImageAnnotationsPopover } from '../components/image/ImageAnnotationsPopover';
 import { ImageAdditiveToolbar } from '../components/image/ImageAdditiveToolbar';
 import { ImageAdditiveStage, type SelectableImageOcrWord } from '../components/image/ImageAdditiveStage';
@@ -70,6 +69,7 @@ import {
   type Dimensions,
   type Point,
 } from '../components/image/ImageViewUtils';
+import { useDocumentStatusRegistration } from '../store/documentStatusStore';
 
 interface Props {
   relativePath: string | null;
@@ -449,6 +449,13 @@ export default function ImageView({ relativePath }: Props) {
     setSaving,
   });
 
+  const documentStatus = useMemo(() => ({
+    status: overlayStatus,
+    onLoadRemote: loadRemoteOverlay,
+    onKeepLocal: keepLocalOverlay,
+  }), [keepLocalOverlay, loadRemoteOverlay, overlayStatus]);
+  useDocumentStatusRegistration(relativePath, documentStatus);
+
   const setOverlayItems = (updater: (items: ImageOverlayItem[]) => ImageOverlayItem[]) => {
     setOverlayDoc((current) => {
       if (!current) return current;
@@ -737,11 +744,6 @@ export default function ImageView({ relativePath }: Props) {
                 onDeleteSelected={deleteSelectedItem}
                 hasAdditiveItems={hasAdditiveItems}
                 onBakeIntoImage={() => setSaveIntent('flatten')}
-              />
-              <DocumentStatusPill
-                status={overlayStatus}
-                onLoadRemote={loadRemoteOverlay}
-                onKeepLocal={keepLocalOverlay}
               />
             </>
           )}
