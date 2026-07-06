@@ -1,4 +1,5 @@
 use crate::state::AppState;
+use base64::Engine as _;
 use notify::RecursiveMode;
 use notify_debouncer_mini::{new_debouncer, DebounceEventResult};
 use std::path::Path;
@@ -40,6 +41,17 @@ fn nearest_visible_relative_parent(relative: &str) -> Option<String> {
         }
     }
     None
+}
+
+fn source_path_from_sidecar_relative_path(relative: &str) -> Option<String> {
+    let encoded = relative
+        .strip_prefix(".collab/image-overlays/")
+        .or_else(|| relative.strip_prefix(".collab/pdf/"))?
+        .strip_suffix(".json")?;
+    let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(encoded)
+        .ok()?;
+    String::from_utf8(bytes).ok()
 }
 
 #[tauri::command]
@@ -86,6 +98,12 @@ pub fn watch_vault(
                         continue;
                     }
 
+                    if let Some(source_path) = source_path_from_sidecar_relative_path(&relative) {
+                        let payload = serde_json::json!({ "path": source_path });
+                        let _ = app_handle.emit("vault:file-modified", &payload);
+                        continue;
+                    }
+
                     if should_ignore_relative_path(&relative) {
                         if let Some(parent) = nearest_visible_relative_parent(&relative) {
                             let payload = serde_json::json!({ "path": parent });
@@ -120,7 +138,12 @@ pub fn watch_vault(
 
 #[cfg(test)]
 mod tests {
-    use super::nearest_visible_relative_parent;
+    use super::{nearest_visible_relative_parent, source_path_from_sidecar_relative_path};
+    use base64::Engine as _;
+
+    fn encode(path: &str) -> String {
+        base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(path)
+    }
 
     #[test]
     fn bubbles_hidden_temp_file_changes_to_visible_parent() {
@@ -140,6 +163,24 @@ mod tests {
         assert_eq!(
             nearest_visible_relative_parent("Docs/Sub/.tmp-upload/spec.pdf.part"),
             Some("Docs/Sub".to_string())
+        );
+    }
+
+    #[test]
+    fn decodes_image_overlay_sidecar_to_source_path() {
+        let encoded = encode("Pictures/demo.png");
+        assert_eq!(
+            source_path_from_sidecar_relative_path(&format!(".collab/image-overlays/{encoded}.json")),
+            Some("Pictures/demo.png".to_string()),
+        );
+    }
+
+    #[test]
+    fn decodes_pdf_sidecar_to_source_path() {
+        let encoded = encode("Docs/spec.pdf");
+        assert_eq!(
+            source_path_from_sidecar_relative_path(&format!(".collab/pdf/{encoded}.json")),
+            Some("Docs/spec.pdf".to_string()),
         );
     }
 }

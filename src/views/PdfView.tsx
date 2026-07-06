@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { listen } from '@tauri-apps/api/event';
 import { getDocument, GlobalWorkerOptions, PixelsPerInch, RenderingCancelledException, TextLayer } from 'pdfjs-dist/legacy/build/pdf.mjs';
 import type { PDFDocumentProxy, RenderTask } from 'pdfjs-dist/legacy/build/pdf.mjs';
 import {
@@ -50,6 +51,11 @@ import { tauriCommands } from '../lib/tauri';
 import { readOcrCache, writeOcrCache } from '../lib/ocrCache';
 import { createVaultClient } from '../lib/vaultClient';
 import type { VaultPdfAnnotations } from '../lib/vaultClient';
+import {
+  useDocumentSessionController,
+  type RemoteCandidate,
+} from '../lib/documentSessionController';
+import { onReplicaMutated } from '../lib/vaultReplica';
 import { vaultCan } from '../types/vault';
 import { useEditorStore } from '../store/editorStore';
 import { useUiStore } from '../store/uiStore';
@@ -62,6 +68,7 @@ import {
   getDocumentBaseName,
   getDocumentFolderPath,
 } from '../components/layout/DocumentTopBar';
+import { DocumentStatusPill } from '../components/layout/DocumentStatusPill';
 import type { CanvasData } from '../types/canvas';
 import type {
   PdfBookmark,
@@ -791,12 +798,6 @@ export default function PdfView({ relativePath }: Props) {
   const [pageSizes, setPageSizes] = useState<Record<number, { width: number; height: number }>>({});
   const [pdfState, setPdfState] = useState<PdfSidecarState>(EMPTY_PDF_STATE);
   const [sidecarLoaded, setSidecarLoaded] = useState(false);
-  // Hosted optimistic-lock token for the annotation document (null for local
-  // vaults, whose sidecars are not versioned).
-  const [annotationsVersion, setAnnotationsVersion] = useState<number | null>(null);
-  // Last annotation payload persisted for a hosted vault, used to skip the
-  // initial post-load save and avoid redundant writes.
-  const hostedAnnotationsRef = useRef<string | null>(null);
   const [selectionAction, setSelectionAction] = useState<SelectionActionState | null>(null);
   const [selectedHighlightId, setSelectedHighlightId] = useState<string | null>(null);
   const [selectedTextAnnotationId, setSelectedTextAnnotationId] = useState<string | null>(null);
@@ -834,6 +835,102 @@ export default function PdfView({ relativePath }: Props) {
     }),
   );
 
+  const normalizePdfState = useCallback((state: PdfSidecarState): PdfSidecarState => ({
+    ...EMPTY_PDF_STATE,
+    ...state,
+    textAnnotations: state.textAnnotations ?? [],
+    pageComments: state.pageComments ?? [],
+  }), []);
+
+  const serializePdfSession = useCallback((state: PdfSidecarState) => {
+    const normalized = normalizePdfState(state);
+    if (vault?.kind === 'hosted') {
+      return JSON.stringify({
+        bookmarks: normalized.bookmarks,
+        highlights: normalized.highlights,
+        textAnnotations: normalized.textAnnotations,
+        pageComments: normalized.pageComments,
+      });
+    }
+    return JSON.stringify({
+      ...normalized,
+      viewerState: normalized.viewerState ?? latestViewerStateRef.current,
+    });
+  }, [normalizePdfState, vault?.kind]);
+
+  const deserializePdfSession = useCallback((content: string): PdfSidecarState => {
+    return normalizePdfState(JSON.parse(content) as PdfSidecarState);
+  }, [normalizePdfState]);
+
+  const applyPdfSession = useCallback((candidate: RemoteCandidate<PdfSidecarState>) => {
+    const sidecar = normalizePdfState(candidate.document);
+    setPdfState(sidecar);
+    setBookmarksOpen(resolvePdfBookmarksOpen(sidecar.viewerState));
+    if (sidecar.viewerState?.lastPage && pageCount > 0) {
+      const nextPage = Math.min(Math.max(sidecar.viewerState.lastPage, 1), pageCount);
+      setPageNumber(nextPage);
+      setPageInput(String(nextPage));
+    }
+    if (sidecar.viewerState?.lastZoomMode === 'custom' || sidecar.viewerState?.lastZoomMode === 'fit-width' || sidecar.viewerState?.lastZoomMode === 'fit-height' || sidecar.viewerState?.lastZoomMode === 'fit-page') {
+      setZoomMode(sidecar.viewerState.lastZoomMode);
+    }
+    if (typeof sidecar.viewerState?.lastZoom === 'number') {
+      setZoom(clampZoom(sidecar.viewerState.lastZoom));
+    }
+    if (sidecar.viewerState?.lastLayoutMode === 'single' || sidecar.viewerState?.lastLayoutMode === 'scroll' || sidecar.viewerState?.lastLayoutMode === 'spread') {
+      setLayoutMode(sidecar.viewerState.lastLayoutMode);
+    }
+    if (typeof sidecar.viewerState?.lastRotation === 'number') {
+      setRotation(sidecar.viewerState.lastRotation);
+    }
+  }, [normalizePdfState, pageCount]);
+
+  const readPdfSession = useCallback(async (): Promise<{ content: string; version: string | null }> => {
+    if (!vault || !relativePath) return { content: serializePdfSession(EMPTY_PDF_STATE), version: null };
+    const annotations = await createVaultClient(vault).readPdfAnnotations(relativePath);
+    const state = normalizePdfState(annotations.state);
+    const content = serializePdfSession(state);
+    return { content, version: annotations.version === null ? content : String(annotations.version) };
+  }, [normalizePdfState, relativePath, serializePdfSession, vault]);
+
+  const { controller: pdfSessionController, snapshot: pdfSessionSnapshot } = useDocumentSessionController<PdfSidecarState>({
+    serialize: serializePdfSession,
+    deserialize: deserializePdfSession,
+    applyDocument: applyPdfSession,
+    read: readPdfSession,
+    write: async ({ content, expectedVersion }) => {
+      if (!vault || !relativePath) return { version: expectedVersion ?? content };
+      const state = deserializePdfSession(content);
+      if (vault.kind === 'hosted') {
+        const parsedVersion = expectedVersion == null ? null : Number(expectedVersion);
+        const result = await createVaultClient(vault).writePdfAnnotations(
+          relativePath,
+          state,
+          Number.isFinite(parsedVersion) ? parsedVersion : null,
+        );
+        const nextContent = serializePdfSession(result.state);
+        return { version: result.version === null ? nextContent : String(result.version), mergedContent: nextContent };
+      }
+      await tauriCommands.writePdfSidecarState(vault.path, relativePath, {
+        ...state,
+        viewerState: latestViewerStateRef.current,
+      });
+      const nextContent = serializePdfSession({ ...state, viewerState: latestViewerStateRef.current });
+      return { version: nextContent, mergedContent: nextContent };
+    },
+    autosaveDebounceMs: vault?.kind === 'hosted' ? 400 : 250,
+  });
+
+  const loadRemotePdfSession = useCallback(() => {
+    if (pdfSessionSnapshot.conflicted) pdfSessionController.resolveConflict('load-remote');
+    else pdfSessionController.applyRemoteNow();
+  }, [pdfSessionController, pdfSessionSnapshot.conflicted]);
+
+  const keepLocalPdfSession = useCallback(() => {
+    if (pdfSessionSnapshot.conflicted) pdfSessionController.resolveConflict('keep-local');
+    else pdfSessionController.discardRemoteCandidate();
+  }, [pdfSessionController, pdfSessionSnapshot.conflicted]);
+
   const allFiles = useMemo(() => flattenPdfFiles(fileTree).filter((node) => !node.isFolder), [fileTree]);
   const availableNotes = useMemo(() => allFiles.filter((file) => file.extension.toLowerCase() === 'md'), [allFiles]);
   const currentNotePath = useMemo(() => {
@@ -868,8 +965,6 @@ export default function PdfView({ relativePath }: Props) {
     setPageSizes({});
     setPdfState(EMPTY_PDF_STATE);
     setSidecarLoaded(false);
-    setAnnotationsVersion(null);
-    hostedAnnotationsRef.current = null;
     setSelectionAction(null);
     setSelectedHighlightId(null);
     setSelectedTextAnnotationId(null);
@@ -895,8 +990,7 @@ export default function PdfView({ relativePath }: Props) {
         .catch(() => ({ state: EMPTY_PDF_STATE, version: null }) as VaultPdfAnnotations),
     ])
       .then(async ([dataUrl, annotations]) => {
-        const sidecar = annotations.state;
-        setAnnotationsVersion(annotations.version);
+        const sidecar = normalizePdfState(annotations.state);
         const data = dataUrlToUint8Array(dataUrl);
         const task = getDocument({ data });
         const pdf = await task.promise;
@@ -911,14 +1005,14 @@ export default function PdfView({ relativePath }: Props) {
         const initialPage = Math.min(Math.max(sidecar.viewerState?.lastPage ?? 1, 1), pdf.numPages);
 
         setPageSizes({ 1: { width: initialViewport.width, height: initialViewport.height } });
-        setPdfState({
-          ...EMPTY_PDF_STATE,
-          ...sidecar,
-          textAnnotations: sidecar.textAnnotations ?? [],
-          pageComments: sidecar.pageComments ?? [],
-        });
+        setPdfState(sidecar);
         setBookmarksOpen(resolvePdfBookmarksOpen(sidecar.viewerState));
         setSidecarLoaded(true);
+        pdfSessionController.load(
+          serializePdfSession(sidecar),
+          annotations.version === null ? serializePdfSession(sidecar) : String(annotations.version),
+          'rest',
+        );
         setDocumentProxy(pdf);
         setPageCount(pdf.numPages);
         setPageNumber(initialPage);
@@ -948,10 +1042,10 @@ export default function PdfView({ relativePath }: Props) {
     return () => {
       cancelled = true;
     };
-  }, [relativePath, supportsSidecars, vault?.path]);
+  }, [normalizePdfState, pdfSessionController, relativePath, serializePdfSession, supportsSidecars, vault?.path]);
 
   useEffect(() => {
-    if (!vault || !relativePath || !sidecarLoaded || !supportsSidecars) return;
+    if (!vault || !relativePath || !sidecarLoaded) return;
     latestViewerStateRef.current = buildPdfViewerState({
       pageNumber,
       zoomMode,
@@ -960,58 +1054,38 @@ export default function PdfView({ relativePath }: Props) {
       rotation,
       bookmarksOpen,
     });
-    const timeout = window.setTimeout(() => {
-      void tauriCommands.writePdfSidecarState(vault.path, relativePath, {
-        ...pdfState,
-        viewerState: latestViewerStateRef.current,
-      }).catch(() => {});
-    }, 250);
-    return () => {
-      window.clearTimeout(timeout);
-      void tauriCommands.writePdfSidecarState(vault.path, relativePath, {
-        ...pdfState,
-        viewerState: latestViewerStateRef.current,
-      }).catch(() => {});
-    };
-  }, [bookmarksOpen, layoutMode, pageNumber, pdfState, relativePath, rotation, sidecarLoaded, supportsSidecars, vault?.path, zoom, zoomMode]);
-
-  // Hosted vaults persist only the shared annotation collections (not per-user
-  // viewer state) through the permission-enforced server endpoint, with
-  // optimistic concurrency on the annotation sequence.
-  useEffect(() => {
-    if (!vault || vault.kind !== 'hosted' || !sidecarLoaded) return;
-    const snapshot = JSON.stringify({
-      bookmarks: pdfState.bookmarks,
-      highlights: pdfState.highlights,
-      textAnnotations: pdfState.textAnnotations,
-      pageComments: pdfState.pageComments,
+    pdfSessionController.markLocalChange({
+      ...pdfState,
+      viewerState: latestViewerStateRef.current,
     });
-    // The first run after a load establishes the baseline without re-saving the
-    // freshly loaded annotations.
-    if (hostedAnnotationsRef.current === null) {
-      hostedAnnotationsRef.current = snapshot;
-      return;
-    }
-    if (hostedAnnotationsRef.current === snapshot) return;
-    const timeout = window.setTimeout(() => {
-      void createVaultClient(vault)
-        .writePdfAnnotations(relativePath, pdfState, annotationsVersion)
-        .then((result) => {
-          hostedAnnotationsRef.current = JSON.stringify({
-            bookmarks: result.state.bookmarks,
-            highlights: result.state.highlights,
-            textAnnotations: result.state.textAnnotations,
-            pageComments: result.state.pageComments,
-          });
-          setAnnotationsVersion(result.version);
-        })
-        .catch((saveError) => {
-          console.error(saveError);
-          toast.error('Could not save PDF annotations.');
-        });
-    }, 400);
-    return () => window.clearTimeout(timeout);
-  }, [annotationsVersion, pdfState, relativePath, sidecarLoaded, vault]);
+  }, [bookmarksOpen, layoutMode, pageNumber, pdfSessionController, pdfState, relativePath, rotation, sidecarLoaded, vault, zoom, zoomMode]);
+
+  useEffect(() => {
+    if (!vault || !supportsSidecars || !relativePath) return;
+    let unlisten: (() => void) | undefined;
+    listen<{ path: string }>('vault:file-modified', async (event) => {
+      if (event.payload?.path !== relativePath) return;
+      if (Date.now() - pdfSessionController.getSnapshot().lastLocalWriteStartedAt < 2000) return;
+      await pdfSessionController.handleExternalMutation('rest');
+    }).then((cleanup) => {
+      unlisten = cleanup;
+    });
+    return () => {
+      unlisten?.();
+    };
+  }, [pdfSessionController, relativePath, supportsSidecars, vault]);
+
+  useEffect(() => {
+    if (!vault || vault.kind !== 'hosted' || !relativePath) return;
+    return onReplicaMutated(async () => {
+      await pdfSessionController.handleExternalMutation('cache');
+    });
+  }, [pdfSessionController, relativePath, vault]);
+
+  useEffect(() => {
+    if (!pdfSessionSnapshot.conflicted) return;
+    toast.error('PDF annotations changed elsewhere. Review the pending changes before editing further.');
+  }, [pdfSessionSnapshot.conflicted]);
 
   const activePageSize = pageSizes[pageNumber] ?? pageSizes[1] ?? null;
   const rotatedPageSize = useMemo(
@@ -2238,6 +2312,12 @@ export default function PdfView({ relativePath }: Props) {
                 </DropdownMenuContent>
               </DropdownMenu>
             </div>
+
+            <DocumentStatusPill
+              status={pdfSessionSnapshot.status}
+              onLoadRemote={loadRemotePdfSession}
+              onKeepLocal={keepLocalPdfSession}
+            />
 
             <div className={documentTopBarGroupClass}>
               <Button size="sm" variant="ghost" className="h-8 gap-1.5 px-2.5 text-xs" onClick={addBookmarkForCurrentPage}>

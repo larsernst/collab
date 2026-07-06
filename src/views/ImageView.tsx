@@ -41,6 +41,7 @@ import {
   getDocumentBaseName,
   getDocumentFolderPath,
 } from '../components/layout/DocumentTopBar';
+import { DocumentStatusPill } from '../components/layout/DocumentStatusPill';
 import { ImageAnnotationsPopover } from '../components/image/ImageAnnotationsPopover';
 import { ImageAdditiveToolbar } from '../components/image/ImageAdditiveToolbar';
 import { ImageAdditiveStage, type SelectableImageOcrWord } from '../components/image/ImageAdditiveStage';
@@ -392,7 +393,13 @@ export default function ImageView({ relativePath }: Props) {
 
   const selectedItem = overlayDoc?.items.find((item) => item.id === selectedItemId) ?? null;
 
-  const { permanentDirty, saveImageOutput } = useImageDocumentSession({
+  const {
+    overlayStatus,
+    permanentDirty,
+    saveImageOutput,
+    loadRemoteOverlay,
+    keepLocalOverlay,
+  } = useImageDocumentSession({
     vault,
     relativePath,
     refreshFileTree,
@@ -730,6 +737,11 @@ export default function ImageView({ relativePath }: Props) {
                 onDeleteSelected={deleteSelectedItem}
                 hasAdditiveItems={hasAdditiveItems}
                 onBakeIntoImage={() => setSaveIntent('flatten')}
+              />
+              <DocumentStatusPill
+                status={overlayStatus}
+                onLoadRemote={loadRemoteOverlay}
+                onKeepLocal={keepLocalOverlay}
               />
             </>
           )}

@@ -1,7 +1,13 @@
-import { useCallback, useEffect, useMemo } from 'react';
+import { useCallback, useEffect, useMemo, useRef } from 'react';
+import { listen } from '@tauri-apps/api/event';
 import { toast } from 'sonner';
 
 import { tauriCommands } from '../../lib/tauri';
+import {
+  useDocumentSessionController,
+  type DocumentStatus,
+  type RemoteCandidate,
+} from '../../lib/documentSessionController';
 import { createVaultClient } from '../../lib/vaultClient';
 import type {
   ImageOverlayDocument,
@@ -11,7 +17,6 @@ import type { VaultMeta } from '../../types/vault';
 import {
   createEmptyEdits,
   EMPTY_SIZE,
-  getOverlaySignature,
   isPermanentDirty,
   type Dimensions,
 } from './ImageViewUtils';
@@ -86,7 +91,6 @@ export function useImageDocumentSession({
   dimensions,
   overlayDoc,
   overlayLoaded,
-  persistedOverlaySignature,
   permanentEdits,
   cropMode,
   permanentDisplayDimensions,
@@ -130,9 +134,68 @@ export function useImageDocumentSession({
     () => (vault ? createVaultClient(vault).capabilities.nativeFilesystem : false),
     [vault?.path],
   );
-  const overlaySignature = useMemo(() => getOverlaySignature(overlayDoc), [overlayDoc]);
-  const overlayDirty = overlayLoaded && overlaySignature !== persistedOverlaySignature;
+  const vaultPath = vault?.path ?? null;
+  const overlayFallbackDimensionsRef = useRef<Dimensions>(EMPTY_SIZE);
+  overlayFallbackDimensionsRef.current = dimensions
+    ?? (overlayDoc ? { width: overlayDoc.baseWidth, height: overlayDoc.baseHeight } : EMPTY_SIZE);
   const permanentDirty = useMemo(() => isPermanentDirty(permanentEdits), [permanentEdits]);
+
+  const serializeOverlay = useCallback((doc: ImageOverlayDocument) => JSON.stringify(doc), []);
+  const parseOverlay = useCallback((content: string) => JSON.parse(content) as ImageOverlayDocument, []);
+  const applyOverlayDocument = useCallback((candidate: RemoteCandidate<ImageOverlayDocument>) => {
+    setOverlayDoc(candidate.document);
+    setPersistedOverlaySignature(candidate.content);
+    setOverlayLoaded(true);
+  }, [setOverlayDoc, setOverlayLoaded, setPersistedOverlaySignature]);
+  const readOverlayDocument = useCallback(async (fallbackDimensions?: Dimensions): Promise<{ content: string; version: string }> => {
+    const dimensionsForFallback = fallbackDimensions ?? overlayFallbackDimensionsRef.current;
+    if (!vaultPath || !relativePath) {
+      const fallback = createEmptyOverlayDocument(dimensionsForFallback);
+      const content = JSON.stringify(fallback);
+      return { content, version: content };
+    }
+    const overlayContent = await tauriCommands.readImageOverlay(vaultPath, relativePath);
+    if (overlayContent) return { content: overlayContent, version: overlayContent };
+    const fallback = createEmptyOverlayDocument(dimensionsForFallback);
+    const content = JSON.stringify(fallback);
+    return { content, version: content };
+  }, [createEmptyOverlayDocument, relativePath, vaultPath]);
+
+  const { controller: overlayController, snapshot: overlaySnapshot } = useDocumentSessionController<ImageOverlayDocument>({
+    serialize: serializeOverlay,
+    deserialize: parseOverlay,
+    applyDocument: applyOverlayDocument,
+    read: async () => {
+      if (!supportsImageEditing || !vaultPath || !relativePath) return null;
+      return readOverlayDocument();
+    },
+    write: async ({ content, expectedVersion }) => {
+      if (!supportsImageEditing || !vaultPath || !relativePath) return { version: expectedVersion ?? content };
+      const parsed = parseOverlay(content);
+      if (parsed.items.length === 0) {
+        await tauriCommands.deleteImageOverlay(vaultPath, relativePath);
+        const emptyContent = JSON.stringify(parsed);
+        setPersistedOverlaySignature('');
+        return { version: emptyContent, mergedContent: emptyContent };
+      }
+      const toPersist = JSON.stringify({ ...parsed, updatedAt: Date.now() });
+      await tauriCommands.writeImageOverlay(vaultPath, relativePath, toPersist);
+      setPersistedOverlaySignature(toPersist);
+      return { version: toPersist, mergedContent: toPersist };
+    },
+    autosaveDebounceMs: 450,
+  });
+
+  const overlayDirty = overlayLoaded && overlaySnapshot.dirty;
+  const overlayStatus: DocumentStatus = overlaySnapshot.status;
+  const loadRemoteOverlay = useCallback(() => {
+    if (overlaySnapshot.conflicted) overlayController.resolveConflict('load-remote');
+    else overlayController.applyRemoteNow();
+  }, [overlayController, overlaySnapshot.conflicted]);
+  const keepLocalOverlay = useCallback(() => {
+    if (overlaySnapshot.conflicted) overlayController.resolveConflict('keep-local');
+    else overlayController.discardRemoteCandidate();
+  }, [overlayController, overlaySnapshot.conflicted]);
 
   useEffect(() => {
     if (!vault || !relativePath) {
@@ -181,21 +244,9 @@ export function useImageDocumentSession({
           return;
         }
         try {
-          const overlayContent = await tauriCommands.readImageOverlay(vault.path, relativePath);
+          const loadedOverlay = await readOverlayDocument(loaded?.decodedDimensions ?? EMPTY_SIZE);
           if (cancelled) return;
-          const fallback = createEmptyOverlayDocument(loaded?.decodedDimensions ?? EMPTY_SIZE);
-
-          if (!overlayContent) {
-            setOverlayDoc(fallback);
-            setPersistedOverlaySignature('');
-            setOverlayLoaded(true);
-            return;
-          }
-
-          const parsed = JSON.parse(overlayContent) as ImageOverlayDocument;
-          setOverlayDoc(parsed);
-          setPersistedOverlaySignature(JSON.stringify(parsed));
-          setOverlayLoaded(true);
+          overlayController.load(loadedOverlay.content, loadedOverlay.version, 'local');
         } catch (overlayError) {
           if (!cancelled) {
             setOverlayDoc(createEmptyOverlayDocument(loaded?.decodedDimensions ?? EMPTY_SIZE));
@@ -225,6 +276,7 @@ export function useImageDocumentSession({
     createEmptyOverlayDocument,
     loadImage,
     relativePath,
+    readOverlayDocument,
     setArrowInteraction,
     setCropDragStart,
     setCropDraft,
@@ -246,6 +298,7 @@ export function useImageDocumentSession({
     setTextInteraction,
     setZoomPercent,
     supportsImageEditing,
+    overlayController,
     vault?.path,
   ]);
 
@@ -271,31 +324,33 @@ export function useImageDocumentSession({
   useEffect(() => {
     if (!relativePath) return;
     if (overlayDirty || permanentDirty) markDirty(relativePath);
-    else markSaved(relativePath, `image:${Date.now()}`);
-  }, [markDirty, markSaved, overlayDirty, permanentDirty, relativePath]);
+    else markSaved(relativePath, `image:${overlaySnapshot.loadedVersion ?? ''}`);
+  }, [markDirty, markSaved, overlayDirty, permanentDirty, relativePath, overlaySnapshot.loadedVersion]);
 
   useEffect(() => {
-    if (!vault || !relativePath || !overlayLoaded || !overlayDoc) return;
-    // Hosted vaults cannot persist overlay sidecars; keep edits in-memory only.
-    if (!supportsImageEditing) return;
+    if (!overlayLoaded || !overlayDoc || !supportsImageEditing) return;
+    overlayController.markLocalChange(overlayDoc);
+  }, [overlayController, overlayDoc, overlayLoaded, supportsImageEditing]);
 
-    const timeout = window.setTimeout(async () => {
-      try {
-        if (overlayDoc.items.length === 0) {
-          await tauriCommands.deleteImageOverlay(vault.path, relativePath);
-          setPersistedOverlaySignature('');
-        } else {
-          const serialized = JSON.stringify({ ...overlayDoc, updatedAt: Date.now() });
-          await tauriCommands.writeImageOverlay(vault.path, relativePath, serialized);
-          setPersistedOverlaySignature(serialized);
-        }
-      } catch (saveError) {
-        toast.error(`Failed to save additive annotations: ${saveError}`);
-      }
-    }, 450);
+  useEffect(() => {
+    if (!vaultPath || !relativePath || !supportsImageEditing) return;
+    let unlisten: (() => void) | undefined;
+    listen<{ path: string }>('vault:file-modified', async (event) => {
+      if (event.payload?.path !== relativePath) return;
+      if (Date.now() - overlayController.getSnapshot().lastLocalWriteStartedAt < 2000) return;
+      await overlayController.handleExternalMutation('local');
+    }).then((cleanup) => {
+      unlisten = cleanup;
+    });
+    return () => {
+      unlisten?.();
+    };
+  }, [overlayController, relativePath, supportsImageEditing, vaultPath]);
 
-    return () => window.clearTimeout(timeout);
-  }, [overlayDoc, overlayLoaded, relativePath, setPersistedOverlaySignature, supportsImageEditing, vault?.path]);
+  useEffect(() => {
+    if (!overlaySnapshot.conflicted) return;
+    toast.error('Image annotations changed elsewhere. Review the pending changes before editing further.');
+  }, [overlaySnapshot.conflicted]);
 
   useEffect(() => {
     if (mode !== 'permanent' || !image || !previewCanvasRef.current) return;
@@ -423,7 +478,10 @@ export function useImageDocumentSession({
 
   return {
     overlayDirty,
+    overlayStatus,
     permanentDirty,
     saveImageOutput,
+    loadRemoteOverlay,
+    keepLocalOverlay,
   };
 }

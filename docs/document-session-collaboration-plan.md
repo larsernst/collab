@@ -239,7 +239,7 @@ Migration order and status:
 4. **Kanban REST fallback — Done (2026-07-06).**
 5. **SVG vector editor — Done (2026-07-06).**
 6. **Grid view — Done (2026-07-06, audit-only).**
-7. PDF/image sidecars — pending.
+7. **PDF/image sidecars — Done (2026-07-06).**
 
 **Logic diagram migration (`src/views/LogicDiagramView.tsx`):**
 
@@ -409,6 +409,30 @@ green.
 
 **Grid tests** (`GridCell.test.tsx`): added logic-diagram render and drag-in
 coverage so the grid test matrix includes the migrated logic document type.
+
+**PDF/image sidecar migration (`src/views/PdfView.tsx`, `src/components/image/useImageDocumentSession.ts`, `src-tauri/src/commands/watcher.rs`):**
+
+- Image additive overlays now use `useDocumentSessionController<ImageOverlayDocument>`
+  for baseline, dirty, autosave, pending remote, and conflict state. Local
+  `vault:file-modified` events route through `handleExternalMutation`; clean
+  overlays apply the latest sidecar, while dirty overlays queue the remote
+  candidate and keep the visible local annotations.
+- PDF sidecar state now uses `useDocumentSessionController<PdfSidecarState>`.
+  Local vaults serialize the full sidecar including viewer state; hosted vaults
+  serialize only shared annotation collections so page/zoom changes do not write
+  hosted annotations. The PDF toolbar shows the shared `DocumentStatusPill`.
+- The native watcher now has a narrow `.collab/` exception for image overlay and
+  PDF sidecar files: it decodes `.collab/image-overlays/*.json` and
+  `.collab/pdf/*.json` back to the source vault path and emits the normal
+  `vault:file-modified` event. Other hidden `.collab/` runtime files remain
+  suppressed.
+- Permanent image raster edits remain outside the sidecar session. They still
+  save generated image bytes through the existing explicit save flow.
+
+**PDF/image tests**: `useImageDocumentSession.test.tsx` covers clean external
+overlay apply, dirty remote queueing, and debounced overlay persistence. Native
+watcher unit tests cover image/PDF sidecar path decoding. `tsc` and
+`cargo check --workspace` are clean.
 
 **Note — modal `ConflictDialog` is now unreached.** Notes, Canvas, and Kanban no
 longer call `collabStore.addConflict`, and SVG/PDF/image never did, so the modal
@@ -594,8 +618,8 @@ Source of truth for the audit below is the code as it stands today:
 | Logic | `LogicDiagramView.tsx` | REST optimistic autosave (600 ms) fired only on structural-signature change via `runExclusiveSave`→`writeLogic`; merge adoption; manual Save button; `conflictedRef` latch stops autosave. | **initial load only.** No watcher, no replica listener, no live session. | none | Conflict → `toast` + `conflictedRef` latch; no `ConflictDialog`; requires manual reopen. | Newest/smallest surface, but a hosted collaborator's edits never appear until reopen and the conflict latch is a dead-end. Safe first migration target. | shared controller, then live JSON |
 | Grid | `GridView.tsx` / `gridStore` | Not a per-file vault document. Workspace layout + cell content persisted in app-scoped `gridStore` (Zustand `persist`). Cells embed other views, which own their own document sessions. | none of its own (embedded views reload independently). | n/a | n/a (no vault-document write) | Low direct risk; safety depends entirely on the embedded child views. | audit-only; no session migration for the grid shell itself |
 | SVG | `useSvgSession.ts` | **Manual save only** (no autosave) through `useDocumentSessionController`; optimistic `writeDocument` with `base_content` merge; asset-backed legacy SVGs load but cannot save. | initial load; `vault:file-modified` watcher (local); `onReplicaMutated` (hosted) through the shared safe-remote policy. | none | Conflict/pending remote → shared `DocumentStatusPill` load/keep actions. | Live collaborative vector editing is still out of scope; REST fallback now prevents dirty-state overwrite. | shared controller, REST safe path complete |
-| PDF annotations | `PdfView.tsx` | Local: debounced `writePdfSidecarState` (viewer state + annotations). Hosted: debounced `writePdfAnnotations` with optimistic `annotationsVersion`; `hostedAnnotationsRef` baseline skips first save. | **initial load only** (`readAssetDataUrl` + annotations read). No watcher/replica/live for annotations. | none | Hosted write error → `toast`; no merge, no `ConflictDialog`. | Sidecar/annotation version conflicts silently lost on error; no remote refresh of annotations while open. | controller variant for sidecars |
-| Image overlays | `useImageDocumentSession.ts` | Local: debounced (450 ms) overlay sidecar `writeImageOverlay`/`deleteImageOverlay`; permanent edits via `saveGeneratedImage`. Hosted: editing disabled (in-memory only). | **initial load only.** No watcher/replica/live. | none | none — last-writer-wins on the sidecar; overwrite reloads the image. | Overlay overwrite; no concurrency control at all. | controller variant for sidecars |
+| PDF annotations | `PdfView.tsx` | `useDocumentSessionController<PdfSidecarState>` owns sidecar baseline/autosave. Local writes full sidecar including viewer state; hosted writes shared annotation collections only. | initial load; decoded local sidecar watcher; hosted replica mutation through safe remote policy. | none | Conflict/pending remote → shared `DocumentStatusPill` load/keep actions. | Live PDF co-editing is still out of scope; REST/sidecar fallback now prevents dirty-state overwrite. | controller sidecar path complete |
+| Image overlays | `useImageDocumentSession.ts` | `useDocumentSessionController<ImageOverlayDocument>` owns additive overlay baseline/autosave; permanent raster edits remain explicit generated-image saves. | initial load; decoded local sidecar watcher through safe remote policy. | none | Conflict/pending remote → shared `DocumentStatusPill` load/keep actions in additive mode. | Hosted overlay persistence remains unavailable; local sidecar overwrite risk is mitigated. | controller sidecar path complete |
 
 ### Reload-Trigger Policy
 
