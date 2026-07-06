@@ -894,6 +894,13 @@ function UsersPage({ currentUser }: { currentUser: ServerUser }) {
       await load();
     } catch (reason) { setError(String(reason)); }
   }
+  async function revokeInvitation(invitation: Invitation) {
+    try {
+      await serverApi.revokeInvitation(invitation.id);
+      if (invitationLink.includes(`invite=`)) setInvitationLink('');
+      await load();
+    } catch (reason) { setError(String(reason)); }
+  }
   async function setDisabled(user: ServerUser, disabled: boolean) {
     try {
       await serverApi.updateUser(user.id, { disabled });
@@ -917,6 +924,14 @@ function UsersPage({ currentUser }: { currentUser: ServerUser }) {
   const visibleUsers = query
     ? users.filter((user) => user.displayName.toLowerCase().includes(query) || user.username.toLowerCase().includes(query))
     : users;
+  const invitationStatus = (invitation: Invitation) =>
+    invitation.acceptedAt
+      ? 'accepted'
+      : invitation.revokedAt
+        ? 'revoked'
+        : new Date(invitation.expiresAt) < new Date()
+          ? 'expired'
+          : 'pending';
   return (
     <>
       <PageHeader eyebrow="IDENTITY" title="Users" subtitle="Create accounts, issue invitations, and manage access." action={<div className="actions"><Button variant="outline" size="sm" onClick={() => setShowInvite(!showInvite)}>Invite user</Button><Button size="sm" onClick={() => setShowCreate(!showCreate)}><Plus size={16} />Add user</Button></div>} />
@@ -930,7 +945,27 @@ function UsersPage({ currentUser }: { currentUser: ServerUser }) {
         </label>
         <div className="user-list">{visibleUsers.map((user) => <div className="user-row" key={user.id}><Avatar user={user} /><div className="grow"><strong>{user.displayName}</strong><small>{user.username} · {user.role}{user.isPrimaryAdmin ? ' · primary administrator' : ''}</small></div><Badge variant={user.role === 'admin' ? 'success' : 'outline'}>{user.role}</Badge><Badge variant={user.status === 'active' ? 'success' : 'destructive'}>{user.status}</Badge><span className="session-count">{user.activeSessions} sessions</span><div className="compact-actions user-actions"><Button aria-label="Edit" title="Edit" variant="outline" size="icon" onClick={() => setEditTarget(user)}><Pencil size={15} /></Button>{user.role === 'admin' ? <Button aria-label="Make member" title="Make member" variant="outline" size="icon" disabled={user.id === currentUser.id || user.isPrimaryAdmin} onClick={() => setRoleTarget(user)}><UserCog size={15} /></Button> : <Button aria-label="Make admin" title="Make admin" variant="outline" size="icon" onClick={() => setRoleTarget(user)}><ShieldCheck size={15} /></Button>}<Button aria-label="Activity" title="Activity" variant="outline" size="icon" onClick={async () => setActivity({ user, events: await serverApi.userActivity(user.id) })}><Activity size={15} /></Button><Button aria-label="Reset password" title="Reset password" variant="outline" size="icon" onClick={() => setResetTarget(user)}><KeyRound size={15} /></Button>{user.status === 'disabled' ? <Button aria-label="Re-enable" title="Re-enable" variant="outline" size="icon" disabled={user.isPrimaryAdmin} onClick={() => setDisabled(user, false)}><UserCheck size={15} /></Button> : <Button aria-label="Disable" title="Disable" variant="outline" size="icon" disabled={user.id === currentUser.id || user.isPrimaryAdmin} onClick={() => setDisabled(user, true)}><Ban size={15} /></Button>}<Button aria-label="Revoke sessions" title="Revoke sessions" variant="outline" size="icon" onClick={async () => { await serverApi.revokeSessions(user.id); await load(); }}><LogOut size={15} /></Button><Button aria-label="Delete account" title="Delete account" variant="destructive" size="icon" disabled={user.id === currentUser.id || user.isPrimaryAdmin} onClick={() => setConfirmDelete(user)}><UserX size={15} /></Button></div></div>)}{visibleUsers.length === 0 && <p className="subtle">No users match this search.</p>}</div>
       </Panel>
-      <Panel title={`${invitations.length} invitations`} icon={<KeyRound size={17} />}><div className="audit-list">{invitations.map((invitation) => <div className="audit-row" key={invitation.id}><div className="grow"><strong>{invitation.displayName}</strong><small>{invitation.username} · expires {new Date(invitation.expiresAt).toLocaleString()}</small></div><span className="request-chip">{invitation.acceptedAt ? 'accepted' : invitation.revokedAt ? 'revoked' : new Date(invitation.expiresAt) < new Date() ? 'expired' : 'pending'}</span></div>)}</div></Panel>
+      <Panel title={`${invitations.length} invitations`} icon={<KeyRound size={17} />}>
+        <div className="audit-list">
+          {invitations.map((invitation) => {
+            const status = invitationStatus(invitation);
+            return (
+              <div className="audit-row" key={invitation.id}>
+                <div className="grow">
+                  <strong>{invitation.displayName}</strong>
+                  <small>{invitation.username} · expires {new Date(invitation.expiresAt).toLocaleString()}</small>
+                </div>
+                <span className="request-chip">{status}</span>
+                {status === 'pending' && (
+                  <Button aria-label={`Revoke invitation for ${invitation.username}`} title="Revoke invitation" variant="outline" size="sm" onClick={() => void revokeInvitation(invitation)}>
+                    <Ban size={14} />Revoke
+                  </Button>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      </Panel>
       {activity && (
         <DialogShell
           title={`${activity.user.displayName} activity`}

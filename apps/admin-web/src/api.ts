@@ -145,6 +145,8 @@ export const serverApi = {
   invitations: () => api<Invitation[]>('/api/v1/admin/invitations'),
   createInvitation: (payload: Record<string, unknown>) =>
     api<CreatedInvitation>('/api/v1/admin/invitations', { method: 'POST', body: JSON.stringify(payload) }),
+  revokeInvitation: (id: string) =>
+    api<void>(`/api/v1/admin/invitations/${id}`, { method: 'DELETE' }),
   vaults: () => api<HostedVaultSummary[]>('/api/v1/admin/vaults'),
   createVault: (payload: Record<string, unknown>) =>
     api<{ id: string }>('/api/v1/vaults', { method: 'POST', body: JSON.stringify(payload) }),

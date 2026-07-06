@@ -37,6 +37,7 @@ vi.mock('./api', () => ({
     userActivity: vi.fn(),
     invitations: vi.fn(),
     createInvitation: vi.fn(),
+    revokeInvitation: vi.fn(),
     vaults: vi.fn(),
     createVault: vi.fn(),
     vaultDetail: vi.fn(),
@@ -905,6 +906,41 @@ describe('admin application', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Create link' }));
     await waitFor(() => expect(serverApi.createInvitation).toHaveBeenCalled());
     expect(await screen.findByText(/one-time-token/)).toBeTruthy();
+  });
+
+  it('revokes pending invitations from the user-management flow', async () => {
+    vi.mocked(serverApi.bootstrapStatus).mockResolvedValue({ required: false });
+    vi.mocked(serverApi.me).mockResolvedValue(admin);
+    vi.mocked(serverApi.users).mockResolvedValue([admin]);
+    vi.mocked(serverApi.invitations)
+      .mockResolvedValueOnce([{
+        id: 'invite-1',
+        username: 'alice',
+        displayName: 'Alice',
+        role: 'member',
+        createdAt: '2026-06-09T00:00:00Z',
+        expiresAt: '2099-06-12T00:00:00Z',
+        acceptedAt: null,
+        revokedAt: null,
+      }])
+      .mockResolvedValueOnce([{
+        id: 'invite-1',
+        username: 'alice',
+        displayName: 'Alice',
+        role: 'member',
+        createdAt: '2026-06-09T00:00:00Z',
+        expiresAt: '2099-06-12T00:00:00Z',
+        acceptedAt: null,
+        revokedAt: '2026-06-10T00:00:00Z',
+      }]);
+    vi.mocked(serverApi.revokeInvitation).mockResolvedValue(undefined);
+
+    render(<App />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Users' }));
+    fireEvent.click(await screen.findByRole('button', { name: /revoke invitation for alice/i }));
+
+    await waitFor(() => expect(serverApi.revokeInvitation).toHaveBeenCalledWith('invite-1'));
+    expect(await screen.findByText('revoked')).toBeTruthy();
   });
 
   it('re-enables and deletes normal accounts while protecting the primary administrator', async () => {

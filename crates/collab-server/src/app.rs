@@ -4,7 +4,7 @@ use axum::{
     http::{HeaderName, HeaderValue, Method, StatusCode},
     middleware::{self, Next},
     response::{IntoResponse, Redirect, Response},
-    routing::{get, patch, post, put},
+    routing::{delete, get, patch, post, put},
     Json, Router,
 };
 use collab_protocol::{
@@ -257,6 +257,10 @@ pub fn build_router(state: AppState) -> Router {
         .route(
             "/api/v1/admin/invitations",
             get(api::list_invitations).post(api::create_invitation),
+        )
+        .route(
+            "/api/v1/admin/invitations/{invitation_id}",
+            delete(api::revoke_invitation),
         )
         .route("/api/v1/admin/vaults", get(api::hosted_vaults))
         .route(

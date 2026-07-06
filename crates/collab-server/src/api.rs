@@ -5430,6 +5430,52 @@ pub async fn list_invitations(
     )))
 }
 
+pub async fn revoke_invitation(
+    State(state): State<AppState>,
+    Extension(request_id): Extension<String>,
+    headers: HeaderMap,
+    Path(invitation_id): Path<Uuid>,
+) -> Result<StatusCode, ApiFailure> {
+    let actor = require_admin_csrf(&state, &headers, &request_id).await?;
+    let result = sqlx::query(
+        r#"
+        UPDATE invitations
+        SET revoked_at = NOW()
+        WHERE id = $1
+          AND accepted_at IS NULL
+          AND revoked_at IS NULL
+          AND expires_at > NOW()
+        "#,
+    )
+    .bind(invitation_id)
+    .execute(&state.database)
+    .await
+    .map_err(|_| ApiFailure::server(request_id.clone()))?;
+
+    if result.rows_affected() == 0 {
+        return Err(ApiFailure::new(
+            StatusCode::NOT_FOUND,
+            ErrorCode::ResourceNotFound,
+            "The invitation is not pending or does not exist.",
+            request_id,
+        ));
+    }
+
+    record_audit(
+        &state.database,
+        Some(&actor.user.id),
+        "admin.invitation.revoke",
+        Some("invitation"),
+        Some(&invitation_id.to_string()),
+        "success",
+        &request_id,
+        json!({}),
+    )
+    .await?;
+
+    Ok(StatusCode::NO_CONTENT)
+}
+
 pub async fn accept_invitation(
     State(state): State<AppState>,
     Extension(request_id): Extension<String>,
