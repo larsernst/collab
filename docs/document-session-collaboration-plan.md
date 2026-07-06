@@ -236,7 +236,7 @@ Migration order and status:
 1. **Logic diagrams — Done (2026-07-06).**
 2. **Notes REST fallback — Done (2026-07-06).**
 3. **Canvas REST fallback — Done (2026-07-06).**
-4. Kanban REST fallback — pending.
+4. **Kanban REST fallback — Done (2026-07-06).**
 5. SVG vector editor — pending.
 6. Grid view — pending.
 7. PDF/image sidecars — pending.
@@ -341,6 +341,40 @@ conflict test now asserts the status pill (`Conflict needs review`) and the
 dirty-watcher test asserts the read-then-evaluate policy (reads but does not
 apply a same-version candidate). Full suite green (127 files / 626 tests), `tsc`
 clean, no unhandled rejections.
+
+**Kanban migration (`KanbanPage.tsx` + `KanbanBoard.tsx`):**
+
+- Same shape as Canvas: `useDocumentSessionController<KanbanBoard>` replaces
+  `useDocumentSessionState` + `hashRef`/`savedBoardContentRef`/`latestBoardRef`/
+  `saveTimerRef`/`isDirtyRef`/`addConflict`/manual `saveBoard`. The hosted
+  live-JSON path (`openLiveJsonSession`, seed, `onChange`, `discardOfflineState`,
+  awareness, `writeJson`) is unchanged; `isLive: () => liveSessionRef.current !== null`.
+- **Automation handling is centered in the controller boundary**: `serialize` is
+  the raw normalized board (dirty-tracking form); the injected `write` applies
+  `runKanbanAutomations(..., 'onBoardSave')` before persisting and returns the
+  automated/merged content as `mergedContent`, so the controller adopts any
+  automation-applied changes back into the displayed board (matching the old
+  `setBoard(automatedBoard)`). `applyDocument` applies `'onBoardOpen'` automations
+  for display; the load baseline is `serializeBoardRaw(displayBoard(parsed))` so a
+  revert-to-loaded edit reads as clean.
+- `updateBoard` now marks a controller local change (REST) or writes to the CRDT
+  (live), derived from `boardRef.current` (no side effects inside a setState
+  updater). Watcher + replica route through `handleExternalMutation`. Conflict +
+  pending-remote flow through the controller; the `DocumentStatusPill` is rendered
+  in `KanbanBoard`'s `DocumentTopBar` meta (threaded via `KanbanContext`
+  `sessionStatus`/`onLoadRemote`/`onKeepLocal`), and `setLiveState` shows `Live`.
+
+**Kanban tests** (`KanbanPage.test.tsx`): the mock board exposes `sessionStatus`;
+the conflict test asserts the controller status latches to `conflict`; the
+dirty-watcher test asserts the read-then-evaluate policy; snapshot/clean-reload
+cases unchanged. Full suite green (127 files / 626 tests), `tsc` clean.
+
+**Note — modal `ConflictDialog` is now unreached.** Notes, Canvas, and Kanban no
+longer call `collabStore.addConflict`, and SVG/PDF/image never did, so the modal
+`ConflictDialog` (still mounted in `AppShell`) can no longer appear; all conflict
+resolution goes through the `DocumentStatusPill`. This is the intended direction
+for Phase 3 ("shared non-modal document status surface"), which will fold the
+side-by-side diff into the shared surface and then remove the dead modal.
 
 ## Phase 3: Merge And Conflict UX
 

@@ -54,10 +54,11 @@ function wait(ms: number) {
 
 vi.mock('../components/kanban/KanbanBoard', () => ({
   default: function MockKanbanBoard() {
-    const { board, updateBoard } = useKanbanContext();
+    const { board, updateBoard, sessionStatus } = useKanbanContext();
     return (
       <div>
         <div data-testid="card-count">{board.columns[0]?.cards.length ?? 0}</div>
+        <div data-testid="session-status">{sessionStatus}</div>
         <button
           type="button"
           onClick={() =>
@@ -141,13 +142,13 @@ describe('KanbanPage save behavior', () => {
     cleanup();
   });
 
-  it('surfaces optimistic-write conflicts through collabStore', async () => {
+  it('surfaces optimistic-write conflicts through the document status', async () => {
     tauriMocks.writeNote.mockResolvedValue({
       hash: 'hash-conflict',
       conflict: {
         relativePath: 'Boards/test.kanban',
         ourContent: 'ours',
-        theirContent: 'theirs',
+        theirContent: JSON.stringify({ columns: [{ id: 'col-1', title: 'To Do', cards: [] }] }),
       },
     });
 
@@ -155,18 +156,12 @@ describe('KanbanPage save behavior', () => {
 
     await screen.findByTestId('card-count');
     fireEvent.click(screen.getByRole('button', { name: 'add card' }));
-    await wait(700);
 
+    // The controller latches the conflict and pauses autosave; the shared status
+    // surfaces it for review instead of the legacy modal dialog.
     await waitFor(() => {
-      expect(useCollabStore.getState().conflicts).toHaveLength(1);
-    });
-
-    expect(useCollabStore.getState().conflicts[0]).toEqual(
-      expect.objectContaining({
-        relativePath: 'Boards/test.kanban',
-        theirContent: 'theirs',
-      }),
-    );
+      expect(screen.getByTestId('session-status').textContent).toBe('conflict');
+    }, { timeout: 2000 });
     expect(tauriMocks.createSnapshot).not.toHaveBeenCalled();
   });
 
@@ -317,7 +312,9 @@ describe('KanbanPage save behavior', () => {
     await wait(50);
 
     expect(screen.getByTestId('card-count').textContent).toBe('1');
-    expect(tauriMocks.readNote).toHaveBeenCalledTimes(1);
+    // The controller re-reads to evaluate the candidate, but with an unchanged
+    // version it is stale and must not replace the dirty local board.
+    expect(tauriMocks.readNote).toHaveBeenCalledTimes(2);
     expect(useEditorStore.getState().openTabs[0]).toEqual(
       expect.objectContaining({
         relativePath: 'Boards/test.kanban',
