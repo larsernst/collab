@@ -1,5 +1,7 @@
 import { useCallback, useRef } from 'react';
 
+import { createExclusiveSaveRunner } from './documentSessionController';
+
 export const DOCUMENT_SNAPSHOT_INTERVAL_MS = 60_000;
 
 export function useDocumentSessionState() {
@@ -8,8 +10,11 @@ export function useDocumentSessionState() {
   const skipNextAutosaveRef = useRef(true);
   const lastSnapshotHashRef = useRef<string | null>(null);
   const lastSnapshotTimeRef = useRef(0);
-  const savingRef = useRef(false);
-  const pendingSaveRef = useRef<null | (() => Promise<void>)>(null);
+  // The trailing-coalescing serial save primitive now lives in the shared
+  // document session controller; this legacy hook wraps it so both the old
+  // per-view state and the new controller share one implementation.
+  const runnerRef = useRef<ReturnType<typeof createExclusiveSaveRunner> | null>(null);
+  if (runnerRef.current === null) runnerRef.current = createExclusiveSaveRunner();
 
   const markLoaded = useCallback((hash?: string | null) => {
     hashRef.current = hash ?? undefined;
@@ -35,32 +40,13 @@ export function useDocumentSessionState() {
   }, []);
 
   /**
-   * Runs document saves one at a time. If a save is requested while another is in
-   * flight, the request is coalesced: only the most recent `save` thunk runs once
-   * the current one finishes. This prevents overlapping writes from racing on slow
-   * connections, where a second autosave would otherwise be sent with an already
-   * stale optimistic version and rejected by the server ("file revision changed").
-   * The latest thunk always reads the freshest content and version, so the trailing
-   * save reflects the newest edits with the version returned by the prior write.
+   * Runs document saves one at a time, coalescing overlapping requests to the
+   * latest content. See {@link createExclusiveSaveRunner} for the full rationale.
    */
-  const runExclusiveSave = useCallback(async (save: () => Promise<void>) => {
-    if (savingRef.current) {
-      pendingSaveRef.current = save;
-      return;
-    }
-    savingRef.current = true;
-    try {
-      let current: (() => Promise<void>) | null = save;
-      while (current) {
-        pendingSaveRef.current = null;
-        await current();
-        current = pendingSaveRef.current;
-      }
-    } finally {
-      savingRef.current = false;
-      pendingSaveRef.current = null;
-    }
-  }, []);
+  const runExclusiveSave = useCallback(
+    (save: () => Promise<void>) => runnerRef.current!.run(save),
+    [],
+  );
 
   return {
     hashRef,

@@ -18,7 +18,7 @@ even before full live co-editing exists.
 | Phase | Status | Goal |
 | --- | --- | --- |
 | 0. Audit and invariants | Done | Map every reload/save path and define the non-negotiable safety rules. |
-| 1. Shared document session core | Planned | Centralize version, dirty, save, remote-change, and conflict state. |
+| 1. Shared document session core | Done | Centralize version, dirty, save, remote-change, and conflict state. |
 | 2. Safe reload policy rollout | Planned | Replace destructive per-view reloads with guarded remote-change handling. |
 | 3. Merge and conflict UX | Planned | Add graceful remote-update banners, merge outcomes, and recovery actions. |
 | 4. Hosted cache and replica hardening | Planned | Prevent stale hosted cache reads from replacing newer in-memory/editor state. |
@@ -159,6 +159,46 @@ Acceptance criteria:
   document format.
 - Existing `useDocumentSessionState` is either wrapped by or migrated into this
   controller.
+
+### Phase 1 Outcome (Completed 2026-07-06)
+
+Landed as `src/lib/documentSessionController.ts`:
+
+- **`DocumentSessionController<TDocument>`** — a framework-agnostic class (no
+  React / React Flow / CodeMirror / format knowledge; content is opaque strings,
+  documents an opaque `TDocument`, all IO injected via `write` / `read` /
+  `applyDocument`). Owns every field the plan listed (`loadedVersion`,
+  `lastSavedContent`, `dirty`, `saving`, `saveQueued`, `conflicted`,
+  `pendingRemote`, `lastLocalWriteStartedAt`, `lastAppliedRemoteVersion`,
+  `source`, plus `offlineQueued`/`liveState`) and derives the full `status`
+  vocabulary (`idle`/`dirty`/`saving`/`saved`/`remote-pending`/`conflict`/
+  `offline-queued`/`live-connected`/`live-reconnecting`).
+- **Methods** implement the plan's API: `load` (force explicit reload / baseline),
+  `markLocalChange`, `requestSave`, `handleRemoteCandidate`,
+  `handleExternalMutation` (re-reads via injected `read`), `applyRemoteNow`,
+  `discardRemoteCandidate`, `resolveConflict('load-remote'|'keep-local'|'save-as-new')`,
+  `pauseAutosave`/`resumeAutosave`, plus `setLiveState`.
+- **Invariants enforced in code**: stale/older candidates rejected (opaque-token
+  default, injectable `compareVersions` for Phase 4 manifest sequences); dirty
+  remote candidates queued (with an optional `mergeRemote` hook reserved for
+  Phase 3); candidates ignored while a save is in flight or a live session owns
+  the doc; autosave stopped on conflict until explicit resolution; REST autosave
+  disabled while live.
+- **Exclusive-save primitive migrated**: `createExclusiveSaveRunner` (serialize +
+  trailing-coalesce) now lives in the controller module, and the legacy
+  `useDocumentSessionState.runExclusiveSave` wraps it — one implementation shared
+  by old and new paths (satisfies "wrapped by or migrated into").
+- **React binding**: `useDocumentSessionController` builds one controller whose
+  injected callbacks delegate to the latest options (stable identity across
+  renders) and subscribes via `useSyncExternalStore`.
+- **Tests**: `documentSessionController.test.ts` (17 cases) covers the acceptance
+  list — first-autosave skip, save serialization, trailing coalescing to latest
+  content, stale rejection (opaque + comparator), clean auto-apply, dirty
+  queuing, save-in-flight queuing, conflict pause + resume-only-on-resolution,
+  offline-queued surfacing, live disable/ignore, external-mutation re-read, and
+  dirty merge. Existing `documentSession.test.tsx` still green.
+
+No view has been migrated yet — that is Phase 2 (starting with logic diagrams).
 
 ## Phase 2: Safe Reload Policy Rollout
 
