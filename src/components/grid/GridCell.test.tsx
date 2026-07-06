@@ -7,6 +7,7 @@ import { useVaultStore } from '../../store/vaultStore';
 
 const canvasPageMock = vi.fn();
 const kanbanPageMock = vi.fn();
+const logicDiagramViewMock = vi.fn();
 const imageViewMock = vi.fn();
 const pdfViewMock = vi.fn();
 
@@ -21,6 +22,13 @@ vi.mock('../../views/KanbanPage', () => ({
   default: (props: { relativePath: string }) => {
     kanbanPageMock(props);
     return <div data-testid="kanban-page">{props.relativePath}</div>;
+  },
+}));
+
+vi.mock('../../views/LogicDiagramView', () => ({
+  default: (props: { relativePath: string }) => {
+    logicDiagramViewMock(props);
+    return <div data-testid="logic-diagram-view">{props.relativePath}</div>;
   },
 }));
 
@@ -104,6 +112,14 @@ describe('GridCell', () => {
               isFolder: false,
             },
             {
+              relativePath: 'Boards/logic.logic',
+              name: 'logic.logic',
+              extension: 'logic',
+              modifiedAt: 0,
+              size: 1,
+              isFolder: false,
+            },
+            {
               relativePath: 'Boards/diagram.png',
               name: 'diagram.png',
               extension: 'png',
@@ -154,6 +170,24 @@ describe('GridCell', () => {
       expect.objectContaining({ relativePath: 'Boards/tasks.kanban' }),
     );
     expect(screen.getByTestId('kanban-page').textContent).toContain('Boards/tasks.kanban');
+  });
+
+  it('renders logic cells with their diagram path', () => {
+    const cell: GridCellType = {
+      id: 'cell-logic',
+      content: {
+        type: 'logic',
+        relativePath: 'Boards/logic.logic',
+        title: 'Logic',
+      },
+    };
+
+    render(<GridCell cell={cell} />);
+
+    expect(logicDiagramViewMock).toHaveBeenCalledWith(
+      expect.objectContaining({ relativePath: 'Boards/logic.logic' }),
+    );
+    expect(screen.getByTestId('logic-diagram-view').textContent).toContain('Boards/logic.logic');
   });
 
   it('accepts dragged vault board files into a cell', () => {
@@ -255,6 +289,39 @@ describe('GridCell', () => {
       type: 'pdf',
       relativePath: 'Boards/spec.pdf',
       title: 'spec',
+    });
+  });
+
+  it('accepts dragged vault logic files into a cell', () => {
+    const setCellContent = vi.fn();
+    useGridStore.setState((state) => ({
+      ...state,
+      setCellContent,
+    }));
+
+    const cell: GridCellType = {
+      id: 'cell-7',
+      content: {
+        type: 'empty',
+        relativePath: null,
+        title: '',
+      },
+    };
+
+    const { container } = render(<GridCell cell={cell} />);
+    const dropZone = container.querySelector('.h-full');
+    expect(dropZone).not.toBeNull();
+
+    fireEvent.drop(dropZone as Element, {
+      dataTransfer: {
+        getData: (type: string) => (type === 'application/x-collab-vault-file' ? 'Boards/logic.logic' : ''),
+      },
+    });
+
+    expect(setCellContent).toHaveBeenCalledWith('cell-7', {
+      type: 'logic',
+      relativePath: 'Boards/logic.logic',
+      title: 'logic',
     });
   });
 });

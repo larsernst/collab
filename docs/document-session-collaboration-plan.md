@@ -238,7 +238,7 @@ Migration order and status:
 3. **Canvas REST fallback — Done (2026-07-06).**
 4. **Kanban REST fallback — Done (2026-07-06).**
 5. **SVG vector editor — Done (2026-07-06).**
-6. Grid view — pending.
+6. **Grid view — Done (2026-07-06, audit-only).**
 7. PDF/image sidecars — pending.
 
 **Logic diagram migration (`src/views/LogicDiagramView.tsx`):**
@@ -391,6 +391,24 @@ apply and dirty remote queueing, while preserving manual-save, conflict,
 asset-fallback, and read-only viewer coverage. Focused suite
 (`useSvgSession.test.tsx` + `documentSessionController.test.ts`) and `tsc` are
 green.
+
+**Grid view audit (`src/views/GridView.tsx`, `src/store/gridStore.ts`, `src/components/grid/GridCell.tsx`):**
+
+- No `useDocumentSessionController` migration is needed for the grid shell.
+  Grid workspaces are app-local UI state persisted by `gridStore`
+  (`grid-storage-v2`), not vault documents with optimistic versions, watcher
+  reloads, replica mutations, or live sessions.
+- Grid cells mount the real document views (`NoteView`, `CanvasPage`,
+  `KanbanPage`, `LogicDiagramView`, `ImageView`, `PdfView`). Those embedded views
+  own their document sessions, so the safe-reload policy follows the child view
+  rather than the shell.
+- `GridView` layout changes, cell swaps, cell clearing, split activation, and
+  responsive layout fallback only mutate the app-local workspace descriptor. They
+  cannot overwrite vault document content and therefore have no dirty/remote
+  candidate state to preserve.
+
+**Grid tests** (`GridCell.test.tsx`): added logic-diagram render and drag-in
+coverage so the grid test matrix includes the migrated logic document type.
 
 **Note — modal `ConflictDialog` is now unreached.** Notes, Canvas, and Kanban no
 longer call `collabStore.addConflict`, and SVG/PDF/image never did, so the modal
