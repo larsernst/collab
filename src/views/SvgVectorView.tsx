@@ -10,6 +10,7 @@ import {
   getDocumentBaseName,
   getDocumentFolderPath,
 } from '../components/layout/DocumentTopBar';
+import { DocumentStatusPill } from '../components/layout/DocumentStatusPill';
 import { ReadOnlyBanner } from '../components/layout/ReadOnlyBanner';
 import {
   EMPTY_SIZE,
@@ -59,7 +60,20 @@ export default function SvgVectorView({ relativePath }: Props) {
   const viewportRef = useRef<HTMLDivElement | null>(null);
   const viewportSize = useElementSize(viewportRef);
 
-  const { scene, setScene, loading, error, dirty, saving, readOnly, assetBacked, save } = useSvgSession({
+  const {
+    scene,
+    setScene,
+    loading,
+    error,
+    dirty,
+    saving,
+    status,
+    readOnly,
+    assetBacked,
+    save,
+    loadRemote,
+    keepLocal,
+  } = useSvgSession({
     vault,
     relativePath,
     markDirty,
@@ -156,7 +170,10 @@ export default function SvgVectorView({ relativePath }: Props) {
             </div>
 
             {mode === 'edit' && !readOnly && (
-              <SvgToolbar tool={tool} onToolChange={setTool} dirty={dirty} saving={saving} onSave={() => void save()} />
+              <>
+                <SvgToolbar tool={tool} onToolChange={setTool} dirty={dirty} saving={saving} onSave={() => void save()} />
+                <DocumentStatusPill status={status} onLoadRemote={loadRemote} onKeepLocal={keepLocal} />
+              </>
             )}
 
             <div className={documentTopBarGroupClass}>

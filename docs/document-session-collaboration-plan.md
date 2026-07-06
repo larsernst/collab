@@ -198,7 +198,7 @@ Landed as `src/lib/documentSessionController.ts`:
   offline-queued surfacing, live disable/ignore, external-mutation re-read, and
   dirty merge. Existing `documentSession.test.tsx` still green.
 
-No view has been migrated yet — that is Phase 2 (starting with logic diagrams).
+Phase 2 is in progress and should continue one document surface at a time.
 
 ## Phase 2: Safe Reload Policy Rollout
 
@@ -237,7 +237,7 @@ Migration order and status:
 2. **Notes REST fallback — Done (2026-07-06).**
 3. **Canvas REST fallback — Done (2026-07-06).**
 4. **Kanban REST fallback — Done (2026-07-06).**
-5. SVG vector editor — pending.
+5. **SVG vector editor — Done (2026-07-06).**
 6. Grid view — pending.
 7. PDF/image sidecars — pending.
 
@@ -368,6 +368,29 @@ clean, no unhandled rejections.
 the conflict test asserts the controller status latches to `conflict`; the
 dirty-watcher test asserts the read-then-evaluate policy; snapshot/clean-reload
 cases unchanged. Full suite green (127 files / 626 tests), `tsc` clean.
+
+**SVG vector editor migration (`src/components/image/useSvgSession.ts` + `src/views/SvgVectorView.tsx`):**
+
+- `useSvgSession` now uses `useDocumentSessionController<SvgScene>` for version,
+  dirty, save, remote-candidate, and conflict state. The SVG editor remains
+  manual-save only (`schedule: () => () => {}`), but local edits are tracked
+  against the controller baseline instead of bespoke `savedText` refs.
+- Local `vault:file-modified` events and hosted `onReplicaMutated` notifications
+  now route through `controller.handleExternalMutation`. Clean SVGs apply the
+  latest document automatically; dirty SVGs keep the current scene and queue the
+  remote candidate as `remote-pending` for explicit load/keep handling.
+- Optimistic `writeDocument` results are mapped into controller outcomes,
+  including backend merge adoption and conflict latching. Asset-backed legacy
+  SVGs still load through the data-URL fallback and expose a clean baseline, but
+  saving remains blocked because they are not revision-backed text documents.
+- `SvgVectorView` renders the shared `DocumentStatusPill` in edit mode, giving
+  SVGs the same pending-remote/conflict actions as the already migrated views.
+
+**SVG tests** (`useSvgSession.test.tsx`): added watcher coverage for clean remote
+apply and dirty remote queueing, while preserving manual-save, conflict,
+asset-fallback, and read-only viewer coverage. Focused suite
+(`useSvgSession.test.tsx` + `documentSessionController.test.ts`) and `tsc` are
+green.
 
 **Note — modal `ConflictDialog` is now unreached.** Notes, Canvas, and Kanban no
 longer call `collabStore.addConflict`, and SVG/PDF/image never did, so the modal
@@ -552,7 +575,7 @@ Source of truth for the audit below is the code as it stands today:
 | Kanban | `KanbanPage.tsx` | REST optimistic autosave via `updateBoard`→debounced `writeNote` through `runExclusiveSave`; automations on open/save; snapshots. Hosted live JSON disables REST autosave. | initial `loadBoard(true)`; `vault:file-modified` (local, skip if dirty or <2 s); `onReplicaMutated` (hosted, skip if dirty/live, pulse); live `onChange` seed/apply. | Hosted JSON Yjs (`openLiveJsonSession`) | `addConflict` → `ConflictDialog`. | Duplicated session/reload logic mirrored from Canvas; same `version !==` limitation. | shared structured session hook |
 | Logic | `LogicDiagramView.tsx` | REST optimistic autosave (600 ms) fired only on structural-signature change via `runExclusiveSave`→`writeLogic`; merge adoption; manual Save button; `conflictedRef` latch stops autosave. | **initial load only.** No watcher, no replica listener, no live session. | none | Conflict → `toast` + `conflictedRef` latch; no `ConflictDialog`; requires manual reopen. | Newest/smallest surface, but a hosted collaborator's edits never appear until reopen and the conflict latch is a dead-end. Safe first migration target. | shared controller, then live JSON |
 | Grid | `GridView.tsx` / `gridStore` | Not a per-file vault document. Workspace layout + cell content persisted in app-scoped `gridStore` (Zustand `persist`). Cells embed other views, which own their own document sessions. | none of its own (embedded views reload independently). | n/a | n/a (no vault-document write) | Low direct risk; safety depends entirely on the embedded child views. | audit-only; no session migration for the grid shell itself |
-| SVG | `useSvgSession.ts` | **Manual save only** (no autosave) via `save()`; optimistic `writeDocument` with `base_content` merge; `dirty` = serialized scene ≠ `savedText`. Asset-backed legacy SVGs open read-only. | **initial load only.** No watcher, replica, or live. | none | Conflict → `toast` + abort; no `ConflictDialog`, no latch. | Full-scene overwrite risk; a concurrent change is only caught at save time and then just refused with a toast. | shared controller, REST safe path |
+| SVG | `useSvgSession.ts` | **Manual save only** (no autosave) through `useDocumentSessionController`; optimistic `writeDocument` with `base_content` merge; asset-backed legacy SVGs load but cannot save. | initial load; `vault:file-modified` watcher (local); `onReplicaMutated` (hosted) through the shared safe-remote policy. | none | Conflict/pending remote → shared `DocumentStatusPill` load/keep actions. | Live collaborative vector editing is still out of scope; REST fallback now prevents dirty-state overwrite. | shared controller, REST safe path complete |
 | PDF annotations | `PdfView.tsx` | Local: debounced `writePdfSidecarState` (viewer state + annotations). Hosted: debounced `writePdfAnnotations` with optimistic `annotationsVersion`; `hostedAnnotationsRef` baseline skips first save. | **initial load only** (`readAssetDataUrl` + annotations read). No watcher/replica/live for annotations. | none | Hosted write error → `toast`; no merge, no `ConflictDialog`. | Sidecar/annotation version conflicts silently lost on error; no remote refresh of annotations while open. | controller variant for sidecars |
 | Image overlays | `useImageDocumentSession.ts` | Local: debounced (450 ms) overlay sidecar `writeImageOverlay`/`deleteImageOverlay`; permanent edits via `saveGeneratedImage`. Hosted: editing disabled (in-memory only). | **initial load only.** No watcher/replica/live. | none | none — last-writer-wins on the sidecar; overwrite reloads the image. | Overlay overwrite; no concurrency control at all. | controller variant for sidecars |
 
@@ -637,4 +660,3 @@ Integration/manual checks:
 - Treat “no data loss” as the success metric, not silent auto-merge.
 - Office Online-like behavior should emerge from live sessions per document type,
   not from forced background reloads.
-
