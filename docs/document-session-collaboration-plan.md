@@ -234,7 +234,7 @@ Acceptance criteria:
 Migration order and status:
 
 1. **Logic diagrams — Done (2026-07-06).**
-2. Notes REST fallback — pending.
+2. **Notes REST fallback — Done (2026-07-06).**
 3. Canvas REST fallback — pending.
 4. Kanban REST fallback — pending.
 5. SVG vector editor — pending.
@@ -270,8 +270,40 @@ Migration order and status:
 **Tests:** `DocumentStatusPill.test.tsx` (labels + action wiring) and
 `LogicDiagramView.test.tsx` (clean external change auto-applies; unsaved local
 edit is preserved and the remote is queued while dirty; stale same-version
-watcher event is ignored). Full suite green (127 files / 625 tests) and `tsc`
-clean.
+watcher event is ignored).
+
+**Notes migration (`src/views/NoteView.tsx`):**
+
+- Replaced `useDocumentSessionState` + `hashRef`/`savedContentRef`/`contentRef`/
+  `isDirtyRef`/`shouldSkipAutosave` and the bespoke `performSave`/`requestSave`/
+  autosave effect with `useDocumentSessionController`. Version, dirty, save
+  serialization (trailing-coalesce), remote-candidate policy, and conflict latch
+  now live in the controller.
+- **Live-when-connected preserved**: the hosted Yjs path is untouched;
+  `isLive: () => liveSession !== null` disables REST autosave and remote reloads
+  while live, and `setLiveState('live-connected')` surfaces the live status. A
+  remote apply echoes back through the editor's `onChange`, but since it equals
+  the just-saved content the controller treats it as not dirty — no guard needed.
+- Watcher + replica listeners now route through `controller.handleExternalMutation`
+  (clean auto-apply with pulse, dirty → queued pending, stale/echo ignored). This
+  replaces the old `version !==` + `isDirtyRef` checks.
+- View-specific behavior kept local: the H1-title rename-move runs after a
+  successful write inside the injected `write`, snapshot creation stays in the
+  manual-save handler, tag transforms flow through `setContent` → `onChange`.
+- **Conflict** is routed through the controller + `DocumentStatusPill`
+  (`Load latest` / `Keep mine`), consistent with Logic. Notes no longer calls
+  `addConflict`, so the legacy modal `ConflictDialog` no longer appears for notes
+  (it remains for the not-yet-migrated Canvas/Kanban). Phase 3 will build the
+  richer shared conflict surface (with the side-by-side diff) on top of the pill.
+- `readOnly` (hosted viewer) is gated in both `markLocalChange` (skipped) and the
+  injected `write` (no-op), so a viewer never triggers a rejected write.
+
+**Notes tests** (`NoteView.test.tsx`): existing clean-reload / dirty-preserved /
+overlapping-autosave / hosted-open / read-only-never-writes / live-drives-editor
+cases updated for the read-then-evaluate policy, plus a new case: a newer remote
+change is queued while dirty and applied on `Load latest`.
+
+Full suite green (127 files / 626 tests) and `tsc` clean.
 
 ## Phase 3: Merge And Conflict UX
 

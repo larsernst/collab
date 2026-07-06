@@ -3,7 +3,6 @@ import { listen } from '@tauri-apps/api/event';
 import { useVaultStore } from '../store/vaultStore';
 import { useEditorStore } from '../store/editorStore';
 import type { NoteEditorViewState } from '../store/editorStore';
-import { useCollabStore } from '../store/collabStore';
 import { useCollabIdentity } from '../lib/collabIdentity';
 import { MarkdownEditor, type MarkdownEditorHandle } from '../components/editor/MarkdownEditor';
 import { EditorToolbar } from '../components/editor/EditorToolbar';
@@ -16,11 +15,13 @@ import {
 } from '../lib/frontmatter';
 import { useUiStore } from '../store/uiStore';
 import { extractHttpUrls, prefetchWebPreviews } from '../lib/webPreviewCache';
-import { useDocumentSessionState } from '../lib/documentSession';
+import { DOCUMENT_SNAPSHOT_INTERVAL_MS } from '../lib/documentSession';
+import { useDocumentSessionController, type RemoteCandidate } from '../lib/documentSessionController';
 import { openLiveNoteSession, type LiveDocumentSession } from '../lib/liveDocumentSession';
 import { onReplicaMutated } from '../lib/vaultReplica';
 import { useLivePeers } from '../lib/liveAwareness';
 import LivePeers from '../components/collaboration/LivePeers';
+import { DocumentStatusPill } from '../components/layout/DocumentStatusPill';
 import { yCollab } from 'y-codemirror.next';
 import { createVaultClient } from '../lib/vaultClient';
 import { isVaultReadOnly } from '../types/vault';
@@ -59,7 +60,6 @@ export default function NoteView({ relativePath }: { relativePath: string }) {
   const pendingSearchJump = useEditorStore((state) => state.pendingSearchJump);
   const setPendingSearchJump = useEditorStore((state) => state.setPendingSearchJump);
   const setNoteViewState = useEditorStore((state) => state.setNoteViewState);
-  const { addConflict } = useCollabStore();
   // Snapshot authorship follows the effective identity: server-authoritative for
   // hosted vaults, local client identity otherwise.
   const { userId: myUserId, userName: myUserName, userColor: myUserColor } = useCollabIdentity();
@@ -73,7 +73,6 @@ export default function NoteView({ relativePath }: { relativePath: string }) {
   const loadSnippets = useNoteSnippetStore((state) => state.loadSnippets);
   const editorRef = useRef<MarkdownEditorHandle | null>(null);
   const refreshPulseTimerRef = useRef<number | null>(null);
-  const savedContentRef = useRef<string | null>(null);
   const client = useMemo(() => (vault ? createVaultClient(vault) : null), [vault]);
   const readOnly = isVaultReadOnly(vault);
   // Live co-editing session for hosted notes. When present, the Yjs document
@@ -88,30 +87,106 @@ export default function NoteView({ relativePath }: { relativePath: string }) {
   // Live co-editors of this note (remote awareness peers). Remote cursors/
   // selections already render inline via `yCollab`; this surfaces who is here.
   const livePeers = useLivePeers(liveSession);
-  const { hashRef, markLoaded, shouldSkipAutosave, markWriteStarted, shouldCreateSnapshot, runExclusiveSave } = useDocumentSessionState();
-  // Mirrors the latest content so a coalesced trailing save always writes the
-  // freshest text rather than a value captured when the save was first queued.
-  const contentRef = useRef<string | null>(null);
-  contentRef.current = content;
   const initialViewState = useMemo<NoteEditorViewState | null>(
     () => useEditorStore.getState().noteViewStates[relativePath] ?? null,
     [relativePath],
   );
 
-  const loadNote = () => {
+  // Periodic collaboration snapshot throttle (manual saves only).
+  const lastSnapshotHashRef = useRef<string | null>(null);
+  const lastSnapshotTimeRef = useRef(0);
+  const shouldCreateSnapshot = (hash: string, now = Date.now()) => {
+    if (hash === lastSnapshotHashRef.current) return false;
+    if (now - lastSnapshotTimeRef.current < DOCUMENT_SNAPSHOT_INTERVAL_MS) return false;
+    lastSnapshotHashRef.current = hash;
+    lastSnapshotTimeRef.current = now;
+    return true;
+  };
+
+  // After a successful save, rename the file to follow the note's first H1 (the
+  // title-derived move). Best-effort; a name collision is silently ignored.
+  const maybeRenameFromH1 = async (savedContent: string) => {
+    if (!client) return;
+    const h1 = extractFirstH1(savedContent);
+    if (!h1) return;
+    const sanitized = sanitizeFilename(h1);
+    const parts = relativePath.split('/');
+    const currentStem = parts[parts.length - 1].replace(/\.md$/, '');
+    if (!sanitized || sanitized === currentStem) return;
+    parts[parts.length - 1] = `${sanitized}.md`;
+    const newPath = parts.join('/');
+    try {
+      await client.renameMove(relativePath, newPath);
+      renameTab(relativePath, newPath, sanitized);
+      await refreshFileTree();
+    } catch {
+      // Likely a name collision with an existing file — keep the current name.
+    }
+  };
+
+  // Push an adopted document (initial load, safe remote apply, or backend merge)
+  // into the editor and republish the saved version to the tab session.
+  const applyNoteDocument = (candidate: RemoteCandidate<string>) => {
+    setContent(candidate.content);
+    setSavedHash(relativePath, candidate.version ?? '');
+  };
+
+  // The shared document session controller owns version/dirty/save/remote/
+  // conflict state for the REST fallback path. When a live Yjs session is
+  // active, `isLive` disables REST autosave and remote reloads for this note.
+  const { controller, snapshot } = useDocumentSessionController<string>({
+    serialize: (value) => value,
+    deserialize: (value) => value,
+    applyDocument: applyNoteDocument,
+    read: async () => {
+      if (!client) return null;
+      const doc = await client.readDocument(relativePath);
+      return { content: doc.content, version: doc.version };
+    },
+    write: async ({ content: toWrite, expectedVersion, baseContent }) => {
+      // Viewers have no write access; never attempt a save the server would reject.
+      if (!client || readOnly) return { version: expectedVersion ?? '' };
+      const result = await client.writeDocument(relativePath, toWrite, expectedVersion ?? undefined, baseContent);
+      if (result.conflict) {
+        let theirVersion: string | null = null;
+        try {
+          theirVersion = (await client.readDocument(relativePath)).version;
+        } catch {
+          // Best-effort; a null version makes a keep-mine resolution overwrite.
+        }
+        return {
+          version: expectedVersion ?? '',
+          conflict: { theirContent: result.conflict.theirContent, baseContent, theirVersion },
+        };
+      }
+      const savedContent = result.mergedContent ?? toWrite;
+      await maybeRenameFromH1(savedContent);
+      return { version: result.version, mergedContent: result.mergedContent };
+    },
+    isLive: () => liveSession !== null,
+    autosaveDebounceMs: 600,
+  });
+
+  // Initial load: establish the session baseline (force explicit reload policy).
+  useEffect(() => {
     if (!client || !relativePath) return;
+    let cancelled = false;
     setContent(null);
     client.readDocument(relativePath)
       .then((doc) => {
-        setContent(doc.content);
-        savedContentRef.current = doc.content;
-        markLoaded(doc.version);
-        setSavedHash(relativePath, doc.version);
+        if (cancelled) return;
+        controller.load(doc.content, doc.version, 'rest');
       })
-      .catch((e) => toast.error('Failed to open note: ' + e));
-  };
+      .catch((e) => {
+        if (!cancelled) toast.error('Failed to open note: ' + e);
+      });
+    return () => { cancelled = true; };
+  }, [client, controller, relativePath, vault?.path]);
 
-  useEffect(() => { loadNote(); }, [relativePath, vault?.path]);
+  // Reflect the live connection in the shared status vocabulary.
+  useEffect(() => {
+    controller.setLiveState(liveSession ? 'live-connected' : null);
+  }, [controller, liveSession]);
 
   // Open a live collaboration session for hosted notes; fall back to REST when
   // unavailable. The session is torn down when the note or vault changes.
@@ -207,13 +282,15 @@ export default function NoteView({ relativePath }: { relativePath: string }) {
     };
   }, []);
 
-  // Reload when HistoryPanel restores a snapshot for this file
+  // Reload when HistoryPanel restores a snapshot for this file (force explicit
+  // reload — a user-initiated restore overrides local state).
   useEffect(() => {
-    if (forceReloadPath === relativePath) {
-      setForceReloadPath(null);
-      loadNote();
-    }
-  }, [forceReloadPath]);
+    if (forceReloadPath !== relativePath || !client) return;
+    setForceReloadPath(null);
+    client.readDocument(relativePath)
+      .then((doc) => controller.load(doc.content, doc.version, 'rest'))
+      .catch((e) => toast.error('Failed to reload note: ' + e));
+  }, [client, controller, forceReloadPath, relativePath, setForceReloadPath]);
 
   useEffect(() => {
     if (revealEditorPath !== relativePath || content === null) return;
@@ -235,146 +312,88 @@ export default function NoteView({ relativePath }: { relativePath: string }) {
     return () => window.cancelAnimationFrame(frame);
   }, [content, pendingSearchJump, relativePath, setPendingSearchJump]);
 
-  // Auto-reload when another user edits the same file (no local dirty changes)
-  const isDirtyRef = useRef(false);
+  const pulseRefresh = () => {
+    setRefreshPulse(true);
+    if (refreshPulseTimerRef.current !== null) window.clearTimeout(refreshPulseTimerRef.current);
+    refreshPulseTimerRef.current = window.setTimeout(() => setRefreshPulse(false), 420);
+  };
+
+  // Local filesystem watcher: another writer changed this file. The controller
+  // auto-applies when clean, queues when dirty, and ignores our own echo/stale.
   useEffect(() => {
     if (!client || !client.capabilities.filesystemWatch) return;
     const unlisten = listen<{ path: string }>('vault:file-modified', async (event) => {
-      const changedPath = event.payload?.path;
-      if (changedPath !== relativePath) return;
-      if (isDirtyRef.current) return;
-      try {
-        const doc = await client.readDocument(relativePath);
-        if (doc.version !== hashRef.current) {
-          setContent(doc.content);
-          savedContentRef.current = doc.content;
-          markLoaded(doc.version);
-          setSavedHash(relativePath, doc.version);
-        }
-      } catch {}
+      if (event.payload?.path !== relativePath) return;
+      if (Date.now() - controller.getSnapshot().lastLocalWriteStartedAt < 2000) return;
+      const decision = await controller.handleExternalMutation('rest');
+      if (decision === 'applied') pulseRefresh();
     });
     return () => { unlisten.then((u) => u()); };
-  }, [client, relativePath, vault?.path]);
+  }, [client, controller, relativePath, vault?.path]);
 
+  // Hosted replica refresh: route through the same safe remote policy.
   useEffect(() => {
     if (!client || client.kind !== 'hosted') return;
     return onReplicaMutated(async () => {
-      if (isDirtyRef.current || liveSession) return;
-      try {
-        const doc = await client.readDocument(relativePath);
-        if (doc.version !== hashRef.current) {
-          setContent(doc.content);
-          savedContentRef.current = doc.content;
-          markLoaded(doc.version);
-          setSavedHash(relativePath, doc.version);
-          setRefreshPulse(true);
-          if (refreshPulseTimerRef.current !== null) window.clearTimeout(refreshPulseTimerRef.current);
-          refreshPulseTimerRef.current = window.setTimeout(() => setRefreshPulse(false), 420);
-        }
-      } catch {
-        // Replica refreshes are best-effort; the current editor state remains usable.
-      }
+      const decision = await controller.handleExternalMutation('cache');
+      if (decision === 'applied') pulseRefresh();
     });
-  }, [client, liveSession, markLoaded, relativePath, setSavedHash]);
+  }, [client, controller, relativePath]);
 
   useEffect(() => () => {
     if (refreshPulseTimerRef.current !== null) window.clearTimeout(refreshPulseTimerRef.current);
   }, []);
 
+  // Bridge the controller's dirty/version state to the tab dirty indicator.
+  // Live edits do not mark the tab dirty (the CRDT relay persists them).
+  useEffect(() => {
+    if (liveSession) return;
+    if (snapshot.dirty) markDirty(relativePath);
+    else if (snapshot.loadedVersion) markSaved(relativePath, snapshot.loadedVersion);
+  }, [liveSession, markDirty, markSaved, relativePath, snapshot.dirty, snapshot.loadedVersion]);
+
   const handleChange = (newContent: string) => {
     setContent(newContent);
     // In a live session the server persists edits via the CRDT relay; there is
-    // no local dirty/REST-save bookkeeping.
-    if (liveSession) return;
-    isDirtyRef.current = true;
-    markDirty(relativePath);
+    // no local dirty/REST-save bookkeeping. Otherwise route the edit through the
+    // controller, which debounces the autosave and serializes writes. A remote
+    // apply echoes back through here too, but equals the just-saved content, so
+    // the controller correctly treats it as not dirty.
+    if (liveSession || readOnly) return;
+    controller.markLocalChange(newContent);
   };
 
   const applyContentTransform = (transform: (value: string) => string) => {
     if (readOnly) return;
     setContent((prev) => {
       if (prev === null) return prev;
-      const next = transform(prev);
-      if (next !== prev) {
-        isDirtyRef.current = true;
-        markDirty(relativePath);
-      }
-      return next;
+      return transform(prev);
     });
   };
 
-  // Autosave 600 ms after the last keystroke
-  useEffect(() => {
-    if (content === null) return;
-    if (shouldSkipAutosave()) return;
-    if (readOnly) return;
-    // Live sessions persist through the server, not the REST autosave.
-    if (liveSession) return;
-    const t = setTimeout(() => { requestSave(false); }, 600);
-    return () => clearTimeout(t);
-  }, [content, shouldSkipAutosave, readOnly, liveSession]);
-
-  // Saves are serialized through the session so overlapping writes never race on
-  // slow connections; each run reads the latest content and optimistic version.
-  const requestSave = (manual = false): Promise<void> => {
-    // Live sessions are persisted by the server; the REST write path is disabled
-    // to avoid racing the CRDT materialization with a stale optimistic version.
-    if (!client || readOnly || liveSession) return Promise.resolve();
-    return runExclusiveSave(() => performSave(manual));
+  // Manual save (Ctrl/Cmd-S). Serialized through the controller; creates a
+  // periodic collaboration snapshot on a successful, non-conflicting write.
+  const handleManualSave = async () => {
+    if (!client || readOnly || liveSession) return;
+    await controller.requestSave('manual');
+    const snap = controller.getSnapshot();
+    if (!snap.conflicted && !snap.offlineQueued && snap.loadedVersion && shouldCreateSnapshot(snap.loadedVersion)) {
+      client.createSnapshot(relativePath, snap.lastSavedContent ?? '', myUserId, myUserName)
+        .catch(() => {});
+    }
   };
 
-  const performSave = async (manual = false) => {
-    const newContent = contentRef.current;
-    // Viewers have no write access; never attempt a save that the server would
-    // reject with a "could not save" error.
-    if (!client || readOnly || newContent === null) return;
-    try {
-      markWriteStarted();
-      const result = await client.writeDocument(
-        relativePath,
-        newContent,
-        hashRef.current,
-        savedContentRef.current ?? undefined,
-      );
-      if (result.conflict) {
-        addConflict({ ...result.conflict, ourContent: newContent });
-        return;
-      }
+  const handleLoadRemote = () => {
+    if (controller.getSnapshot().conflicted) controller.resolveConflict('load-remote');
+    else controller.applyRemoteNow();
+  };
 
-      const savedContent = result.mergedContent ?? newContent;
-      if (savedContent !== newContent) {
-        markLoaded(result.version);
-        setContent(savedContent);
-      }
-      savedContentRef.current = savedContent;
-      hashRef.current = result.version;
-      isDirtyRef.current = false;
-      markSaved(relativePath, result.version);
-
-      if (manual && shouldCreateSnapshot(result.version)) {
-        client.createSnapshot(relativePath, savedContent, myUserId, myUserName)
-          .catch(() => {});
-      }
-
-      const h1 = extractFirstH1(savedContent);
-      if (h1) {
-        const sanitized = sanitizeFilename(h1);
-        const parts = relativePath.split('/');
-        const currentStem = parts[parts.length - 1].replace(/\.md$/, '');
-        if (sanitized && sanitized !== currentStem) {
-          parts[parts.length - 1] = sanitized + '.md';
-          const newPath = parts.join('/');
-          try {
-            await client.renameMove(relativePath, newPath);
-            renameTab(relativePath, newPath, sanitized);
-            await refreshFileTree();
-          } catch {
-            // Silently ignore — likely a name collision with an existing file
-          }
-        }
-      }
-    } catch (e) {
-      toast.error('Failed to save: ' + e);
+  const handleKeepLocal = () => {
+    if (controller.getSnapshot().conflicted) {
+      controller.resolveConflict('keep-local');
+      void controller.requestSave('manual');
+    } else {
+      controller.discardRemoteCandidate();
     }
   };
 
@@ -400,16 +419,26 @@ export default function NoteView({ relativePath }: { relativePath: string }) {
           the final flex-grown height, which shifts getBoundingClientRect().top to 0 and
           causes posAtCoords() to be offset by exactly the toolbar height. */}
       <div className="flex-1 min-h-0 relative overflow-hidden">
-        {livePeers.length > 0 && (
-          <div className="absolute top-2 right-3 z-10 rounded-full bg-card/80 backdrop-blur px-2 py-1 shadow-sm border border-border">
-            <LivePeers peers={livePeers} />
-          </div>
-        )}
+        <div className="absolute top-2 right-3 z-10 flex items-center gap-2">
+          {!readOnly && content !== null && (
+            <DocumentStatusPill
+              status={snapshot.status}
+              onLoadRemote={handleLoadRemote}
+              onKeepLocal={handleKeepLocal}
+              className="rounded-full bg-card/80 backdrop-blur px-2 py-1 shadow-sm border border-border"
+            />
+          )}
+          {livePeers.length > 0 && (
+            <div className="rounded-full bg-card/80 backdrop-blur px-2 py-1 shadow-sm border border-border">
+              <LivePeers peers={livePeers} />
+            </div>
+          )}
+        </div>
         <MarkdownEditor
           ref={editorRef}
           content={editorContent}
           onChange={handleChange}
-          onSave={() => requestSave(true)}
+          onSave={handleManualSave}
           readOnly={readOnly}
           collabExtension={collabExtension}
           relativePath={relativePath}

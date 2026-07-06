@@ -182,8 +182,34 @@ describe('NoteView external reload behavior', () => {
       expect(screen.getByTestId('editor-content').textContent).toContain('updated');
     });
 
-    expect(tauriMocks.readNote).toHaveBeenCalledTimes(1);
+    // The controller re-reads to evaluate the candidate, but with an unchanged
+    // version it is stale and must not replace the dirty local content.
+    expect(tauriMocks.readNote).toHaveBeenCalledTimes(2);
+    expect(screen.getByTestId('editor-content').textContent).not.toBe('initial note');
     expect(useEditorStore.getState().openTabs[0]?.isDirty).toBe(true);
+  });
+
+  it('queues a newer remote change while dirty and applies it on Load latest', async () => {
+    tauriMocks.readNote
+      .mockResolvedValueOnce({ content: 'initial note', hash: 'hash-1', modifiedAt: 1 })
+      .mockResolvedValue({ content: 'external update', hash: 'hash-2', modifiedAt: 2 });
+    tauriMocks.writeNote.mockResolvedValue({ hash: 'hash-saved' });
+
+    render(<NoteView relativePath="Notes/a.md" />);
+    expect((await screen.findByTestId('editor-content')).textContent).toBe('initial note');
+
+    fireEvent.click(screen.getByRole('button', { name: 'change' }));
+    await waitFor(() => expect(screen.getByTestId('editor-content').textContent).toContain('updated'));
+
+    await noteEvents.fileModifiedHandler?.({ payload: { path: 'Notes/a.md' } });
+
+    // A newer remote (hash-2) is queued as pending, not applied over local edits.
+    await waitFor(() => expect(screen.getByText(/Remote changes available/)).toBeTruthy());
+    expect(screen.getByTestId('editor-content').textContent).not.toBe('external update');
+
+    // Load latest applies the queued remote content.
+    fireEvent.click(screen.getByRole('button', { name: /load latest/i }));
+    await waitFor(() => expect(screen.getByTestId('editor-content').textContent).toBe('external update'));
   });
 
   it('serializes overlapping autosaves on a slow connection (no stale-revision write)', async () => {
