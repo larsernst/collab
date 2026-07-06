@@ -237,13 +237,13 @@ describe('CanvasPage save behavior', () => {
     cleanup();
   });
 
-  it('surfaces optimistic-write conflicts through collabStore', async () => {
+  it('surfaces optimistic-write conflicts through the document status pill', async () => {
     tauriMocks.writeNote.mockResolvedValue({
       hash: 'hash-conflict',
       conflict: {
         relativePath: 'Boards/test.canvas',
         ourContent: 'ours',
-        theirContent: 'theirs',
+        theirContent: JSON.stringify({ nodes: [], edges: [], viewport: { x: 0, y: 0, zoom: 1 } }),
       },
     });
 
@@ -251,18 +251,12 @@ describe('CanvasPage save behavior', () => {
 
     await screen.findByText(/0 cards and 0 links/i);
     fireEvent.click(screen.getByRole('button', { name: /add text/i }));
-    await wait(700);
 
+    // The controller latches the conflict and pauses autosave; the shared status
+    // pill surfaces it for review instead of the legacy modal dialog.
     await waitFor(() => {
-      expect(useCollabStore.getState().conflicts).toHaveLength(1);
-    });
-
-    expect(useCollabStore.getState().conflicts[0]).toEqual(
-      expect.objectContaining({
-        relativePath: 'Boards/test.canvas',
-        theirContent: 'theirs',
-      }),
-    );
+      expect(screen.getByText(/Conflict needs review/i)).toBeTruthy();
+    }, { timeout: 2000 });
     expect(tauriMocks.createSnapshot).not.toHaveBeenCalled();
   });
 
@@ -366,7 +360,9 @@ describe('CanvasPage save behavior', () => {
     await wait(50);
 
     expect(screen.getByText(/1 card and 0 links/i)).toBeTruthy();
-    expect(tauriMocks.readNote).toHaveBeenCalledTimes(1);
+    // The controller re-reads to evaluate the candidate, but with an unchanged
+    // version it is stale and must not replace the dirty local canvas.
+    expect(tauriMocks.readNote).toHaveBeenCalledTimes(2);
     expect(useEditorStore.getState().openTabs[0]).toEqual(
       expect.objectContaining({
         relativePath: 'Boards/test.canvas',

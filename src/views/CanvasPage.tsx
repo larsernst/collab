@@ -67,7 +67,6 @@ import {
 import { useEditorStore } from '../store/editorStore';
 import { useUiStore } from '../store/uiStore';
 import { useVaultStore } from '../store/vaultStore';
-import { useCollabStore } from '../store/collabStore';
 import { useCollabIdentity } from '../lib/collabIdentity';
 import type {
   CanvasData,
@@ -81,7 +80,7 @@ import type {
   PlanningCanvasNode,
 } from '../types/canvas';
 import type { NoteFile } from '../types/vault';
-import { useDocumentSessionState } from '../lib/documentSession';
+import { DocumentStatusPill } from '../components/layout/DocumentStatusPill';
 import type { OnConnectStartParams, FinalConnectionState } from '@xyflow/react';
 import { useNoteIndexStore } from '../store/noteIndexStore';
 import { useCollabContext } from '../components/collaboration/CollabProvider';
@@ -504,7 +503,6 @@ function CanvasBoard({ relativePath }: { relativePath: string | null }) {
   const markDirty = useEditorStore((state) => state.markDirty);
   const markSaved = useEditorStore((state) => state.markSaved);
   const setSavedHash = useEditorStore((state) => state.setSavedHash);
-  const addConflict = useCollabStore((state) => state.addConflict);
   // Snapshot authorship follows the effective identity (server-authoritative for hosted).
   const { userId: myUserId, userName: myUserName, userColor: myUserColor } = useCollabIdentity();
   const setActiveView = useUiStore((state) => state.setActiveView);
@@ -518,7 +516,6 @@ function CanvasBoard({ relativePath }: { relativePath: string | null }) {
   const collabTransport = useCollabContext();
   const viewportRef = useRef<HTMLDivElement | null>(null);
   const isMountedRef = useRef(true);
-  const isDirtyRef = useRef(false);
   const [nodes, setNodes] = useNodesState<FlowNode<CanvasNodeData>>([]);
   const [edges, setEdges, onEdgesChangeBase] = useEdgesState<CanvasFlowEdge>([]);
   const [viewport, setViewport] = useState(EMPTY_CANVAS.viewport);
@@ -541,7 +538,6 @@ function CanvasBoard({ relativePath }: { relativePath: string | null }) {
     y: 0,
     flowPosition: { x: 0, y: 0 },
   });
-  const { hashRef, lastWriteRef, markLoaded, shouldSkipAutosave, markWriteStarted, shouldCreateSnapshot, runExclusiveSave } = useDocumentSessionState();
   const pendingAutoConnectRef = useRef<PendingAutoConnect | null>(null);
   const duplicateDragSessionRef = useRef<{
     nodeIds: string[];
@@ -734,7 +730,14 @@ function CanvasBoard({ relativePath }: { relativePath: string | null }) {
     webPreviewsEnabled,
   ]);
 
-  const { liveSession, isLoading: canvasLoading, refreshPulse } = useCanvasDocumentSession({
+  const {
+    liveSession,
+    isLoading: canvasLoading,
+    refreshPulse,
+    sessionStatus,
+    onLoadRemote,
+    onKeepLocal,
+  } = useCanvasDocumentSession({
     reactFlow,
     vault,
     relativePath,
@@ -752,21 +755,12 @@ function CanvasBoard({ relativePath }: { relativePath: string | null }) {
     markDirty,
     markSaved,
     setSavedHash,
-    addConflict,
     myUserId,
     myUserName,
     myUserColor,
     isMountedRef,
-    isDirtyRef,
-    hashRef,
-    lastWriteRef,
-    markLoaded,
-    shouldSkipAutosave,
     pauseAutosave: isCanvasInteracting,
     readOnly,
-    markWriteStarted,
-    shouldCreateSnapshot,
-    runExclusiveSave,
   });
 
   // ── Live awareness: co-editors and their node selections ─────────────────
@@ -1476,6 +1470,13 @@ function CanvasBoard({ relativePath }: { relativePath: string | null }) {
             <span className="shrink-0 text-xs text-muted-foreground">
               {nodes.length} {nodes.length === 1 ? 'card' : 'cards'} and {edges.length} {edges.length === 1 ? 'link' : 'links'}
             </span>
+            {!readOnly && (
+              <DocumentStatusPill
+                status={sessionStatus}
+                onLoadRemote={onLoadRemote}
+                onKeepLocal={onKeepLocal}
+              />
+            )}
             <LivePeers peers={livePeers} />
           </>
         }

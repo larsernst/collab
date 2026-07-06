@@ -3,6 +3,12 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { Node as FlowNode, Viewport } from '@xyflow/react';
 
 import { createVaultClient } from '../../lib/vaultClient';
+import { DOCUMENT_SNAPSHOT_INTERVAL_MS } from '../../lib/documentSession';
+import {
+  useDocumentSessionController,
+  type DocumentStatus,
+  type RemoteCandidate,
+} from '../../lib/documentSessionController';
 import { openLiveJsonSession, type LiveJsonSession, type JsonObject } from '../../lib/liveJsonDocument';
 import { onReplicaMutated } from '../../lib/vaultReplica';
 import type { CanvasData, CanvasEdge } from '../../types/canvas';
@@ -97,22 +103,26 @@ interface UseCanvasDocumentSessionOptions {
   markDirty: (path: string) => void;
   markSaved: (path: string, hash: string) => void;
   setSavedHash: (path: string, hash: string) => void;
-  addConflict: (conflict: { relativePath: string; ourContent: string; theirContent: string }) => void;
   myUserId: string;
   myUserName: string;
   myUserColor?: string;
   isMountedRef: React.RefObject<boolean>;
-  isDirtyRef: React.RefObject<boolean>;
-  hashRef: React.RefObject<string | undefined>;
-  lastWriteRef: React.RefObject<number>;
-  markLoaded: (hash?: string | null) => void;
-  shouldSkipAutosave: () => boolean;
+  /** Autosave is paused during transient interactions (e.g. drag). */
   pauseAutosave?: boolean;
   /** Viewer access to a hosted vault: never persist or auto-create the canvas. */
   readOnly?: boolean;
-  markWriteStarted: () => void;
-  shouldCreateSnapshot: (hash: string) => boolean;
-  runExclusiveSave: (save: () => Promise<void>) => Promise<void>;
+}
+
+export interface CanvasDocumentSession {
+  liveSession: LiveJsonSession | null;
+  isLoading: boolean;
+  refreshPulse: boolean;
+  /** Shared document-session status vocabulary for the REST fallback path. */
+  sessionStatus: DocumentStatus;
+  /** Resolve a pending remote / conflict by adopting the remote content. */
+  onLoadRemote: () => void;
+  /** Keep local content (discard a pending remote, or keep-mine on conflict). */
+  onKeepLocal: () => void;
 }
 
 export function useCanvasDocumentSession({
@@ -133,27 +143,16 @@ export function useCanvasDocumentSession({
   markDirty,
   markSaved,
   setSavedHash,
-  addConflict,
   myUserId,
   myUserName,
   myUserColor,
   isMountedRef,
-  isDirtyRef,
-  hashRef,
-  lastWriteRef,
-  markLoaded,
-  shouldSkipAutosave,
   pauseAutosave = false,
   readOnly = false,
-  markWriteStarted,
-  shouldCreateSnapshot,
-  runExclusiveSave,
-}: UseCanvasDocumentSessionOptions) {
+}: UseCanvasDocumentSessionOptions): CanvasDocumentSession {
   const client = useMemo(() => (vault ? createVaultClient(vault) : null), [vault]);
-  const saveTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const refreshPulseTimerRef = useRef<number | null>(null);
   const pendingViewportRef = useRef<Viewport | null>(null);
-  const savedCanvasContentRef = useRef<string | null>(null);
   const restCanvasRef = useRef<CanvasData | null>(null);
   const [restLoadedPath, setRestLoadedPath] = useState<string | null>(null);
   const [loadRevision, setLoadRevision] = useState(0);
@@ -164,6 +163,21 @@ export function useCanvasDocumentSession({
   const liveWriteTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const liveHydratedRef = useRef(false);
   const expectedLiveCanvasRef = useRef<string | null>(null);
+  // After a controller-driven apply (load / remote adopt / merge), skip exactly
+  // one local-change mark so re-applying the just-loaded state never marks dirty
+  // even if the flow round-trip normalizes the serialization slightly.
+  const firstMarkAfterApplyRef = useRef(false);
+
+  // Periodic collaboration snapshot throttle (successful REST saves only).
+  const lastSnapshotHashRef = useRef<string | null>(null);
+  const lastSnapshotTimeRef = useRef(0);
+  const shouldCreateSnapshot = useCallback((hash: string, now = Date.now()) => {
+    if (hash === lastSnapshotHashRef.current) return false;
+    if (now - lastSnapshotTimeRef.current < DOCUMENT_SNAPSHOT_INTERVAL_MS) return false;
+    lastSnapshotHashRef.current = hash;
+    lastSnapshotTimeRef.current = now;
+    return true;
+  }, []);
 
   // Applies a canvas document (remote live change or seed) to the editor state.
   const applyCanvas = useCallback((canvas: CanvasData) => {
@@ -189,85 +203,128 @@ export function useCanvasDocumentSession({
     applyCanvas(sanitized);
   }, [applyCanvas, buildFlowNode, fromFlowEdge, fromFlowNode, toFlowEdge]);
 
-  const loadCanvas = useCallback(async (isInitial = false): Promise<boolean> => {
-    if (!client || !relativePath) return false;
-    if (isInitial) setIsLoading(true);
+  // Canonical serialized form of a canvas as it round-trips through the flow
+  // editor. Used as the controller baseline so re-applying loaded content and the
+  // first local-change mark produce byte-identical content (no spurious dirty).
+  const roundTripCanonical = useCallback((canvas: CanvasData): string => (
+    JSON.stringify(canvasToJson({
+      nodes: buildFlowNode(canvas).map(fromFlowNode),
+      edges: canvas.edges.map(toFlowEdge).map(fromFlowEdge),
+      viewport: canvas.viewport,
+    }), null, 2)
+  ), [buildFlowNode, fromFlowEdge, fromFlowNode, toFlowEdge]);
 
+  const parseCanvasContent = useCallback((content: string): CanvasData => {
+    if (!content.trim()) return EMPTY_CANVAS;
+    try {
+      return sanitizeLoadedCanvasData(JSON.parse(content) as CanvasData).canvas;
+    } catch {
+      return EMPTY_CANVAS;
+    }
+  }, []);
+
+  const pulseRefresh = useCallback(() => {
+    setRefreshPulse(true);
+    if (refreshPulseTimerRef.current !== null) window.clearTimeout(refreshPulseTimerRef.current);
+    refreshPulseTimerRef.current = window.setTimeout(() => setRefreshPulse(false), 420);
+  }, []);
+
+  // Adopt a controller document (initial load, safe remote apply, or backend
+  // merge) into the editor and re-baseline the live-guard reference.
+  const applyCanvasDocument = useCallback((candidate: RemoteCandidate<CanvasData>) => {
+    if (!isMountedRef.current) return;
+    restCanvasRef.current = candidate.document;
+    firstMarkAfterApplyRef.current = true;
+    applyCanvas(candidate.document);
+    setRestLoadedPath(relativePath);
+    if (relativePath) setSavedHash(relativePath, candidate.version ?? '');
+  }, [applyCanvas, isMountedRef, relativePath, setSavedHash]);
+
+  const { controller, snapshot } = useDocumentSessionController<CanvasData>({
+    serialize: (canvas) => JSON.stringify(canvasToJson(canvas), null, 2),
+    deserialize: parseCanvasContent,
+    applyDocument: applyCanvasDocument,
+    read: async () => {
+      if (!client || !relativePath) return null;
+      const doc = await client.readDocument(relativePath);
+      return { content: roundTripCanonical(parseCanvasContent(doc.content)), version: doc.version };
+    },
+    write: async ({ content, expectedVersion, baseContent }) => {
+      if (!client || !relativePath || readOnly) return { version: expectedVersion ?? '' };
+      const result = await client.writeDocument(relativePath, content, expectedVersion ?? undefined, baseContent);
+      if (result.conflict) {
+        let theirVersion: string | null = null;
+        try {
+          theirVersion = (await client.readDocument(relativePath)).version;
+        } catch {
+          // Best-effort; a null version makes a keep-mine resolution overwrite.
+        }
+        return {
+          version: expectedVersion ?? '',
+          conflict: {
+            theirContent: roundTripCanonical(parseCanvasContent(result.conflict.theirContent)),
+            baseContent,
+            theirVersion,
+          },
+        };
+      }
+      const savedContent = result.mergedContent ?? content;
+      if (shouldCreateSnapshot(result.version)) {
+        client.createSnapshot(relativePath, savedContent, myUserId, myUserName).catch(() => {});
+      }
+      return { version: result.version, mergedContent: result.mergedContent };
+    },
+    isLive: () => liveSession !== null,
+    autosaveDebounceMs: SAVE_DEBOUNCE_MS,
+  });
+
+  // Initial load: sanitize, repair/seed the file if needed, then establish the
+  // controller baseline (force explicit reload policy).
+  const loadInitialCanvas = useCallback(async () => {
+    if (!client || !relativePath) return;
+    setIsLoading(true);
     try {
       const { content, version } = await client.readDocument(relativePath);
-      if (!isMountedRef.current) return false;
+      if (!isMountedRef.current) return;
 
       let canvas = EMPTY_CANVAS;
-      let currentHash = version;
+      let currentVersion = version;
 
       if (content.trim()) {
-        canvas = JSON.parse(content) as CanvasData;
-        const sanitized = sanitizeLoadedCanvasData(canvas);
+        const sanitized = sanitizeLoadedCanvasData(JSON.parse(content) as CanvasData);
         canvas = sanitized.canvas;
-        const sanitizedContent = sanitized.changed ? JSON.stringify(canvas, null, 2) : content;
-
-        savedCanvasContentRef.current = sanitizedContent;
-
-        // Viewers cannot persist; skip the dangling-edge repair write and keep
-        // the sanitized canvas in memory only.
+        // Viewers cannot persist; skip the dangling-edge repair write.
         if (sanitized.changed && !readOnly && client.capabilities.nativeFilesystem) {
           try {
-            const repairedResult = await client.writeDocument(
+            const repaired = await client.writeDocument(
               relativePath,
-              sanitizedContent,
-              currentHash ?? undefined,
+              JSON.stringify(canvas, null, 2),
+              currentVersion ?? undefined,
               content,
             );
-            currentHash = repairedResult.version;
-          } catch {}
+            currentVersion = repaired.version;
+          } catch {
+            // Repair is best-effort; keep the sanitized canvas in memory.
+          }
         }
-      } else if (isInitial && !readOnly) {
-        const blank = EMPTY_CANVAS;
-        const result = await client.writeDocument(relativePath, JSON.stringify(blank, null, 2));
-        currentHash = result.version;
-        canvas = blank;
-        savedCanvasContentRef.current = JSON.stringify(blank, null, 2);
+      } else if (!readOnly) {
+        const result = await client.writeDocument(relativePath, JSON.stringify(EMPTY_CANVAS, null, 2));
+        currentVersion = result.version;
       }
 
-      const changed = currentHash !== hashRef.current;
-      markLoaded(currentHash);
-      restCanvasRef.current = canvas;
-      setRestLoadedPath(relativePath);
-      isDirtyRef.current = false;
-      setSavedHash(relativePath, currentHash);
-      resetPreviewState();
-      setViewport(canvas.viewport ?? EMPTY_CANVAS.viewport);
-      setNodes(buildFlowNode(canvas));
-      setEdges(canvas.edges.map(toFlowEdge));
-      pendingViewportRef.current = canvas.viewport ?? EMPTY_CANVAS.viewport;
-      setLoadRevision((prev) => prev + 1);
-      return changed;
+      if (!isMountedRef.current) return;
+      controller.load(roundTripCanonical(canvas), currentVersion, 'rest');
     } catch {
       setRestLoadedPath(relativePath);
-      return false;
     } finally {
       if (isMountedRef.current) setIsLoading(false);
     }
-  }, [
-    buildFlowNode,
-    client,
-    isDirtyRef,
-    isMountedRef,
-    markLoaded,
-    readOnly,
-    relativePath,
-    resetPreviewState,
-    setEdges,
-    setNodes,
-    setSavedHash,
-    setViewport,
-    toFlowEdge,
-  ]);
+  }, [client, controller, isMountedRef, readOnly, relativePath, roundTripCanonical]);
 
   useEffect(() => {
     if (!relativePath) return;
-    void loadCanvas(true);
-  }, [loadCanvas, relativePath]);
+    void loadInitialCanvas();
+  }, [loadInitialCanvas, relativePath]);
 
   // Open a live co-editing session for hosted canvases; fall back to REST when
   // unavailable. Remote changes flow in through `onChange`.
@@ -404,136 +461,83 @@ export function useCanvasDocumentSession({
     });
   }, [loadRevision, reactFlow]);
 
+  // Local edits drive the controller (REST path only). Fires on any node/edge/
+  // viewport change; the controller's content-equality treats selection-only or
+  // no-op changes as clean, so they never autosave. Skipped while live (the CRDT
+  // relay persists) or read-only.
+  useEffect(() => {
+    if (!vault || !relativePath || readOnly || liveSession) return;
+    if (restLoadedPath !== relativePath) return;
+    if (firstMarkAfterApplyRef.current) {
+      firstMarkAfterApplyRef.current = false;
+      return;
+    }
+    controller.markLocalChange({
+      nodes: nodes.map(fromFlowNode),
+      edges: edges.map(fromFlowEdge),
+      viewport,
+    });
+  }, [controller, edges, fromFlowEdge, fromFlowNode, liveSession, nodes, readOnly, relativePath, restLoadedPath, vault, viewport]);
+
+  // Pause/resume the controller autosave for transient interactions (drag, etc.).
+  useEffect(() => {
+    if (pauseAutosave) controller.pauseAutosave();
+    else controller.resumeAutosave();
+  }, [controller, pauseAutosave]);
+
+  // Bridge the controller's dirty/version state to the tab dirty indicator.
+  useEffect(() => {
+    if (!relativePath || liveSession) return;
+    if (snapshot.dirty) markDirty(relativePath);
+    else if (snapshot.loadedVersion) markSaved(relativePath, snapshot.loadedVersion);
+  }, [liveSession, markDirty, markSaved, relativePath, snapshot.dirty, snapshot.loadedVersion]);
+
+  // Local filesystem watcher: another writer changed this file. The controller
+  // auto-applies when clean, queues when dirty, and ignores our own echo/stale.
   useEffect(() => {
     if (!client || !client.capabilities.filesystemWatch || !relativePath) return;
     let unsub: (() => void) | undefined;
-
     listen<{ path: string }>('vault:file-modified', (event) => {
       if (event.payload.path !== relativePath) return;
-      if (isDirtyRef.current) return;
-      if (Date.now() - lastWriteRef.current < 2000) return;
-      void loadCanvas(false);
+      if (Date.now() - controller.getSnapshot().lastLocalWriteStartedAt < 2000) return;
+      void controller.handleExternalMutation('rest').then((decision) => {
+        if (decision === 'applied') pulseRefresh();
+      });
     }).then((cleanup) => {
       unsub = cleanup;
     });
-
     return () => {
       unsub?.();
     };
-  }, [client, isDirtyRef, lastWriteRef, loadCanvas, relativePath]);
+  }, [client, controller, pulseRefresh, relativePath]);
 
+  // Hosted replica refresh: route through the same safe remote policy.
   useEffect(() => {
     if (!client || client.kind !== 'hosted' || !relativePath) return;
-    return onReplicaMutated(async () => {
-      if (isDirtyRef.current || liveSession) return;
-      if (await loadCanvas(false)) {
-        setRefreshPulse(true);
-        if (refreshPulseTimerRef.current !== null) window.clearTimeout(refreshPulseTimerRef.current);
-        refreshPulseTimerRef.current = window.setTimeout(() => setRefreshPulse(false), 420);
-      }
+    return onReplicaMutated(() => {
+      void controller.handleExternalMutation('cache').then((decision) => {
+        if (decision === 'applied') pulseRefresh();
+      });
     });
-  }, [client, isDirtyRef, liveSession, loadCanvas, relativePath]);
+  }, [client, controller, pulseRefresh, relativePath]);
 
   useEffect(() => () => {
     if (refreshPulseTimerRef.current !== null) window.clearTimeout(refreshPulseTimerRef.current);
   }, []);
 
-  const saveCanvas = useCallback(async () => {
-    if (!client || !relativePath || readOnly) return;
-    const payload: CanvasData = {
-      nodes: nodes.map(fromFlowNode),
-      edges: edges.map(fromFlowEdge),
-      viewport,
-    };
-    const serialized = JSON.stringify(payload, null, 2);
+  const onLoadRemote = useCallback(() => {
+    if (controller.getSnapshot().conflicted) controller.resolveConflict('load-remote');
+    else controller.applyRemoteNow();
+  }, [controller]);
 
-    markWriteStarted();
-    try {
-      const result = await client.writeDocument(
-        relativePath,
-        serialized,
-        hashRef.current ?? undefined,
-        savedCanvasContentRef.current ?? undefined,
-      );
-      if (result.conflict) {
-        addConflict({ ...result.conflict, ourContent: serialized });
-        return;
-      }
-      if (isMountedRef.current) {
-        const mergedSerialized = result.mergedContent ?? serialized;
-        if (mergedSerialized !== serialized) {
-          markLoaded(result.version);
-          const mergedCanvas = JSON.parse(mergedSerialized) as CanvasData;
-          resetPreviewState();
-          setViewport(mergedCanvas.viewport ?? EMPTY_CANVAS.viewport);
-          setNodes(buildFlowNode(mergedCanvas));
-          setEdges(mergedCanvas.edges.map(toFlowEdge));
-          pendingViewportRef.current = mergedCanvas.viewport ?? EMPTY_CANVAS.viewport;
-          setLoadRevision((prev) => prev + 1);
-        }
-        savedCanvasContentRef.current = mergedSerialized;
-        hashRef.current = result.version;
-        isDirtyRef.current = false;
-        markSaved(relativePath, result.version);
-        if (shouldCreateSnapshot(result.version)) {
-          client.createSnapshot(
-            relativePath,
-            mergedSerialized,
-            myUserId,
-            myUserName,
-          ).catch(() => {});
-        }
-      }
-    } catch {}
-  }, [
-    addConflict,
-    buildFlowNode,
-    client,
-    edges,
-    fromFlowEdge,
-    fromFlowNode,
-    hashRef,
-    isDirtyRef,
-    isMountedRef,
-    markLoaded,
-    markSaved,
-    markWriteStarted,
-    myUserId,
-    myUserName,
-    nodes,
-    readOnly,
-    relativePath,
-    resetPreviewState,
-    setEdges,
-    setNodes,
-    setViewport,
-    shouldCreateSnapshot,
-    toFlowEdge,
-    viewport,
-  ]);
-
-  useEffect(() => {
-    if (!vault || !relativePath) return;
-    // Live sessions persist through the server, not the REST autosave path.
-    if (pauseAutosave || readOnly || liveSession) {
-      if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
-      return;
+  const onKeepLocal = useCallback(() => {
+    if (controller.getSnapshot().conflicted) {
+      controller.resolveConflict('keep-local');
+      void controller.requestSave('manual');
+    } else {
+      controller.discardRemoteCandidate();
     }
-    if (shouldSkipAutosave()) {
-      return;
-    }
-    isDirtyRef.current = true;
-    markDirty(relativePath);
-    if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
-    // Serialize writes so a slow save never overlaps the next one with a stale
-    // revision; the trailing save coalesces to the latest canvas state.
-    saveTimerRef.current = setTimeout(() => {
-      void runExclusiveSave(saveCanvas);
-    }, SAVE_DEBOUNCE_MS);
-    return () => {
-      if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
-    };
-  }, [edges, isDirtyRef, liveSession, markDirty, nodes, pauseAutosave, readOnly, relativePath, runExclusiveSave, saveCanvas, shouldSkipAutosave, vault, viewport]);
+  }, [controller]);
 
-  return { liveSession, isLoading, refreshPulse };
+  return { liveSession, isLoading, refreshPulse, sessionStatus: snapshot.status, onLoadRemote, onKeepLocal };
 }

@@ -41,6 +41,35 @@ vi.mock('../../lib/liveJsonDocument', () => ({
   openLiveJsonSession: liveMocks.openLiveJsonSession,
 }));
 
+type SessionOptions = Parameters<typeof useCanvasDocumentSession>[0];
+
+/** Base options for the local-vault REST path with sensible no-op defaults. */
+function baseLocalOptions(overrides: Partial<SessionOptions> = {}): SessionOptions {
+  return {
+    reactFlow: { setViewport: vi.fn() },
+    vault: { id: 'vault-1', path: '/vault', name: 'Vault', isEncrypted: false, lastOpened: 1 },
+    relativePath: 'Boards/test.canvas',
+    nodes: [],
+    edges: [] as CanvasFlowEdge[],
+    viewport: { x: 0, y: 0, zoom: 1 },
+    setViewport: vi.fn(),
+    setNodes: vi.fn(),
+    setEdges: vi.fn(),
+    buildFlowNode: () => [] as FlowNode<CanvasNodeData>[],
+    toFlowEdge: (edge) => edge as never,
+    fromFlowNode: vi.fn(),
+    fromFlowEdge: vi.fn(),
+    resetPreviewState: vi.fn(),
+    markDirty: vi.fn(),
+    markSaved: vi.fn(),
+    setSavedHash: vi.fn(),
+    myUserId: 'user-1',
+    myUserName: 'User',
+    isMountedRef: { current: true },
+    ...overrides,
+  };
+}
+
 describe('useCanvasDocumentSession', () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -101,52 +130,19 @@ describe('useCanvasDocumentSession', () => {
 
   it('loads the canvas document and resets preview state', async () => {
     const setViewport = vi.fn();
-    const setNodes = vi.fn();
-    const setEdges = vi.fn();
     const resetPreviewState = vi.fn();
     const setSavedHash = vi.fn();
-    const markLoaded = vi.fn((hash?: string | null) => {
-      hashRef.current = hash ?? undefined;
-    });
-    const hashRef = { current: undefined as string | undefined };
 
-    renderHook(() => useCanvasDocumentSession({
-      reactFlow: { setViewport: vi.fn() },
-      vault: { id: 'vault-1', path: '/vault', name: 'Vault', isEncrypted: false, lastOpened: 1 },
-      relativePath: 'Boards/test.canvas',
-      nodes: [],
-      edges: [] as CanvasFlowEdge[],
-      viewport: { x: 0, y: 0, zoom: 1 },
+    renderHook(() => useCanvasDocumentSession(baseLocalOptions({
       setViewport,
-      setNodes,
-      setEdges,
-      buildFlowNode: () => [] as FlowNode<CanvasNodeData>[],
-      toFlowEdge: (edge) => edge as never,
-      fromFlowNode: vi.fn(),
-      fromFlowEdge: vi.fn(),
       resetPreviewState,
-      markDirty: vi.fn(),
-      markSaved: vi.fn(),
       setSavedHash,
-      addConflict: vi.fn(),
-      myUserId: 'user-1',
-      myUserName: 'User',
-      isMountedRef: { current: true },
-      isDirtyRef: { current: false },
-      hashRef,
-      lastWriteRef: { current: 0 },
-      markLoaded,
-      shouldSkipAutosave: () => true,
-      markWriteStarted: vi.fn(),
-      shouldCreateSnapshot: () => false,
-      runExclusiveSave: (save: () => Promise<void>) => save(),
-    }));
+    })));
 
     await waitFor(() => {
       expect(setSavedHash).toHaveBeenCalledWith('Boards/test.canvas', 'hash-1');
     });
 
-    expect(markLoaded).toHaveBeenCalledWith('hash-1');
     expect(resetPreviewState).toHaveBeenCalled();
     expect(setViewport).toHaveBeenCalledWith({ x: 1, y: 2, zoom: 0.9 });
   });
@@ -165,47 +161,11 @@ describe('useCanvasDocumentSession', () => {
       hash: 'hash-1',
       modifiedAt: 1,
     });
-    tauriMocks.writeNote.mockResolvedValue({
-      hash: 'hash-repaired',
-    });
+    tauriMocks.writeNote.mockResolvedValue({ hash: 'hash-repaired' });
 
     const setSavedHash = vi.fn();
-    const markLoaded = vi.fn((hash?: string | null) => {
-      hashRef.current = hash ?? undefined;
-    });
-    const hashRef = { current: undefined as string | undefined };
 
-    renderHook(() => useCanvasDocumentSession({
-      reactFlow: { setViewport: vi.fn() },
-      vault: { id: 'vault-1', path: '/vault', name: 'Vault', isEncrypted: false, lastOpened: 1 },
-      relativePath: 'Boards/test.canvas',
-      nodes: [],
-      edges: [] as CanvasFlowEdge[],
-      viewport: { x: 0, y: 0, zoom: 1 },
-      setViewport: vi.fn(),
-      setNodes: vi.fn(),
-      setEdges: vi.fn(),
-      buildFlowNode: () => [] as FlowNode<CanvasNodeData>[],
-      toFlowEdge: (edge) => edge as never,
-      fromFlowNode: vi.fn(),
-      fromFlowEdge: vi.fn(),
-      resetPreviewState: vi.fn(),
-      markDirty: vi.fn(),
-      markSaved: vi.fn(),
-      setSavedHash,
-      addConflict: vi.fn(),
-      myUserId: 'user-1',
-      myUserName: 'User',
-      isMountedRef: { current: true },
-      isDirtyRef: { current: false },
-      hashRef,
-      lastWriteRef: { current: 0 },
-      markLoaded,
-      shouldSkipAutosave: () => true,
-      markWriteStarted: vi.fn(),
-      shouldCreateSnapshot: () => false,
-      runExclusiveSave: (save: () => Promise<void>) => save(),
-    }));
+    renderHook(() => useCanvasDocumentSession(baseLocalOptions({ setSavedHash })));
 
     await waitFor(() => {
       expect(tauriMocks.writeNote).toHaveBeenCalledWith(
@@ -231,62 +191,45 @@ describe('useCanvasDocumentSession', () => {
       );
     });
 
-    expect(setSavedHash).toHaveBeenCalledWith('Boards/test.canvas', 'hash-repaired');
-    expect(markLoaded).toHaveBeenCalledWith('hash-repaired');
+    await waitFor(() => {
+      expect(setSavedHash).toHaveBeenCalledWith('Boards/test.canvas', 'hash-repaired');
+    });
   });
 
   it('autosaves current canvas content and creates a snapshot on success', async () => {
     vi.useFakeTimers();
-    const hashRef = { current: 'hash-1' as string | undefined };
-    let skipAutosave = true;
+    // Match the file viewport to the prop viewport so the loaded baseline is
+    // clean; only the added node makes the document dirty.
+    tauriMocks.readNote.mockResolvedValue({
+      content: JSON.stringify({ nodes: [], edges: [], viewport: { x: 0, y: 0, zoom: 1 } }),
+      hash: 'hash-1',
+      modifiedAt: 1,
+    });
     tauriMocks.writeNote.mockResolvedValue({ hash: 'hash-2' });
+    tauriMocks.createSnapshot.mockResolvedValue(undefined);
 
-    const baseOptions = {
-      reactFlow: { setViewport: vi.fn() },
-      vault: { id: 'vault-1', path: '/vault', name: 'Vault', isEncrypted: false, lastOpened: 1 },
-      relativePath: 'Boards/test.canvas',
-      setViewport: vi.fn(),
-      setNodes: vi.fn(),
-      setEdges: vi.fn(),
-      buildFlowNode: () => [] as FlowNode<CanvasNodeData>[],
-      toFlowEdge: (edge: unknown) => edge as never,
-      fromFlowNode: vi.fn((node: FlowNode<CanvasNodeData>) => ({ id: node.id, type: 'text' as const, content: node.data.content ?? '', position: node.position, width: 100, height: 100 })),
+    const options = baseLocalOptions({
+      fromFlowNode: vi.fn((node: FlowNode<CanvasNodeData>) => ({
+        id: node.id,
+        type: 'text' as const,
+        content: node.data.content ?? '',
+        position: node.position,
+        width: 100,
+        height: 100,
+      })),
       fromFlowEdge: vi.fn((edge: CanvasFlowEdge) => edge as never),
-      resetPreviewState: vi.fn(),
-      markDirty: vi.fn(),
-      markSaved: vi.fn(),
-      setSavedHash: vi.fn(),
-      addConflict: vi.fn(),
-      myUserId: 'user-1',
-      myUserName: 'User',
-      isMountedRef: { current: true },
-      isDirtyRef: { current: false },
-      hashRef,
-      lastWriteRef: { current: 0 },
-      markLoaded: vi.fn((hash?: string | null) => {
-        hashRef.current = hash ?? undefined;
-      }),
-      shouldSkipAutosave: () => skipAutosave,
-      markWriteStarted: vi.fn(),
-      shouldCreateSnapshot: () => true,
-      runExclusiveSave: (save: () => Promise<void>) => save(),
-    };
-
-    const { rerender } = renderHook((props: { nodes: FlowNode<CanvasNodeData>[] }) => useCanvasDocumentSession({
-      ...baseOptions,
-      nodes: props.nodes,
-      edges: [] as CanvasFlowEdge[],
-      viewport: { x: 0, y: 0, zoom: 1 },
-    }), {
-      initialProps: {
-        nodes: [] as FlowNode<CanvasNodeData>[],
-      },
     });
 
-    await Promise.resolve();
+    const { rerender } = renderHook((props: { nodes: FlowNode<CanvasNodeData>[] }) => useCanvasDocumentSession({
+      ...options,
+      nodes: props.nodes,
+    }), {
+      initialProps: { nodes: [] as FlowNode<CanvasNodeData>[] },
+    });
+
+    await vi.advanceTimersByTimeAsync(0);
     expect(tauriMocks.readNote).toHaveBeenCalled();
 
-    skipAutosave = false;
     rerender({
       nodes: [{
         id: 'node-1',
@@ -297,10 +240,8 @@ describe('useCanvasDocumentSession', () => {
     });
 
     await vi.advanceTimersByTimeAsync(650);
-    await Promise.resolve();
 
     expect(tauriMocks.writeNote).toHaveBeenCalled();
-
     expect(tauriMocks.createSnapshot).toHaveBeenCalledWith(
       '/vault',
       'Boards/test.canvas',
@@ -314,6 +255,56 @@ describe('useCanvasDocumentSession', () => {
       undefined,
     );
   });
+
+  function hostedLiveOptions(overrides: Partial<SessionOptions> = {}): SessionOptions {
+    return {
+      reactFlow: { setViewport: vi.fn() },
+      vault: {
+        kind: 'hosted',
+        id: 'hosted-vault',
+        hostedVaultId: 'hosted-vault',
+        serverUrl: 'https://collab.example.test',
+        role: 'editor',
+        path: 'hosted://hosted-vault',
+        name: 'Hosted',
+        isEncrypted: false,
+        lastOpened: 1,
+      },
+      relativePath: 'Boards/test.canvas',
+      nodes: [],
+      edges: [] as CanvasFlowEdge[],
+      viewport: { x: 0, y: 0, zoom: 1 },
+      setViewport: vi.fn(),
+      setNodes: vi.fn(),
+      setEdges: vi.fn(),
+      buildFlowNode: (canvas: { nodes: Array<{ id: string; content?: string; position: { x: number; y: number } }> }) => (
+        canvas.nodes.map((node) => ({
+          id: node.id,
+          type: 'textCard',
+          position: node.position,
+          data: { title: 'Text', content: node.content ?? '' },
+        })) as FlowNode<CanvasNodeData>[]
+      ),
+      toFlowEdge: (edge) => edge as never,
+      fromFlowNode: vi.fn((node: FlowNode<CanvasNodeData>) => ({
+        id: node.id,
+        type: 'text' as const,
+        content: node.data.content ?? '',
+        position: node.position,
+        width: 100,
+        height: 100,
+      })),
+      fromFlowEdge: vi.fn((edge: CanvasFlowEdge) => edge as never),
+      resetPreviewState: vi.fn(),
+      markDirty: vi.fn(),
+      markSaved: vi.fn(),
+      setSavedHash: vi.fn(),
+      myUserId: 'user-1',
+      myUserName: 'User',
+      isMountedRef: { current: true },
+      ...overrides,
+    };
+  }
 
   it('opens a hosted canvas live session but only writes after hydration', async () => {
     const writeJson = vi.fn();
@@ -329,72 +320,16 @@ describe('useCanvasDocumentSession', () => {
       destroy: vi.fn(),
     });
 
-    const baseOptions = {
-      reactFlow: { setViewport: vi.fn() },
-      vault: {
-        kind: 'hosted' as const,
-        id: 'hosted-vault',
-        hostedVaultId: 'hosted-vault',
-        serverUrl: 'https://collab.example.test',
-        role: 'editor' as const,
-        path: 'hosted://hosted-vault',
-        name: 'Hosted',
-        isEncrypted: false,
-        lastOpened: 1,
-      },
-      relativePath: 'Boards/test.canvas',
-      edges: [] as CanvasFlowEdge[],
-      viewport: { x: 0, y: 0, zoom: 1 },
-      setViewport: vi.fn(),
-      setNodes: vi.fn(),
-      setEdges: vi.fn(),
-      buildFlowNode: (canvas: { nodes: Array<{ id: string; content?: string; position: { x: number; y: number } }> }) => (
-        canvas.nodes.map((node) => ({
-          id: node.id,
-          type: 'textCard',
-          position: node.position,
-          data: { title: 'Text', content: node.content ?? '' },
-        })) as FlowNode<CanvasNodeData>[]
-      ),
-      toFlowEdge: (edge: unknown) => edge as never,
-      fromFlowNode: vi.fn((node: FlowNode<CanvasNodeData>) => ({
-        id: node.id,
-        type: 'text' as const,
-        content: node.data.content ?? '',
-        position: node.position,
-        width: 100,
-        height: 100,
-      })),
-      fromFlowEdge: vi.fn((edge: CanvasFlowEdge) => edge as never),
-      resetPreviewState: vi.fn(),
-      markDirty: vi.fn(),
-      markSaved: vi.fn(),
-      setSavedHash: vi.fn(),
-      addConflict: vi.fn(),
-      myUserId: 'user-1',
-      myUserName: 'User',
-      isMountedRef: { current: true },
-      isDirtyRef: { current: false },
-      hashRef: { current: undefined as string | undefined },
-      lastWriteRef: { current: 0 },
-      markLoaded: vi.fn(),
-      shouldSkipAutosave: () => true,
-      markWriteStarted: vi.fn(),
-      shouldCreateSnapshot: () => false,
-      runExclusiveSave: (save: () => Promise<void>) => save(),
-    };
+    const options = hostedLiveOptions();
 
     const { rerender } = renderHook(
-      ({ nodes }: { nodes: FlowNode<CanvasNodeData>[] }) => useCanvasDocumentSession({
-        ...baseOptions,
-        nodes,
-      }),
+      ({ nodes }: { nodes: FlowNode<CanvasNodeData>[] }) => useCanvasDocumentSession({ ...options, nodes }),
       { initialProps: { nodes: [] as FlowNode<CanvasNodeData>[] } },
     );
 
-    // The hosted canvas now opens a live session (after the REST load resolves
-    // the gate). Before the editor state has hydrated to match the server
-    // snapshot, the initial (empty) React state must never be written.
+    // The hosted canvas opens a live session (after the REST load resolves the
+    // gate). Before the editor state has hydrated to match the server snapshot,
+    // the initial (empty) React state must never be written.
     await waitFor(() => expect(liveMocks.openLiveJsonSession).toHaveBeenCalled());
     expect(writeJson).not.toHaveBeenCalled();
 
@@ -429,66 +364,10 @@ describe('useCanvasDocumentSession', () => {
       destroy: vi.fn(),
     });
 
-    const baseOptions = {
-      reactFlow: { setViewport: vi.fn() },
-      vault: {
-        kind: 'hosted' as const,
-        id: 'hosted-vault',
-        hostedVaultId: 'hosted-vault',
-        serverUrl: 'https://collab.example.test',
-        role: 'editor' as const,
-        path: 'hosted://hosted-vault',
-        name: 'Hosted',
-        isEncrypted: false,
-        lastOpened: 1,
-      },
-      relativePath: 'Boards/test.canvas',
-      edges: [] as CanvasFlowEdge[],
-      viewport: { x: 0, y: 0, zoom: 1 },
-      setViewport: vi.fn(),
-      setNodes: vi.fn(),
-      setEdges: vi.fn(),
-      buildFlowNode: (canvas: { nodes: Array<{ id: string; content?: string; position: { x: number; y: number } }> }) => (
-        canvas.nodes.map((node) => ({
-          id: node.id,
-          type: 'textCard',
-          position: node.position,
-          data: { title: 'Text', content: node.content ?? '' },
-        })) as FlowNode<CanvasNodeData>[]
-      ),
-      toFlowEdge: (edge: unknown) => edge as never,
-      fromFlowNode: vi.fn((node: FlowNode<CanvasNodeData>) => ({
-        id: node.id,
-        type: 'text' as const,
-        content: node.data.content ?? '',
-        position: node.position,
-        width: 100,
-        height: 100,
-      })),
-      fromFlowEdge: vi.fn((edge: CanvasFlowEdge) => edge as never),
-      resetPreviewState: vi.fn(),
-      markDirty: vi.fn(),
-      markSaved: vi.fn(),
-      setSavedHash: vi.fn(),
-      addConflict: vi.fn(),
-      myUserId: 'user-1',
-      myUserName: 'User',
-      isMountedRef: { current: true },
-      isDirtyRef: { current: false },
-      hashRef: { current: undefined as string | undefined },
-      lastWriteRef: { current: 0 },
-      markLoaded: vi.fn(),
-      shouldSkipAutosave: () => true,
-      markWriteStarted: vi.fn(),
-      shouldCreateSnapshot: () => false,
-      runExclusiveSave: (save: () => Promise<void>) => save(),
-    };
+    const options = hostedLiveOptions();
 
     const { rerender } = renderHook(
-      ({ nodes }: { nodes: FlowNode<CanvasNodeData>[] }) => useCanvasDocumentSession({
-        ...baseOptions,
-        nodes,
-      }),
+      ({ nodes }: { nodes: FlowNode<CanvasNodeData>[] }) => useCanvasDocumentSession({ ...options, nodes }),
       { initialProps: { nodes: [] as FlowNode<CanvasNodeData>[] } },
     );
 

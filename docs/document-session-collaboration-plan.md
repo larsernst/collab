@@ -235,7 +235,7 @@ Migration order and status:
 
 1. **Logic diagrams — Done (2026-07-06).**
 2. **Notes REST fallback — Done (2026-07-06).**
-3. Canvas REST fallback — pending.
+3. **Canvas REST fallback — Done (2026-07-06).**
 4. Kanban REST fallback — pending.
 5. SVG vector editor — pending.
 6. Grid view — pending.
@@ -304,6 +304,43 @@ cases updated for the read-then-evaluate policy, plus a new case: a newer remote
 change is queued while dirty and applied on `Load latest`.
 
 Full suite green (127 files / 626 tests) and `tsc` clean.
+
+**Canvas migration (`useCanvasDocumentSession.ts` + `CanvasPage.tsx`):**
+
+- All REST session state moved into `useDocumentSessionController`, built
+  *inside* the hook. `CanvasPage` no longer creates `useDocumentSessionState` and
+  no longer threads `hashRef`/`lastWriteRef`/`markLoaded`/`shouldSkipAutosave`/
+  `markWriteStarted`/`shouldCreateSnapshot`/`runExclusiveSave`/`isDirtyRef`/
+  `addConflict` down — the hook's option surface shrank to just view state,
+  setters, conversions, identity, `pauseAutosave`, and `readOnly`.
+- **The hosted live-JSON path is preserved verbatim** — the corruption guards
+  (`liveHydratedRef`, `lostRestNodes`, empty-root REST fallback,
+  `discardOfflineState`, awareness publish, debounced `writeJson`) are unchanged.
+  `isLive: () => liveSession !== null` disables REST autosave/remote reloads while
+  a live session owns the canvas; `restCanvasRef` (used by `lostRestNodes`) is now
+  refreshed by the controller's `applyDocument`.
+- **Round-trip-canonical baseline**: because the flow round-trip normalizes JSON,
+  the controller is loaded/read with `roundTripCanonical(canvas)` (the exact
+  `fromFlowNode`/`fromFlowEdge` serialization) so re-applying loaded content and
+  the first local-change mark produce byte-identical content — no spurious dirty
+  on open. A `firstMarkAfterApplyRef` skips one mark after every apply as a
+  belt-and-suspenders against non-idempotent round-trips.
+- Local edits drive the controller via an effect on `[nodes, edges, viewport]`;
+  the controller's content-equality now treats selection-only changes as clean
+  (fewer redundant writes than before). `pauseAutosave` (drag interaction) maps to
+  `controller.pauseAutosave()/resumeAutosave()`. Watcher + replica route through
+  `handleExternalMutation`; the initial load keeps the sanitize + dangling-edge
+  repair-write + blank-seed behavior before establishing the baseline.
+- Conflict routed through the controller + `DocumentStatusPill` (in the
+  `DocumentTopBar` meta), consistent with Notes/Logic; Canvas no longer calls
+  `addConflict`. Snapshots created in the injected `write` on a successful save.
+
+**Canvas tests**: `useCanvasDocumentSession.test.tsx` updated to the new option
+interface (load/repair/autosave+snapshot/live-hydration/awareness); `CanvasPage.test.tsx`
+conflict test now asserts the status pill (`Conflict needs review`) and the
+dirty-watcher test asserts the read-then-evaluate policy (reads but does not
+apply a same-version candidate). Full suite green (127 files / 626 tests), `tsc`
+clean, no unhandled rejections.
 
 ## Phase 3: Merge And Conflict UX
 
