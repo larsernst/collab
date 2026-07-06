@@ -88,6 +88,10 @@ import { ReadOnlyBanner } from '../components/layout/ReadOnlyBanner';
 import LivePeers from '../components/collaboration/LivePeers';
 import { dedupePeersByUser, useLivePeers } from '../lib/liveAwareness';
 import { useDocumentStatusRegistration } from '../store/documentStatusStore';
+import type {
+  DocumentSessionController,
+  DocumentSessionSnapshot,
+} from '../lib/documentSessionController';
 import { cn } from '../lib/utils';
 import { getVaultDocumentTabType } from '../lib/vaultLinks';
 
@@ -734,9 +738,9 @@ function CanvasBoard({ relativePath }: { relativePath: string | null }) {
     liveSession,
     isLoading: canvasLoading,
     refreshPulse,
-    sessionStatus,
-    onLoadRemote,
-    onKeepLocal,
+    controller: canvasController,
+    snapshot: canvasSnapshot,
+    onSaveAsNew,
   } = useCanvasDocumentSession({
     reactFlow,
     vault,
@@ -763,11 +767,13 @@ function CanvasBoard({ relativePath }: { relativePath: string | null }) {
     readOnly,
   });
 
-  const documentStatus = useMemo(() => (
-    !readOnly
-      ? { status: sessionStatus, onLoadRemote, onKeepLocal }
-      : null
-  ), [onKeepLocal, onLoadRemote, readOnly, sessionStatus]);
+  const documentStatus = useMemo(() => ({
+    status: canvasSnapshot.status,
+    controller: canvasController as DocumentSessionController<unknown>,
+    snapshot: canvasSnapshot as DocumentSessionSnapshot<unknown>,
+    onSaveAsNew,
+    readOnly,
+  }), [canvasController, canvasSnapshot, onSaveAsNew, readOnly]);
   useDocumentStatusRegistration(relativePath, documentStatus);
 
   // ── Live awareness: co-editors and their node selections ─────────────────

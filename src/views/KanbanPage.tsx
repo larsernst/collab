@@ -13,9 +13,12 @@ import { useEditorStore } from '../store/editorStore';
 import { DOCUMENT_SNAPSHOT_INTERVAL_MS } from '../lib/documentSession';
 import {
   useDocumentSessionController,
+  type DocumentSessionController,
+  type DocumentSessionSnapshot,
   type DocumentStatus,
   type RemoteCandidate,
 } from '../lib/documentSessionController';
+import { saveConflictedCopy } from '../lib/conflictedCopy';
 import { openLiveJsonSession, type LiveJsonSession, type JsonObject } from '../lib/liveJsonDocument';
 import { onReplicaMutated } from '../lib/vaultReplica';
 import { useCollabContext } from '../components/collaboration/CollabProvider';
@@ -73,10 +76,6 @@ interface KanbanCtx {
   remoteCardEditors: Map<string, LiveAwarenessUser>;
   /** Shared document-session status vocabulary for the REST fallback path. */
   sessionStatus: DocumentStatus;
-  /** Resolve a pending remote / conflict by adopting the remote content. */
-  onLoadRemote: () => void;
-  /** Keep local content (discard a pending remote, or keep-mine on conflict). */
-  onKeepLocal: () => void;
 }
 
 const KanbanContext = createContext<KanbanCtx | null>(null);
@@ -296,25 +295,18 @@ export default function KanbanPage({ relativePath }: { relativePath: string | nu
     refreshPulseTimerRef.current = window.setTimeout(() => setRefreshPulse(false), 420);
   }, []);
 
-  const onLoadRemote = useCallback(() => {
-    if (controller.getSnapshot().conflicted) controller.resolveConflict('load-remote');
-    else controller.applyRemoteNow();
-  }, [controller]);
+  const onSaveAsNew = useCallback(async (localContent: string) => {
+    if (!client || !relativePath) return;
+    await saveConflictedCopy(client, relativePath, localContent);
+  }, [client, relativePath]);
 
-  const onKeepLocal = useCallback(() => {
-    if (controller.getSnapshot().conflicted) {
-      controller.resolveConflict('keep-local');
-      void controller.requestSave('manual');
-    } else {
-      controller.discardRemoteCandidate();
-    }
-  }, [controller]);
-
-  const documentStatus = useMemo(() => (
-    !readOnly
-      ? { status: snapshot.status, onLoadRemote, onKeepLocal }
-      : null
-  ), [onKeepLocal, onLoadRemote, readOnly, snapshot.status]);
+  const documentStatus = useMemo(() => ({
+    status: snapshot.status,
+    controller: controller as DocumentSessionController<unknown>,
+    snapshot: snapshot as DocumentSessionSnapshot<unknown>,
+    onSaveAsNew,
+    readOnly,
+  }), [controller, onSaveAsNew, readOnly, snapshot]);
   useDocumentStatusRegistration(relativePath, documentStatus);
 
   // Open a live co-editing session for hosted boards; fall back to REST when
@@ -456,7 +448,7 @@ export default function KanbanPage({ relativePath }: { relativePath: string | nu
   }
 
   return (
-    <KanbanContext.Provider value={{ board, updateBoard, knownUsers, relativePath, readOnly, caps, livePeers, remoteCardEditors, sessionStatus: snapshot.status, onLoadRemote, onKeepLocal }}>
+    <KanbanContext.Provider value={{ board, updateBoard, knownUsers, relativePath, readOnly, caps, livePeers, remoteCardEditors, sessionStatus: snapshot.status }}>
       <div className={`h-full min-h-0 app-document-ready ${refreshPulse ? 'app-refresh-pulse' : ''}`}>
         {readOnly && <ReadOnlyBanner />}
         <KanbanBoardView />

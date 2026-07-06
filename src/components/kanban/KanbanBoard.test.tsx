@@ -178,7 +178,6 @@ describe('KanbanBoard archive view', () => {
       myUserName: 'Test User',
       myUserColor: '#22c55e',
       peers: [],
-      conflicts: [],
       chatMessages: [],
       chatTypingUntil: null,
     });

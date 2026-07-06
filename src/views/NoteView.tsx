@@ -16,7 +16,14 @@ import {
 import { useUiStore } from '../store/uiStore';
 import { extractHttpUrls, prefetchWebPreviews } from '../lib/webPreviewCache';
 import { DOCUMENT_SNAPSHOT_INTERVAL_MS } from '../lib/documentSession';
-import { useDocumentSessionController, type RemoteCandidate } from '../lib/documentSessionController';
+import {
+  useDocumentSessionController,
+  type DocumentSessionController,
+  type DocumentSessionSnapshot,
+  type RemoteCandidate,
+} from '../lib/documentSessionController';
+import { mergeText } from '../lib/textMerge';
+import { saveConflictedCopy } from '../lib/conflictedCopy';
 import { openLiveNoteSession, type LiveDocumentSession } from '../lib/liveDocumentSession';
 import { onReplicaMutated } from '../lib/vaultReplica';
 import { useLivePeers } from '../lib/liveAwareness';
@@ -162,6 +169,14 @@ export default function NoteView({ relativePath }: { relativePath: string }) {
       const savedContent = result.mergedContent ?? toWrite;
       await maybeRenameFromH1(savedContent);
       return { version: result.version, mergedContent: result.mergedContent };
+    },
+    // Dirty note + clean remote change: attempt a line-based three-way merge so
+    // disjoint edits reconcile automatically (mirrors the backend auto-merge).
+    // Overlapping edits, or a missing common base, fall back to a pending review.
+    mergeRemote: ({ base, local, remote }) => {
+      if (base === null) return null;
+      const merged = mergeText(base, local, remote);
+      return merged === null ? null : { document: merged, content: merged };
     },
     isLive: () => liveSession !== null,
     autosaveDebounceMs: 600,
@@ -383,25 +398,22 @@ export default function NoteView({ relativePath }: { relativePath: string }) {
     }
   };
 
-  const handleLoadRemote = useCallback(() => {
-    if (controller.getSnapshot().conflicted) controller.resolveConflict('load-remote');
-    else controller.applyRemoteNow();
-  }, [controller]);
-
-  const handleKeepLocal = useCallback(() => {
-    if (controller.getSnapshot().conflicted) {
-      controller.resolveConflict('keep-local');
-      void controller.requestSave('manual');
-    } else {
-      controller.discardRemoteCandidate();
-    }
-  }, [controller]);
+  const handleSaveAsNew = useCallback(async (localContent: string) => {
+    if (!client) return;
+    await saveConflictedCopy(client, relativePath, localContent);
+  }, [client, relativePath]);
 
   const documentStatus = useMemo(() => (
-    !readOnly && content !== null
-      ? { status: snapshot.status, onLoadRemote: handleLoadRemote, onKeepLocal: handleKeepLocal }
+    content !== null
+      ? {
+          status: snapshot.status,
+          controller: controller as DocumentSessionController<unknown>,
+          snapshot: snapshot as DocumentSessionSnapshot<unknown>,
+          onSaveAsNew: handleSaveAsNew,
+          readOnly,
+        }
       : null
-  ), [content, handleKeepLocal, handleLoadRemote, readOnly, snapshot.status]);
+  ), [content, controller, handleSaveAsNew, readOnly, snapshot]);
   useDocumentStatusRegistration(relativePath, documentStatus);
 
   if (content === null && !liveSession) {

@@ -1,6 +1,5 @@
 import { create } from 'zustand';
 import type { ChatMessage, PresenceEntry } from '../types/collab';
-import type { ConflictInfo } from '../types/vault';
 import { userColorForId } from '../lib/userColor';
 
 interface CollabState {
@@ -8,12 +7,9 @@ interface CollabState {
   myUserName: string;
   myUserColor: string;
   peers: PresenceEntry[];
-  conflicts: ConflictInfo[];
   chatMessages: ChatMessage[];
   chatTypingUntil: number | null;
   setPeers: (peers: PresenceEntry[]) => void;
-  addConflict: (conflict: ConflictInfo) => void;
-  dismissConflict: (relativePath: string) => void;
   setMyProfile: (userId: string, userName: string, userColor: string) => void;
   setChatMessages: (msgs: ChatMessage[]) => void;
   mergeChatMessages: (msgs: ChatMessage[]) => void;
@@ -41,16 +37,9 @@ export const useCollabStore = create<CollabState>()((set) => {
     myUserName: userName,
     myUserColor: userColor,
     peers: [],
-    conflicts: [],
     chatMessages: [],
     chatTypingUntil: null,
     setPeers: (peers) => set({ peers }),
-    addConflict: (conflict) =>
-      set((state) => ({
-        conflicts: [...state.conflicts.filter((c) => c.relativePath !== conflict.relativePath), conflict],
-      })),
-    dismissConflict: (relativePath) =>
-      set((state) => ({ conflicts: state.conflicts.filter((c) => c.relativePath !== relativePath) })),
     setMyProfile: (myUserId, myUserName, myUserColor) => {
       localStorage.setItem('collab-user-id', myUserId);
       localStorage.setItem('collab-user-name', myUserName);

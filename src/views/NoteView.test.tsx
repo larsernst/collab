@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import * as Y from 'yjs';
 import { Awareness } from 'y-protocols/awareness';
@@ -140,7 +140,6 @@ describe('NoteView external reload behavior', () => {
       myUserName: 'Test User',
       myUserColor: '#22c55e',
       peers: [],
-      conflicts: [],
       chatMessages: [],
       chatTypingUntil: null,
     });
@@ -211,9 +210,38 @@ describe('NoteView external reload behavior', () => {
     });
     expect(screen.getByTestId('editor-content').textContent).not.toBe('external update');
 
-    // Load latest applies the queued remote content.
-    useDocumentStatusStore.getState().statuses['Notes/a.md']?.onLoadRemote?.();
+    // Load latest applies the queued remote content (via the registered
+    // session controller that drives the central reconciliation surface).
+    act(() => {
+      useDocumentStatusStore.getState().statuses['Notes/a.md']?.controller?.loadRemote();
+    });
     await waitFor(() => expect(screen.getByTestId('editor-content').textContent).toBe('external update'));
+  });
+
+  it('auto-merges a non-overlapping remote change while dirty (three-way merge)', async () => {
+    tauriMocks.readNote
+      .mockResolvedValueOnce({ content: 'line1\nline2\n', hash: 'hash-1', modifiedAt: 1 })
+      // Remote changed the first line; the local edit appends a trailing line,
+      // so the two edits are disjoint and merge cleanly.
+      .mockResolvedValue({ content: 'line1 remote\nline2\n', hash: 'hash-2', modifiedAt: 2 });
+    tauriMocks.writeNote.mockResolvedValue({ hash: 'hash-saved' });
+
+    render(<NoteView relativePath="Notes/a.md" />);
+    await screen.findByTestId('editor-content');
+
+    // Local edit appends "\nupdated" to the end.
+    fireEvent.click(screen.getByRole('button', { name: 'change' }));
+    await waitFor(() => expect(screen.getByTestId('editor-content').textContent).toContain('updated'));
+
+    await noteEvents.fileModifiedHandler?.({ payload: { path: 'Notes/a.md' } });
+
+    // Both edits survive; no pending review is needed.
+    await waitFor(() => {
+      const text = screen.getByTestId('editor-content').textContent ?? '';
+      expect(text).toContain('line1 remote');
+      expect(text).toContain('updated');
+    });
+    expect(useDocumentStatusStore.getState().statuses['Notes/a.md']?.status).not.toBe('remote-pending');
   });
 
   it('serializes overlapping autosaves on a slow connection (no stale-revision write)', async () => {

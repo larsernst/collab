@@ -8,6 +8,7 @@ import PresenceBar from '../collaboration/PresenceBar';
 import HostedConnectionStatus from './HostedConnectionStatus';
 import SyncStatusIndicator from './SyncStatusIndicator';
 import { DocumentStatusPill } from './DocumentStatusPill';
+import { DocumentReconciler } from './DocumentReconciler';
 import { Progress } from '../ui/progress';
 import { BookOpen, Hash, Download, RefreshCw } from 'lucide-react';
 import { cn } from '../../lib/utils';
@@ -93,7 +94,16 @@ export default function StatusBar() {
           </span>
         )}
         <SyncStatusIndicator />
-        {activeDocumentStatus && (
+        {activeDocumentStatus && activeDocumentStatus.controller && activeDocumentStatus.snapshot ? (
+          <DocumentReconciler
+            controller={activeDocumentStatus.controller}
+            snapshot={activeDocumentStatus.snapshot}
+            onSaveAsNew={activeDocumentStatus.onSaveAsNew}
+            readOnly={activeDocumentStatus.readOnly}
+            hideWhenSaved
+            compact
+          />
+        ) : activeDocumentStatus ? (
           <DocumentStatusPill
             status={activeDocumentStatus.status}
             onLoadRemote={activeDocumentStatus.onLoadRemote}
@@ -101,7 +111,7 @@ export default function StatusBar() {
             hideWhenSaved
             compact
           />
-        )}
+        ) : null}
         <HostedConnectionStatus />
         <PresenceBar />
       </div>

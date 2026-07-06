@@ -394,3 +394,102 @@ describe('DocumentSessionController', () => {
     expect(applied[applied.length - 1]).toMatchObject({ content: 'local+remote' });
   });
 });
+
+describe('DocumentSessionController reconciliation API', () => {
+  it('derives the reconciliation model from a queued pending remote', () => {
+    const { controller } = makeController();
+    controller.load('base', 'v1');
+    controller.markLocalChange('mine');
+    controller.handleRemoteCandidate({ document: 'theirs', content: 'theirs', version: 'v2', source: 'rest' });
+
+    const recon = controller.getReconciliation();
+    expect(recon).toEqual({
+      kind: 'remote-pending',
+      base: 'base',
+      ours: 'mine',
+      theirs: 'theirs',
+      theirVersion: 'v2',
+    });
+  });
+
+  it('derives the reconciliation model from a hard conflict', async () => {
+    const { controller } = makeController({
+      resolveWrite: async () => ({
+        version: 'v1',
+        conflict: { theirContent: 'server', baseContent: 'base', theirVersion: 'v2' },
+      }),
+    });
+    controller.load('base', 'v1');
+    controller.markLocalChange('mine');
+    await controller.requestSave('manual');
+
+    const recon = controller.getReconciliation();
+    expect(recon).toEqual({
+      kind: 'conflict',
+      base: 'base',
+      ours: 'mine',
+      theirs: 'server',
+      theirVersion: 'v2',
+    });
+    expect(controller.getSnapshot().status).toBe('conflict');
+  });
+
+  it('loadRemote adopts the pending remote and clears dirty state', () => {
+    const { controller, applied } = makeController();
+    controller.load('base', 'v1');
+    controller.markLocalChange('mine');
+    controller.handleRemoteCandidate({ document: 'theirs', content: 'theirs', version: 'v2', source: 'rest' });
+
+    controller.loadRemote();
+    expect(controller.getReconciliation()).toBeNull();
+    expect(controller.getSnapshot().currentContent).toBe('theirs');
+    expect(controller.isDirty).toBe(false);
+    expect(applied[applied.length - 1]).toMatchObject({ content: 'theirs', version: 'v2' });
+  });
+
+  it('keepMine rebases a pending remote onto the remote version so the next save overwrites cleanly', () => {
+    const { controller, hasScheduledAutosave } = makeController();
+    controller.load('base', 'v1');
+    controller.markLocalChange('mine');
+    controller.handleRemoteCandidate({ document: 'theirs', content: 'theirs', version: 'v2', source: 'rest' });
+
+    controller.keepMine();
+    const snap = controller.getSnapshot();
+    expect(snap.pendingRemote).toBeNull();
+    // Version advanced to theirs, but local content is preserved and still dirty
+    // against it, so the queued autosave will overwrite v2 (base = their content).
+    expect(snap.loadedVersion).toBe('v2');
+    expect(snap.lastSavedContent).toBe('theirs');
+    expect(snap.currentContent).toBe('mine');
+    expect(snap.dirty).toBe(true);
+    expect(hasScheduledAutosave()).toBe(true);
+  });
+
+  it('saveMineAsNew persists local content then adopts the remote', async () => {
+    const { controller, applied } = makeController();
+    controller.load('base', 'v1');
+    controller.markLocalChange('mine');
+    controller.handleRemoteCandidate({ document: 'theirs', content: 'theirs', version: 'v2', source: 'rest' });
+
+    const persisted: string[] = [];
+    await controller.saveMineAsNew(async (local) => { persisted.push(local); });
+
+    expect(persisted).toEqual(['mine']);
+    expect(controller.getReconciliation()).toBeNull();
+    expect(controller.getSnapshot().currentContent).toBe('theirs');
+    expect(applied[applied.length - 1]).toMatchObject({ content: 'theirs' });
+  });
+
+  it('saveMineAsNew leaves reconciliation intact when persist fails', async () => {
+    const { controller } = makeController();
+    controller.load('base', 'v1');
+    controller.markLocalChange('mine');
+    controller.handleRemoteCandidate({ document: 'theirs', content: 'theirs', version: 'v2', source: 'rest' });
+
+    await expect(
+      controller.saveMineAsNew(async () => { throw new Error('disk full'); }),
+    ).rejects.toThrow('disk full');
+    expect(controller.getReconciliation()).not.toBeNull();
+    expect(controller.getSnapshot().currentContent).toBe('mine');
+  });
+});

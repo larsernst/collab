@@ -218,7 +218,6 @@ describe('CanvasPage save behavior', () => {
       myUserName: 'Test User',
       myUserColor: '#22c55e',
       peers: [],
-      conflicts: [],
       chatMessages: [],
       chatTypingUntil: null,
     });

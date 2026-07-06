@@ -19,8 +19,8 @@ even before full live co-editing exists.
 | --- | --- | --- |
 | 0. Audit and invariants | Done | Map every reload/save path and define the non-negotiable safety rules. |
 | 1. Shared document session core | Done | Centralize version, dirty, save, remote-change, and conflict state. |
-| 2. Safe reload policy rollout | In progress | Replace destructive per-view reloads with guarded remote-change handling. |
-| 3. Merge and conflict UX | Planned | Add graceful remote-update banners, merge outcomes, and recovery actions. |
+| 2. Safe reload policy rollout | Done | Replace destructive per-view reloads with guarded remote-change handling. |
+| 3. Merge and conflict UX | Done | Add graceful remote-update banners, merge outcomes, and recovery actions. |
 | 4. Hosted cache and replica hardening | Planned | Prevent stale hosted cache reads from replacing newer in-memory/editor state. |
 | 5. Live structured documents | Planned | Move suitable hosted JSON documents onto the existing Yjs live path. |
 | 6. Collaboration polish | Planned | Add presence/status/reconnect UX and operational hardening. |
@@ -434,12 +434,12 @@ overlay apply, dirty remote queueing, and debounced overlay persistence. Native
 watcher unit tests cover image/PDF sidecar path decoding. `tsc` and
 `cargo check --workspace` are clean.
 
-**Note — modal `ConflictDialog` is now unreached.** Notes, Canvas, and Kanban no
-longer call `collabStore.addConflict`, and SVG/PDF/image never did, so the modal
-`ConflictDialog` (still mounted in `AppShell`) can no longer appear; all conflict
-resolution goes through the `DocumentStatusPill`. This is the intended direction
-for Phase 3 ("shared non-modal document status surface"), which will fold the
-side-by-side diff into the shared surface and then remove the dead modal.
+**Note — modal `ConflictDialog` removed in Phase 3.** After Phase 2, Notes,
+Canvas, and Kanban no longer called `collabStore.addConflict` (SVG/PDF/image
+never did), leaving the modal `ConflictDialog` unreachable. Phase 3 folded the
+side-by-side diff into the shared `DocumentReconciler` surface and then deleted
+the dead modal, its `AppShell` mount, and the `collabStore` conflict state (see
+the Phase 3 Outcome below).
 
 ## Phase 3: Merge And Conflict UX
 
@@ -478,6 +478,55 @@ Acceptance criteria:
 - Dirty documents receive remote changes gracefully without immediate overwrite.
 - All conflict resolution paths preserve at least one recoverable copy of local
   content.
+
+### Phase 3 Outcome — Done (2026-07-06)
+
+Built the shared reconciliation surface on top of the Phase 1 controller and
+retired the legacy modal.
+
+- **Unified reconciliation model.** The controller gained a `Reconciliation`
+  projection (`deriveReconciliation(snapshot)` — pure, snapshot-driven) that
+  collapses a queued pending-remote and a hard save conflict into one shape
+  (`base` / `ours` / `theirs` / `theirVersion`), where `ours` is always a
+  recoverable copy of the local content. New unified action methods replace the
+  per-view `applyRemoteNow`/`discardRemoteCandidate`/`resolveConflict` glue:
+  - `loadRemote()` — adopt the other side (works for pending and conflict).
+  - `keepMine()` — for a conflict, keep-local; for a pending-remote, **rebase**
+    the local edits onto the remote version so the next save cleanly overwrites
+    it (base = their content). This fixes the old pending "keep mine" path, which
+    left a stale version that would only hard-conflict on the next autosave.
+  - `saveMineAsNew(persist)` — the caller persists local content to a new
+    revision/file, then the active document adopts the remote; both copies
+    survive. If `persist` rejects, the remote is not adopted.
+- **Shared surface (`DocumentReconciler`).** Renders the non-modal
+  `DocumentStatusPill` plus, when there is unresolved remote content, a "Review"
+  button opening a **non-dismissible** dialog (overlay-click and Escape are
+  prevented; no close button) that shows the your/their panes, a per-pane
+  **Copy** escape hatch, a collapsible line diff (`diffLines`), and the three
+  resolution actions. Autosave is paused for the entire time the dialog is open.
+  Hidden entirely for read-only viewers.
+- **Central mount.** `StatusBar` is the single active rendering site: the
+  `documentStatusStore` registration now carries the live `controller` +
+  `snapshot` + `onSaveAsNew` (types erased at the store boundary), and StatusBar
+  renders `DocumentReconciler` from it (falling back to a bare pill for any
+  legacy registrant). Every migrated view (Note/Canvas/Kanban/Logic) registers
+  this payload and no longer re-implements load/keep handlers.
+- **Text three-way merge for notes.** `src/lib/textMerge.ts` (`mergeText`, jsdiff
+  `merge`) is injected as the note controller's `mergeRemote`, so a dirty note
+  absorbs a disjoint remote change automatically (mirroring the backend
+  `write_note` auto-merge); overlapping edits or a missing base fall back to the
+  pending-review surface.
+- **Save mine as new.** `src/lib/conflictedCopy.ts` writes a dated sibling
+  `… (conflicted copy YYYY-MM-DD).ext` via the mode-agnostic `VaultClient`
+  (local + hosted), wired as each view's `onSaveAsNew`.
+- **Dead modal removed.** Deleted `ConflictDialog.tsx`, its `AppShell` mount, and
+  the now-unused `collabStore` `conflicts`/`addConflict`/`dismissConflict` state
+  (the write-result `ConflictInfo` type stays — it is the controller's conflict
+  payload). All conflict resolution now flows through `DocumentReconciler`.
+
+Tests: `textMerge`, `conflictedCopy`, `DocumentReconciler`, and controller
+reconciliation-API specs added; NoteView gains an auto-merge case. Full suite
+131 files / 658 tests green; `tsc --noEmit` clean.
 
 ## Phase 4: Hosted Cache And Replica Hardening
 

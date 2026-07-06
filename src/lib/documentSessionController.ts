@@ -71,6 +71,52 @@ export interface ConflictState {
   ourContent: string;
 }
 
+/**
+ * The unresolved-remote state a view needs to render the Phase 3 review surface,
+ * derived uniformly from either a queued pending-remote candidate or a hard
+ * save conflict. `ours` is always a recoverable copy of the local content.
+ */
+export interface Reconciliation {
+  kind: 'remote-pending' | 'conflict';
+  /** Last common base content, when known (enables a three-way diff). */
+  base: string | null;
+  /** The local (unsaved) content — always recoverable. */
+  ours: string;
+  /** The other side's content. */
+  theirs: string;
+  /** The other side's version token. */
+  theirVersion: string | null;
+}
+
+/**
+ * Pure projection of a snapshot into the review model, so the shared surface can
+ * render reactively from the subscribed snapshot rather than reaching into the
+ * controller. Returns `null` when there is nothing to reconcile.
+ */
+export function deriveReconciliation<TDocument>(
+  snapshot: DocumentSessionSnapshot<TDocument>,
+): Reconciliation | null {
+  if (snapshot.conflict) {
+    return {
+      kind: 'conflict',
+      base: snapshot.conflict.baseContent ?? null,
+      ours: snapshot.conflict.ourContent,
+      theirs: snapshot.conflict.theirContent,
+      theirVersion: snapshot.conflict.theirVersion,
+    };
+  }
+  if (snapshot.pendingRemote) {
+    return {
+      kind: 'remote-pending',
+      base: snapshot.lastSavedContent,
+      ours: snapshot.currentContent ?? '',
+      theirs: snapshot.pendingRemote.content,
+      theirVersion: snapshot.pendingRemote.version,
+    };
+  }
+  return null;
+}
+
 export interface DocumentWriteOutcome {
   version: string;
   /** Backend-merged content when concurrent non-overlapping edits were merged. */
@@ -484,6 +530,67 @@ export class DocumentSessionController<TDocument> {
     if (!this.pendingRemote) return;
     this.pendingRemote = null;
     this.invalidate();
+  }
+
+  /**
+   * Uniform read model for the shared review surface, derived from whichever of
+   * a conflict or a queued pending-remote is currently active.
+   */
+  getReconciliation(): Reconciliation | null {
+    return deriveReconciliation(this.getSnapshot());
+  }
+
+  /**
+   * "Load remote": adopt the other side's content, discarding local edits. Works
+   * for both a hard conflict and a queued pending-remote. Callers should let the
+   * user copy/export their local content first (the review surface does).
+   */
+  loadRemote(): void {
+    if (this.conflict) {
+      this.resolveConflict('load-remote');
+      return;
+    }
+    this.applyRemoteNow();
+  }
+
+  /**
+   * "Keep mine": keep the local edits but rebase them onto the other side's
+   * version so the next save cleanly overwrites it (the backend three-way merge
+   * treats their content as the base). For a pending-remote this replaces the
+   * old "discard candidate" behavior, which left a stale version that would only
+   * hard-conflict on the next autosave.
+   */
+  keepMine(): void {
+    if (this.conflict) {
+      this.resolveConflict('keep-local');
+      return;
+    }
+    const pending = this.pendingRemote;
+    if (!pending) return;
+    this.pendingRemote = null;
+    this.loadedVersion = pending.version;
+    this.lastSavedContent = pending.content;
+    this.lastAppliedRemoteVersion = pending.version;
+    this.dirty = this.currentContent === null
+      ? false
+      : !this.contentEqual(this.currentContent, pending.content);
+    this.justSaved = false;
+    if (this.dirty) this.scheduleAutosave();
+    this.invalidate();
+  }
+
+  /**
+   * "Save mine as new revision": the caller persists the current local content
+   * to a new file/revision (via `persist`), after which the active document
+   * adopts the remote content. Both copies survive. If `persist` rejects, the
+   * remote is not adopted and the reconciliation state is left intact so the
+   * user can retry.
+   */
+  async saveMineAsNew(persist: (localContent: string) => Promise<void>): Promise<void> {
+    const recon = this.getReconciliation();
+    if (!recon) return;
+    await persist(recon.ours);
+    this.loadRemote();
   }
 
   private adoptRemote(candidate: RemoteCandidate<TDocument>): void {

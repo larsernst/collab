@@ -6,9 +6,12 @@ import { createVaultClient } from '../../lib/vaultClient';
 import { DOCUMENT_SNAPSHOT_INTERVAL_MS } from '../../lib/documentSession';
 import {
   useDocumentSessionController,
+  type DocumentSessionController,
+  type DocumentSessionSnapshot,
   type DocumentStatus,
   type RemoteCandidate,
 } from '../../lib/documentSessionController';
+import { saveConflictedCopy } from '../../lib/conflictedCopy';
 import { openLiveJsonSession, type LiveJsonSession, type JsonObject } from '../../lib/liveJsonDocument';
 import { onReplicaMutated } from '../../lib/vaultReplica';
 import type { CanvasData, CanvasEdge } from '../../types/canvas';
@@ -119,10 +122,12 @@ export interface CanvasDocumentSession {
   refreshPulse: boolean;
   /** Shared document-session status vocabulary for the REST fallback path. */
   sessionStatus: DocumentStatus;
-  /** Resolve a pending remote / conflict by adopting the remote content. */
-  onLoadRemote: () => void;
-  /** Keep local content (discard a pending remote, or keep-mine on conflict). */
-  onKeepLocal: () => void;
+  /** Session controller for the central reconciliation review surface. */
+  controller: DocumentSessionController<CanvasData>;
+  /** Latest subscribed snapshot for the reconciliation surface. */
+  snapshot: DocumentSessionSnapshot<CanvasData>;
+  /** Persist the local canvas as a new revision/file ("Save mine as new"). */
+  onSaveAsNew: (localContent: string) => Promise<void>;
 }
 
 export function useCanvasDocumentSession({
@@ -525,19 +530,10 @@ export function useCanvasDocumentSession({
     if (refreshPulseTimerRef.current !== null) window.clearTimeout(refreshPulseTimerRef.current);
   }, []);
 
-  const onLoadRemote = useCallback(() => {
-    if (controller.getSnapshot().conflicted) controller.resolveConflict('load-remote');
-    else controller.applyRemoteNow();
-  }, [controller]);
+  const onSaveAsNew = useCallback(async (localContent: string) => {
+    if (!client || !relativePath) return;
+    await saveConflictedCopy(client, relativePath, localContent);
+  }, [client, relativePath]);
 
-  const onKeepLocal = useCallback(() => {
-    if (controller.getSnapshot().conflicted) {
-      controller.resolveConflict('keep-local');
-      void controller.requestSave('manual');
-    } else {
-      controller.discardRemoteCandidate();
-    }
-  }, [controller]);
-
-  return { liveSession, isLoading, refreshPulse, sessionStatus: snapshot.status, onLoadRemote, onKeepLocal };
+  return { liveSession, isLoading, refreshPulse, sessionStatus: snapshot.status, controller, snapshot, onSaveAsNew };
 }

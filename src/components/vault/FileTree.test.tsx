@@ -178,7 +178,6 @@ describe('FileTree folder collapse state', () => {
       myUserName: 'Test User',
       myUserColor: '#22c55e',
       peers: [],
-      conflicts: [],
       chatMessages: [],
       chatTypingUntil: null,
     });

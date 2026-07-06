@@ -46,7 +46,6 @@ import KanbanPage from '../../views/KanbanPage';
 import SettingsPage from '../../views/SettingsPage';
 import GridView from '../../views/GridView';
 import { CollabProvider } from '../collaboration/CollabProvider';
-import { ConflictDialog } from '../collaboration/ConflictDialog';
 import { CommandBar } from '../command-bar/CommandBar';
 import { DragProvider } from '../../contexts/DragContext';
 import SplitDropZones from '../grid/SplitDropZones';
@@ -341,7 +340,6 @@ export default function AppShell() {
         </div>
       </div>
 
-      <ConflictDialog />
       <CommandBar />
       {switcherTab && (
         <div className="pointer-events-none fixed inset-0 z-[70] flex items-center justify-center bg-background/18 backdrop-blur-xs-webkit">

@@ -1,10 +1,27 @@
 import { useEffect } from 'react';
 import { create } from 'zustand';
 
-import type { DocumentStatus } from '../lib/documentSessionController';
+import type {
+  DocumentSessionController,
+  DocumentSessionSnapshot,
+  DocumentStatus,
+} from '../lib/documentSessionController';
 
 export interface RegisteredDocumentStatus {
   status: DocumentStatus;
+  /**
+   * Phase 3: the live session controller + latest snapshot for the active
+   * document, so the central status surface can render the full reconciliation
+   * review (base/local/remote diff, copy-out, and the resolution actions). Type
+   * parameters are erased at the store boundary; the surface treats documents
+   * opaquely. Legacy registrants that only set `status`/`onLoadRemote`/
+   * `onKeepLocal` still render as a plain pill.
+   */
+  controller?: DocumentSessionController<unknown>;
+  snapshot?: DocumentSessionSnapshot<unknown>;
+  /** Persists local content as a new revision/file ("Save mine as new"). */
+  onSaveAsNew?: (localContent: string) => Promise<void>;
+  readOnly?: boolean;
   onLoadRemote?: () => void;
   onKeepLocal?: () => void;
 }

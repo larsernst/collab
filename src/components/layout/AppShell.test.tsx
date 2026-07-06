@@ -24,7 +24,6 @@ vi.mock('./Sidebar', () => ({ default: () => <div data-testid="sidebar" /> }));
 vi.mock('./TabBar', () => ({ default: () => <div data-testid="tab-bar" /> }));
 vi.mock('./StatusBar', () => ({ default: () => <div data-testid="status-bar" /> }));
 vi.mock('../grid/SplitDropZones', () => ({ default: () => null }));
-vi.mock('../collaboration/ConflictDialog', () => ({ ConflictDialog: () => null }));
 vi.mock('../command-bar/CommandBar', () => ({ CommandBar: () => null }));
 vi.mock('../collaboration/CollabProvider', () => ({
   CollabProvider: ({ children }: { children: React.ReactNode }) => <>{children}</>,

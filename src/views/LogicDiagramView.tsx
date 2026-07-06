@@ -80,7 +80,12 @@ import { listen } from '@tauri-apps/api/event';
 import { useEditorStore } from '../store/editorStore';
 import { useVaultStore } from '../store/vaultStore';
 import { createVaultClient } from '../lib/vaultClient';
-import { useDocumentSessionController } from '../lib/documentSessionController';
+import {
+  useDocumentSessionController,
+  type DocumentSessionController,
+  type DocumentSessionSnapshot,
+} from '../lib/documentSessionController';
+import { saveConflictedCopy } from '../lib/conflictedCopy';
 import { onReplicaMutated } from '../lib/vaultReplica';
 import { isVaultReadOnly } from '../types/vault';
 import { useDocumentStatusRegistration } from '../store/documentStatusStore';
@@ -1247,25 +1252,22 @@ function LogicDiagramEditor({ relativePath }: Props) {
     </>
   );
 
-  const handleLoadRemote = useCallback(() => {
-    if (controller.getSnapshot().conflicted) controller.resolveConflict('load-remote');
-    else controller.applyRemoteNow();
-  }, [controller]);
-
-  const handleKeepLocal = useCallback(() => {
-    if (controller.getSnapshot().conflicted) {
-      controller.resolveConflict('keep-local');
-      void controller.requestSave('manual');
-    } else {
-      controller.discardRemoteCandidate();
-    }
-  }, [controller]);
+  const handleSaveAsNew = useCallback(async (localContent: string) => {
+    if (!client || !relativePath) return;
+    await saveConflictedCopy(client, relativePath, localContent);
+  }, [client, relativePath]);
 
   const documentStatus = useMemo(() => (
-    !readOnly && !loading
-      ? { status: snapshot.status, onLoadRemote: handleLoadRemote, onKeepLocal: handleKeepLocal }
+    !loading
+      ? {
+          status: snapshot.status,
+          controller: controller as DocumentSessionController<unknown>,
+          snapshot: snapshot as DocumentSessionSnapshot<unknown>,
+          onSaveAsNew: handleSaveAsNew,
+          readOnly,
+        }
       : null
-  ), [handleKeepLocal, handleLoadRemote, loading, readOnly, snapshot.status]);
+  ), [controller, handleSaveAsNew, loading, readOnly, snapshot]);
   useDocumentStatusRegistration(relativePath, documentStatus);
 
   const counts = useMemo(() => {
