@@ -19,7 +19,7 @@ even before full live co-editing exists.
 | --- | --- | --- |
 | 0. Audit and invariants | Done | Map every reload/save path and define the non-negotiable safety rules. |
 | 1. Shared document session core | Done | Centralize version, dirty, save, remote-change, and conflict state. |
-| 2. Safe reload policy rollout | Planned | Replace destructive per-view reloads with guarded remote-change handling. |
+| 2. Safe reload policy rollout | In progress | Replace destructive per-view reloads with guarded remote-change handling. |
 | 3. Merge and conflict UX | Planned | Add graceful remote-update banners, merge outcomes, and recovery actions. |
 | 4. Hosted cache and replica hardening | Planned | Prevent stale hosted cache reads from replacing newer in-memory/editor state. |
 | 5. Live structured documents | Planned | Move suitable hosted JSON documents onto the existing Yjs live path. |
@@ -228,6 +228,50 @@ Acceptance criteria:
 - A clean document still updates automatically when another source changes it.
 - A recently saved hosted document cannot be replaced by stale cached content.
 - The same status vocabulary appears in each migrated view.
+
+### Phase 2 Progress
+
+Migration order and status:
+
+1. **Logic diagrams — Done (2026-07-06).**
+2. Notes REST fallback — pending.
+3. Canvas REST fallback — pending.
+4. Kanban REST fallback — pending.
+5. SVG vector editor — pending.
+6. Grid view — pending.
+7. PDF/image sidecars — pending.
+
+**Logic diagram migration (`src/views/LogicDiagramView.tsx`):**
+
+- Replaced `useDocumentSessionState` + the bespoke `hashRef` / `baseContentRef` /
+  `conflictedRef` / `savedStructuralRef` bookkeeping and the ad-hoc
+  `writeLogic`/autosave with `useDocumentSessionController`. Version, dirty, save
+  serialization, remote-candidate policy, and conflict latch now live in the
+  shared controller.
+- View-specific logic kept local: the structural-signature gate still decides
+  *when* to mark a local change (so selection / measurement / fit-view / pan do
+  not autosave), and `fromFlowGraph`/`toFlowGraph` serialization stays in the
+  view. A `lastMarkedSigRef` makes the mark idempotent per distinct signature so
+  a controller-driven re-render never re-marks the same edit.
+- **New safe remote handling Logic never had**: added `vault:file-modified`
+  (local) and `onReplicaMutated` (hosted) listeners that route through
+  `controller.handleExternalMutation`. Clean docs auto-apply (with a refresh
+  pulse); dirty docs queue the remote as pending; our own write echo and
+  same-version reads are rejected as stale.
+- **Conflict is no longer a dead-end**: the old latch-until-reopen (`conflictedRef`
+  + toast) is replaced by the controller's `conflict` state with inline
+  `Load latest` / `Keep mine` recovery (the latter rebases onto their version and
+  re-saves). Autosave stays paused until resolved.
+- **Shared status surface**: new `src/components/layout/DocumentStatusPill.tsx`
+  renders the controller `status` vocabulary + remote/conflict recovery actions.
+  This is the reusable surface every subsequent migrated view will use, so the
+  "same status vocabulary" criterion is satisfied from the first migration.
+
+**Tests:** `DocumentStatusPill.test.tsx` (labels + action wiring) and
+`LogicDiagramView.test.tsx` (clean external change auto-applies; unsaved local
+edit is preserved and the remote is queued while dirty; stale same-version
+watcher event is ignored). Full suite green (127 files / 625 tests) and `tsc`
+clean.
 
 ## Phase 3: Merge And Conflict UX
 

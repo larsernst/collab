@@ -75,10 +75,14 @@ import {
   getLogicInputHandles,
   getLogicOutputHandles,
 } from '../components/logic/logicDiagramEvaluator';
+import { listen } from '@tauri-apps/api/event';
+
 import { useEditorStore } from '../store/editorStore';
 import { useVaultStore } from '../store/vaultStore';
 import { createVaultClient } from '../lib/vaultClient';
-import { useDocumentSessionState } from '../lib/documentSession';
+import { useDocumentSessionController } from '../lib/documentSessionController';
+import { onReplicaMutated } from '../lib/vaultReplica';
+import { DocumentStatusPill } from '../components/layout/DocumentStatusPill';
 import { isVaultReadOnly } from '../types/vault';
 import {
   createEmptyLogicDiagram,
@@ -415,18 +419,15 @@ function LogicDiagramEditor({ relativePath }: Props) {
   const [contextMenu, setContextMenu] = useState<LogicContextMenu | null>(null);
   const idCounterRef = useRef(1);
   const viewportRef = useRef<HTMLDivElement | null>(null);
-  const { hashRef, markLoaded, markWriteStarted, runExclusiveSave } = useDocumentSessionState();
-  // Base content of the last successful write, for optimistic auto-merge.
-  const baseContentRef = useRef('');
+  const client = useMemo(() => (vault ? createVaultClient(vault) : null), [vault]);
   // Structural signature of what is currently persisted; used to skip autosaves
   // that carry no real change (selection, measurement, fit-view, pan).
   const savedStructuralRef = useRef<string | null>(null);
   // True only after a successful load, so a failed read never overwrites the
   // file with an empty/default diagram.
   const readyRef = useRef(false);
-  // Latched after an unresolved conflict so autosave stops clobbering.
-  const conflictedRef = useRef(false);
-  const autosaveTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  const [refreshPulse, setRefreshPulse] = useState(false);
+  const refreshPulseTimerRef = useRef<number | null>(null);
   const { getViewport, screenToFlowPosition, fitView, setViewport } = useReactFlow<LogicFlowNode, LogicFlowEdge>();
 
   const structuralSignature = useCallback((flowNodes: LogicFlowNode[], flowEdges: LogicFlowEdge[]) =>
@@ -494,29 +495,65 @@ function LogicDiagramEditor({ relativePath }: Props) {
 
   const title = getDocumentBaseName(relativePath, 'Logic Diagram').replace(/\.logic$/i, '');
 
+  // Push an adopted document (initial load, backend merge, or a safe remote
+  // apply) into the ReactFlow editor and re-baseline the structural signature so
+  // the autosave effect does not immediately re-fire.
+  const applyLogicDocument = useCallback((loaded: LogicDiagramDocument) => {
+    const graph = toFlowGraph(loaded);
+    setDiagram(loaded);
+    setNodes(graph.nodes);
+    setEdges(graph.edges);
+    setViewportState(loaded.viewport);
+    savedStructuralRef.current = structuralSignature(graph.nodes, graph.edges);
+    readyRef.current = true;
+    window.setTimeout(() => {
+      void setViewport(loaded.viewport, { duration: 0 });
+    }, 0);
+  }, [setEdges, setNodes, setViewport, structuralSignature]);
+
+  const { controller, snapshot } = useDocumentSessionController<LogicDiagramDocument>({
+    serialize: (doc) => JSON.stringify(doc, null, 2),
+    deserialize: (content) => parseLogicDocumentContent(content, title),
+    applyDocument: (candidate) => applyLogicDocument(candidate.document),
+    read: async () => {
+      if (!client) return null;
+      const doc = await client.readDocument(relativePath);
+      return { content: doc.content, version: doc.version };
+    },
+    write: async ({ content, expectedVersion, baseContent }) => {
+      if (!client) return { version: expectedVersion ?? '' };
+      const result = await client.writeDocument(relativePath, content, expectedVersion ?? undefined, baseContent);
+      if (result.conflict) {
+        // ConflictInfo carries the other side's content but no version token;
+        // read the current server version so keep-mine/load-latest can rebase.
+        let theirVersion: string | null = null;
+        try {
+          theirVersion = (await client.readDocument(relativePath)).version;
+        } catch {
+          // Best-effort; a null version makes the next save force-overwrite.
+        }
+        return {
+          version: expectedVersion ?? '',
+          conflict: { theirContent: result.conflict.theirContent, baseContent, theirVersion },
+        };
+      }
+      return { version: result.version, mergedContent: result.mergedContent };
+    },
+    autosaveDebounceMs: SAVE_DEBOUNCE_MS,
+    isLive: () => false,
+  });
+
+  // Initial load: establish the session baseline (force explicit reload policy).
   useEffect(() => {
     let cancelled = false;
-    if (!vault) return;
+    if (!client) return;
     readyRef.current = false;
     setLoading(true);
-    createVaultClient(vault).readDocument(relativePath)
+    client.readDocument(relativePath)
       .then((document) => {
         if (cancelled) return;
-        const loaded = parseLogicDocumentContent(document.content, title);
-        const graph = toFlowGraph(loaded);
-        setDiagram(loaded);
-        setNodes(graph.nodes);
-        setEdges(graph.edges);
-        setViewportState(loaded.viewport);
-        markLoaded(document.version);
-        baseContentRef.current = document.content;
-        savedStructuralRef.current = structuralSignature(graph.nodes, graph.edges);
-        conflictedRef.current = false;
-        readyRef.current = true;
+        controller.load(document.content, document.version, 'rest');
         setSavedHash(relativePath, document.version);
-        window.setTimeout(() => {
-          void setViewport(loaded.viewport, { duration: 0 });
-        }, 0);
       })
       .catch((error) => {
         if (!cancelled) toast.error(`Failed to open logic diagram: ${error}`);
@@ -527,82 +564,100 @@ function LogicDiagramEditor({ relativePath }: Props) {
     return () => {
       cancelled = true;
     };
-  }, [markLoaded, relativePath, setEdges, setNodes, setSavedHash, setViewport, structuralSignature, title, vault]);
+  }, [client, controller, relativePath, setSavedHash]);
 
-  const currentContent = useCallback(() => {
-    const next = fromFlowGraph(diagram, nodes, edges, getViewport() as Viewport);
-    return JSON.stringify(next, null, 2);
-  }, [diagram, edges, getViewport, nodes]);
-
-  // Single write path shared by autosave and the manual Save button. Serialize
-  // callers through `runExclusiveSave` so a slow write never overlaps the next
-  // one with a stale optimistic version. Throws on write failure so the manual
-  // path can surface it; conflicts are handled in-band.
-  const writeLogic = useCallback(async () => {
-    if (!vault || readOnly || !readyRef.current || conflictedRef.current) return;
-    const content = currentContent();
-    const signature = structuralSignature(nodes, edges);
-    markWriteStarted();
-    const result = await createVaultClient(vault).writeDocument(
-      relativePath,
-      content,
-      hashRef.current,
-      baseContentRef.current || undefined,
-    );
-    if (result.conflict) {
-      conflictedRef.current = true;
-      toast.error('This logic diagram changed elsewhere. Reopen it before saving again.');
+  // Debounced autosave via the shared controller: only marks a local change when
+  // the structural signature actually changes, so selection, node measurement,
+  // fit-view, and pan do not trigger writes. The controller serializes
+  // overlapping saves, rejects stale remote reloads, queues remote changes while
+  // dirty, and latches autosave off on conflict. `lastMarkedSigRef` makes the
+  // mark idempotent per distinct signature so a re-render (from the controller's
+  // own state change) never re-marks the same edit.
+  const lastMarkedSigRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!vault || readOnly || !readyRef.current) return;
+    const sig = structuralSignature(nodes, edges);
+    if (sig === savedStructuralRef.current) {
+      lastMarkedSigRef.current = sig;
       return;
     }
-    const merged = result.mergedContent ?? content;
-    hashRef.current = result.version;
-    baseContentRef.current = merged;
-    markSaved(relativePath, result.version);
-    if (merged !== content) {
-      // The backend auto-merged concurrent non-overlapping edits; adopt the
-      // merged document as the new source of truth.
-      const mergedDoc = parseLogicDocumentContent(merged, title);
-      const graph = toFlowGraph(mergedDoc);
-      setDiagram(mergedDoc);
-      setNodes(graph.nodes);
-      setEdges(graph.edges);
-      savedStructuralRef.current = structuralSignature(graph.nodes, graph.edges);
-    } else {
-      savedStructuralRef.current = signature;
+    if (sig === lastMarkedSigRef.current) return;
+    lastMarkedSigRef.current = sig;
+    controller.markLocalChange(fromFlowGraph(diagram, nodes, edges, getViewport() as Viewport));
+  }, [controller, diagram, edges, getViewport, nodes, readOnly, structuralSignature, vault]);
+
+  // Re-baseline the structural signature when a save (without a merge adoption,
+  // which reseeds via applyDocument) completes cleanly, so the autosave effect
+  // stops firing for already-persisted state.
+  const prevSavingRef = useRef(false);
+  useEffect(() => {
+    if (prevSavingRef.current && !snapshot.saving && !snapshot.dirty && !snapshot.conflicted) {
+      savedStructuralRef.current = structuralSignature(nodes, edges);
     }
-  }, [currentContent, edges, hashRef, markSaved, markWriteStarted, nodes, readOnly, relativePath, setEdges, setNodes, structuralSignature, title, vault]);
+    prevSavingRef.current = snapshot.saving;
+  }, [edges, nodes, snapshot.conflicted, snapshot.dirty, snapshot.saving, structuralSignature]);
+
+  // Bridge the controller's dirty/version state to the tab dirty indicator.
+  useEffect(() => {
+    if (!relativePath) return;
+    if (snapshot.dirty) markDirty(relativePath);
+    else if (snapshot.loadedVersion) markSaved(relativePath, snapshot.loadedVersion);
+  }, [markDirty, markSaved, relativePath, snapshot.dirty, snapshot.loadedVersion]);
+
+  const pulseRefresh = useCallback(() => {
+    setRefreshPulse(true);
+    if (refreshPulseTimerRef.current !== null) window.clearTimeout(refreshPulseTimerRef.current);
+    refreshPulseTimerRef.current = window.setTimeout(() => setRefreshPulse(false), 420);
+  }, []);
+
+  // Local filesystem watcher: another writer changed this file. The controller
+  // decides — auto-apply when clean, queue when dirty, ignore our own echo.
+  useEffect(() => {
+    if (!client || !client.capabilities.filesystemWatch || !relativePath) return;
+    let unsub: (() => void) | undefined;
+    listen<{ path: string }>('vault:file-modified', (event) => {
+      if (event.payload.path !== relativePath) return;
+      if (Date.now() - controller.getSnapshot().lastLocalWriteStartedAt < 2000) return;
+      void controller.handleExternalMutation('rest').then((decision) => {
+        if (decision === 'applied') pulseRefresh();
+      });
+    }).then((cleanup) => { unsub = cleanup; });
+    return () => { unsub?.(); };
+  }, [client, controller, pulseRefresh, relativePath]);
+
+  // Hosted replica refresh: route through the same safe remote policy.
+  useEffect(() => {
+    if (!client || client.kind !== 'hosted' || !relativePath) return;
+    return onReplicaMutated(() => {
+      void controller.handleExternalMutation('cache').then((decision) => {
+        if (decision === 'applied') pulseRefresh();
+      });
+    });
+  }, [client, controller, pulseRefresh, relativePath]);
+
+  useEffect(() => () => {
+    if (refreshPulseTimerRef.current !== null) window.clearTimeout(refreshPulseTimerRef.current);
+  }, []);
 
   const handleSave = useCallback(async () => {
     if (!vault || readOnly) return;
     setSaving(true);
     try {
-      await runExclusiveSave(writeLogic);
-      if (!conflictedRef.current) toast.success('Saved logic diagram.');
+      await controller.requestSave('manual');
+      const snap = controller.getSnapshot();
+      if (snap.conflicted) {
+        toast.error('This logic diagram changed elsewhere. Review the conflict before saving.');
+      } else if (snap.offlineQueued) {
+        toast.message('Saved offline — changes will sync when reconnected.');
+      } else {
+        toast.success('Saved logic diagram.');
+      }
     } catch (error) {
       toast.error(`Failed to save logic diagram: ${error}`);
     } finally {
       setSaving(false);
     }
-  }, [readOnly, runExclusiveSave, vault, writeLogic]);
-
-  // Debounced autosave. Only fires when the structural signature actually
-  // changes, so selection, node measurement, fit-view, and pan do not write.
-  useEffect(() => {
-    if (!vault || readOnly || !readyRef.current) return;
-    if (structuralSignature(nodes, edges) === savedStructuralRef.current) return;
-    markDirty(relativePath);
-    if (autosaveTimerRef.current) clearTimeout(autosaveTimerRef.current);
-    autosaveTimerRef.current = setTimeout(() => {
-      void runExclusiveSave(writeLogic).catch(() => {});
-    }, SAVE_DEBOUNCE_MS);
-    return () => {
-      if (autosaveTimerRef.current) clearTimeout(autosaveTimerRef.current);
-    };
-  }, [edges, markDirty, nodes, readOnly, relativePath, runExclusiveSave, structuralSignature, vault, writeLogic]);
-
-  useEffect(() => () => {
-    if (autosaveTimerRef.current) clearTimeout(autosaveTimerRef.current);
-  }, []);
+  }, [controller, readOnly, vault]);
 
   const markChanged = useCallback(() => {
     markDirty(relativePath);
@@ -1192,18 +1247,43 @@ function LogicDiagramEditor({ relativePath }: Props) {
     </>
   );
 
-  const meta = useMemo(() => {
+  const handleLoadRemote = useCallback(() => {
+    if (controller.getSnapshot().conflicted) controller.resolveConflict('load-remote');
+    else controller.applyRemoteNow();
+  }, [controller]);
+
+  const handleKeepLocal = useCallback(() => {
+    if (controller.getSnapshot().conflicted) {
+      controller.resolveConflict('keep-local');
+      void controller.requestSave('manual');
+    } else {
+      controller.discardRemoteCandidate();
+    }
+  }, [controller]);
+
+  const counts = useMemo(() => {
     const gateCount = nodes.filter((node) => node.data.kind !== 'group').length;
     const groupCount = nodes.length - gateCount;
-    return (
+    return { gateCount, groupCount };
+  }, [nodes]);
+
+  const meta = (
+    <div className="flex items-center gap-2">
       <div className="rounded-full border border-border/60 px-2 py-1 text-[11px] text-muted-foreground">
-        {gateCount} gates · {groupCount} groups · {edges.length} wires
+        {counts.gateCount} gates · {counts.groupCount} groups · {edges.length} wires
       </div>
-    );
-  }, [edges.length, nodes]);
+      {!readOnly && !loading && (
+        <DocumentStatusPill
+          status={snapshot.status}
+          onLoadRemote={handleLoadRemote}
+          onKeepLocal={handleKeepLocal}
+        />
+      )}
+    </div>
+  );
 
   return (
-    <div className="flex h-full min-h-0 flex-col bg-background">
+    <div className={`flex h-full min-h-0 flex-col bg-background app-document-ready ${refreshPulse ? 'app-refresh-pulse' : ''}`}>
       <DocumentTopBar
         title={title}
         subtitle={getDocumentFolderPath(relativePath)}
