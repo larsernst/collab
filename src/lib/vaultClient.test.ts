@@ -345,6 +345,29 @@ describe('HostedVaultClient', () => {
     );
   });
 
+  it('queues a document edit offline when connected to a different server than the vault', async () => {
+    // Reads resolve from the seeded replica manifest (no network), and the
+    // revision POST is rejected because the connected session targets another
+    // server. The edit must be queued as a pending operation, not thrown away.
+    vi.mocked(tauriCommands.replicaReadManifest).mockResolvedValue(mockHostedManifest(8));
+    vi.mocked(tauriCommands.hostedVaultRequest)
+      .mockRejectedValueOnce(new Error('This hosted vault belongs to a different Collab server.'));
+    const client = new HostedVaultClient(hostedVault);
+
+    await expect(client.writeDocument('Notes/Test.md', '# Next', '3')).resolves.toEqual({ version: '4' });
+
+    expect(tauriCommands.replicaEnqueueOperation).toHaveBeenCalledWith(
+      'https://collab.example.test',
+      'hosted-vault',
+      expect.objectContaining({
+        kind: 'edit',
+        fileId: 'file-1',
+        relativePath: 'Notes/Test.md',
+        baseManifestSequence: 8,
+      }),
+    );
+  });
+
   it('write-through caches read documents into the offline replica', async () => {
     vi.mocked(tauriCommands.hostedVaultRequest)
       .mockResolvedValueOnce(mockHostedManifest())

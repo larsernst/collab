@@ -33,32 +33,123 @@ fn existing_read(server_url: &str, vault_id: &str) -> Result<Option<ReplicaStore
     })
 }
 
-fn replica_keyring_entry(server_url: &str, vault_id: &str) -> Result<keyring::Entry, String> {
-    keyring::Entry::new(
+fn replica_account(server_url: &str, vault_id: &str) -> String {
+    format!("{}:{vault_id}", server_key(server_url))
+}
+
+// ── Replica key persistence ─────────────────────────────────────────────────
+//
+// The replica's at-rest encryption key must be DURABLE. Unlike a server refresh
+// token — where losing the stored value merely forces a re-login — losing this
+// key orphans every locally cached document/asset/CRDT blob AND any unsynced
+// offline edits (they become undecryptable). It must therefore survive reboots.
+//
+// On Windows/macOS the native OS keystore is already durable, so the generic
+// entry is used. On Linux the key is persisted to the D-Bus Secret Service
+// (durable across reboots) and mirrored to the kernel keyutils keyring (a silent
+// fast path). Reads try keyutils first (silent, same-session) and fall back to
+// the Secret Service, so a key survives a keyutils clear on reboot and any
+// legacy keyutils-only key written by an earlier build is still found. This
+// fixes the failure where a lost keyutils key was silently regenerated, leaving
+// previously-encrypted replica content undecryptable ("Decryption failed …").
+
+#[cfg(not(target_os = "linux"))]
+fn read_replica_key_encoded(server_url: &str, vault_id: &str) -> Option<String> {
+    keyring::Entry::new(REPLICA_KEYRING_SERVICE, &replica_account(server_url, vault_id))
+        .ok()
+        .and_then(|entry| entry.get_password().ok())
+}
+
+#[cfg(not(target_os = "linux"))]
+fn write_replica_key_encoded(server_url: &str, vault_id: &str, encoded: &str) -> Result<(), String> {
+    keyring::Entry::new(REPLICA_KEYRING_SERVICE, &replica_account(server_url, vault_id))
+        .map_err(|_| "The operating system credential store is unavailable.".to_string())?
+        .set_password(encoded)
+        .map_err(|_| {
+            "Could not save the offline replica key in the operating system credential store.".to_string()
+        })
+}
+
+#[cfg(not(target_os = "linux"))]
+fn delete_replica_key(server_url: &str, vault_id: &str) {
+    if let Ok(entry) =
+        keyring::Entry::new(REPLICA_KEYRING_SERVICE, &replica_account(server_url, vault_id))
+    {
+        let _ = entry.delete_credential();
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn replica_keyutils_entry(server_url: &str, vault_id: &str) -> Result<keyring::Entry, String> {
+    let cred = keyring::keyutils::KeyutilsCredential::new_with_target(
+        None,
         REPLICA_KEYRING_SERVICE,
-        &format!("{}:{vault_id}", server_key(server_url)),
+        &replica_account(server_url, vault_id),
     )
-    .map_err(|_| "The operating system credential store is unavailable.".into())
+    .map_err(|_| "The session keyring is unavailable.".to_string())?;
+    Ok(keyring::Entry::new_with_credential(Box::new(cred)))
+}
+
+#[cfg(target_os = "linux")]
+fn replica_secret_service_entry(server_url: &str, vault_id: &str) -> Result<keyring::Entry, String> {
+    let cred = keyring::secret_service::SsCredential::new_with_target(
+        None,
+        REPLICA_KEYRING_SERVICE,
+        &replica_account(server_url, vault_id),
+    )
+    .map_err(|_| "The system keyring (Secret Service) is unavailable.".to_string())?;
+    Ok(keyring::Entry::new_with_credential(Box::new(cred)))
+}
+
+#[cfg(target_os = "linux")]
+fn read_replica_key_encoded(server_url: &str, vault_id: &str) -> Option<String> {
+    replica_keyutils_entry(server_url, vault_id)
+        .ok()
+        .and_then(|entry| entry.get_password().ok())
+        .or_else(|| {
+            replica_secret_service_entry(server_url, vault_id)
+                .ok()
+                .and_then(|entry| entry.get_password().ok())
+        })
+}
+
+#[cfg(target_os = "linux")]
+fn write_replica_key_encoded(server_url: &str, vault_id: &str, encoded: &str) -> Result<(), String> {
+    // Durable Secret Service first, then mirror to keyutils; succeed if either
+    // persists so a missing/locked Secret Service (e.g. headless) still works via
+    // keyutils and is never worse than before.
+    let ss = replica_secret_service_entry(server_url, vault_id)
+        .and_then(|entry| entry.set_password(encoded).map_err(|e| e.to_string()));
+    let ku = replica_keyutils_entry(server_url, vault_id)
+        .and_then(|entry| entry.set_password(encoded).map_err(|e| e.to_string()));
+    if ss.is_ok() || ku.is_ok() {
+        Ok(())
+    } else {
+        Err("Could not save the offline replica key in the operating system credential store.".to_string())
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn delete_replica_key(server_url: &str, vault_id: &str) {
+    if let Ok(entry) = replica_keyutils_entry(server_url, vault_id) {
+        let _ = entry.delete_credential();
+    }
+    if let Ok(entry) = replica_secret_service_entry(server_url, vault_id) {
+        let _ = entry.delete_credential();
+    }
 }
 
 fn replica_key(server_url: &str, vault_id: &str, create: bool) -> Result<Option<[u8; 32]>, String> {
-    let entry = match replica_keyring_entry(server_url, vault_id) {
-        Ok(entry) => entry,
-        Err(_) if !create => return Ok(None),
-        Err(error) => return Err(error),
-    };
-    let encoded = match entry.get_password() {
-        Ok(encoded) => encoded,
-        Err(_) if create => {
+    let encoded = match read_replica_key_encoded(server_url, vault_id) {
+        Some(encoded) => encoded,
+        None if create => {
             let mut key = [0u8; 32];
             rand::thread_rng().fill_bytes(&mut key);
             let encoded = base64::engine::general_purpose::STANDARD.encode(key);
-            entry
-                .set_password(&encoded)
-                .map_err(|_| "Could not save the offline replica key in the operating system credential store.".to_string())?;
+            write_replica_key_encoded(server_url, vault_id, &encoded)?;
             encoded
         }
-        Err(_) => return Ok(None),
+        None => return Ok(None),
     };
     let bytes = base64::engine::general_purpose::STANDARD
         .decode(encoded.as_bytes())
@@ -371,8 +462,6 @@ pub fn replica_delete(server_url: String, vault_id: String) -> Result<(), String
     if let Some(store) = ReplicaStore::open_existing(&app_config_dir()?, &server_url, &vault_id) {
         store.delete()?;
     }
-    if let Ok(entry) = replica_keyring_entry(&server_url, &vault_id) {
-        let _ = entry.delete_credential();
-    }
+    delete_replica_key(&server_url, &vault_id);
     Ok(())
 }

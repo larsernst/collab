@@ -507,7 +507,17 @@ export class DocumentSessionController<TDocument> {
   async handleExternalMutation(source: DocumentSource = 'rest'): Promise<RemoteDecision> {
     if (this.options.isLive?.()) return 'ignored';
     if (!this.options.read) return 'ignored';
-    const read = await this.options.read();
+    // A re-read can fail for reasons that must not crash the editor: the vault's
+    // server is not the connected one and there is no decryptable local cache, a
+    // transient IO error, etc. Treat any such failure as "nothing to apply"
+    // rather than letting it surface as an unhandled rejection from the watcher /
+    // replica-mutation event handlers that drive this.
+    let read: { content: string; version: string | null } | null;
+    try {
+      read = await this.options.read();
+    } catch {
+      return 'ignored';
+    }
     if (!read) return 'ignored';
     return this.handleRemoteCandidate({
       document: this.options.deserialize(read.content),
@@ -699,7 +709,10 @@ export class DocumentSessionController<TDocument> {
     const delay = this.options.autosaveDebounceMs ?? DEFAULT_AUTOSAVE_DEBOUNCE_MS;
     this.cancelAutosave = schedule(() => {
       this.cancelAutosave = null;
-      void this.requestSave('autosave');
+      // A rejected write (e.g. an unexpected backend/IO error) must never surface
+      // as an unhandled rejection from the debounce timer; the content stays
+      // dirty and a later save/flush retries.
+      void this.requestSave('autosave').catch(() => {});
     }, delay);
   }
 

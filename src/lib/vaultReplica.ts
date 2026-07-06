@@ -208,6 +208,13 @@ export function isLikelyConnectivityError(error: unknown): boolean {
     message.includes('connect to the collab server') ||
     message.includes('no saved server session') ||
     message.includes('no active hosted server session') ||
+    // The native client is connected to a *different* server (or to none) than
+    // the one this vault belongs to. For this vault that is indistinguishable
+    // from being offline: reads must fall back to the local replica and writes
+    // must queue as pending operations, so edits are never lost and sync
+    // resumes once its own server is reconnected — rather than hard-failing.
+    message.includes('different collab server') ||
+    message.includes('before opening hosted vaults') ||
     message.includes('network') ||
     message.includes('failed to fetch') ||
     message.includes('could not reach') ||

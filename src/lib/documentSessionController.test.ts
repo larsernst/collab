@@ -374,6 +374,17 @@ describe('DocumentSessionController', () => {
     expect(applied[applied.length - 1]).toMatchObject({ content: 'fresh', version: 'v2', source: 'cache' });
   });
 
+  it('treats a failing external re-read as nothing-to-apply (no unhandled rejection)', async () => {
+    const read = vi.fn().mockRejectedValue(new Error('Decryption failed — incorrect password or corrupted file'));
+    const { controller } = makeController({ read });
+    controller.load('a', 'v1');
+
+    await expect(controller.handleExternalMutation('cache')).resolves.toBe('ignored');
+    // The session baseline is untouched by the failed re-read.
+    expect(controller.getSnapshot().currentContent).toBe('a');
+    expect(controller.version).toBe('v1');
+  });
+
   it('merges a dirty remote candidate when a merge function is provided', () => {
     const { controller, applied } = makeController({
       mergeRemote: ({ local, remote }) => ({ document: `${local}+${remote}`, content: `${local}+${remote}` }),

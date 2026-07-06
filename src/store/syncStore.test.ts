@@ -4,14 +4,17 @@ import { syncRollup, useSyncStore } from './syncStore';
 import { tauriCommands } from '../lib/tauri';
 import {
   discardPendingOperation,
+  listHostedVaultReplicas,
   listPendingOperationRecoveries,
   makeHostedVaultAvailableOffline,
   retryPendingOperation,
   syncReplicaManifestDelta,
   type PendingOperation,
   type PendingOperationRecovery,
+  type ReplicaSummary,
 } from '../lib/vaultReplica';
 import type { HostedVaultMeta } from '../types/vault';
+import { useVaultStore } from './vaultStore';
 
 vi.mock('../lib/tauri', () => ({
   tauriCommands: {
@@ -30,6 +33,7 @@ vi.mock('../lib/vaultReplica', async (importOriginal) => {
     discardPendingOperation: vi.fn().mockResolvedValue(undefined),
     makeHostedVaultAvailableOffline: vi.fn().mockResolvedValue({ documentsCached: 1, assetsCached: 2, skipped: 0 }),
     syncReplicaManifestDelta: vi.fn().mockResolvedValue({}),
+    listHostedVaultReplicas: vi.fn().mockResolvedValue([]),
     // Use the real classifier/derivation/connectivity helpers.
     classifyVaultAccessError: actual.classifyVaultAccessError,
     deriveVaultAccess: actual.deriveVaultAccess,
@@ -108,6 +112,43 @@ describe('syncStore', () => {
     expect(state.failed.map((r) => r.operation.id)).toEqual(['c']);
     expect(state.lastSyncedAt).toBe('2026-06-18T00:00:00Z');
     expect(state.offlineAvailableAt).toBeNull();
+  });
+
+  it('syncAllForServer replays every replica belonging to the server', async () => {
+    useVaultStore.setState({ vault: null } as never);
+    useSyncStore.setState({ isSyncing: false });
+    const summary = (serverUrl: string, vaultId: string): ReplicaSummary => ({
+      serverUrl,
+      vaultId,
+      vaultName: vaultId,
+      manifestSequence: 1,
+      lastSyncedAt: null,
+      status: 'offline',
+      pendingCount: 1,
+      updatedAt: '2026-06-18T00:00:00Z',
+      capabilities: [],
+    });
+    vi.mocked(listHostedVaultReplicas).mockResolvedValue([
+      summary('https://a.test', 'v1'),
+      summary('https://a.test', 'v2'),
+      summary('https://b.test', 'v3'),
+    ]);
+
+    await useSyncStore.getState().syncAllForServer('https://a.test');
+
+    const synced = vi.mocked(syncReplicaManifestDelta).mock.calls.map(([v]) => v.hostedVaultId);
+    expect(synced).toEqual(['v1', 'v2']);
+    expect(synced).not.toContain('v3');
+    expect(useSyncStore.getState().isSyncing).toBe(false);
+  });
+
+  it('syncAllForServer is a no-op when the server has no replicas', async () => {
+    useVaultStore.setState({ vault: null } as never);
+    useSyncStore.setState({ isSyncing: false });
+    vi.mocked(listHostedVaultReplicas).mockResolvedValue([]);
+
+    await useSyncStore.getState().syncAllForServer('https://a.test');
+    expect(syncReplicaManifestDelta).not.toHaveBeenCalled();
   });
 
   it('syncNow runs a manifest delta sync then refreshes', async () => {

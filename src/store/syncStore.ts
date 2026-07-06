@@ -6,6 +6,7 @@ import {
   deriveVaultAccess,
   discardPendingOperation,
   isLikelyConnectivityError,
+  listHostedVaultReplicas,
   listPendingOperationRecoveries,
   makeHostedVaultAvailableOffline,
   retryPendingOperation,
@@ -13,10 +14,13 @@ import {
   type OfflineAvailabilityReport,
   type PendingOperation,
   type PendingOperationRecovery,
+  type ReplicaSummary,
   type SyncStatus,
   type VaultAccessState,
 } from '../lib/vaultReplica';
 import { tauriCommands } from '../lib/tauri';
+import { useVaultStore } from './vaultStore';
+import type { MemberRole } from '../types/vault';
 
 /** The coarse rollup the status-bar indicator renders. */
 export type SyncRollup = 'synced' | 'syncing' | 'pending' | 'conflicts';
@@ -47,11 +51,36 @@ interface SyncStoreState {
   ) => Promise<OfflineAvailabilityReport>;
   /** Permanently remove the local replica (used after access is lost). */
   removeReplica: (vault: HostedVaultMeta) => Promise<void>;
+  /**
+   * Replay + pull every local replica belonging to `serverUrl`. Used when a
+   * server connection is (re)established so background offline edits across all
+   * of that server's vaults — not just the open one — are pushed automatically.
+   */
+  syncAllForServer: (serverUrl: string) => Promise<void>;
   clear: () => void;
 }
 
 function vaultKeyFor(vault: HostedVaultMeta): string {
   return `${vault.serverUrl}|${vault.hostedVaultId}`;
+}
+
+/**
+ * Build a minimal hosted vault descriptor from a local replica summary so a
+ * background (not currently open) vault can be synced without its full DTO.
+ */
+function vaultMetaFromReplica(summary: ReplicaSummary): HostedVaultMeta {
+  return {
+    kind: 'hosted',
+    id: `hosted:${summary.serverUrl}:${summary.vaultId}`,
+    name: summary.vaultName,
+    path: `hosted://${summary.vaultId}`,
+    lastOpened: 0,
+    isEncrypted: false,
+    serverUrl: summary.serverUrl,
+    hostedVaultId: summary.vaultId,
+    role: (summary.role as MemberRole | null) ?? 'editor',
+    capabilities: summary.capabilities,
+  };
 }
 
 export const useSyncStore = create<SyncStoreState>((set, get) => ({
@@ -140,6 +169,45 @@ export const useSyncStore = create<SyncStoreState>((set, get) => ({
   removeReplica: async (vault) => {
     await tauriCommands.replicaDelete(vault.serverUrl, vault.hostedVaultId);
     get().clear();
+  },
+
+  syncAllForServer: async (serverUrl) => {
+    if (get().isSyncing) return;
+    let replicas: ReplicaSummary[];
+    try {
+      replicas = await listHostedVaultReplicas();
+    } catch {
+      return;
+    }
+    const targets = replicas.filter((replica) => replica.serverUrl === serverUrl);
+    if (targets.length === 0) return;
+
+    const openVault = useVaultStore.getState().vault;
+    const openHosted = openVault && openVault.kind === 'hosted' ? openVault : null;
+
+    set({ isSyncing: true });
+    try {
+      for (const replica of targets) {
+        // Prefer the open vault's richer DTO (accurate capabilities) when it is
+        // one of the targets; otherwise reconstruct a minimal descriptor.
+        const vault =
+          openHosted &&
+          openHosted.serverUrl === replica.serverUrl &&
+          openHosted.hostedVaultId === replica.vaultId
+            ? openHosted
+            : vaultMetaFromReplica(replica);
+        try {
+          await syncReplicaManifestDelta(vault);
+        } catch {
+          // Best-effort: a still-offline vault, a conflict, or lost access is
+          // recorded in that replica's own queue and surfaced when it is opened.
+        }
+      }
+    } finally {
+      set({ isSyncing: false });
+      // Refresh the open vault's snapshot so the indicator reflects the sync.
+      if (openHosted) await get().refresh(openHosted);
+    }
   },
 
   clear: () =>

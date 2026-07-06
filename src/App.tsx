@@ -3,6 +3,7 @@ import './App.css';
 import { TooltipProvider } from './components/ui/tooltip';
 import { useVaultStore } from './store/vaultStore';
 import { useServerStore } from './store/serverStore';
+import { useServerAutoReconnect } from './lib/useServerAutoReconnect';
 import { useEditorStore } from './store/editorStore';
 import { useUiStore, ACCENT_COLORS, INTERFACE_FONTS } from './store/uiStore';
 import VaultPicker from './components/vault/VaultPicker';
@@ -105,6 +106,10 @@ export default function App() {
     restorePreviousSession,
   } = useUiStore();
   const { checkForUpdate } = useUpdateStore();
+
+  // Automatically retry a dropped/expired hosted server session and sync all of
+  // that server's offline replicas once the connection is re-established.
+  useServerAutoReconnect();
 
   // Apply theme class + CSS variables whenever settings change
   useEffect(() => {

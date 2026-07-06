@@ -3,7 +3,7 @@ import { tauriCommands, type ServerConnectionStatus } from '../lib/tauri';
 import { useVaultStore } from './vaultStore';
 import type { HostedVaultSummary } from '../types/vault';
 
-const SERVER_URL_KEY = 'collab-hosted-server-url';
+export const SERVER_URL_KEY = 'collab-hosted-server-url';
 const ALLOW_INVALID_CERTIFICATES_KEY = 'collab-hosted-allow-invalid-certificates';
 // Linux-only preference: persist the refresh token in the Secret Service (durable
 // across reboots) instead of the default silent keyutils keyring. Ignored on
@@ -66,6 +66,13 @@ interface ServerState {
   _restoreSessionOnce: () => Promise<RestoreSessionResult>;
   connect: (serverUrl: string, username: string, password: string, allowInvalidCertificates?: boolean, persistAcrossReboots?: boolean) => Promise<void>;
   reconnect: (serverUrl: string, allowInvalidCertificates?: boolean, persistAcrossReboots?: boolean) => Promise<void>;
+  /**
+   * Quiet, best-effort reconnect from the OS-stored refresh token for the saved
+   * session. Unlike {@link reconnect} it never toggles `isLoading` or sets an
+   * error (so a background retry loop does not churn the UI), and it is a no-op
+   * when already effectively connected. Drives the automatic reconnect retry.
+   */
+  autoReconnect: () => Promise<RestoreSessionResult>;
   disconnect: () => Promise<void>;
   loadHostedVaults: () => Promise<void>;
   createHostedVault: (name: string) => Promise<HostedVaultSummary>;
@@ -139,6 +146,26 @@ export const useServerStore = create<ServerState>()((set, get) => ({
     } catch (error) {
       set({ isLoading: false, error: String(error) });
       throw error;
+    }
+  },
+  autoReconnect: async () => {
+    const serverUrl = localStorage.getItem(SERVER_URL_KEY);
+    if (!serverUrl) return 'skipped';
+    if (isEffectivelyConnected(get().status) && get().status?.serverUrl === serverUrl) {
+      return 'connected';
+    }
+    const allowInvalidCertificates = localStorage.getItem(ALLOW_INVALID_CERTIFICATES_KEY) === 'true';
+    const persistAcrossReboots = localStorage.getItem(PERSIST_ACROSS_REBOOTS_KEY) === 'true';
+    try {
+      const status = await tauriCommands.reconnectServer(serverUrl, allowInvalidCertificates, persistAcrossReboots);
+      // Only mutate the store on success so a failed background attempt (e.g. the
+      // server is still unreachable) produces no state churn and no re-trigger.
+      set({ status, error: null });
+      await get().loadHostedVaults();
+      return 'connected';
+    } catch (error) {
+      if (String(error).includes(NO_SAVED_SESSION_MESSAGE)) return 'skipped';
+      return 'failed';
     }
   },
   disconnect: async () => {

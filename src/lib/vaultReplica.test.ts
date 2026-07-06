@@ -101,6 +101,16 @@ describe('vaultReplica', () => {
     expect(isLikelyConnectivityError(new Error('manifest_conflict'))).toBe(false);
   });
 
+  it('treats a vault whose server is not the connected one as offline (queueable)', () => {
+    // Connected to a different server than the vault belongs to: for this vault
+    // that is effectively offline, so edits must queue rather than hard-fail.
+    expect(isLikelyConnectivityError(new Error('This hosted vault belongs to a different Collab server.'))).toBe(true);
+    // No server connected at all when opening a hosted vault.
+    expect(isLikelyConnectivityError(new Error('Connect to the Collab server before opening hosted vaults.'))).toBe(true);
+    // A genuine access-revocation must still not be mistaken for connectivity.
+    expect(isLikelyConnectivityError(new Error('You do not have permission to perform this vault operation.'))).toBe(false);
+  });
+
   it('classifies irreconcilable replay failures for recovery flows', () => {
     expect(classifyPendingOperationFailure(new Error('The vault manifest has changed since the supplied sequence.'))).toEqual({
       code: 'manifest_conflict',

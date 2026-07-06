@@ -256,7 +256,20 @@ impl ReplicaStore {
             Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
             Err(err) => return Err(err.to_string()),
         };
-        let raw = self.decrypt_persisted(&raw)?;
+        let raw = match self.decrypt_persisted(&raw) {
+            Ok(bytes) => bytes,
+            Err(_) => {
+                // The queue was written under a different replica key that has
+                // since been lost/rotated (e.g. a volatile OS keyring cleared on
+                // reboot), so it can no longer be read. Those queued edits are
+                // already unrecoverable without the old key; quarantine the bytes
+                // (rather than silently deleting them) and continue with an empty
+                // queue so offline editing — every write appends here — is not
+                // bricked by an undecryptable legacy file.
+                self.quarantine_unreadable(PENDING_OPS_FILE);
+                return Ok(Vec::new());
+            }
+        };
         let raw = String::from_utf8(raw).map_err(|e| e.to_string())?;
         let mut ops = Vec::new();
         for line in raw.lines() {
@@ -359,12 +372,10 @@ impl ReplicaStore {
     pub fn read_cached_document(&self, file_id: &str) -> Result<Option<String>, String> {
         let path = self.root.join(DOCUMENTS_DIR).join(safe_segment(file_id)?);
         match std::fs::read(&path) {
-            Ok(bytes) => {
-                let bytes = self.decrypt_persisted(&bytes)?;
-                String::from_utf8(bytes)
-                    .map(Some)
-                    .map_err(|e| e.to_string())
-            }
+            Ok(bytes) => match self.decrypt_content_or_miss(&bytes) {
+                Some(plain) => String::from_utf8(plain).map(Some).map_err(|e| e.to_string()),
+                None => Ok(None),
+            },
             Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(None),
             Err(err) => Err(err.to_string()),
         }
@@ -379,7 +390,7 @@ impl ReplicaStore {
     pub fn read_cached_asset(&self, file_id: &str) -> Result<Option<Vec<u8>>, String> {
         let path = self.root.join(ASSETS_DIR).join(safe_segment(file_id)?);
         match std::fs::read(&path) {
-            Ok(bytes) => self.decrypt_persisted(&bytes).map(Some),
+            Ok(bytes) => Ok(self.decrypt_content_or_miss(&bytes)),
             Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(None),
             Err(err) => Err(err.to_string()),
         }
@@ -397,7 +408,19 @@ impl ReplicaStore {
             _ => return Err(format!("Unsupported cached content kind: {kind}")),
         };
         let bytes = match std::fs::read(path) {
-            Ok(bytes) => self.decrypt_persisted(&bytes)?,
+            // An undecryptable entry (e.g. after a lost/rotated replica key) is
+            // treated as absent so the caller re-fetches it from the server.
+            Ok(bytes) => match self.decrypt_content_or_miss(&bytes) {
+                Some(plain) => plain,
+                None => {
+                    return Ok(CachedContentStatus {
+                        present: false,
+                        matches_expected_hash: false,
+                        actual_sha256: None,
+                        size_bytes: None,
+                    });
+                }
+            },
             Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
                 return Ok(CachedContentStatus {
                     present: false,
@@ -432,7 +455,7 @@ impl ReplicaStore {
     pub fn read_cached_crdt_state(&self, file_id: &str) -> Result<Option<Vec<u8>>, String> {
         let path = self.crdt_path(file_id)?;
         match std::fs::read(&path) {
-            Ok(bytes) => self.decrypt_persisted(&bytes).map(Some),
+            Ok(bytes) => Ok(self.decrypt_content_or_miss(&bytes)),
             Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(None),
             Err(err) => Err(err.to_string()),
         }
@@ -718,6 +741,18 @@ impl ReplicaStore {
         }
     }
 
+    /// Best-effort: move an undecryptable authoritative file aside (rather than
+    /// deleting it) so its bytes are preserved for possible later recovery while
+    /// the replica falls back to an empty/default state instead of erroring.
+    fn quarantine_unreadable(&self, name: &str) {
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis())
+            .unwrap_or(0);
+        let dst = self.root.join(format!("{name}.unreadable-{stamp}"));
+        let _ = std::fs::rename(self.root.join(name), dst);
+    }
+
     fn decrypt_persisted(&self, bytes: &[u8]) -> Result<Vec<u8>, String> {
         if !crypto::is_encrypted_data(bytes) {
             return Ok(bytes.to_vec());
@@ -726,6 +761,27 @@ impl ReplicaStore {
             "This offline replica is encrypted but its local key is unavailable.".to_string()
         })?;
         crypto::decrypt_bytes(key, bytes)
+    }
+
+    /// Decrypt a **re-fetchable content cache** entry (document / asset / CRDT
+    /// state), treating an undecryptable entry as a cache miss (`Ok(None)`)
+    /// rather than an error.
+    ///
+    /// The replica's at-rest key is held in the OS keyring; on some platforms
+    /// (notably the Linux kernel keyutils keyring) that store is volatile and can
+    /// lose the key across restarts, after which a fresh key is minted and older
+    /// entries become undecryptable. For cached copies of server content that is
+    /// exactly a miss — the caller re-fetches from the server — so it must never
+    /// surface as a hard error (which previously bubbled up as an unhandled
+    /// "Decryption failed" rejection while editing). Authoritative local state
+    /// (manifest, sync state, pending-op queue) intentionally keeps the strict
+    /// `decrypt_persisted` path.
+    fn decrypt_content_or_miss(&self, bytes: &[u8]) -> Option<Vec<u8>> {
+        if !crypto::is_encrypted_data(bytes) {
+            return Some(bytes.to_vec());
+        }
+        let key = self.encryption_key.as_ref()?;
+        crypto::decrypt_bytes(key, bytes).ok()
     }
 }
 
@@ -1064,14 +1120,84 @@ mod tests {
         );
         assert_eq!(store.list_pending_operations().unwrap().len(), 1);
 
+        // A content-cache entry that no longer authenticates (tampering, or a
+        // rotated/lost replica key) degrades to a cache miss so the caller
+        // re-fetches from the server, instead of surfacing a hard decrypt error.
         let mut tampered = raw_document;
         let last = tampered.len() - 1;
         tampered[last] ^= 0xff;
         std::fs::write(store.root().join(DOCUMENTS_DIR).join("file-1"), tampered).unwrap();
-        let err = store
-            .read_cached_document("file-1")
-            .expect_err("tampered ciphertext should fail authentication");
-        assert!(err.contains("incorrect password or corrupted file"));
+        assert_eq!(
+            store.read_cached_document("file-1").unwrap(),
+            None,
+            "undecryptable content cache must read as a miss"
+        );
+    }
+
+    #[test]
+    fn pending_queue_recovers_when_the_replica_key_rotates() {
+        let dir = TempDir::new().unwrap();
+        let op = |id: &str| PendingOperation {
+            id: id.into(),
+            kind: PendingOpKind::Edit,
+            file_id: Some("file-1".into()),
+            relative_path: Some("Notes/n.md".into()),
+            base_manifest_sequence: 1,
+            payload: json!({ "content": "x" }),
+            created_at: "2026-06-17T00:00:00Z".into(),
+            status: PendingOpStatus::Pending,
+            failure_code: None,
+            failure_message: None,
+        };
+
+        // Queue an op under the original key.
+        open(&dir).with_encryption_key([1u8; 32]).enqueue_operation(&op("op-1")).unwrap();
+
+        // With a rotated key the legacy queue is undecryptable: listing it must
+        // not error (it quarantines the file and returns empty) and a new enqueue
+        // must succeed so offline editing keeps working.
+        let rotated = open(&dir).with_encryption_key([2u8; 32]);
+        assert_eq!(rotated.list_pending_operations().unwrap().len(), 0);
+        rotated.enqueue_operation(&op("op-2")).unwrap();
+        let ops = rotated.list_pending_operations().unwrap();
+        assert_eq!(ops.iter().map(|o| o.id.as_str()).collect::<Vec<_>>(), ["op-2"]);
+
+        // The original bytes are preserved beside the queue, not deleted.
+        let quarantined = std::fs::read_dir(rotated.root())
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .any(|e| e.file_name().to_string_lossy().contains("pending-ops.jsonl.unreadable-"));
+        assert!(quarantined, "the undecryptable queue should be quarantined, not lost");
+    }
+
+    #[test]
+    fn content_caches_read_as_miss_when_the_replica_key_rotates() {
+        // Content written with one key and read back after the replica key was
+        // regenerated (e.g. a volatile OS keyring lost the original) must not
+        // error — it is a re-fetchable cache miss.
+        let dir = TempDir::new().unwrap();
+        let written = open(&dir).with_encryption_key([1u8; 32]);
+        written.cache_document("file-1", "# secret").unwrap();
+        written.cache_asset("asset-1", b"bytes").unwrap();
+        written.cache_crdt_state("crdt-1", b"crdt").unwrap();
+
+        let rotated = open(&dir).with_encryption_key([2u8; 32]);
+        assert_eq!(rotated.read_cached_document("file-1").unwrap(), None);
+        assert_eq!(rotated.read_cached_asset("asset-1").unwrap(), None);
+        assert_eq!(rotated.read_cached_crdt_state("crdt-1").unwrap(), None);
+        assert!(
+            !rotated
+                .cached_content_status("file-1", "document", None)
+                .unwrap()
+                .present
+        );
+
+        // The same store with the original key still reads the content.
+        let original = open(&dir).with_encryption_key([1u8; 32]);
+        assert_eq!(
+            original.read_cached_document("file-1").unwrap().as_deref(),
+            Some("# secret")
+        );
     }
 
     #[test]

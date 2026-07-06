@@ -122,6 +122,45 @@ describe('serverStore', () => {
     await expect(useServerStore.getState().createHostedVault('X')).rejects.toThrow(/Connect to a Collab server/);
   });
 
+  describe('autoReconnect', () => {
+    beforeEach(() => localStorage.clear());
+
+    it('skips when there is no saved session', async () => {
+      expect(await useServerStore.getState().autoReconnect()).toBe('skipped');
+      expect(tauriCommands.reconnectServer).not.toHaveBeenCalled();
+    });
+
+    it('is a quiet no-op when already effectively connected', async () => {
+      localStorage.setItem('collab-hosted-server-url', 'https://collab.example.test');
+      useServerStore.setState({ status: connected });
+      expect(await useServerStore.getState().autoReconnect()).toBe('connected');
+      expect(tauriCommands.reconnectServer).not.toHaveBeenCalled();
+    });
+
+    it('reconnects from the saved refresh token and loads hosted vaults', async () => {
+      localStorage.setItem('collab-hosted-server-url', 'https://collab.example.test');
+      useServerStore.setState({ status: { ...connected, connected: false } });
+      vi.mocked(tauriCommands.reconnectServer).mockResolvedValue(connected);
+      vi.mocked(tauriCommands.hostedVaultRequest).mockResolvedValue([hostedVault]);
+
+      expect(await useServerStore.getState().autoReconnect()).toBe('connected');
+      expect(tauriCommands.reconnectServer).toHaveBeenCalledWith('https://collab.example.test', false, false);
+      expect(useServerStore.getState().status).toEqual(connected);
+      expect(useServerStore.getState().hostedVaults).toEqual([hostedVault]);
+    });
+
+    it('does not churn store state on a failed attempt', async () => {
+      localStorage.setItem('collab-hosted-server-url', 'https://collab.example.test');
+      useServerStore.setState({ status: { ...connected, connected: false }, isLoading: false, error: null });
+      vi.mocked(tauriCommands.reconnectServer).mockRejectedValue(new Error('could not reach server'));
+
+      expect(await useServerStore.getState().autoReconnect()).toBe('failed');
+      // Left untouched so a background retry loop is not re-triggered by a change.
+      expect(useServerStore.getState().isLoading).toBe(false);
+      expect(useServerStore.getState().error).toBeNull();
+    });
+  });
+
   it('refuses to create a hosted vault when the session has expired', async () => {
     useServerStore.setState({ status: { ...connected, accessExpiresAt: '2000-01-01T00:00:00Z' } });
     await expect(useServerStore.getState().createHostedVault('X')).rejects.toThrow(/Connect to a Collab server/);
