@@ -27,7 +27,7 @@ vi.mock('../lib/tauri', () => ({
   tauriCommands: tauriCommandsMock,
 }));
 
-import type { HostedVaultMeta } from '../types/vault';
+import type { HostedVaultMeta, HostedVaultSummary } from '../types/vault';
 import { sortFileTreeAlphabetically, useVaultStore } from './vaultStore';
 
 describe('vaultStore Flatpak reopen fallback', () => {
@@ -274,7 +274,51 @@ describe('vaultStore Flatpak reopen fallback', () => {
     lastOpened: 1,
     isEncrypted: false,
     capabilities: ['vault.read', 'vault.offlineCopy'],
+    requireOfflineCopy: false,
   };
+
+  const hostedSummary: HostedVaultSummary = {
+    id: 'hosted-vault',
+    name: 'Hosted Vault',
+    ownerUserId: 'owner-1',
+    ownerDisplayName: 'Owner',
+    role: 'editor',
+    status: 'active',
+    manifestSequence: 4,
+    members: 2,
+    storageBytes: 100,
+    createdAt: '1970-01-01T00:00:01.000Z',
+    updatedAt: '1970-01-01T00:00:00.001Z',
+    capabilities: ['vault.read', 'vault.offlineCopy'],
+    requireOfflineCopy: false,
+  };
+
+  it('does not replace open hosted vault metadata when refresh data is unchanged', () => {
+    useVaultStore.setState({ vault: hostedVault });
+    const before = useVaultStore.getState().vault;
+
+    useVaultStore.getState().refreshHostedVaultMetadata('https://collab.example.test', [{
+      ...hostedSummary,
+      updatedAt: '2026-07-06T08:00:00.000Z',
+    }]);
+
+    expect(useVaultStore.getState().vault).toBe(before);
+  });
+
+  it('updates open hosted vault metadata when access data changes', () => {
+    useVaultStore.setState({ vault: hostedVault });
+
+    useVaultStore.getState().refreshHostedVaultMetadata('https://collab.example.test', [{
+      ...hostedSummary,
+      role: 'viewer',
+      capabilities: ['vault.read'],
+    }]);
+
+    expect(useVaultStore.getState().vault).toMatchObject({
+      role: 'viewer',
+      capabilities: ['vault.read'],
+    });
+  });
 
   it('seeds the offline replica from the manifest when opening a hosted vault', async () => {
     const manifest = { vaultId: 'hosted-vault', sequence: 4, files: [] };

@@ -3,5 +3,6 @@ export * from './note';
 export * from './collab';
 export * from './canvas';
 export * from './kanban';
+export * from './logicDiagram';
 export * from './template';
 export * from './noteSnippet';

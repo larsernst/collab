@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { GitFork, Layout, LayoutDashboard, Settings, FileText, Search, Image as ImageIcon } from 'lucide-react';
+import { CircuitBoard, GitFork, Layout, LayoutDashboard, Settings, FileText, Search, Image as ImageIcon } from 'lucide-react';
 import { Popover, PopoverContent, PopoverTrigger } from '../ui/popover';
 import { Tooltip, TooltipContent, TooltipTrigger } from '../ui/tooltip';
 import { useNoteIndexStore } from '../../store/noteIndexStore';
@@ -25,6 +25,7 @@ export default function CellContentPicker({ children, onSelect }: Props) {
   const flatFiles = flattenVaultFiles(fileTree);
   const canvasBoards = flatFiles.filter((file) => getVaultDocumentTabType(file.relativePath) === 'canvas');
   const kanbanBoards = flatFiles.filter((file) => getVaultDocumentTabType(file.relativePath) === 'kanban');
+  const logicDiagrams = flatFiles.filter((file) => getVaultDocumentTabType(file.relativePath) === 'logic');
   const imageFiles = flatFiles.filter((file) => getVaultDocumentTabType(file.relativePath) === 'image');
   const pdfFiles = flatFiles.filter((file) => getVaultDocumentTabType(file.relativePath) === 'pdf');
 
@@ -48,6 +49,11 @@ export default function CellContentPicker({ children, onSelect }: Props) {
     ? kanbanBoards.filter((file) =>
         file.name.toLowerCase().includes(query) || file.relativePath.toLowerCase().includes(query))
     : kanbanBoards
+  ).slice(0, 8);
+  const filteredLogicDiagrams = (query
+    ? logicDiagrams.filter((file) =>
+        file.name.toLowerCase().includes(query) || file.relativePath.toLowerCase().includes(query))
+    : logicDiagrams
   ).slice(0, 8);
   const filteredImageFiles = (query
     ? imageFiles.filter((file) =>
@@ -137,6 +143,24 @@ export default function CellContentPicker({ children, onSelect }: Props) {
                 className="w-full flex items-center gap-2 px-2 py-1.5 rounded text-xs hover:bg-accent/60 text-left transition-colors min-w-0"
               >
                 <LayoutDashboard size={11} className="text-emerald-400/70 shrink-0" />
+                <span className="truncate text-foreground/80">
+                  {getVaultDocumentTitle(file.relativePath)}
+                </span>
+              </button>
+            ))}
+            {filteredLogicDiagrams.map((file) => (
+              <button
+                key={`logic:${file.relativePath}`}
+                onClick={() =>
+                  select({
+                    type: 'logic',
+                    relativePath: file.relativePath,
+                    title: getVaultDocumentTitle(file.relativePath),
+                  })
+                }
+                className="w-full flex items-center gap-2 px-2 py-1.5 rounded text-xs hover:bg-accent/60 text-left transition-colors min-w-0"
+              >
+                <CircuitBoard size={11} className="text-cyan-400/70 shrink-0" />
                 <span className="truncate text-foreground/80">
                   {getVaultDocumentTitle(file.relativePath)}
                 </span>

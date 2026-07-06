@@ -16,6 +16,7 @@ describe('commandBarUtils', () => {
     expect(detectMode('tag:project')).toEqual({ type: 'tag', tag: 'project' });
     expect(detectMode('#project')).toEqual({ type: 'tag', tag: 'project' });
     expect(detectMode(':kanban')).toEqual({ type: 'fileType', ext: 'kanban' });
+    expect(detectMode(':logic')).toEqual({ type: 'fileType', ext: 'logic' });
     expect(detectMode('type:md')).toEqual({ type: 'fileType', ext: 'md' });
     expect(detectMode('name:meeting')).toEqual({ type: 'nameSearch', query: 'meeting' });
     expect(detectMode('/table 3x4')).toEqual({ type: 'insert', query: 'table 3x4' });
@@ -27,12 +28,14 @@ describe('commandBarUtils', () => {
     expect(getTabType('note.md')).toBe('note');
     expect(getTabType('board.kanban')).toBe('kanban');
     expect(getTabType('map.canvas')).toBe('canvas');
+    expect(getTabType('adder.logic')).toBe('logic');
     expect(getTabType('paper.pdf')).toBe('pdf');
     expect(getTabType('cover.png')).toBe('image');
 
     expect(getViewForType('note')).toBe('editor');
     expect(getViewForType('image')).toBe('editor');
     expect(getViewForType('pdf')).toBe('editor');
+    expect(getViewForType('logic')).toBe('editor');
     expect(getViewForType('kanban')).toBe('kanban');
     expect(getViewForType('canvas')).toBe('canvas');
   });

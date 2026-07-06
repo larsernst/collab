@@ -1,9 +1,10 @@
 import type { VaultClient } from './vaultClient';
 import { tauriCommands } from './tauri';
+import { parseLogicDiagramDocument } from '../types/logicDiagram';
 
 /**
  * External-file import for vaults. Adding documents/images/notes to a vault is
- * limited to images, SVG, PDFs, markdown, canvas, and Kanban so an import never
+ * limited to images, SVG, PDFs, markdown, canvas, Kanban, and logic diagrams so an import never
  * injects an arbitrary or unsupported binary. Raster images and PDFs are stored
  * as binary assets through the mode-agnostic `externalAssetImport` capability;
  * markdown, Collab structured files, and SVG become real text documents on both
@@ -16,6 +17,7 @@ export const IMPORT_PDF_EXTENSIONS = ['pdf'];
 export const IMPORT_MARKDOWN_EXTENSIONS = ['md', 'markdown'];
 export const IMPORT_CANVAS_EXTENSIONS = ['canvas'];
 export const IMPORT_KANBAN_EXTENSIONS = ['kanban'];
+export const IMPORT_LOGIC_EXTENSIONS = ['logic'];
 
 export const IMPORTABLE_EXTENSIONS = [
   ...IMPORT_IMAGE_EXTENSIONS,
@@ -24,9 +26,10 @@ export const IMPORTABLE_EXTENSIONS = [
   ...IMPORT_MARKDOWN_EXTENSIONS,
   ...IMPORT_CANVAS_EXTENSIONS,
   ...IMPORT_KANBAN_EXTENSIONS,
+  ...IMPORT_LOGIC_EXTENSIONS,
 ];
 
-export type ImportableCategory = 'image' | 'svg' | 'pdf' | 'markdown' | 'canvas' | 'kanban';
+export type ImportableCategory = 'image' | 'svg' | 'pdf' | 'markdown' | 'canvas' | 'kanban' | 'logic';
 
 export function fileBaseName(sourcePath: string): string {
   const segments = sourcePath.split(/[/\\]/);
@@ -46,6 +49,7 @@ export function importCategoryForName(name: string): ImportableCategory | null {
   if (IMPORT_MARKDOWN_EXTENSIONS.includes(ext)) return 'markdown';
   if (IMPORT_CANVAS_EXTENSIONS.includes(ext)) return 'canvas';
   if (IMPORT_KANBAN_EXTENSIONS.includes(ext)) return 'kanban';
+  if (IMPORT_LOGIC_EXTENSIONS.includes(ext)) return 'logic';
   return null;
 }
 
@@ -73,7 +77,11 @@ function joinVaultPath(folder: string | undefined, name: string): string {
  * written through the mode-agnostic `VaultClient` so the same path works for both
  * local and hosted vaults.
  */
-function validateStructuredDocument(text: string, category: 'canvas' | 'kanban') {
+function validateStructuredDocument(text: string, category: 'canvas' | 'kanban' | 'logic') {
+  if (category === 'logic') {
+    parseLogicDiagramDocument(text);
+    return;
+  }
   let parsed: unknown;
   try {
     parsed = JSON.parse(text);
@@ -96,11 +104,13 @@ async function importTextDocument(
   client: VaultClient,
   sourcePath: string,
   targetFolder: string | undefined,
-  category: 'markdown' | 'canvas' | 'kanban' | 'svg',
+  category: 'markdown' | 'canvas' | 'kanban' | 'logic' | 'svg',
 ): Promise<string> {
   const payload = await tauriCommands.readFileForUpload(sourcePath);
   const text = decodeUtf8Base64(payload.contentBase64);
-  if (category === 'canvas' || category === 'kanban') validateStructuredDocument(text, category);
+  if (category === 'canvas' || category === 'kanban' || category === 'logic') {
+    validateStructuredDocument(text, category);
+  }
   const targetPath = joinVaultPath(targetFolder, payload.name);
   await client.createDocument(targetPath);
   // A freshly created note starts empty; write the source content as its first
@@ -112,7 +122,7 @@ async function importTextDocument(
 
 /**
  * Imports the given desktop files into the vault, routing each by type. Markdown,
- * canvas, and Kanban become text documents; images and PDFs become binary
+ * canvas, Kanban, and logic diagrams become text documents; images and PDFs become binary
  * assets. When `targetFolder` is omitted, images default to the app-managed
  * `Pictures/` folder and everything else lands at the vault root. Each file is
  * imported independently so one bad file never aborts the rest.
@@ -130,10 +140,10 @@ export async function importExternalFilesIntoVault(
     const category = importCategoryForName(name);
     try {
       if (!category) {
-        result.failed.push({ name, error: 'Unsupported file type. Only images, PDFs, markdown, canvas, and Kanban files can be imported.' });
+        result.failed.push({ name, error: 'Unsupported file type. Only images, PDFs, markdown, canvas, Kanban, and logic files can be imported.' });
         continue;
       }
-      if (category === 'markdown' || category === 'canvas' || category === 'kanban') {
+      if (category === 'markdown' || category === 'canvas' || category === 'kanban' || category === 'logic') {
         result.imported.push(await importTextDocument(client, sourcePath, options.targetFolder, category));
         continue;
       }

@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { X, FileText, Layout, LayoutDashboard, GitFork, Settings, Image as ImageIcon } from 'lucide-react';
+import { X, CircuitBoard, FileText, Layout, LayoutDashboard, GitFork, Settings, Image as ImageIcon } from 'lucide-react';
 import { cn } from '../../lib/utils';
 import { useEditorStore } from '../../store/editorStore';
 import { useUiStore } from '../../store/uiStore';
@@ -85,6 +85,7 @@ export default function TabBar() {
   const getTabIcon = (type: string) => {
     if (type === 'canvas')   return <Layout size={11} className="shrink-0" />;
     if (type === 'kanban')   return <LayoutDashboard size={11} className="shrink-0" />;
+    if (type === 'logic')    return <CircuitBoard size={11} className="shrink-0" />;
     if (type === 'graph')    return <GitFork size={11} className="shrink-0" />;
     if (type === 'settings') return <Settings size={11} className="shrink-0" />;
     if (type === 'image')    return <ImageIcon size={11} className="shrink-0" />;

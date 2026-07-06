@@ -3,12 +3,16 @@ import { describe, expect, it, vi, beforeEach } from 'vitest';
 import { ACTIONS, SETTINGS_SECTIONS, type RenderCtx } from './commandBarActions';
 
 const createNote = vi.fn();
+const readNote = vi.fn();
+const writeNote = vi.fn();
 const toolbarAction = vi.fn();
 const toastError = vi.fn();
 
 vi.mock('../../lib/tauri', () => ({
   tauriCommands: {
     createNote: (...args: unknown[]) => createNote(...args),
+    readNote: (...args: unknown[]) => readNote(...args),
+    writeNote: (...args: unknown[]) => writeNote(...args),
   },
 }));
 
@@ -74,6 +78,39 @@ describe('commandBarActions', () => {
     expect(ctx.openTab).toHaveBeenCalledWith('My Note.md', 'My Note', 'note');
     expect(ctx.setActiveView).toHaveBeenCalledWith('editor');
     expect(ctx.close).toHaveBeenCalled();
+  });
+
+  it('creates a new logic diagram with initial source content and opens it', async () => {
+    const ctx = makeCtx();
+    createNote.mockResolvedValueOnce({
+      relativePath: 'Half Adder.logic',
+      name: 'Half Adder.logic',
+      extension: 'logic',
+      modifiedAt: 0,
+      size: 0,
+      isFolder: false,
+    });
+    readNote.mockResolvedValueOnce({
+      content: '',
+      hash: 'v0',
+      modifiedAt: 0,
+    });
+    writeNote.mockResolvedValueOnce({ hash: 'v1' });
+    const action = ACTIONS.find((entry) => entry.id === 'new-logic');
+
+    await action?.onSelect(ctx, 'new logic Half Adder');
+
+    expect(createNote).toHaveBeenCalledWith('/vault', 'Half Adder.logic');
+    expect(writeNote).toHaveBeenCalledWith(
+      '/vault',
+      'Half Adder.logic',
+      expect.stringContaining('"kind": "logic-diagram"'),
+      'v0',
+      '',
+    );
+    expect(ctx.refreshFileTree).toHaveBeenCalled();
+    expect(ctx.openTab).toHaveBeenCalledWith('Half Adder.logic', 'Half Adder', 'logic');
+    expect(ctx.setActiveView).toHaveBeenCalledWith('editor');
   });
 
   it('guards editor-only actions outside editor view', async () => {

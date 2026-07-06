@@ -58,7 +58,6 @@ import type { CanvasInsertItem } from '../components/canvas/canvasInsertItems';
 import {
   getBaseName,
   getPreviewKey,
-  isImageExtension,
 } from '../components/canvas/CanvasPreviewUtils';
 import {
   DocumentTopBar,
@@ -91,6 +90,7 @@ import { ReadOnlyBanner } from '../components/layout/ReadOnlyBanner';
 import LivePeers from '../components/collaboration/LivePeers';
 import { dedupePeersByUser, useLivePeers } from '../lib/liveAwareness';
 import { cn } from '../lib/utils';
+import { getVaultDocumentTabType } from '../lib/vaultLinks';
 
 const pdfWorkerUrl = new URL('pdfjs-dist/build/pdf.worker.mjs', import.meta.url).toString();
 GlobalWorkerOptions.workerSrc = pdfWorkerUrl;
@@ -611,16 +611,7 @@ function CanvasBoard({ relativePath }: { relativePath: string | null }) {
   }, [collabTransport, vault?.path]);
 
   const openRelativePath = useCallback((path: string) => {
-    const extension = path.split('.').pop()?.toLowerCase() ?? '';
-    const type = isImageExtension(extension)
-      ? 'image'
-      : extension === 'pdf'
-      ? 'pdf'
-      : extension === 'canvas'
-      ? 'canvas'
-      : extension === 'kanban'
-      ? 'kanban'
-      : 'note';
+    const type = getVaultDocumentTabType(path);
     openTab(path, getNameWithoutExtension(getBaseName(path)), type);
     if (type === 'canvas') setActiveView('canvas');
     else if (type === 'kanban') setActiveView('kanban');

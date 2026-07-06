@@ -4,7 +4,7 @@ import type { NoteFile } from '../types/vault';
 const ABSOLUTE_URL_RE = /^(?:[a-z][a-z\d+.-]*:|\/\/)/i;
 const IMAGE_EXT_RE = /\.(avif|bmp|gif|ico|jpe?g|png|svg|webp)$/i;
 
-export type VaultDocumentTabType = 'note' | 'canvas' | 'kanban' | 'image' | 'pdf';
+export type VaultDocumentTabType = 'note' | 'canvas' | 'kanban' | 'logic' | 'image' | 'pdf';
 
 export interface VaultLinkTarget {
   relativePath: string;
@@ -87,6 +87,7 @@ export function flattenVaultFiles(nodes: NoteFile[]): NoteFile[] {
 export function getVaultDocumentTabType(relativePath: string): VaultDocumentTabType {
   if (/\.(png|jpg|jpeg|gif|webp|svg|bmp|ico|avif)$/i.test(relativePath)) return 'image';
   if (/\.pdf$/i.test(relativePath)) return 'pdf';
+  if (/\.logic$/i.test(relativePath)) return 'logic';
   if (/\.kanban$/i.test(relativePath)) return 'kanban';
   if (/\.canvas$/i.test(relativePath)) return 'canvas';
   return 'note';

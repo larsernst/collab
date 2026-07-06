@@ -60,6 +60,14 @@ const FILES: NoteFile[] = [
         isFolder: false,
       },
       {
+        relativePath: 'Docs/adder.logic',
+        name: 'adder.logic',
+        extension: 'logic',
+        modifiedAt: 0,
+        size: 1,
+        isFolder: false,
+      },
+      {
         relativePath: 'Docs/diagram.png',
         name: 'diagram.png',
         extension: 'png',
@@ -88,6 +96,14 @@ describe('vaultLinks', () => {
     });
   });
 
+  it('resolves vault-relative markdown links to logic diagrams', () => {
+    expect(resolveVaultRelativeLinkTarget('../Docs/adder.logic', 'Notes/alpha.md', FILES)).toEqual({
+      relativePath: 'Docs/adder.logic',
+      title: 'adder',
+      type: 'logic',
+    });
+  });
+
   it('resolves wikilinks to PDFs by file name', () => {
     expect(resolveVaultWikilinkTarget('spec.pdf', FILES)).toEqual({
       relativePath: 'Docs/spec.pdf',
@@ -104,13 +120,14 @@ describe('vaultLinks', () => {
     });
   });
 
-  it('offers PDF and Kanban files in wikilink autocomplete but excludes images', () => {
+  it('offers PDF, Kanban, and logic files in wikilink autocomplete but excludes images', () => {
     const items = getVaultWikilinkAutocompleteItems(FILES);
     expect(items).toEqual(
       expect.arrayContaining([
         expect.objectContaining({ label: 'alpha', insertText: 'Notes/alpha.md' }),
         expect.objectContaining({ label: 'spec.pdf', insertText: 'Docs/spec.pdf' }),
         expect.objectContaining({ label: 'board.kanban', insertText: 'Docs/board.kanban' }),
+        expect.objectContaining({ label: 'adder.logic', insertText: 'Docs/adder.logic' }),
       ]),
     );
     expect(items.some((item) => item.label === 'diagram.png')).toBe(false);

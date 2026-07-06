@@ -182,6 +182,7 @@ fn is_allowed_extension(ext: &str) -> bool {
         ext,
         "md" | "canvas"
             | "kanban"
+            | "logic"
             | "png"
             | "jpg"
             | "jpeg"
@@ -2221,6 +2222,7 @@ mod tests {
     #[test]
     fn allowed_extensions_and_walk_skip_rules_match_vault_policy() {
         assert!(is_allowed_extension("md"));
+        assert!(is_allowed_extension("logic"));
         assert!(is_allowed_extension("pdf"));
         assert!(!is_allowed_extension("exe"));
 

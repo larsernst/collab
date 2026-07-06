@@ -7,6 +7,7 @@ import {
 } from '../ui/command';
 import {
   Calculator,
+  CircuitBoard,
   Copy,
   FileText,
   Hash,
@@ -34,6 +35,7 @@ import { ACTIONS, SETTINGS_SECTIONS, type RenderCtx } from './commandBarActions'
 function FileTypeIcon({ path, className = 'size-4 shrink-0 opacity-60' }: { path: string; className?: string }) {
   if (/\.(png|jpg|jpeg|gif|webp|svg|bmp|ico|avif)$/i.test(path)) return <FileText className={className} />;
   if (/\.pdf$/i.test(path)) return <FileText className={className} />;
+  if (path.endsWith('.logic')) return <CircuitBoard className={className} />;
   if (path.endsWith('.kanban')) return <LayoutDashboard className={className} />;
   if (path.endsWith('.canvas')) return <Layers className={className} />;
   return <FileText className={className} />;

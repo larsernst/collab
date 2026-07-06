@@ -144,7 +144,7 @@ fn is_vaultfile(path: &Path) -> bool {
         .map(|e| e.to_string_lossy().to_lowercase())
         .as_deref()
     {
-        Some("md") | Some("canvas") | Some("kanban") => true,
+        Some("md") | Some("canvas") | Some("kanban") | Some("logic") => true,
         _ => false,
     }
 }

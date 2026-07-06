@@ -451,6 +451,25 @@ describe('FileTree folder collapse state', () => {
     expect(tauriCommands.moveNoteToTrash).toHaveBeenCalledTimes(1);
   });
 
+  it('does not handle Delete when another view already prevented it', () => {
+    useUiStore.setState({ ...useUiStore.getState(), confirmDelete: false });
+    vi.mocked(tauriCommands.moveNoteToTrash).mockResolvedValue(undefined as never);
+    useVaultStore.setState({
+      ...useVaultStore.getState(),
+      fileTree: [
+        { relativePath: 'a.md', name: 'a.md', extension: 'md', modifiedAt: 1, size: 1, isFolder: false },
+      ],
+    });
+
+    render(<FileTree />);
+    fireEvent.mouseEnter(screen.getByText('a.md'));
+    const event = new KeyboardEvent('keydown', { key: 'Delete', cancelable: true });
+    event.preventDefault();
+    window.dispatchEvent(event);
+
+    expect(tauriCommands.moveNoteToTrash).not.toHaveBeenCalled();
+  });
+
   it('multi-selects files with ctrl-click and trashes all of them on Delete', async () => {
     useUiStore.setState({ ...useUiStore.getState(), confirmDelete: false });
     vi.mocked(tauriCommands.moveNoteToTrash).mockResolvedValue(undefined as never);

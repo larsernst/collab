@@ -63,7 +63,7 @@ function createVaultFileCommands(currentDocumentRelativePath: string): SlashComm
     const folder = file.relativePath.includes('/')
       ? file.relativePath.split('/').slice(0, -1).join('/')
       : undefined;
-    const detail = [folder, type === 'note' ? 'Note' : type === 'pdf' ? 'PDF' : type === 'canvas' ? 'Canvas' : type === 'kanban' ? 'Kanban' : 'Image']
+    const detail = [folder, type === 'note' ? 'Note' : type === 'pdf' ? 'PDF' : type === 'canvas' ? 'Canvas' : type === 'kanban' ? 'Kanban' : type === 'logic' ? 'Logic diagram' : 'Image']
       .filter(Boolean)
       .join(' · ');
     return {

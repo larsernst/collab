@@ -37,6 +37,13 @@ function compareNoteFilesAlphabetically(left: NoteFile, right: NoteFile) {
   });
 }
 
+function sameStringArray(left?: string[], right?: string[]) {
+  const leftValues = left ?? [];
+  const rightValues = right ?? [];
+  if (leftValues.length !== rightValues.length) return false;
+  return leftValues.every((value, index) => value === rightValues[index]);
+}
+
 export function sortFileTreeAlphabetically(nodes: NoteFile[]): NoteFile[] {
   return [...nodes]
     .map((node) => ({
@@ -161,11 +168,18 @@ export const useVaultStore = create<VaultState>()(
         const summary = summaries.find((candidate) => candidate.id === vault.hostedVaultId);
         if (!summary) return;
         const next = hostedVaultMeta(serverUrl, summary);
+        if (
+          vault.name === next.name
+          && vault.role === next.role
+          && vault.requireOfflineCopy === next.requireOfflineCopy
+          && sameStringArray(vault.capabilities, next.capabilities)
+        ) {
+          return;
+        }
         set({
           vault: {
             ...vault,
             name: next.name,
-            lastOpened: next.lastOpened,
             role: next.role,
             capabilities: next.capabilities,
             requireOfflineCopy: next.requireOfflineCopy,

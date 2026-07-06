@@ -6,7 +6,7 @@ export interface OpenTab {
   title: string;
   isDirty: boolean;
   savedHash: string | null;
-  type: 'note' | 'canvas' | 'kanban' | 'graph' | 'settings' | 'image' | 'pdf';
+  type: 'note' | 'canvas' | 'kanban' | 'logic' | 'graph' | 'settings' | 'image' | 'pdf';
 }
 
 export interface NoteEditorViewState {
@@ -30,7 +30,7 @@ interface EditorState {
   noteViewStates: Record<string, NoteEditorViewState>;
   setSessionVaultPath: (vaultPath: string | null) => void;
   resetSession: (vaultPath?: string | null) => void;
-  openTab: (relativePath: string, title: string, type?: 'note' | 'canvas' | 'kanban' | 'graph' | 'settings' | 'image' | 'pdf') => void;
+  openTab: (relativePath: string, title: string, type?: OpenTab['type']) => void;
   closeTab: (relativePath: string) => void;
   setActiveTab: (relativePath: string) => void;
   markDirty: (relativePath: string) => void;

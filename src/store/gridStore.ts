@@ -13,7 +13,7 @@ export type GridLayoutId =
   | 'main-side'
   | 'side-main';
 
-export type CellContentType = 'empty' | 'note' | 'graph' | 'canvas' | 'kanban' | 'image' | 'pdf' | 'settings';
+export type CellContentType = 'empty' | 'note' | 'graph' | 'canvas' | 'kanban' | 'logic' | 'image' | 'pdf' | 'settings';
 
 export interface GridCellContent {
   type: CellContentType;

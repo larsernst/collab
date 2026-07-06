@@ -1,4 +1,4 @@
-import { GripVertical, X, ChevronDown, GitFork, Layout, LayoutDashboard, Settings, FileText, Image as ImageIcon } from 'lucide-react';
+import { GripVertical, X, ChevronDown, CircuitBoard, GitFork, Layout, LayoutDashboard, Settings, FileText, Image as ImageIcon } from 'lucide-react';
 import { useDraggable, useDroppable } from '@dnd-kit/core';
 import { CSS } from '@dnd-kit/utilities';
 import { cn } from '../../lib/utils';
@@ -9,6 +9,7 @@ import NoteView from '../../views/NoteView';
 import GraphPage from '../../views/GraphPage';
 import CanvasPage from '../../views/CanvasPage';
 import KanbanPage from '../../views/KanbanPage';
+import LogicDiagramView from '../../views/LogicDiagramView';
 import ImageView from '../../views/ImageView';
 import PdfView from '../../views/PdfView';
 import SettingsPage from '../../views/SettingsPage';
@@ -19,6 +20,7 @@ const CONTENT_ICONS: Partial<Record<string, React.ReactNode>> = {
   graph:    <GitFork size={11} />,
   canvas:   <Layout size={11} />,
   kanban:   <LayoutDashboard size={11} />,
+  logic:    <CircuitBoard size={11} />,
   image:    <ImageIcon size={11} />,
   pdf:      <FileText size={11} />,
   settings: <Settings size={11} />,
@@ -61,7 +63,7 @@ export default function GridCell({ cell, onContainerRef }: Props) {
     if (!file) return null;
 
     const type = getVaultDocumentTabType(relativePath);
-    if (type !== 'note' && type !== 'canvas' && type !== 'kanban' && type !== 'image' && type !== 'pdf') return null;
+    if (type !== 'note' && type !== 'canvas' && type !== 'kanban' && type !== 'logic' && type !== 'image' && type !== 'pdf') return null;
 
     return {
       type,
@@ -90,6 +92,9 @@ export default function GridCell({ cell, onContainerRef }: Props) {
     }
     if (type === 'kanban' && relativePath) {
       return <KanbanPage relativePath={relativePath} />;
+    }
+    if (type === 'logic' && relativePath) {
+      return <LogicDiagramView relativePath={relativePath} />;
     }
     if (type === 'image' && relativePath) {
       return <ImageView relativePath={relativePath} />;

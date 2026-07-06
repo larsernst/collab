@@ -1,6 +1,6 @@
 import { useState, useCallback, useEffect, useMemo, useRef } from 'react';
 import {
-  ChevronRight, ChevronDown, FileText, Folder, FolderOpen,
+  ChevronRight, ChevronDown, CircuitBoard, FileText, Folder, FolderOpen,
   Plus, FolderPlus, FileUp, Layout, LayoutDashboard, Paperclip, Image as ImageIcon, Trash2,
   Download, FolderSearch,
 } from 'lucide-react';
@@ -33,12 +33,14 @@ import FileReferencesPanel from './FileReferencesPanel';
 import { FileTreeHoverPreviewPopover } from '../previews/FileTreeHoverPreviewPopover';
 import { VersionHistoryModal } from '../collaboration/history/VersionHistoryModal';
 import { supportsVersionHistoryRelativePath } from '../collaboration/history/historyUtils';
+import { createEmptyLogicDiagram } from '../../types/logicDiagram';
 
 type DialogState =
   | { type: 'none' }
   | { type: 'delete'; files: NoteFile[] }
   | { type: 'rename'; file: NoteFile }
   | { type: 'create-note'; parentPath?: string }
+  | { type: 'create-logic'; parentPath?: string }
   | { type: 'create-folder'; parentPath?: string };
 
 interface TaskAttachmentRef {
@@ -206,15 +208,7 @@ export default function FileTree() {
   );
 
   const handleOpenFile = useCallback((file: NoteFile) => {
-    const type = isImageFile(file)
-      ? 'image'
-      : isPdfFile(file)
-      ? 'pdf'
-      : file.extension === 'canvas'
-      ? 'canvas'
-      : file.extension === 'kanban'
-      ? 'kanban'
-      : 'note';
+    const type = getVaultDocumentTabType(file.relativePath);
     openTab(file.relativePath, file.name, type);
     if (type === 'canvas') setActiveView('canvas');
     else if (type === 'kanban') setActiveView('kanban');
@@ -252,6 +246,10 @@ export default function FileTree() {
 
   const handleCreateNote = (parentPath?: string) => {
     setDialog({ type: 'create-note', parentPath });
+  };
+
+  const handleCreateLogic = (parentPath?: string) => {
+    setDialog({ type: 'create-logic', parentPath });
   };
 
   const handleCreateFolder = (parentPath?: string) => {
@@ -407,6 +405,25 @@ export default function FileTree() {
         openTab(relativePath, name, 'note');
         setActiveView('editor');
       } catch (e) { toast.error('Failed to create note: ' + e); }
+    } else if (dialog.type === 'create-logic') {
+      const { parentPath } = dialog;
+      setDialog({ type: 'none' });
+      const stem = name.replace(/\.logic$/i, '');
+      const relativePath = parentPath ? `${parentPath}/${stem}.logic` : `${stem}.logic`;
+      try {
+        const client = createVaultClient(vault);
+        await client.createDocument(relativePath);
+        const created = await client.readDocument(relativePath);
+        await client.writeDocument(
+          relativePath,
+          JSON.stringify(createEmptyLogicDiagram(stem), null, 2),
+          created.version,
+          created.content,
+        );
+        await refreshFileTree();
+        openTab(relativePath, stem, 'logic');
+        setActiveView('editor');
+      } catch (e) { toast.error('Failed to create logic diagram: ' + e); }
     } else if (dialog.type === 'create-folder') {
       const { parentPath } = dialog;
       setDialog({ type: 'none' });
@@ -573,6 +590,7 @@ export default function FileTree() {
 
   useEffect(() => {
     const handler = (event: KeyboardEvent) => {
+      if (event.defaultPrevented) return;
       if (event.key !== 'Delete') return;
       const target = event.target as HTMLElement | null;
       if (target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable)) {
@@ -645,9 +663,10 @@ export default function FileTree() {
         }}
       />
       <InputDialog
-        open={dialog.type === 'create-note' || dialog.type === 'create-folder' || dialog.type === 'rename'}
+        open={dialog.type === 'create-note' || dialog.type === 'create-logic' || dialog.type === 'create-folder' || dialog.type === 'rename'}
         variant={
           dialog.type === 'create-note' ? 'create-note'
+          : dialog.type === 'create-logic' ? 'create-logic'
           : dialog.type === 'create-folder' ? 'create-folder'
           : 'rename'
         }
@@ -697,28 +716,43 @@ export default function FileTree() {
         </div>
         {mode === 'files' && (
           <div className="flex items-center gap-0.5">
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <button
-                  onClick={() => handleCreateNote()}
-                  className="w-6 h-6 flex items-center justify-center rounded text-muted-foreground hover:text-foreground hover:bg-accent/60 transition-colors app-motion-fast"
-                >
-                  <Plus size={13} />
-                </button>
-              </TooltipTrigger>
-              <TooltipContent side="bottom" className="text-xs text-foreground">New note</TooltipContent>
-            </Tooltip>
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <button
-                  onClick={() => handleCreateFolder()}
-                  className="w-6 h-6 flex items-center justify-center rounded text-muted-foreground hover:text-foreground hover:bg-accent/60 transition-colors app-motion-fast"
-                >
-                  <FolderPlus size={13} />
-                </button>
-              </TooltipTrigger>
-              <TooltipContent side="bottom" className="text-xs text-foreground">New folder</TooltipContent>
-            </Tooltip>
+            {!readOnly && (
+              <>
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <button
+                      onClick={() => handleCreateNote()}
+                      className="w-6 h-6 flex items-center justify-center rounded text-muted-foreground hover:text-foreground hover:bg-accent/60 transition-colors app-motion-fast"
+                    >
+                      <Plus size={13} />
+                    </button>
+                  </TooltipTrigger>
+                  <TooltipContent side="bottom" className="text-xs text-foreground">New note</TooltipContent>
+                </Tooltip>
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <button
+                      onClick={() => handleCreateFolder()}
+                      className="w-6 h-6 flex items-center justify-center rounded text-muted-foreground hover:text-foreground hover:bg-accent/60 transition-colors app-motion-fast"
+                    >
+                      <FolderPlus size={13} />
+                    </button>
+                  </TooltipTrigger>
+                  <TooltipContent side="bottom" className="text-xs text-foreground">New folder</TooltipContent>
+                </Tooltip>
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <button
+                      onClick={() => handleCreateLogic()}
+                      className="w-6 h-6 flex items-center justify-center rounded text-muted-foreground hover:text-foreground hover:bg-accent/60 transition-colors app-motion-fast"
+                    >
+                      <CircuitBoard size={13} />
+                    </button>
+                  </TooltipTrigger>
+                  <TooltipContent side="bottom" className="text-xs text-foreground">New logic diagram</TooltipContent>
+                </Tooltip>
+              </>
+            )}
             {!readOnly && (
               <Tooltip>
                 <TooltipTrigger asChild>
@@ -730,7 +764,7 @@ export default function FileTree() {
                     <FileUp size={13} />
                   </button>
                 </TooltipTrigger>
-                <TooltipContent side="bottom" className="text-xs text-foreground">Add files (images, PDFs, markdown, canvas, Kanban)</TooltipContent>
+                <TooltipContent side="bottom" className="text-xs text-foreground">Add files (images, PDFs, markdown, canvas, Kanban, logic)</TooltipContent>
               </Tooltip>
             )}
           </div>
@@ -784,6 +818,7 @@ export default function FileTree() {
               setCollapsed={setCollapsed}
               onOpenFile={handleOpenFile}
               onCreateNote={handleCreateNote}
+              onCreateLogic={handleCreateLogic}
               onCreateFolder={handleCreateFolder}
               onDelete={handleDelete}
               onRename={handleRename}
@@ -834,6 +869,7 @@ interface FileTreeNodeProps {
   setCollapsed: React.Dispatch<React.SetStateAction<Set<string>>>;
   onOpenFile: (file: NoteFile) => void;
   onCreateNote: (parentPath?: string) => void;
+  onCreateLogic: (parentPath?: string) => void;
   onCreateFolder: (parentPath?: string) => void;
   onDelete: (file: NoteFile) => void;
   onRename: (file: NoteFile) => void;
@@ -856,7 +892,7 @@ interface FileTreeNodeProps {
 
 function FileTreeNode({
   node, depth, collapsed, setCollapsed,
-  onOpenFile, onCreateNote, onCreateFolder, onDelete, onRename, onReveal, onDownload, onDragOut, canReveal, onViewHistory,
+  onOpenFile, onCreateNote, onCreateLogic, onCreateFolder, onDelete, onRename, onReveal, onDownload, onDragOut, canReveal, onViewHistory,
   onNodeClick, selectedPaths, onHover,
   draggingPath, dropTargetPath, taskAttachmentsByPath, setDraggingPath, setDropTargetPath, onMove,
   fileTreeHoverPreviewsEnabled,
@@ -892,6 +928,7 @@ function FileTreeNode({
     if (isImageAsset) return <ImageIcon size={13} className="text-sky-400/80" />;
     if (node.extension === 'canvas')  return <Layout size={13} className="text-blue-400/70" />;
     if (node.extension === 'kanban')  return <LayoutDashboard size={13} className="text-emerald-400/70" />;
+    if (node.extension === 'logic')   return <CircuitBoard size={13} className="text-cyan-400/75" />;
     return <FileText size={13} className="text-muted-foreground/70" />;
   };
 
@@ -1140,6 +1177,7 @@ function FileTreeNode({
                   setCollapsed={setCollapsed}
                   onOpenFile={onOpenFile}
                   onCreateNote={onCreateNote}
+                  onCreateLogic={onCreateLogic}
                   onCreateFolder={onCreateFolder}
                   onDelete={onDelete}
                   onRename={onRename}
@@ -1169,6 +1207,7 @@ function FileTreeNode({
         {node.isFolder && (
           <>
             <ContextMenuItem onClick={() => onCreateNote(node.relativePath)}>New Note</ContextMenuItem>
+            <ContextMenuItem onClick={() => onCreateLogic(node.relativePath)}>New Logic Diagram</ContextMenuItem>
             <ContextMenuItem onClick={() => onCreateFolder(node.relativePath)}>New Folder</ContextMenuItem>
             <ContextMenuSeparator />
           </>

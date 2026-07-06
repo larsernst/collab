@@ -1,5 +1,6 @@
 import {
   Calculator,
+  CircuitBoard,
   FileCode,
   FilePlus,
   GitFork,
@@ -22,6 +23,7 @@ import type { ActiveView, DateFormat } from '../../store/uiStore';
 import type { PendingSearchJump } from '../../store/editorStore';
 import type { NoteMetadata, SearchResult } from '../../types/note';
 import type { NoteFile, VaultMeta } from '../../types/vault';
+import { createEmptyLogicDiagram } from '../../types/logicDiagram';
 
 export interface RenderCtx {
   notes: NoteMetadata[];
@@ -30,7 +32,7 @@ export interface RenderCtx {
   activeView: ActiveView;
   vault: VaultMeta | null;
   dateFormat: DateFormat;
-  openTab: (relativePath: string, title: string, type?: 'note' | 'canvas' | 'kanban' | 'graph' | 'settings' | 'image' | 'pdf') => void;
+  openTab: (relativePath: string, title: string, type?: 'note' | 'canvas' | 'kanban' | 'logic' | 'graph' | 'settings' | 'image' | 'pdf') => void;
   setActiveView: (v: ActiveView) => void;
   openSettings: () => void;
   refreshFileTree: () => Promise<void>;
@@ -143,6 +145,31 @@ export const ACTIONS: Action[] = [
         ctx.setActiveView('canvas');
       } catch (e) {
         toast.error('Failed to create canvas board: ' + e);
+      }
+      ctx.close();
+    },
+  },
+  {
+    id: 'new-logic',
+    keywords: ['new logic', 'create logic', 'logic diagram', 'logic gate', 'circuit diagram'],
+    label: 'New Logic Diagram',
+    icon: <CircuitBoard className="size-4 shrink-0" />,
+    onSelect: async (ctx, query) => {
+      const rawName = query.replace(/^new\s+logic\s*/i, '').trim() || 'Logic Diagram';
+      const name = rawName.replace(/\.logic$/i, '');
+      if (!ctx.vault) return;
+      try {
+        const client = createVaultClient(ctx.vault);
+        const relativePath = `${name}.logic`;
+        const file = await client.createDocument(relativePath);
+        const created = await client.readDocument(file.relativePath);
+        const content = JSON.stringify(createEmptyLogicDiagram(name), null, 2);
+        await client.writeDocument(file.relativePath, content, created.version, created.content);
+        await ctx.refreshFileTree();
+        ctx.openTab(file.relativePath, name, 'logic');
+        ctx.setActiveView('editor');
+      } catch (e) {
+        toast.error('Failed to create logic diagram: ' + e);
       }
       ctx.close();
     },

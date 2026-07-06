@@ -20,9 +20,9 @@ export function detectMode(raw: string): Mode {
   if (tagColon) return { type: 'tag', tag: tagColon[1].trim() };
   if (s.startsWith('#')) return { type: 'tag', tag: s.slice(1) };
 
-  const shortTypeMatch = s.match(/^:(md|kanban|canvas)/i);
+  const shortTypeMatch = s.match(/^:(md|kanban|canvas|logic)/i);
   if (shortTypeMatch) return { type: 'fileType', ext: shortTypeMatch[1].toLowerCase() };
-  const typeMatch = s.match(/^type:(md|kanban|canvas)/i);
+  const typeMatch = s.match(/^type:(md|kanban|canvas|logic)/i);
   if (typeMatch) return { type: 'fileType', ext: typeMatch[1].toLowerCase() };
 
   const nameMatch = s.match(/^name:(.*)$/i);
@@ -39,15 +39,16 @@ export function detectMode(raw: string): Mode {
   return { type: 'search', query: s };
 }
 
-export function getTabType(relativePath: string): 'note' | 'canvas' | 'kanban' | 'image' | 'pdf' {
+export function getTabType(relativePath: string): 'note' | 'canvas' | 'kanban' | 'logic' | 'image' | 'pdf' {
   if (/\.(png|jpg|jpeg|gif|webp|svg|bmp|ico|avif)$/i.test(relativePath)) return 'image';
   if (/\.pdf$/i.test(relativePath)) return 'pdf';
+  if (relativePath.endsWith('.logic')) return 'logic';
   if (relativePath.endsWith('.kanban')) return 'kanban';
   if (relativePath.endsWith('.canvas')) return 'canvas';
   return 'note';
 }
 
-export function getViewForType(type: 'note' | 'canvas' | 'kanban' | 'image' | 'pdf'): ActiveView {
+export function getViewForType(type: 'note' | 'canvas' | 'kanban' | 'logic' | 'image' | 'pdf'): ActiveView {
   if (type === 'kanban') return 'kanban';
   if (type === 'canvas') return 'canvas';
   return 'editor';

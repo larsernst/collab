@@ -166,6 +166,26 @@ const GROUPS: Group[] = [
       { label: 'Reset zoom',         keys: [['Ctrl', '0'], ['0']] },
     ],
   },
+  {
+    heading: 'Logic Diagrams',
+    note: 'Only active when a logic diagram tab is open and an input field is not focused.',
+    rows: [
+      { label: 'Add input',          keys: [['I']] },
+      { label: 'Add output',         keys: [['O']] },
+      { label: 'Add AND gate',       keys: [['A']] },
+      { label: 'Add NOT gate',       keys: [['N']] },
+      { label: 'Add XOR gate',       keys: [['X']] },
+      { label: 'Select all',         keys: [['Ctrl', 'A']] },
+      { label: 'Group selection',    keys: [['Ctrl', 'G']] },
+      { label: 'Ungroup selection',  keys: [['Ctrl', 'Shift', 'G']] },
+      { label: 'Rename selected group', keys: [['F2']] },
+      { label: 'Fit view',           keys: [['Shift', 'F']] },
+      { label: 'Delete selection',   keys: [['Delete'], ['Backspace']] },
+      { label: 'Zoom in',            keys: [['Ctrl', 'Arrow Up']] },
+      { label: 'Zoom out',           keys: [['Ctrl', 'Arrow Down']] },
+      { label: 'Reset zoom',         keys: [['Ctrl', '0'], ['0']] },
+    ],
+  },
 ];
 
 export default function ShortcutsTab() {

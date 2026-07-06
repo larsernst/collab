@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { Trash2, FilePlus, FolderPlus, Pencil, Layout, LayoutDashboard } from 'lucide-react';
+import { Trash2, CircuitBoard, FilePlus, FolderPlus, Pencil, Layout, LayoutDashboard } from 'lucide-react';
 import {
   Dialog, DialogContent, DialogHeader, DialogTitle,
   DialogDescription, DialogFooter,
@@ -104,7 +104,7 @@ export function ConfirmDeleteDialog({
 
 // ─── Input (create / rename) ──────────────────────────────────────────────────
 
-type InputDialogVariant = 'create-note' | 'create-folder' | 'rename' | 'create-canvas' | 'create-kanban' | 'create-template';
+type InputDialogVariant = 'create-note' | 'create-folder' | 'rename' | 'create-canvas' | 'create-kanban' | 'create-logic' | 'create-template';
 
 const VARIANT_META: Record<InputDialogVariant, {
   icon: React.ReactNode;
@@ -146,6 +146,13 @@ const VARIANT_META: Record<InputDialogVariant, {
     title: 'New kanban board',
     label: 'Board name',
     placeholder: 'Untitled Board',
+    confirm: 'Create',
+  },
+  'create-logic': {
+    icon: <CircuitBoard size={16} />,
+    title: 'New logic diagram',
+    label: 'Diagram name',
+    placeholder: 'Logic Diagram',
     confirm: 'Create',
   },
   'create-template': {
