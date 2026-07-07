@@ -121,6 +121,35 @@ function frame(tag: number, fileIdBytes: Uint8Array, payload: Uint8Array): Uint8
   return out;
 }
 
+/**
+ * Opt-in live-collaboration tracing. Enable in the desktop app's devtools with
+ * `localStorage.collabLiveDebug = '1'` (and reload); disable with
+ * `delete localStorage.collabLiveDebug`. Off by default and zero-cost in
+ * production. Used to localize live co-editing faults (send vs. transport vs.
+ * receive vs. editor binding) that the unit tests — which bypass the real
+ * WebSocket transport and the CodeMirror binding — cannot reach.
+ */
+let liveDebugEnabled: boolean | null = null;
+function liveDebugOn(): boolean {
+  if (liveDebugEnabled === null) {
+    try {
+      liveDebugEnabled = typeof localStorage !== 'undefined'
+        && localStorage.getItem('collabLiveDebug') === '1';
+    } catch {
+      liveDebugEnabled = false;
+    }
+  }
+  return liveDebugEnabled;
+}
+function liveLog(file: string, ...args: unknown[]): void {
+  if (!liveDebugOn()) return;
+  // eslint-disable-next-line no-console
+  console.info(`[live ${file.slice(0, 8)}]`, ...args);
+}
+function tagName(tag: number): string {
+  return tag === SYNC_STEP1 ? 'SYNC_STEP1' : tag === SYNC_UPDATE ? 'SYNC_UPDATE' : tag === AWARENESS ? 'AWARENESS' : `tag#${tag}`;
+}
+
 export class WebSocketYProvider {
   readonly doc = new Y.Doc();
   readonly awareness = new Awareness(this.doc);
@@ -157,6 +186,16 @@ export class WebSocketYProvider {
     this.doc.on('update', this.handleLocalUpdate);
     if (this.offlineReplica) this.doc.on('update', this.handlePersistUpdate);
     this.awareness.on('update', this.handleAwarenessUpdate);
+    liveLog(target.fileId, 'provider created', { server: target.serverUrl, vault: target.vaultId });
+    if (liveDebugOn()) {
+      // Trace every mutation of the shared doc so it is obvious whether the
+      // CodeMirror/yCollab binding is actually feeding local edits into Y.Text
+      // (sender) and whether received remote updates land in Y.Text (receiver).
+      this.doc.on('update', (_u: Uint8Array, origin: unknown) => {
+        const kind = origin === REMOTE_ORIGIN ? 'remote' : origin === SEED_ORIGIN ? 'seed' : 'local';
+        liveLog(target.fileId, `doc update (${kind}) -> text len ${this.doc.getText(NOTE_TEXT_NAME).length}`);
+      });
+    }
   }
 
   /**
@@ -270,11 +309,15 @@ export class WebSocketYProvider {
   private sendBinary(tag: number, payload: Uint8Array) {
     if (this.socket?.readyState === WebSocket.OPEN) {
       this.socket.send(frame(tag, this.fileIdBytes, payload));
+      liveLog(this.target.fileId, `send ${tagName(tag)} (${payload.length}B)`);
+    } else {
+      liveLog(this.target.fileId, `send ${tagName(tag)} DROPPED (socket ${this.socket?.readyState ?? 'null'})`);
     }
   }
 
   private setStatus(status: LiveStatus) {
     if (this.status === status) return;
+    liveLog(this.target.fileId, `status: ${this.status} -> ${status}`);
     this.status = status;
     for (const cb of this.statusCallbacks) cb(status);
   }
@@ -328,6 +371,7 @@ export class WebSocketYProvider {
       return;
     }
 
+    liveLog(this.target.fileId, `opening socket -> ${ticket.websocketUrl}`);
     let socket: WebSocket;
     try {
       socket = new WebSocket(ticket.websocketUrl);
@@ -354,7 +398,8 @@ export class WebSocketYProvider {
     socket.onerror = () => {
       // `onclose` follows and handles reconnect.
     };
-    socket.onclose = () => {
+    socket.onclose = (event) => {
+      liveLog(this.target.fileId, `socket closed`, { code: (event as CloseEvent)?.code, reason: (event as CloseEvent)?.reason });
       if (this.socket === socket) this.socket = null;
       onSubscribed?.(false);
       if (!this.destroyed) {
@@ -372,6 +417,7 @@ export class WebSocketYProvider {
       } catch {
         return;
       }
+      liveLog(this.target.fileId, `recv control: ${control.type ?? '?'}`);
       switch (control.type) {
         case 'ready':
           // Protocol negotiation: the server echoes the version it accepted. A
@@ -417,6 +463,7 @@ export class WebSocketYProvider {
     if (data.length < HEADER_LEN) return;
     const tag = data[0];
     const payload = data.subarray(HEADER_LEN);
+    liveLog(this.target.fileId, `recv ${tagName(tag)} (${payload.length}B)`);
     if (tag === SYNC_STEP1) {
       // Peer's state vector: reply with everything it is missing.
       const update = Y.encodeStateAsUpdate(this.doc, payload);

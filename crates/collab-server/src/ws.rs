@@ -350,11 +350,23 @@ impl Room {
         if content_changed {
             *self.last_author.lock().expect("author lock poisoned") = Some(author);
         }
-        let _ = self.tx.send(RoomBroadcast {
-            origin,
-            tag: ws_message::SYNC_UPDATE,
-            payload: Arc::new(update_bytes.to_vec()),
-        });
+        let delivered = self
+            .tx
+            .send(RoomBroadcast {
+                origin,
+                tag: ws_message::SYNC_UPDATE,
+                payload: Arc::new(update_bytes.to_vec()),
+            })
+            .unwrap_or(0);
+        tracing::debug!(
+            target: "collab_server::ws",
+            file_id = %self.file_id,
+            seq = next,
+            bytes = update_bytes.len(),
+            content_changed,
+            broadcast_receivers = delivered,
+            "applied remote SYNC_UPDATE and broadcast to peers"
+        );
         // Sync-handshake/no-op updates still belong in the CRDT log for
         // convergence. Wake the quiet-period worker for every valid update so
         // it can compact the CRDT log even when materialized content is
@@ -945,6 +957,14 @@ async fn handle_subscribe(
                         continue;
                     }
                     let frame = encode_binary(broadcast.tag, file_id, &broadcast.payload);
+                    tracing::debug!(
+                        target: "collab_server::ws",
+                        %file_id,
+                        %session_id,
+                        tag = broadcast.tag,
+                        bytes = broadcast.payload.len(),
+                        "forwarding broadcast to subscriber"
+                    );
                     if forward_out
                         .send(Message::Binary(frame.into()))
                         .await
@@ -964,6 +984,13 @@ async fn handle_subscribe(
             room: room.clone(),
             forwarder: handle,
         },
+    );
+    tracing::debug!(
+        target: "collab_server::ws",
+        %file_id,
+        %session_id,
+        room_subscribers = room.tx.receiver_count(),
+        "session subscribed to document room"
     );
 
     let _ = send_control(
