@@ -32,7 +32,7 @@ Container Registry and run with a single production Compose file.
 - Dedicated image viewer/editor with additive annotation overlays and permanent crop/rotate/resize/export flows
 - Shared-folder collaboration with presence, chat, per-file history snapshots, permissions, and conflict dialogs
 - Hosted vaults on a self-hosted server with server-backed roles, fine-grained permissions, and authenticated native/browser sessions
-- Live co-editing of hosted notes, Kanban boards, and canvases over a server-held CRDT, with live presence and read-only-when-disconnected REST fallback
+- Live co-editing of hosted notes, Kanban boards, canvases, and logic diagrams over a server-held CRDT, with live presence and safe REST fallback when no live session is available
 - Offline synchronization for hosted vaults through a native replica with reconnect convergence and a status-bar sync/conflict indicator
 - Self-hosted Docker Compose server with PostgreSQL, persistent blob storage, Caddy gateway, health checks, automatic migrations, backups, quotas, and rate limiting
 - Published multi-architecture (AMD64/ARM64) server images on GitHub Container Registry for one-command production deployment
@@ -155,7 +155,7 @@ Container Registry and run with a single production Compose file.
   theme, accent, and density settings
 - Dashboard storage/warning summaries, user creation/invitations, password reset, disable/re-enable/delete controls, session revocation, activity inspection, and redacted audit views
 - Desktop server login in Settings with memory-only access tokens and refresh tokens stored in the OS credential store
-- Live co-editing of hosted notes, Kanban boards, and canvases backed by a
+- Live co-editing of hosted notes, Kanban boards, canvases, and logic diagrams backed by a
   per-document server-held `yrs` CRDT, relayed over an authenticated WebSocket
   with single-use tickets, live awareness/presence, and REST optimistic-write
   fallback when no live session is available

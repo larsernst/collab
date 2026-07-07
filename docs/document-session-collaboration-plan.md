@@ -24,7 +24,7 @@ even before full live co-editing exists.
 | 4. Hosted cache and replica hardening | Done | Prevent stale hosted cache reads from replacing newer in-memory/editor state. |
 | 5. Live structured documents | Done | Move suitable hosted JSON documents onto the existing Yjs live path. |
 | 6. Collaboration polish | Done | Add presence/status/reconnect UX and operational hardening. |
-| 7. Advanced Office-like behavior | Deferred | Explore richer per-type concurrent editing after the safe baseline is proven. |
+| 7. Advanced Office-like behavior | Done | Define the per-type path for richer concurrent editing without overclaiming support. |
 
 ## Current System Snapshot
 
@@ -35,7 +35,7 @@ Current document behavior is split across views:
 - Canvas uses `useCanvasDocumentSession`, REST fallback, hosted live JSON, and
   several defensive guards.
 - Kanban already uses hosted live JSON for board state, plus REST fallback.
-- Logic diagrams currently use a local session inside `LogicDiagramView`.
+- Logic diagrams use hosted live JSON for graph state, plus REST fallback.
 - SVG, image overlays, PDF sidecars, grid, and other structured views each have
   their own save/reload assumptions.
 - App-level file and replica events refresh file trees and indexes, and some
@@ -713,6 +713,30 @@ Acceptance criteria:
 - The app does not claim Office-like behavior for document types that still use
   safe REST fallback only.
 
+### Phase 7 Outcome — Done (2026-07-07)
+
+Phase 7 is complete as the advanced-behavior design gate, not as a blanket
+"Office-like" implementation. The app now documents live support only for the
+document types that actually have live sessions: hosted notes, Kanban boards,
+canvases, and logic diagrams. Document types still on safe REST/session
+fallback remain described as safe/conflict-aware, not real-time co-editable.
+
+| Document type | Current collaboration model | Advanced design before implementation |
+| --- | --- | --- |
+| Notes | Hosted Yjs text with CodeMirror cursor/selection awareness. | Keep text CRDT as canonical. Add comment/review threads as anchored ranges with explicit re-anchor behavior after edits; do not mix review state into raw markdown until export semantics are defined. |
+| Canvas | Hosted generic live JSON, stable node/edge IDs, Canvas selected-node awareness. | Move to per-entity maps for nodes/edges plus an explicit ordered ID list or fractional order key so node field edits survive concurrent reorder/delete operations. Drag previews should remain awareness-only until commit. |
+| Kanban | Hosted generic live JSON, stable column/card IDs, card-edit awareness. | Model columns and cards as entity maps with conflict-free order keys per column. Card moves should update card location/order atomically, while title/content/comments remain independent fields. |
+| Logic diagrams | Hosted generic live JSON, stable gate/wire IDs, live peer presence. | Model gates and wires as entity maps with stable IDs. Gate movement, input toggles, group membership, and wire edits should be independent operations; multi-user drag previews stay awareness-only. |
+| Grid | App-scoped workspace shell embedding document views; no vault-document write path. | No Office-like claim. Cross-document status should aggregate embedded child document states rather than inventing a live grid document model. |
+| SVG vector editor | Safe REST/manual save through `useSvgSession`; no live vector session. | Require a scene-operation design first: recognized primitives can become entity maps, but raw passthrough SVG, defs, filters, groups, and `<use>` need preserve/lock semantics before live editing is offered. |
+| PDF annotations | Safe hosted/local sidecar sessions; no live PDF annotation session. | Limit live work to annotation/comment sidecars. Highlights, text boxes, and comments can become entity maps with page/anchor coordinates; the PDF binary itself stays immutable. |
+| Image overlays | Safe local additive overlay sessions; hosted overlay persistence is unavailable. | Live only the additive overlay sidecar after hosted overlay storage exists. Raster edits remain explicit generated-image operations, never collaborative pixel editing. |
+
+Advanced work must land behind document-type-specific designs and tests. Generic
+JSON reconciliation remains acceptable for today’s stable-ID co-editing, but the
+app must not claim conflict-free reordering, live comments, or multi-user drag
+previews until those per-type models exist.
+
 ## Phase 0 Audit (Completed 2026-07-06)
 
 Source of truth for the audit below is the code as it stands today:
@@ -728,7 +752,7 @@ Source of truth for the audit below is the code as it stands today:
 | Notes | `NoteView.tsx` | REST optimistic autosave (600 ms debounce) via `runExclusiveSave`→`performSave` with `expected_hash` + `base_content` auto-merge; manual save; H1-title rename-move; snapshot on manual save. Hosted live Yjs text disables REST autosave. | initial load on path/vault change; `vault:file-modified` watcher (local); `onReplicaMutated` (hosted); `forceReloadPath` from HistoryPanel; live session seed/binding. | Hosted text Yjs (`openLiveNoteSession`) | `performSave` conflict → `addConflict` → `ConflictDialog`. | Watcher/replica compare with `version !== hashRef` (not monotonic "newer than"); dirty is *ignored* (not queued) so a remote change is silently dropped while typing; no cache-source awareness. | shared controller + existing live path |
 | Canvas | `useCanvasDocumentSession.ts` | REST optimistic autosave (600 ms) via `runExclusiveSave`→`saveCanvas`; merge adoption; blank-doc create + dangling-edge repair writes on load; snapshot. Hosted live JSON disables REST autosave. | initial `loadCanvas(true)`; `vault:file-modified` (local, skip if dirty or <2 s since write); `onReplicaMutated` (hosted, skip if dirty/live, pulse); live `onChange`→`applyLiveCanvas`; merged-content adoption after save. | Hosted JSON Yjs, hardened (`liveHydratedRef`, `lostRestNodes`, empty-root REST fallback, `discardOfflineState`) | `addConflict` → `ConflictDialog`. | Most complex per-view reload logic; several guards to preserve; still `version !==` rather than monotonic. | shared structured session hook |
 | Kanban | `KanbanPage.tsx` | REST optimistic autosave via `updateBoard`→debounced `writeNote` through `runExclusiveSave`; automations on open/save; snapshots. Hosted live JSON disables REST autosave. | initial `loadBoard(true)`; `vault:file-modified` (local, skip if dirty or <2 s); `onReplicaMutated` (hosted, skip if dirty/live, pulse); live `onChange` seed/apply. | Hosted JSON Yjs (`openLiveJsonSession`) | `addConflict` → `ConflictDialog`. | Duplicated session/reload logic mirrored from Canvas; same `version !==` limitation. | shared structured session hook |
-| Logic | `LogicDiagramView.tsx` | REST optimistic autosave (600 ms) fired only on structural-signature change via `runExclusiveSave`→`writeLogic`; merge adoption; manual Save button; `conflictedRef` latch stops autosave. | **initial load only.** No watcher, no replica listener, no live session. | none | Conflict → `toast` + `conflictedRef` latch; no `ConflictDialog`; requires manual reopen. | Newest/smallest surface, but a hosted collaborator's edits never appear until reopen and the conflict latch is a dead-end. Safe first migration target. | shared controller, then live JSON |
+| Logic | `LogicDiagramView.tsx` | REST optimistic autosave (600 ms) through `useDocumentSessionController`; hosted live JSON disables REST autosave. | initial load; `vault:file-modified` watcher (local); `onReplicaMutated` (hosted); live session seed/reconnect through per-type validation. | Hosted JSON Yjs with gate/wire entity validation and live peer presence. | Conflict/pending remote → shared `DocumentStatusPill` load/keep actions. | Generic JSON live reconciliation still does not provide conflict-free reordering or multi-user drag previews. | live JSON complete; advanced entity/order model deferred behind Phase 7 design |
 | Grid | `GridView.tsx` / `gridStore` | Not a per-file vault document. Workspace layout + cell content persisted in app-scoped `gridStore` (Zustand `persist`). Cells embed other views, which own their own document sessions. | none of its own (embedded views reload independently). | n/a | n/a (no vault-document write) | Low direct risk; safety depends entirely on the embedded child views. | audit-only; no session migration for the grid shell itself |
 | SVG | `useSvgSession.ts` | **Manual save only** (no autosave) through `useDocumentSessionController`; optimistic `writeDocument` with `base_content` merge; asset-backed legacy SVGs load but cannot save. | initial load; `vault:file-modified` watcher (local); `onReplicaMutated` (hosted) through the shared safe-remote policy. | none | Conflict/pending remote → shared `DocumentStatusPill` load/keep actions. | Live collaborative vector editing is still out of scope; REST fallback now prevents dirty-state overwrite. | shared controller, REST safe path complete |
 | PDF annotations | `PdfView.tsx` | `useDocumentSessionController<PdfSidecarState>` owns sidecar baseline/autosave. Local writes full sidecar including viewer state; hosted writes shared annotation collections only. | initial load; decoded local sidecar watcher; hosted replica mutation through safe remote policy. | none | Conflict/pending remote → shared `DocumentStatusPill` load/keep actions. | Live PDF co-editing is still out of scope; REST/sidecar fallback now prevents dirty-state overwrite. | controller sidecar path complete |
@@ -743,18 +767,18 @@ controller must enforce.
 | Trigger | Sources today | Current behavior | Target policy |
 | --- | --- | --- | --- |
 | Initial load / tab open / path change | all views | authoritative first read | **force explicit reload** (establishes session version + baseline) |
-| `vault:file-modified` watcher (local) | Notes, Canvas, Kanban | clean → apply if `version !==`; dirty → ignore | clean+newer → **auto-apply** (pulse); dirty → **queue pending**; older/equal version → **ignore** |
-| `onReplicaMutated` (hosted) | Notes, Canvas, Kanban | clean & not-live → apply if changed; dirty/live → ignore | clean+newer → **auto-apply** (pulse); dirty → **queue pending**; live session active → **ignore**; stale cache (older seq/hash) → **ignore** |
+| `vault:file-modified` watcher (local) | Notes, Canvas, Kanban, Logic, SVG, PDF/image sidecars where applicable | route through the shared controller or view-specific live guard | clean+newer → **auto-apply** (pulse); dirty → **queue pending**; older/equal version → **ignore** |
+| `onReplicaMutated` (hosted) | Hosted document and sidecar views | route through the shared controller, path filter, and live-session guard | clean+newer → **auto-apply** (pulse); dirty → **queue pending**; live session active → **ignore**; stale cache (older seq/hash) → **ignore** |
 | Hosted vault metadata polling | `serverStore` | can churn vault identity | **ignore** for content-only timestamp churn (Phase 4) |
 | History/snapshot restore | Notes `forceReloadPath` (others TBD) | force reload | **force explicit reload** (user-initiated; must still protect unsaved local via confirm) |
-| Live session seed / reconnect | Notes, Canvas, Kanban | `onChange` applies; per-type guards | **auto-apply** (CRDT authoritative) behind per-type validation guards |
+| Live session seed / reconnect | Notes, Canvas, Kanban, Logic | `onChange` applies; per-type guards | **auto-apply** (CRDT authoritative) behind per-type validation guards |
 | Offline cache refresh | replica read-through | may reload from cache | **ignore** unless it advances the active revision; feed file-tree/index only |
 | Server merged-content adoption (post-save) | Notes, Canvas, Kanban, Logic | adopt merged result | **auto-apply** (server merge is authoritative for that write) |
 
-Views with **no** remote-reload trigger today (Logic, SVG, PDF, Image) currently
-satisfy "never clobber unsaved local state from a remote event" only because
-they never listen — adding hosted/live support later must route through the
-shared controller rather than re-deriving ad-hoc listeners.
+Views with **no live session today** (SVG, PDF, Image) still route remote
+signals through the shared controller and safe REST/session path. Adding live
+support later must extend those controller-backed paths rather than re-deriving
+ad-hoc reload listeners.
 
 ### Save-Trigger Inventory
 
@@ -763,7 +787,7 @@ shared controller rather than re-deriving ad-hoc listeners.
 | Debounced autosave | Notes (600 ms), Canvas (600 ms), Kanban (600 ms), Logic (600 ms, structural-signature-gated), PDF sidecar (400 ms local / 400 ms hosted), Image overlay (450 ms) | all document autosaves funnel through `runExclusiveSave` except sidecars/overlays |
 | Manual save | Notes, Logic (Save button), SVG (only save path) | — |
 | Toolbar / structural actions | Canvas, Kanban, Logic, SVG, Image | mutate in-memory state → mark dirty → trigger autosave (except SVG which requires manual save) |
-| Live CRDT persistence | Notes, Canvas, Kanban (hosted) | server relay persists; REST autosave is disabled while live |
+| Live CRDT persistence | Notes, Canvas, Kanban, Logic (hosted) | server relay persists; REST autosave is disabled while live |
 | Rename / title-derived move | Notes (H1 → filename) | writes then `renameMove` + tree refresh |
 | Sidecar writes | PDF (viewer state + annotations), Image (overlays), plus note-arrow/image-overlay sidecars | independent of the document-revision path |
 
