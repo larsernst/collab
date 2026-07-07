@@ -11,7 +11,7 @@ Add a phased diagramming feature for university-oriented logic-gate overviews fi
 | 0. Product shaping | Complete | Locked document format, source/export intent, and local groundwork. |
 | 1. Static logic diagram editor | Complete | Create editable logic-gate diagrams as vault documents. |
 | 2. Boolean interaction | Complete | Add toggleable inputs and live gate evaluation. |
-| 3. Note insertion/export | Planned | Export editable-source-linked graphics into notes. |
+| 3. Note insertion/export | Complete | Export editable-source-linked graphics into notes. |
 | 4. Diagram polish and reuse | Planned | Add templates, library improvements, and better authoring flow. |
 | 5. Electronic component diagrams | Planned | Add static resistor/transistor/etc. schematic symbols. |
 | 6. Circuit simulation research | Deferred | Decide whether real electronics simulation is worth integrating. |
@@ -108,6 +108,15 @@ Acceptance criteria:
 - Clicking the embedded generated diagram in a note opens the editable source diagram, similar to how image assets open the image editor.
 - Re-exporting can overwrite the previous graphic by default so the note stays pointed at the latest visual, with unique-name export available when requested.
 - Hosted vault behavior respects existing read/write permissions.
+
+Implementation notes:
+
+- Logic diagrams export through a deterministic SVG renderer with embedded source metadata containing a diagram marker and source `.logic` relative path.
+- `LogicDiagramView` exposes an `Insert in note` action that saves the SVG into `Pictures/`, appends markdown image syntax to an open note, and switches back to that note.
+- Local exports overwrite the stable `Pictures/<diagram>.svg` asset by default so existing note links continue to point at the latest visual.
+- Shift-clicking `Insert in note` requests a unique generated SVG path instead of overwriting the stable local export.
+- Hosted exports use the hosted asset import capability and remain disabled for read-only hosted viewers.
+- Rendered note images inspect exported SVG metadata and open the source `.logic` editor when the source still exists; if the source is missing, the click falls back to opening the exported image asset.
 
 ### Phase 4: Diagram Polish And Reuse
 

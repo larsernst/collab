@@ -25,6 +25,7 @@ import {
 import {
   CircuitBoard,
   Group,
+  Image,
   Loader2,
   Maximize2,
   Minus,
@@ -79,7 +80,8 @@ import { listen } from '@tauri-apps/api/event';
 
 import { useEditorStore } from '../store/editorStore';
 import { useVaultStore } from '../store/vaultStore';
-import { createVaultClient } from '../lib/vaultClient';
+import { useUiStore } from '../store/uiStore';
+import { createVaultClient, type VaultClient } from '../lib/vaultClient';
 import {
   compareDocumentVersions,
   useDocumentSessionController,
@@ -96,12 +98,16 @@ import { DocumentStatusPill } from '../components/layout/DocumentStatusPill';
 import { useLivePeers } from '../lib/liveAwareness';
 import { useLiveJsonDocumentSession, type JsonObject, type LiveJsonSession } from '../lib/liveJsonDocument';
 import { useLiveDocumentStatus } from '../lib/useLiveDocumentStatus';
+import { getMarkdownImageTarget } from '../lib/noteAssets';
+import { buildLogicDiagramSvg } from '../lib/logicDiagramExport';
+import { flattenVaultFiles } from '../lib/vaultLinks';
 import {
   createEmptyLogicDiagram,
   normalizeLogicDiagramDocument,
   type LogicDiagramDocument,
   type LogicGateKind,
 } from '../types/logicDiagram';
+import type { NoteFile } from '../types/vault';
 import { cn } from '../lib/utils';
 
 interface Props {
@@ -195,6 +201,43 @@ function logicDocumentFromJson(value: JsonObject): LogicDiagramDocument | null {
   if (document.kind !== 'logic-diagram') return null;
   if (!Array.isArray(document.nodes) || !Array.isArray(document.wires)) return null;
   return document;
+}
+
+function logicExportFileName(relativePath: string) {
+  const base = getDocumentBaseName(relativePath, 'logic-diagram').replace(/\.logic$/i, '');
+  return `${base.replace(/[^a-z0-9._-]+/gi, '-').replace(/^-+|-+$/g, '') || 'logic-diagram'}.svg`;
+}
+
+function uniqueLogicExportPath(relativePath: string, existingPaths: Set<string>) {
+  const fileName = logicExportFileName(relativePath);
+  const stem = fileName.replace(/\.svg$/i, '');
+  let candidate = `Pictures/${fileName}`;
+  let index = 2;
+  while (existingPaths.has(candidate.toLowerCase())) {
+    candidate = `Pictures/${stem}-${index}.svg`;
+    index += 1;
+  }
+  return candidate;
+}
+
+function vaultTreeHasPath(entries: NoteFile[], relativePath: string): boolean {
+  for (const entry of entries) {
+    if (entry.relativePath.toLowerCase() === relativePath.toLowerCase()) return true;
+    if (entry.children?.length && vaultTreeHasPath(entry.children, relativePath)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+async function writeLogicSvgExport(client: VaultClient, relativePath: string, svg: string) {
+  try {
+    const existing = await client.readDocument(relativePath);
+    return client.writeDocument(relativePath, svg, existing.version, existing.content);
+  } catch {
+    await client.createDocument(relativePath);
+    return client.writeDocument(relativePath, svg);
+  }
 }
 
 function liveLogicStatePreservesCanonicalEntities(
@@ -435,9 +478,17 @@ const edgeTypes = { logicWire: LogicWireEdge };
 
 function LogicDiagramEditor({ relativePath }: Props) {
   const vault = useVaultStore((state) => state.vault);
+  const fileTree = useVaultStore((state) => state.fileTree);
+  const refreshFileTree = useVaultStore((state) => state.refreshFileTree);
+  const client = useMemo(() => (vault ? createVaultClient(vault) : null), [vault]);
   const markDirty = useEditorStore((state) => state.markDirty);
   const markSaved = useEditorStore((state) => state.markSaved);
   const setSavedHash = useEditorStore((state) => state.setSavedHash);
+  const setForceReloadPath = useEditorStore((state) => state.setForceReloadPath);
+  const openTabs = useEditorStore((state) => state.openTabs);
+  const activeTabPath = useEditorStore((state) => state.activeTabPath);
+  const openTab = useEditorStore((state) => state.openTab);
+  const setActiveView = useUiStore((state) => state.setActiveView);
   const readOnly = vault ? isVaultReadOnly(vault) : false;
   const { userId: myUserId, userName: myUserName, userColor: myUserColor } = useCollabIdentity();
   const [nodes, setNodes, onNodesChange] = useNodesState<LogicFlowNode>([]);
@@ -447,6 +498,7 @@ function LogicDiagramEditor({ relativePath }: Props) {
   );
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  const [exporting, setExporting] = useState(false);
   const [selectedGate, setSelectedGate] = useState<LogicGateKind>('and');
   const [renameGroupId, setRenameGroupId] = useState<string | null>(null);
   const [renameGroupLabel, setRenameGroupLabel] = useState('');
@@ -454,7 +506,6 @@ function LogicDiagramEditor({ relativePath }: Props) {
   const [contextMenu, setContextMenu] = useState<LogicContextMenu | null>(null);
   const idCounterRef = useRef(1);
   const viewportRef = useRef<HTMLDivElement | null>(null);
-  const client = useMemo(() => (vault ? createVaultClient(vault) : null), [vault]);
   // Structural signature of what is currently persisted; used to skip autosaves
   // that carry no real change (selection, measurement, fit-view, pan).
   const savedStructuralRef = useRef<string | null>(null);
@@ -531,6 +582,11 @@ function LogicDiagramEditor({ relativePath }: Props) {
   }), [edges, evaluation.wireValues]);
 
   const title = getDocumentBaseName(relativePath, 'Logic Diagram').replace(/\.logic$/i, '');
+  const noteTarget = useMemo(() => (
+    openTabs.find((tab) => tab.type === 'note' && tab.relativePath === activeTabPath)
+    ?? openTabs.find((tab) => tab.type === 'note')
+    ?? null
+  ), [activeTabPath, openTabs]);
 
   // Push an adopted document (initial load, backend merge, or a safe remote
   // apply) into the ReactFlow editor and re-baseline the structural signature so
@@ -743,6 +799,44 @@ function LogicDiagramEditor({ relativePath }: Props) {
       setSaving(false);
     }
   }, [controller, readOnly, vault]);
+
+  const handleExportToNote = useCallback(async (uniqueName = false) => {
+    if (!vault || !client || readOnly) return;
+    if (!noteTarget) {
+      toast.error('Open a note before inserting this diagram.');
+      return;
+    }
+    setExporting(true);
+    try {
+      await controller.requestSave('manual');
+      const current = fromFlowGraph(diagram, nodes, edges, getViewport() as Viewport);
+      const svg = buildLogicDiagramSvg(current, relativePath);
+      const existingPaths = new Set(flattenVaultFiles(fileTree).map((entry) => entry.relativePath.toLowerCase()));
+      if (!vaultTreeHasPath(fileTree, 'Pictures')) {
+        await client.createFolder('Pictures');
+      }
+      const exportedPath = uniqueName
+        ? uniqueLogicExportPath(relativePath, existingPaths)
+        : `Pictures/${logicExportFileName(relativePath)}`;
+      await writeLogicSvgExport(client, exportedPath, svg);
+      await refreshFileTree();
+      const note = await client.readDocument(noteTarget.relativePath);
+      const markdownTarget = getMarkdownImageTarget(noteTarget.relativePath, exportedPath);
+      const markdown = `![${title}](${markdownTarget})`;
+      const separator = note.content.trim().length > 0 && !note.content.endsWith('\n') ? '\n\n' : '';
+      const nextContent = `${note.content}${separator}${markdown}\n`;
+      const result = await client.writeDocument(noteTarget.relativePath, nextContent, note.version, note.content);
+      markSaved(noteTarget.relativePath, result.version);
+      setForceReloadPath(noteTarget.relativePath);
+      openTab(noteTarget.relativePath, noteTarget.title, 'note');
+      setActiveView('editor');
+      toast.success(`Inserted diagram into ${noteTarget.title}`);
+    } catch (error) {
+      toast.error(`Failed to export logic diagram: ${error}`);
+    } finally {
+      setExporting(false);
+    }
+  }, [client, controller, diagram, edges, fileTree, getViewport, markSaved, nodes, noteTarget, openTab, readOnly, refreshFileTree, relativePath, setActiveView, setForceReloadPath, title, vault]);
 
   const markChanged = useCallback(() => {
     if (liveSessionRef.current) return;
@@ -1325,6 +1419,14 @@ function LogicDiagramEditor({ relativePath }: Props) {
         </DocumentTopBarIconButton>
       </div>
       <div className={documentTopBarGroupClass}>
+        <DocumentTopBarButton
+          onClick={(event) => handleExportToNote(event.shiftKey)}
+          disabled={exporting || loading || readOnly}
+          title="Insert in note. Shift-click saves a unique export."
+        >
+          {exporting ? <Loader2 size={14} className="animate-spin" /> : <Image size={14} />}
+          Insert in note
+        </DocumentTopBarButton>
         <DocumentTopBarButton onClick={handleSave} disabled={saving || loading}>
           {saving ? <Loader2 size={14} className="animate-spin" /> : <Save size={14} />}
           Save

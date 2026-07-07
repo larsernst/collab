@@ -23,9 +23,12 @@ import DOMPurify from 'dompurify';
 import { useUiStore } from '../../store/uiStore';
 import { useVaultStore } from '../../store/vaultStore';
 import { createVaultClient } from '../../lib/vaultClient';
+import { useEditorStore } from '../../store/editorStore';
 import { WebLinkPreviewPopover } from '../previews/WebLinkPreviewPopover';
 import { extractHttpUrls, prefetchWebPreviews } from '../../lib/webPreviewCache';
 import { resolveNoteAssetTarget } from '../../lib/noteAssets';
+import { extractLogicDiagramExportSource } from '../../lib/logicDiagramExport';
+import { flattenVaultFiles, getVaultDocumentTitle } from '../../lib/vaultLinks';
 import { parseMathPlots, type ParsedMathPlots } from './mathPlotSpec';
 import { MathPlot2D } from './MathPlot2D';
 import { MathPlot3D } from './MathPlot3D';
@@ -320,6 +323,8 @@ function PreviewInner({ content, className = '', onWikilinkClick, currentDocumen
         .then((dataUrl) => {
           if (cancelled || !image.isConnected) return;
           image.src = dataUrl;
+          const logicSource = extractLogicDiagramExportSource(dataUrl);
+          if (logicSource) image.dataset.logicSourcePath = logicSource;
           return waitForImageLoad(image);
         })
         .catch(() => {
@@ -348,6 +353,23 @@ function PreviewInner({ content, className = '', onWikilinkClick, currentDocumen
   }, [client, currentDocumentRelativePath, fileTree, html, onReady, plotBlocks]);
 
   function handleClick(e: React.MouseEvent<HTMLDivElement>) {
+    const image = (e.target as HTMLElement).closest<HTMLImageElement>('img[data-asset-kind="vault"]');
+    if (image?.dataset.assetValue) {
+      const sourcePath = image.dataset.logicSourcePath;
+      const sourceExists = sourcePath
+        ? flattenVaultFiles(fileTree).some((entry) => entry.relativePath === sourcePath)
+        : false;
+      const targetPath = sourceExists ? sourcePath! : image.dataset.assetValue;
+      useEditorStore.getState().openTab(
+        targetPath,
+        getVaultDocumentTitle(targetPath),
+        sourceExists ? 'logic' : 'image',
+      );
+      useUiStore.getState().setActiveView('editor');
+      e.preventDefault();
+      e.stopPropagation();
+      return;
+    }
     if (!onWikilinkClick) return;
     const el = (e.target as HTMLElement).closest<HTMLElement>('.wikilink');
     if (el?.dataset.path) onWikilinkClick(el.dataset.path);

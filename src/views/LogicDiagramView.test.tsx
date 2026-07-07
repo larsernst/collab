@@ -13,6 +13,8 @@ const logicEvents = vi.hoisted(() => ({
 const tauriMocks = vi.hoisted(() => ({
   readNote: vi.fn(),
   writeNote: vi.fn(),
+  createNote: vi.fn(),
+  createFolder: vi.fn(),
 }));
 
 const liveJsonMocks = vi.hoisted(() => ({
@@ -33,6 +35,8 @@ vi.mock('../lib/tauri', () => ({
   tauriCommands: {
     readNote: tauriMocks.readNote,
     writeNote: tauriMocks.writeNote,
+    createNote: tauriMocks.createNote,
+    createFolder: tauriMocks.createFolder,
   },
 }));
 
@@ -102,6 +106,8 @@ function logicDoc(kinds: string[]) {
 function seedVault() {
   useVaultStore.setState({
     vault: { id: 'v1', path: '/vault', name: 'Vault', isEncrypted: false, lastOpened: Date.now() },
+    fileTree: [],
+    refreshFileTree: vi.fn(async () => {}),
   } as never);
   useEditorStore.setState({
     sessionVaultPath: '/vault',
@@ -118,6 +124,8 @@ describe('LogicDiagramView safe reload policy', () => {
     logicEvents.fileModifiedHandler = null;
     seedVault();
     tauriMocks.writeNote.mockResolvedValue({ hash: 'v-write' });
+    tauriMocks.createNote.mockResolvedValue({ relativePath: 'Pictures/test.svg', name: 'test.svg', isFolder: false, extension: 'svg' });
+    tauriMocks.createFolder.mockResolvedValue(undefined);
   });
 
   afterEach(() => {
@@ -205,5 +213,79 @@ describe('LogicDiagramView safe reload policy', () => {
 
     await waitFor(() => expect(liveJsonMocks.writeJson).toHaveBeenCalled());
     expect(tauriMocks.writeNote).not.toHaveBeenCalled();
+  });
+
+  it('exports the current diagram SVG and appends it to an open note', async () => {
+    useEditorStore.setState({
+      openTabs: [
+        { relativePath: PATH, title: 'test', isDirty: false, savedHash: null, type: 'logic' },
+        { relativePath: 'Notes/target.md', title: 'target', isDirty: false, savedHash: 'note-v1', type: 'note' },
+      ],
+      activeTabPath: PATH,
+    } as never);
+    tauriMocks.readNote
+      .mockResolvedValueOnce({ content: logicDoc(['input', 'and']), hash: 'logic-v1', modifiedAt: 1 })
+      .mockRejectedValueOnce(new Error('missing svg'))
+      .mockResolvedValueOnce({ content: '# Target\n', hash: 'note-v1', modifiedAt: 2 });
+    tauriMocks.writeNote.mockResolvedValue({ hash: 'note-v2' });
+
+    render(<LogicDiagramView relativePath={PATH} />);
+    expect(await screen.findByText(/2 gates/)).toBeTruthy();
+
+    fireEvent.click(screen.getByRole('button', { name: /insert in note/i }));
+
+    await waitFor(() => expect(tauriMocks.writeNote).toHaveBeenCalledWith(
+      '/vault',
+      'Pictures/test.svg',
+      expect.stringContaining('<svg'),
+      undefined,
+      undefined,
+    ));
+    expect(tauriMocks.createFolder).toHaveBeenCalledWith('/vault', 'Pictures');
+    await waitFor(() => expect(tauriMocks.writeNote).toHaveBeenCalledWith(
+      '/vault',
+      'Notes/target.md',
+      expect.stringContaining('![test](../Pictures/test.svg)'),
+      'note-v1',
+      '# Target\n',
+    ));
+    expect(useEditorStore.getState().forceReloadPath).toBe('Notes/target.md');
+  });
+
+  it('uses a unique image export when inserting with shift-click', async () => {
+    useVaultStore.setState({
+      fileTree: [
+        {
+          name: 'Pictures',
+          relativePath: 'Pictures',
+          isFolder: true,
+          children: [{ name: 'test.svg', relativePath: 'Pictures/test.svg', isFolder: false, extension: 'svg' }],
+        },
+      ],
+    } as never);
+    useEditorStore.setState({
+      openTabs: [
+        { relativePath: PATH, title: 'test', isDirty: false, savedHash: null, type: 'logic' },
+        { relativePath: 'Notes/target.md', title: 'target', isDirty: false, savedHash: 'note-v1', type: 'note' },
+      ],
+      activeTabPath: PATH,
+    } as never);
+    tauriMocks.readNote
+      .mockResolvedValueOnce({ content: logicDoc(['input']), hash: 'logic-v1', modifiedAt: 1 })
+      .mockRejectedValueOnce(new Error('missing svg'))
+      .mockResolvedValueOnce({ content: '', hash: 'note-v1', modifiedAt: 2 });
+
+    render(<LogicDiagramView relativePath={PATH} />);
+    expect(await screen.findByText(/1 gates/)).toBeTruthy();
+
+    fireEvent.click(screen.getByRole('button', { name: /insert in note/i }), { shiftKey: true });
+
+    await waitFor(() => expect(tauriMocks.writeNote).toHaveBeenCalledWith(
+      '/vault',
+      'Pictures/test-2.svg',
+      expect.stringContaining('<svg'),
+      undefined,
+      undefined,
+    ));
   });
 });

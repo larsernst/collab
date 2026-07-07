@@ -29,6 +29,31 @@ function parentPath(path: string): string {
   return index >= 0 ? normalized.slice(0, index) : '';
 }
 
+export function getRelativeMarkdownPath(currentDocumentRelativePath: string, targetRelativePath: string) {
+  const currentDir = normalizeRelativePath(currentDocumentRelativePath).includes('/')
+    ? normalizeRelativePath(currentDocumentRelativePath).split('/').slice(0, -1)
+    : [];
+  const targetParts = normalizeRelativePath(targetRelativePath).split('/');
+
+  let common = 0;
+  while (
+    common < currentDir.length
+    && common < targetParts.length
+    && currentDir[common] === targetParts[common]
+  ) {
+    common += 1;
+  }
+
+  const up = Array.from({ length: currentDir.length - common }, () => '..');
+  const down = targetParts.slice(common);
+  return [...up, ...down].join('/') || '.';
+}
+
+export function getMarkdownImageTarget(currentDocumentRelativePath: string, targetRelativePath: string) {
+  const relativeTarget = getRelativeMarkdownPath(currentDocumentRelativePath, targetRelativePath);
+  return /\s/.test(relativeTarget) ? `<${relativeTarget}>` : relativeTarget;
+}
+
 export function isLikelyImagePath(path: string): boolean {
   const cleanPath = path.split(/[?#]/, 1)[0];
   return IMAGE_EXT_RE.test(cleanPath);

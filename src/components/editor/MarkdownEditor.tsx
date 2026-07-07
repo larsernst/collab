@@ -37,6 +37,7 @@ import {
   handleFormattingShortcutKeydown,
 } from './MarkdownEditorContextMenu';
 import { openNonVaultMarkdownPreviewLink } from './markdownLinkOpen';
+import { getMarkdownImageTarget } from '../../lib/noteAssets';
 import {
   MATH_SOLVER_ACTION_EVENT,
   type MathSolverActionDetail,
@@ -94,31 +95,10 @@ function isImageLikePath(path: string): boolean {
   return IMAGE_DROP_EXTENSIONS.has(getFileExtension(path));
 }
 
-function getRelativeMarkdownPath(currentDocumentRelativePath: string, targetRelativePath: string) {
-  const currentDir = currentDocumentRelativePath.includes('/')
-    ? currentDocumentRelativePath.split('/').slice(0, -1)
-    : [];
-  const targetParts = targetRelativePath.split('/');
-
-  let common = 0;
-  while (
-    common < currentDir.length &&
-    common < targetParts.length &&
-    currentDir[common] === targetParts[common]
-  ) {
-    common += 1;
-  }
-
-  const up = Array.from({ length: currentDir.length - common }, () => '..');
-  const down = targetParts.slice(common);
-  return [...up, ...down].join('/') || '.';
-}
-
 function buildImageMarkdown(relativePath: string, currentDocumentRelativePath: string): string {
   const fileName = relativePath.split('/').pop() ?? relativePath;
   const alt = fileName.replace(/\.[^.]+$/, '');
-  const relativeTarget = getRelativeMarkdownPath(currentDocumentRelativePath, relativePath);
-  const target = /\s/.test(relativeTarget) ? `<${relativeTarget}>` : relativeTarget;
+  const target = getMarkdownImageTarget(currentDocumentRelativePath, relativePath);
   return `![${alt}](${target})`;
 }
 
