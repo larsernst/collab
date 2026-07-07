@@ -21,7 +21,7 @@ even before full live co-editing exists.
 | 1. Shared document session core | Done | Centralize version, dirty, save, remote-change, and conflict state. |
 | 2. Safe reload policy rollout | Done | Replace destructive per-view reloads with guarded remote-change handling. |
 | 3. Merge and conflict UX | Done | Add graceful remote-update banners, merge outcomes, and recovery actions. |
-| 4. Hosted cache and replica hardening | Planned | Prevent stale hosted cache reads from replacing newer in-memory/editor state. |
+| 4. Hosted cache and replica hardening | Done | Prevent stale hosted cache reads from replacing newer in-memory/editor state. |
 | 5. Live structured documents | Planned | Move suitable hosted JSON documents onto the existing Yjs live path. |
 | 6. Collaboration polish | Planned | Add presence/status/reconnect UX and operational hardening. |
 | 7. Advanced Office-like behavior | Deferred | Explore richer per-type concurrent editing after the safe baseline is proven. |
@@ -560,6 +560,38 @@ Acceptance criteria:
 - A hosted offline/online transition cannot revert recent unsaved or just-saved
   document content.
 - Pending offline edits remain visible as pending, not silently replaced.
+
+### Phase 4 Outcome — Done (2026-07-06)
+
+Implemented the hosted cache and replica hardening layer:
+
+- Hosted document reads now carry source metadata (`network`, `cache`, or
+  `optimistic-replica`), manifest sequence, and content hash where available.
+- The shared document-session controller accepts read-source metadata and uses a
+  shared version comparator so hosted revision sequences are ordered
+  numerically; older cached candidates are rejected instead of treated as fresh
+  opaque tokens.
+- Notes, Kanban, Canvas, Logic, and text-backed SVG sessions use the shared
+  comparator and propagate cached read source into the controller.
+- Hosted offline write fallback now returns `offlineQueued`, allowing document
+  sessions to keep the local edit dirty/offline instead of marking it as a clean
+  saved revision.
+- Offline queued saves clear optimistic cache echoes that can arrive from the
+  replica mutation emitted during the queue write.
+- Background hosted document cache refresh no longer emits a replica mutation
+  when the active file revision/path/identity did not change.
+- Replica mutation notifications are now typed as `manifest`, `content`,
+  `pending`, `sync`, or `replica`, optionally scoped by affected file IDs and
+  relative paths.
+- Active document sessions subscribe only to manifest events affecting their own
+  relative path. Content-cache-only refreshes and unrelated manifest changes no
+  longer trigger active-document re-reads.
+- File-tree/index refreshes subscribe only to manifest/replica events, while the
+  sync status UI still listens broadly because pending-operation and sync-state
+  changes are relevant there.
+- Hosted vault metadata refresh already ignores manifest-sequence and
+  updated-at-only churn for the active vault identity, updating only name, role,
+  capabilities, and offline-copy intent.
 
 ## Phase 5: Live Structured Documents
 

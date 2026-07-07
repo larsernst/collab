@@ -60,6 +60,12 @@ export interface RemoteCandidate<TDocument> {
   source: DocumentSource;
 }
 
+export interface DocumentReadResult {
+  content: string;
+  version: string | null;
+  source?: DocumentSource;
+}
+
 export interface ConflictState {
   /** The other side's current content. */
   theirContent: string;
@@ -171,7 +177,7 @@ export interface DocumentSessionControllerOptions<TDocument> {
    * {@link DocumentSessionController.handleExternalMutation}. Optional: when
    * omitted, external-mutation events that carry no document are ignored.
    */
-  read?(): Promise<{ content: string; version: string | null } | null>;
+  read?(): Promise<DocumentReadResult | null>;
   /**
    * Optional structural / three-way merge used when a remote candidate arrives
    * while the document is dirty. Returning `null` falls back to queuing the
@@ -254,6 +260,24 @@ export function createExclusiveSaveRunner(callbacks?: {
     isBusy: () => saving,
     hasPending: () => pending !== null,
   };
+}
+
+/**
+ * Shared ordering for document-session versions. Hosted document versions are
+ * revision sequences, so older cached replica reads must be rejected instead of
+ * treated as fresh just because their opaque token differs. Local hashes remain
+ * opaque: equality is stale, any different hash is potentially new.
+ */
+export function compareDocumentVersions(a: string | null, b: string | null): number {
+  if (a === b) return 0;
+  if (a === null) return b === null ? 0 : -1;
+  if (b === null) return 1;
+  const numericA = Number(a);
+  const numericB = Number(b);
+  if (Number.isInteger(numericA) && Number.isInteger(numericB)) {
+    return numericA - numericB;
+  }
+  return 1;
 }
 
 function defaultSchedule(fn: () => void, ms: number): () => void {
@@ -408,6 +432,7 @@ export class DocumentSessionController<TDocument> {
       // The bytes are safely queued locally; keep them dirty and surface the
       // offline status without advancing the session version.
       this.offlineQueued = true;
+      this.pendingRemote = null;
       this.invalidate();
       return;
     }
@@ -512,7 +537,7 @@ export class DocumentSessionController<TDocument> {
     // transient IO error, etc. Treat any such failure as "nothing to apply"
     // rather than letting it surface as an unhandled rejection from the watcher /
     // replica-mutation event handlers that drive this.
-    let read: { content: string; version: string | null } | null;
+    let read: DocumentReadResult | null;
     try {
       read = await this.options.read();
     } catch {
@@ -523,7 +548,7 @@ export class DocumentSessionController<TDocument> {
       document: this.options.deserialize(read.content),
       content: read.content,
       version: read.version,
-      source,
+      source: read.source ?? source,
     });
   }
 

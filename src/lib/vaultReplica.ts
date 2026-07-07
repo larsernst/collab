@@ -11,29 +11,51 @@ import { tauriCommands } from './tauri';
 import { vaultCan, type HostedVaultMeta } from '../types/vault';
 
 /**
- * Lightweight change notification for the replica's local state (pending-op
- * queue, sync state, cached manifest). The sync UI subscribes so it can refresh
- * immediately after an edit is queued, a replay runs, or a manual sync completes
- * — without waiting for the background poll.
+ * Lightweight change notification for the replica's local state. The sync UI
+ * subscribes broadly so it can refresh after queued edits/replay/manual sync,
+ * while active documents subscribe only to manifest-affecting events for their
+ * own path. Content-cache-only updates must not make an editor re-read itself.
  */
-type ReplicaMutationListener = () => void;
+export type ReplicaMutationKind = 'manifest' | 'content' | 'pending' | 'sync' | 'replica';
+
+export interface ReplicaMutationEvent {
+  kind: ReplicaMutationKind;
+  /** Stable file IDs affected when known. Omitted means broad/unknown scope. */
+  fileIds?: string[];
+  /** Vault-relative paths affected when known. Omitted means broad/unknown scope. */
+  relativePaths?: string[];
+}
+
+type ReplicaMutationListener = (event: ReplicaMutationEvent) => void;
 const replicaMutationListeners = new Set<ReplicaMutationListener>();
 
-export function onReplicaMutated(listener: ReplicaMutationListener): () => void {
-  replicaMutationListeners.add(listener);
+export function onReplicaMutated(
+  listener: ReplicaMutationListener,
+  options?: { kinds?: ReplicaMutationKind[] },
+): () => void {
+  const allowedKinds = options?.kinds ? new Set(options.kinds) : null;
+  const wrapped: ReplicaMutationListener = (event) => {
+    if (allowedKinds && !allowedKinds.has(event.kind)) return;
+    listener(event);
+  };
+  replicaMutationListeners.add(wrapped);
   return () => {
-    replicaMutationListeners.delete(listener);
+    replicaMutationListeners.delete(wrapped);
   };
 }
 
-export function emitReplicaMutated(): void {
+export function emitReplicaMutated(event: ReplicaMutationEvent = { kind: 'replica' }): void {
   for (const listener of replicaMutationListeners) {
     try {
-      listener();
+      listener(event);
     } catch {
       // A listener failure must never break a replica mutation.
     }
   }
+}
+
+export function replicaMutationAffectsPath(event: ReplicaMutationEvent, relativePath: string): boolean {
+  return !event.relativePaths || event.relativePaths.includes(relativePath);
 }
 
 export type SyncStatus = 'idle' | 'syncing' | 'offline' | 'error';
@@ -329,7 +351,7 @@ export async function listHostedVaultReplicas(): Promise<ReplicaSummary[]> {
 
 export async function deleteHostedVaultReplica(replica: Pick<ReplicaSummary, 'serverUrl' | 'vaultId'>): Promise<void> {
   await tauriCommands.replicaDelete(replica.serverUrl, replica.vaultId);
-  emitReplicaMutated();
+  emitReplicaMutated({ kind: 'replica' });
 }
 
 export async function writeOptimisticReplicaManifest(
@@ -345,7 +367,13 @@ export async function writeOptimisticReplicaManifest(
     vault.role,
     vault.capabilities ?? [],
   );
-  emitReplicaMutated();
+  emitReplicaMutated({
+    kind: 'manifest',
+    fileIds: manifest.files.map((file) => file.id),
+    relativePaths: manifest.files
+      .map((file) => typeof file.relativePath === 'string' ? file.relativePath : null)
+      .filter((path): path is string => path !== null),
+  });
 }
 
 export async function enqueuePendingOperation(
@@ -363,7 +391,11 @@ export async function enqueuePendingOperation(
     status: 'pending',
   };
   await tauriCommands.replicaEnqueueOperation(vault.serverUrl, vault.hostedVaultId, operation);
-  emitReplicaMutated();
+  emitReplicaMutated({
+    kind: 'pending',
+    fileIds: operation.fileId ? [operation.fileId] : undefined,
+    relativePaths: operation.relativePath ? [operation.relativePath] : undefined,
+  });
   return operation;
 }
 
@@ -389,12 +421,12 @@ export async function listPendingOperationRecoveries(
 
 export async function retryPendingOperation(vault: HostedVaultMeta, operationId: string): Promise<void> {
   await tauriCommands.replicaUpdateOperationStatus(vault.serverUrl, vault.hostedVaultId, operationId, 'pending');
-  emitReplicaMutated();
+  emitReplicaMutated({ kind: 'pending' });
 }
 
 export async function discardPendingOperation(vault: HostedVaultMeta, operationId: string): Promise<void> {
   await tauriCommands.replicaRemoveOperation(vault.serverUrl, vault.hostedVaultId, operationId);
-  emitReplicaMutated();
+  emitReplicaMutated({ kind: 'pending' });
 }
 
 function recoveryActionForFailure(
@@ -520,7 +552,7 @@ export async function replayPendingOperations(vault: HostedVaultMeta): Promise<v
     }
   }
   if (!stoppedForFailure) await seedReplicaFromManifest(vault);
-  emitReplicaMutated();
+  emitReplicaMutated({ kind: stoppedForFailure ? 'pending' : 'sync' });
 }
 
 /**
@@ -556,7 +588,13 @@ export async function seedReplicaFromManifest(vault: HostedVaultMeta): Promise<v
     vault.role,
     vault.capabilities ?? [],
   );
-  emitReplicaMutated();
+  emitReplicaMutated({
+    kind: 'manifest',
+    fileIds: manifest.files.map((file) => file.id),
+    relativePaths: manifest.files
+      .map((file) => typeof file.relativePath === 'string' ? file.relativePath : null)
+      .filter((path): path is string => path !== null),
+  });
 }
 
 function dataUrlBase64(dataUrl: string): string {
@@ -653,7 +691,7 @@ export async function makeHostedVaultAvailableOffline(
   const report = await cacheActiveFilesForOffline(vault, manifest.files, onProgress);
   await markOfflineAvailable(vault, manifest.sequence);
   await cleanupReplicaCache(vault);
-  emitReplicaMutated();
+  emitReplicaMutated({ kind: 'content' });
   return report;
 }
 
@@ -724,6 +762,12 @@ export async function syncReplicaManifestDelta(vault: HostedVaultMeta): Promise<
     await markOfflineAvailable(vault, delta.sequence);
     await cleanupReplicaCache(vault);
   }
-  emitReplicaMutated();
+  emitReplicaMutated({
+    kind: 'manifest',
+    fileIds: delta.changedFiles.map((file) => file.id),
+    relativePaths: delta.changedFiles
+      .map((file) => typeof file.relativePath === 'string' ? file.relativePath : null)
+      .filter((path): path is string => path !== null),
+  });
   return nextManifest;
 }

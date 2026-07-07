@@ -52,10 +52,11 @@ import { readOcrCache, writeOcrCache } from '../lib/ocrCache';
 import { createVaultClient } from '../lib/vaultClient';
 import type { VaultPdfAnnotations } from '../lib/vaultClient';
 import {
+  compareDocumentVersions,
   useDocumentSessionController,
   type RemoteCandidate,
 } from '../lib/documentSessionController';
-import { onReplicaMutated } from '../lib/vaultReplica';
+import { onReplicaMutated, replicaMutationAffectsPath } from '../lib/vaultReplica';
 import { vaultCan } from '../types/vault';
 import { useEditorStore } from '../store/editorStore';
 import { useUiStore } from '../store/uiStore';
@@ -919,6 +920,7 @@ export default function PdfView({ relativePath }: Props) {
       return { version: nextContent, mergedContent: nextContent };
     },
     autosaveDebounceMs: vault?.kind === 'hosted' ? 400 : 250,
+    compareVersions: compareDocumentVersions,
   });
 
   const loadRemotePdfSession = useCallback(() => {
@@ -1084,9 +1086,10 @@ export default function PdfView({ relativePath }: Props) {
 
   useEffect(() => {
     if (!vault || vault.kind !== 'hosted' || !relativePath) return;
-    return onReplicaMutated(async () => {
+    return onReplicaMutated(async (event) => {
+      if (!replicaMutationAffectsPath(event, relativePath)) return;
       await pdfSessionController.handleExternalMutation('cache');
-    });
+    }, { kinds: ['manifest'] });
   }, [pdfSessionController, relativePath, vault]);
 
   useEffect(() => {

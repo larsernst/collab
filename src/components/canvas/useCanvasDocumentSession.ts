@@ -5,6 +5,7 @@ import type { Node as FlowNode, Viewport } from '@xyflow/react';
 import { createVaultClient } from '../../lib/vaultClient';
 import { DOCUMENT_SNAPSHOT_INTERVAL_MS } from '../../lib/documentSession';
 import {
+  compareDocumentVersions,
   useDocumentSessionController,
   type DocumentSessionController,
   type DocumentSessionSnapshot,
@@ -13,7 +14,7 @@ import {
 } from '../../lib/documentSessionController';
 import { saveConflictedCopy } from '../../lib/conflictedCopy';
 import { openLiveJsonSession, type LiveJsonSession, type JsonObject } from '../../lib/liveJsonDocument';
-import { onReplicaMutated } from '../../lib/vaultReplica';
+import { onReplicaMutated, replicaMutationAffectsPath } from '../../lib/vaultReplica';
 import type { CanvasData, CanvasEdge } from '../../types/canvas';
 import type { VaultMeta } from '../../types/vault';
 import type { CanvasNodeData } from './CanvasNodeTypes';
@@ -252,7 +253,11 @@ export function useCanvasDocumentSession({
     read: async () => {
       if (!client || !relativePath) return null;
       const doc = await client.readDocument(relativePath);
-      return { content: roundTripCanonical(parseCanvasContent(doc.content)), version: doc.version };
+      return {
+        content: roundTripCanonical(parseCanvasContent(doc.content)),
+        version: doc.version,
+        source: doc.source && doc.source !== 'network' ? 'cache' : 'rest',
+      };
     },
     write: async ({ content, expectedVersion, baseContent }) => {
       if (!client || !relativePath || readOnly) return { version: expectedVersion ?? '' };
@@ -273,6 +278,7 @@ export function useCanvasDocumentSession({
           },
         };
       }
+      if (result.offlineQueued) return { version: result.version, offlineQueued: true };
       const savedContent = result.mergedContent ?? content;
       if (shouldCreateSnapshot(result.version)) {
         client.createSnapshot(relativePath, savedContent, myUserId, myUserName).catch(() => {});
@@ -280,6 +286,7 @@ export function useCanvasDocumentSession({
       return { version: result.version, mergedContent: result.mergedContent };
     },
     isLive: () => liveSession !== null,
+    compareVersions: compareDocumentVersions,
     autosaveDebounceMs: SAVE_DEBOUNCE_MS,
   });
 
@@ -519,11 +526,12 @@ export function useCanvasDocumentSession({
   // Hosted replica refresh: route through the same safe remote policy.
   useEffect(() => {
     if (!client || client.kind !== 'hosted' || !relativePath) return;
-    return onReplicaMutated(() => {
+    return onReplicaMutated((event) => {
+      if (!replicaMutationAffectsPath(event, relativePath)) return;
       void controller.handleExternalMutation('cache').then((decision) => {
         if (decision === 'applied') pulseRefresh();
       });
-    });
+    }, { kinds: ['manifest'] });
   }, [client, controller, pulseRefresh, relativePath]);
 
   useEffect(() => () => {

@@ -12,6 +12,7 @@ import { ReadOnlyBanner } from '../components/layout/ReadOnlyBanner';
 import { useEditorStore } from '../store/editorStore';
 import { DOCUMENT_SNAPSHOT_INTERVAL_MS } from '../lib/documentSession';
 import {
+  compareDocumentVersions,
   useDocumentSessionController,
   type DocumentSessionController,
   type DocumentSessionSnapshot,
@@ -20,7 +21,7 @@ import {
 } from '../lib/documentSessionController';
 import { saveConflictedCopy } from '../lib/conflictedCopy';
 import { openLiveJsonSession, type LiveJsonSession, type JsonObject } from '../lib/liveJsonDocument';
-import { onReplicaMutated } from '../lib/vaultReplica';
+import { onReplicaMutated, replicaMutationAffectsPath } from '../lib/vaultReplica';
 import { useCollabContext } from '../components/collaboration/CollabProvider';
 import { buildKanbanCardEditors, useLivePeers, type LivePeer, type LiveAwarenessUser } from '../lib/liveAwareness';
 import { useKanbanStore } from '../store/kanbanStore';
@@ -196,7 +197,11 @@ export default function KanbanPage({ relativePath }: { relativePath: string | nu
     read: async () => {
       if (!client || !relativePath) return null;
       const doc = await client.readDocument(relativePath);
-      return { content: serializeBoardRaw(displayBoard(parseBoardContent(doc.content))), version: doc.version };
+      return {
+        content: serializeBoardRaw(displayBoard(parseBoardContent(doc.content))),
+        version: doc.version,
+        source: doc.source && doc.source !== 'network' ? 'cache' : 'rest',
+      };
     },
     write: async ({ content, expectedVersion, baseContent }) => {
       if (!client || !relativePath || readOnly) return { version: expectedVersion ?? '' };
@@ -220,6 +225,7 @@ export default function KanbanPage({ relativePath }: { relativePath: string | nu
           },
         };
       }
+      if (result.offlineQueued) return { version: result.version, offlineQueued: true };
       const savedContent = result.mergedContent ?? automatedContent;
       if (shouldCreateSnapshot(result.version)) {
         client.createSnapshot(relativePath, savedContent, myUserId, myUserName).catch(() => {});
@@ -229,6 +235,7 @@ export default function KanbanPage({ relativePath }: { relativePath: string | nu
       return { version: result.version, mergedContent: result.mergedContent ?? automatedContent };
     },
     isLive: () => liveSessionRef.current !== null,
+    compareVersions: compareDocumentVersions,
     autosaveDebounceMs: 600,
   });
 
@@ -408,11 +415,12 @@ export default function KanbanPage({ relativePath }: { relativePath: string | nu
   // Hosted replica refresh: route through the same safe remote policy.
   useEffect(() => {
     if (!client || client.kind !== 'hosted' || !relativePath) return;
-    return onReplicaMutated(() => {
+    return onReplicaMutated((event) => {
+      if (!replicaMutationAffectsPath(event, relativePath)) return;
       void controller.handleExternalMutation('cache').then((decision) => {
         if (decision === 'applied') pulseRefresh();
       });
-    });
+    }, { kinds: ['manifest'] });
   }, [client, controller, pulseRefresh, relativePath]);
 
   // ── Known users (for assignee picker) ────────────────────────────────────

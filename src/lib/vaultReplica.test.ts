@@ -6,12 +6,15 @@ import {
   cleanupReplicaCache,
   discardPendingOperation,
   enqueuePendingOperation,
+  emitReplicaMutated,
   initialSyncState,
   isLikelyConnectivityError,
   listPendingOperationRecoveries,
   makeHostedVaultAvailableOffline,
+  onReplicaMutated,
   replayPendingOperations,
   REPLICA_CACHE_BUDGET_BYTES,
+  replicaMutationAffectsPath,
   retryPendingOperation,
   seedReplicaFromManifest,
   syncReplicaManifestDelta,
@@ -99,6 +102,30 @@ describe('vaultReplica', () => {
   it('detects connectivity-shaped errors without swallowing validation failures', () => {
     expect(isLikelyConnectivityError(new Error('NetworkError when attempting to fetch resource.'))).toBe(true);
     expect(isLikelyConnectivityError(new Error('manifest_conflict'))).toBe(false);
+  });
+
+  it('routes replica mutation events by kind and path', () => {
+    const broad = vi.fn();
+    const manifestOnly = vi.fn();
+    const unsubscribeBroad = onReplicaMutated(broad);
+    const unsubscribeManifest = onReplicaMutated(manifestOnly, { kinds: ['manifest'] });
+
+    emitReplicaMutated({ kind: 'content', fileIds: ['file-1'], relativePaths: ['Notes/Test.md'] });
+    emitReplicaMutated({ kind: 'manifest', fileIds: ['file-2'], relativePaths: ['Notes/Other.md'] });
+
+    expect(broad).toHaveBeenCalledTimes(2);
+    expect(manifestOnly).toHaveBeenCalledTimes(1);
+    expect(manifestOnly).toHaveBeenCalledWith({
+      kind: 'manifest',
+      fileIds: ['file-2'],
+      relativePaths: ['Notes/Other.md'],
+    });
+    expect(replicaMutationAffectsPath({ kind: 'manifest', relativePaths: ['Notes/Test.md'] }, 'Notes/Test.md')).toBe(true);
+    expect(replicaMutationAffectsPath({ kind: 'manifest', relativePaths: ['Notes/Other.md'] }, 'Notes/Test.md')).toBe(false);
+    expect(replicaMutationAffectsPath({ kind: 'manifest' }, 'Notes/Test.md')).toBe(true);
+
+    unsubscribeBroad();
+    unsubscribeManifest();
   });
 
   it('treats a vault whose server is not the connected one as offline (queueable)', () => {

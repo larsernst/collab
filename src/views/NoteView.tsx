@@ -17,6 +17,7 @@ import { useUiStore } from '../store/uiStore';
 import { extractHttpUrls, prefetchWebPreviews } from '../lib/webPreviewCache';
 import { DOCUMENT_SNAPSHOT_INTERVAL_MS } from '../lib/documentSession';
 import {
+  compareDocumentVersions,
   useDocumentSessionController,
   type DocumentSessionController,
   type DocumentSessionSnapshot,
@@ -25,7 +26,7 @@ import {
 import { mergeText } from '../lib/textMerge';
 import { saveConflictedCopy } from '../lib/conflictedCopy';
 import { openLiveNoteSession, type LiveDocumentSession } from '../lib/liveDocumentSession';
-import { onReplicaMutated } from '../lib/vaultReplica';
+import { onReplicaMutated, replicaMutationAffectsPath } from '../lib/vaultReplica';
 import { useLivePeers } from '../lib/liveAwareness';
 import LivePeers from '../components/collaboration/LivePeers';
 import { yCollab } from 'y-codemirror.next';
@@ -148,7 +149,7 @@ export default function NoteView({ relativePath }: { relativePath: string }) {
     read: async () => {
       if (!client) return null;
       const doc = await client.readDocument(relativePath);
-      return { content: doc.content, version: doc.version };
+      return { content: doc.content, version: doc.version, source: doc.source && doc.source !== 'network' ? 'cache' : 'rest' };
     },
     write: async ({ content: toWrite, expectedVersion, baseContent }) => {
       // Viewers have no write access; never attempt a save the server would reject.
@@ -166,6 +167,7 @@ export default function NoteView({ relativePath }: { relativePath: string }) {
           conflict: { theirContent: result.conflict.theirContent, baseContent, theirVersion },
         };
       }
+      if (result.offlineQueued) return { version: result.version, offlineQueued: true };
       const savedContent = result.mergedContent ?? toWrite;
       await maybeRenameFromH1(savedContent);
       return { version: result.version, mergedContent: result.mergedContent };
@@ -179,6 +181,7 @@ export default function NoteView({ relativePath }: { relativePath: string }) {
       return merged === null ? null : { document: merged, content: merged };
     },
     isLive: () => liveSession !== null,
+    compareVersions: compareDocumentVersions,
     autosaveDebounceMs: 600,
   });
 
@@ -349,10 +352,11 @@ export default function NoteView({ relativePath }: { relativePath: string }) {
   // Hosted replica refresh: route through the same safe remote policy.
   useEffect(() => {
     if (!client || client.kind !== 'hosted') return;
-    return onReplicaMutated(async () => {
+    return onReplicaMutated(async (event) => {
+      if (!replicaMutationAffectsPath(event, relativePath)) return;
       const decision = await controller.handleExternalMutation('cache');
       if (decision === 'applied') pulseRefresh();
-    });
+    }, { kinds: ['manifest'] });
   }, [client, controller, relativePath]);
 
   useEffect(() => () => {

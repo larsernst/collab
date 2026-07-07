@@ -115,7 +115,7 @@ export default function AppShell() {
       unsubs.push(u1, u2, u3, u4);
     };
     setup();
-    const unsubscribeReplica = onReplicaMutated(refreshVisibleFiles);
+    const unsubscribeReplica = onReplicaMutated(refreshVisibleFiles, { kinds: ['manifest', 'replica'] });
     return () => {
       if (refreshTimer !== null) window.clearTimeout(refreshTimer);
       unsubscribeReplica();

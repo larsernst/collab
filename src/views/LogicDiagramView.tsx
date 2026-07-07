@@ -81,12 +81,13 @@ import { useEditorStore } from '../store/editorStore';
 import { useVaultStore } from '../store/vaultStore';
 import { createVaultClient } from '../lib/vaultClient';
 import {
+  compareDocumentVersions,
   useDocumentSessionController,
   type DocumentSessionController,
   type DocumentSessionSnapshot,
 } from '../lib/documentSessionController';
 import { saveConflictedCopy } from '../lib/conflictedCopy';
-import { onReplicaMutated } from '../lib/vaultReplica';
+import { onReplicaMutated, replicaMutationAffectsPath } from '../lib/vaultReplica';
 import { isVaultReadOnly } from '../types/vault';
 import { useDocumentStatusRegistration } from '../store/documentStatusStore';
 import {
@@ -523,7 +524,7 @@ function LogicDiagramEditor({ relativePath }: Props) {
     read: async () => {
       if (!client) return null;
       const doc = await client.readDocument(relativePath);
-      return { content: doc.content, version: doc.version };
+      return { content: doc.content, version: doc.version, source: doc.source && doc.source !== 'network' ? 'cache' : 'rest' };
     },
     write: async ({ content, expectedVersion, baseContent }) => {
       if (!client) return { version: expectedVersion ?? '' };
@@ -542,9 +543,11 @@ function LogicDiagramEditor({ relativePath }: Props) {
           conflict: { theirContent: result.conflict.theirContent, baseContent, theirVersion },
         };
       }
+      if (result.offlineQueued) return { version: result.version, offlineQueued: true };
       return { version: result.version, mergedContent: result.mergedContent };
     },
     autosaveDebounceMs: SAVE_DEBOUNCE_MS,
+    compareVersions: compareDocumentVersions,
     isLive: () => false,
   });
 
@@ -633,11 +636,12 @@ function LogicDiagramEditor({ relativePath }: Props) {
   // Hosted replica refresh: route through the same safe remote policy.
   useEffect(() => {
     if (!client || client.kind !== 'hosted' || !relativePath) return;
-    return onReplicaMutated(() => {
+    return onReplicaMutated((event) => {
+      if (!replicaMutationAffectsPath(event, relativePath)) return;
       void controller.handleExternalMutation('cache').then((decision) => {
         if (decision === 'applied') pulseRefresh();
       });
-    });
+    }, { kinds: ['manifest'] });
   }, [client, controller, pulseRefresh, relativePath]);
 
   useEffect(() => () => {

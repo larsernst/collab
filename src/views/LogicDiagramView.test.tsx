@@ -33,6 +33,7 @@ vi.mock('../lib/tauri', () => ({
 
 vi.mock('../lib/vaultReplica', () => ({
   onReplicaMutated: vi.fn(() => () => {}),
+  replicaMutationAffectsPath: vi.fn(() => true),
 }));
 
 vi.mock('sonner', () => ({

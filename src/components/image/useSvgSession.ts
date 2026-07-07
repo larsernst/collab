@@ -3,11 +3,12 @@ import { listen } from '@tauri-apps/api/event';
 import { toast } from 'sonner';
 import { createVaultClient } from '../../lib/vaultClient';
 import {
+  compareDocumentVersions,
   useDocumentSessionController,
   type DocumentStatus,
   type RemoteCandidate,
 } from '../../lib/documentSessionController';
-import { onReplicaMutated } from '../../lib/vaultReplica';
+import { onReplicaMutated, replicaMutationAffectsPath } from '../../lib/vaultReplica';
 import { isVaultReadOnly } from '../../types/vault';
 import type { VaultMeta } from '../../types/vault';
 import type { SvgScene } from '../../types/svg';
@@ -122,8 +123,10 @@ export function useSvgSession({ vault, relativePath, markDirty, markSaved }: Use
           },
         };
       }
+      if (result.offlineQueued) return { version: result.version, offlineQueued: true };
       return { version: result.version, mergedContent: result.mergedContent };
     },
+    compareVersions: compareDocumentVersions,
     // SVG editing is intentionally manual-save only. The controller still owns
     // dirty/remote/conflict state, but autosave timers are disabled.
     schedule: () => () => {},
@@ -201,9 +204,10 @@ export function useSvgSession({ vault, relativePath, markDirty, markSaved }: Use
   // Hosted replica refreshes route through the same safe remote-candidate policy.
   useEffect(() => {
     if (!client || client.kind !== 'hosted' || !relativePath || assetBacked) return;
-    return onReplicaMutated(async () => {
+    return onReplicaMutated(async (event) => {
+      if (!replicaMutationAffectsPath(event, relativePath)) return;
       await controller.handleExternalMutation('cache');
-    });
+    }, { kinds: ['manifest'] });
   }, [assetBacked, client, controller, relativePath]);
 
   const save = useCallback(async () => {

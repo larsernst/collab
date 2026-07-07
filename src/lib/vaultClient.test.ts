@@ -335,6 +335,9 @@ describe('HostedVaultClient', () => {
       content: '# Test',
       version: '3',
       modifiedAt: Date.parse('2026-06-11T08:00:00Z'),
+      source: 'network',
+      manifestSequence: 8,
+      contentHash: 'hash-3',
     });
     await expect(client.writeDocument('Notes/Test.md', '# Next', '3')).resolves.toEqual({ version: '4' });
     expect(tauriCommands.hostedVaultRequest).toHaveBeenLastCalledWith(
@@ -354,7 +357,10 @@ describe('HostedVaultClient', () => {
       .mockRejectedValueOnce(new Error('This hosted vault belongs to a different Collab server.'));
     const client = new HostedVaultClient(hostedVault);
 
-    await expect(client.writeDocument('Notes/Test.md', '# Next', '3')).resolves.toEqual({ version: '4' });
+    await expect(client.writeDocument('Notes/Test.md', '# Next', '3')).resolves.toEqual({
+      version: '4',
+      offlineQueued: true,
+    });
 
     expect(tauriCommands.replicaEnqueueOperation).toHaveBeenCalledWith(
       'https://collab.example.test',
@@ -417,6 +423,9 @@ describe('HostedVaultClient', () => {
       content: '# Cached',
       version: '3',
       modifiedAt: Date.parse('2026-06-11T08:00:00Z'),
+      source: 'cache',
+      manifestSequence: 8,
+      contentHash: 'hash-3',
     });
 
     expect(tauriCommands.replicaCachedContentStatus).toHaveBeenCalledWith(
@@ -715,10 +724,24 @@ describe('HostedVaultClient', () => {
   });
 
   it('queues offline document edits and reads the cached document content', async () => {
+    const optimisticManifest = {
+      ...mockHostedManifest(8),
+      files: mockHostedManifest(8).files.map((file) => file.id === 'file-1'
+        ? {
+            ...file,
+            currentRevision: {
+              ...(file.currentRevision as object),
+              sequence: 4,
+              contentHash: 'offline',
+            },
+          }
+        : file),
+    };
+    vi.mocked(tauriCommands.replicaReadManifest)
+      .mockResolvedValueOnce(mockHostedManifest(8))
+      .mockResolvedValueOnce(optimisticManifest);
     vi.mocked(tauriCommands.hostedVaultRequest)
-      .mockResolvedValueOnce(mockHostedManifest(8))
       .mockRejectedValueOnce(new Error('NetworkError when attempting to fetch resource.'))
-      .mockResolvedValueOnce(mockHostedManifest(8))
       .mockRejectedValueOnce(new Error('NetworkError when attempting to fetch resource.'));
     vi.mocked(tauriCommands.replicaReadCachedDocument).mockResolvedValue('# Offline edit');
     vi.spyOn(crypto, 'randomUUID')
@@ -726,12 +749,17 @@ describe('HostedVaultClient', () => {
       .mockReturnValueOnce('55555555-5555-4555-8555-555555555555');
     const client = new HostedVaultClient(hostedVault);
 
-    await expect(client.writeDocument('Notes/Test.md', '# Offline edit', '3')).resolves.toEqual({ version: '4' });
-    await expect(client.readDocument('Notes/Test.md')).resolves.toEqual({
+    await expect(client.writeDocument('Notes/Test.md', '# Offline edit', '3')).resolves.toEqual({
+      version: '4',
+      offlineQueued: true,
+    });
+    await expect(client.readDocument('Notes/Test.md')).resolves.toMatchObject({
       relativePath: 'Notes/Test.md',
       content: '# Offline edit',
-      version: '3',
+      version: '4',
       modifiedAt: Date.parse('2026-06-11T08:00:00Z'),
+      source: 'optimistic-replica',
+      contentHash: 'offline',
     });
 
     expect(tauriCommands.replicaCacheDocument).toHaveBeenCalledWith(

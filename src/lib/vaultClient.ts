@@ -100,12 +100,17 @@ export interface VaultDocument {
    */
   version: string;
   modifiedAt: number;
+  source?: 'network' | 'cache' | 'optimistic-replica';
+  manifestSequence?: number;
+  contentHash?: string | null;
 }
 
 export interface VaultWriteResult {
   version: string;
   mergedContent?: string;
   conflict?: ConflictInfo;
+  /** Hosted write could not reach the server and was queued in the local replica. */
+  offlineQueued?: boolean;
 }
 
 export interface VaultPdfAnnotations {
@@ -618,7 +623,10 @@ export class HostedVaultClient implements VaultClient {
       existing.currentRevision?.sequence === file.currentRevision?.sequence &&
       existing.currentRevision?.contentHash === file.currentRevision?.contentHash &&
       existing.relativePath === file.relativePath &&
-      existing.updatedAt === file.updatedAt
+      existing.name === file.name &&
+      existing.parentId === file.parentId &&
+      existing.kind === file.kind &&
+      existing.state === file.state
     ) {
       return;
     }
@@ -635,7 +643,11 @@ export class HostedVaultClient implements VaultClient {
       this.vault.role,
       this.vault.capabilities ?? [],
     );
-    emitReplicaMutated();
+    emitReplicaMutated({
+      kind: 'manifest',
+      fileIds: [file.id],
+      relativePaths: [file.relativePath],
+    });
   }
 
   private refreshDocumentCacheInBackground(fileId: string): void {
@@ -647,12 +659,20 @@ export class HostedVaultClient implements VaultClient {
       .catch(() => {});
   }
 
-  private vaultDocumentFromHosted(file: HostedFileEntry, content: string): VaultDocument {
+  private vaultDocumentFromHosted(
+    file: HostedFileEntry,
+    content: string,
+    source: VaultDocument['source'],
+    manifestSequence?: number,
+  ): VaultDocument {
     return {
       relativePath: file.relativePath,
       content,
       version: String(file.currentRevision?.sequence ?? 0),
       modifiedAt: timestamp(file.updatedAt),
+      source,
+      manifestSequence,
+      contentHash: file.currentRevision?.contentHash ?? null,
     };
   }
 
@@ -732,7 +752,12 @@ export class HostedVaultClient implements VaultClient {
         const cachedContent = await this.readCurrentCachedDocument(cachedFile);
         if (cachedContent !== null) {
           this.refreshDocumentCacheInBackground(cachedFile.id);
-          return this.vaultDocumentFromHosted(cachedFile, cachedContent);
+          return this.vaultDocumentFromHosted(
+            cachedFile,
+            cachedContent,
+            cachedFile.currentRevision?.contentHash === 'offline' ? 'optimistic-replica' : 'cache',
+            asHostedManifest(cachedManifest).sequence,
+          );
         }
       } catch {
         // Cache misses or corrupt cached content should not block the normal
@@ -752,7 +777,7 @@ export class HostedVaultClient implements VaultClient {
     // explicit offline-copy capability/marker so plain viewers do not build up
     // durable local content caches merely by opening files.
     void this.cacheDocumentForOfflineCopy(file.id, document.content);
-    return this.vaultDocumentFromHosted(document.file, document.content);
+    return this.vaultDocumentFromHosted(document.file, document.content, 'network', manifest.sequence);
   }
 
   async resolveLiveSession(relativePath: string): Promise<LiveSessionTarget | null> {
@@ -797,8 +822,15 @@ export class HostedVaultClient implements VaultClient {
       return {
         file: nextManifest.files.find((entry) => entry.id === file.id) ?? file,
         content,
+        offlineQueued: true,
       };
     });
+    if ('offlineQueued' in document && document.offlineQueued) {
+      return {
+        version: String(document.file.currentRevision?.sequence ?? expectedSequence + 1),
+        offlineQueued: true,
+      };
+    }
     void this.cacheDocumentForOfflineCopy(file.id, content);
     void writeOptimisticReplicaManifest(
       this.vault,

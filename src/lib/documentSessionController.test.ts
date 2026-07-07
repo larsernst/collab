@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 
 import {
+  compareDocumentVersions,
   createExclusiveSaveRunner,
   DocumentSessionController,
   type DocumentSessionControllerOptions,
@@ -181,6 +182,13 @@ describe('DocumentSessionController', () => {
     expect(controller.version).toBe('6');
   });
 
+  it('compares hosted revision sequences numerically and keeps local hashes opaque', () => {
+    expect(compareDocumentVersions('4', '5')).toBeLessThan(0);
+    expect(compareDocumentVersions('6', '5')).toBeGreaterThan(0);
+    expect(compareDocumentVersions('hash-b', 'hash-a')).toBeGreaterThan(0);
+    expect(compareDocumentVersions('hash-a', 'hash-a')).toBe(0);
+  });
+
   it('auto-applies a newer remote candidate while clean', () => {
     const { controller, applied } = makeController();
     controller.load('a', 'v1');
@@ -326,6 +334,37 @@ describe('DocumentSessionController', () => {
     expect(controller.getSnapshot().status).toBe('offline-queued');
     expect(controller.getSnapshot().dirty).toBe(true);
     expect(controller.version).toBe('v1');
+  });
+
+  it('clears queued optimistic cache echoes when a save is queued offline', async () => {
+    let release!: () => void;
+    const { controller } = makeController({
+      resolveWrite: async () => {
+        await new Promise<void>((resolve) => { release = resolve; });
+        return { version: '2', offlineQueued: true };
+      },
+      compareVersions: compareDocumentVersions,
+    });
+    controller.load('base', '1');
+    controller.markLocalChange('mine');
+    const save = controller.requestSave('manual');
+    await flush();
+
+    expect(
+      controller.handleRemoteCandidate({
+        document: 'mine',
+        content: 'mine',
+        version: '2',
+        source: 'cache',
+      }),
+    ).toBe('queued');
+
+    release();
+    await save;
+    expect(controller.getSnapshot().offlineQueued).toBe(true);
+    expect(controller.getSnapshot().pendingRemote).toBeNull();
+    expect(controller.getSnapshot().currentContent).toBe('mine');
+    expect(controller.version).toBe('1');
   });
 
   it('disables REST autosave and ignores foreign remote candidates while live', () => {

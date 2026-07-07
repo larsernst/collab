@@ -27,6 +27,7 @@ vi.mock('@tauri-apps/api/event', () => ({
 
 vi.mock('../../lib/vaultReplica', () => ({
   onReplicaMutated: replicaMocks.onReplicaMutated,
+  replicaMutationAffectsPath: vi.fn(() => true),
 }));
 
 vi.mock('sonner', () => ({
