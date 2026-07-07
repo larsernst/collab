@@ -90,6 +90,10 @@ import { saveConflictedCopy } from '../lib/conflictedCopy';
 import { onReplicaMutated, replicaMutationAffectsPath } from '../lib/vaultReplica';
 import { isVaultReadOnly } from '../types/vault';
 import { useDocumentStatusRegistration } from '../store/documentStatusStore';
+import { useCollabIdentity } from '../lib/collabIdentity';
+import LivePeers from '../components/collaboration/LivePeers';
+import { useLivePeers } from '../lib/liveAwareness';
+import { useLiveJsonDocumentSession, type JsonObject, type LiveJsonSession } from '../lib/liveJsonDocument';
 import {
   createEmptyLogicDiagram,
   normalizeLogicDiagramDocument,
@@ -178,6 +182,28 @@ function parseLogicDocumentContent(content: string, title: string): LogicDiagram
     toast.error('This logic diagram could not be parsed. Opening an empty recovery view.');
     return createEmptyLogicDiagram(title);
   }
+}
+
+function logicDocumentToJson(document: LogicDiagramDocument): JsonObject {
+  return JSON.parse(JSON.stringify(normalizeLogicDiagramDocument(document))) as JsonObject;
+}
+
+function logicDocumentFromJson(value: JsonObject): LogicDiagramDocument | null {
+  const document = normalizeLogicDiagramDocument(value);
+  if (document.kind !== 'logic-diagram') return null;
+  if (!Array.isArray(document.nodes) || !Array.isArray(document.wires)) return null;
+  return document;
+}
+
+function liveLogicStatePreservesCanonicalEntities(
+  live: LogicDiagramDocument,
+  canonical: LogicDiagramDocument | null,
+): boolean {
+  if (!canonical) return true;
+  const liveNodeIds = new Set(live.nodes.map((node) => node.id));
+  const liveWireIds = new Set(live.wires.map((wire) => wire.id));
+  return canonical.nodes.every((node) => liveNodeIds.has(node.id))
+    && canonical.wires.every((wire) => liveWireIds.has(wire.id));
 }
 
 function logicNodeActiveOverlay(kind: LogicGateKind, data: LogicFlowNode['data']): CSSProperties | undefined {
@@ -411,6 +437,7 @@ function LogicDiagramEditor({ relativePath }: Props) {
   const markSaved = useEditorStore((state) => state.markSaved);
   const setSavedHash = useEditorStore((state) => state.setSavedHash);
   const readOnly = vault ? isVaultReadOnly(vault) : false;
+  const { userId: myUserId, userName: myUserName, userColor: myUserColor } = useCollabIdentity();
   const [nodes, setNodes, onNodesChange] = useNodesState<LogicFlowNode>([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState<LogicFlowEdge>([]);
   const [diagram, setDiagram] = useState<LogicDiagramDocument>(() =>
@@ -429,9 +456,11 @@ function LogicDiagramEditor({ relativePath }: Props) {
   // Structural signature of what is currently persisted; used to skip autosaves
   // that carry no real change (selection, measurement, fit-view, pan).
   const savedStructuralRef = useRef<string | null>(null);
+  const canonicalLogicRef = useRef<LogicDiagramDocument | null>(null);
   // True only after a successful load, so a failed read never overwrites the
   // file with an empty/default diagram.
   const readyRef = useRef(false);
+  const liveSessionRef = useRef<LiveJsonSession | null>(null);
   const [refreshPulse, setRefreshPulse] = useState(false);
   const refreshPulseTimerRef = useRef<number | null>(null);
   const { getViewport, screenToFlowPosition, fitView, setViewport } = useReactFlow<LogicFlowNode, LogicFlowEdge>();
@@ -507,6 +536,7 @@ function LogicDiagramEditor({ relativePath }: Props) {
   const applyLogicDocument = useCallback((loaded: LogicDiagramDocument) => {
     const graph = toFlowGraph(loaded);
     setDiagram(loaded);
+    canonicalLogicRef.current = loaded;
     setNodes(graph.nodes);
     setEdges(graph.edges);
     setViewportState(loaded.viewport);
@@ -548,7 +578,7 @@ function LogicDiagramEditor({ relativePath }: Props) {
     },
     autosaveDebounceMs: SAVE_DEBOUNCE_MS,
     compareVersions: compareDocumentVersions,
-    isLive: () => false,
+    isLive: () => liveSessionRef.current !== null,
   });
 
   // Initial load: establish the session baseline (force explicit reload policy).
@@ -574,6 +604,43 @@ function LogicDiagramEditor({ relativePath }: Props) {
     };
   }, [client, controller, relativePath, setSavedHash]);
 
+  const applyLiveLogicDocument = useCallback((document: LogicDiagramDocument) => {
+    applyLogicDocument(document);
+  }, [applyLogicDocument]);
+
+  const validateInitialLiveLogicDocument = useCallback((document: LogicDiagramDocument) => (
+    liveLogicStatePreservesCanonicalEntities(document, canonicalLogicRef.current)
+  ), []);
+
+  const liveSession = useLiveJsonDocumentSession<LogicDiagramDocument>({
+    client,
+    relativePath,
+    enabled: !loading && Boolean(client?.resolveLiveSession),
+    fromJson: logicDocumentFromJson,
+    validateInitial: validateInitialLiveLogicDocument,
+    applyDocument: applyLiveLogicDocument,
+  });
+
+  useEffect(() => {
+    liveSessionRef.current = liveSession;
+    controller.setLiveState(liveSession ? 'live-connected' : null);
+  }, [controller, liveSession]);
+
+  useEffect(() => {
+    if (!liveSession) return;
+    liveSession.awareness.setLocalStateField('user', {
+      id: myUserId,
+      name: myUserName,
+      color: myUserColor,
+    });
+    liveSession.awareness.setLocalStateField('document', {
+      kind: 'logic',
+      relativePath,
+    });
+  }, [liveSession, myUserColor, myUserId, myUserName, relativePath]);
+
+  const livePeers = useLivePeers(liveSession);
+
   // Debounced autosave via the shared controller: only marks a local change when
   // the structural signature actually changes, so selection, node measurement,
   // fit-view, and pan do not trigger writes. The controller serializes
@@ -591,7 +658,12 @@ function LogicDiagramEditor({ relativePath }: Props) {
     }
     if (sig === lastMarkedSigRef.current) return;
     lastMarkedSigRef.current = sig;
-    controller.markLocalChange(fromFlowGraph(diagram, nodes, edges, getViewport() as Viewport));
+    const next = fromFlowGraph(diagram, nodes, edges, getViewport() as Viewport);
+    if (liveSessionRef.current) {
+      liveSessionRef.current.writeJson(logicDocumentToJson(next));
+    } else {
+      controller.markLocalChange(next);
+    }
   }, [controller, diagram, edges, getViewport, nodes, readOnly, structuralSignature, vault]);
 
   // Re-baseline the structural signature when a save (without a merge adoption,
@@ -608,9 +680,10 @@ function LogicDiagramEditor({ relativePath }: Props) {
   // Bridge the controller's dirty/version state to the tab dirty indicator.
   useEffect(() => {
     if (!relativePath) return;
+    if (liveSession) return;
     if (snapshot.dirty) markDirty(relativePath);
     else if (snapshot.loadedVersion) markSaved(relativePath, snapshot.loadedVersion);
-  }, [markDirty, markSaved, relativePath, snapshot.dirty, snapshot.loadedVersion]);
+  }, [liveSession, markDirty, markSaved, relativePath, snapshot.dirty, snapshot.loadedVersion]);
 
   const pulseRefresh = useCallback(() => {
     setRefreshPulse(true);
@@ -669,6 +742,7 @@ function LogicDiagramEditor({ relativePath }: Props) {
   }, [controller, readOnly, vault]);
 
   const markChanged = useCallback(() => {
+    if (liveSessionRef.current) return;
     markDirty(relativePath);
   }, [markDirty, relativePath]);
 
@@ -1282,6 +1356,7 @@ function LogicDiagramEditor({ relativePath }: Props) {
 
   const meta = (
     <div className="flex items-center gap-2">
+      <LivePeers peers={livePeers} />
       <div className="rounded-full border border-border/60 px-2 py-1 text-[11px] text-muted-foreground">
         {counts.gateCount} gates · {counts.groupCount} groups · {edges.length} wires
       </div>

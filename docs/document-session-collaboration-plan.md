@@ -22,7 +22,7 @@ even before full live co-editing exists.
 | 2. Safe reload policy rollout | Done | Replace destructive per-view reloads with guarded remote-change handling. |
 | 3. Merge and conflict UX | Done | Add graceful remote-update banners, merge outcomes, and recovery actions. |
 | 4. Hosted cache and replica hardening | Done | Prevent stale hosted cache reads from replacing newer in-memory/editor state. |
-| 5. Live structured documents | Planned | Move suitable hosted JSON documents onto the existing Yjs live path. |
+| 5. Live structured documents | Done | Move suitable hosted JSON documents onto the existing Yjs live path. |
 | 6. Collaboration polish | Planned | Add presence/status/reconnect UX and operational hardening. |
 | 7. Advanced Office-like behavior | Deferred | Explore richer per-type concurrent editing after the safe baseline is proven. |
 
@@ -634,6 +634,23 @@ Acceptance criteria:
 - Concurrent edits to different stable-ID entities merge.
 - Presence is visible in live-enabled document views.
 - Broken or unavailable live sessions fall back to safe REST sessions.
+
+### Phase 5 Outcome — Done (2026-07-07)
+
+- Added the reusable `useLiveJsonDocumentSession` binding around the existing
+  structured Yjs provider. The hook centralizes live open/cleanup, empty or
+  invalid seed rejection, document-specific validation, remote-change adoption,
+  and safe REST fallback.
+- Logic diagrams now participate in hosted live collaboration through the shared
+  structured JSON session. While live is connected, graph edits write to Yjs
+  instead of scheduling REST autosaves, preventing autosave races for hosted
+  co-editing.
+- Logic live startup validates the CRDT seed against the REST-canonical diagram
+  and discards degenerate cached state that would drop known nodes or wires.
+- Logic diagrams publish live document awareness and show the shared live peer
+  strip in the document top bar.
+- Existing Canvas and Kanban live JSON paths remain supported, with the shared
+  hook available for follow-up consolidation after this phase.
 
 ## Phase 6: Collaboration Polish
 

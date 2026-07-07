@@ -1,3 +1,4 @@
+import { useEffect, useState } from 'react';
 import * as Y from 'yjs';
 import { connectLiveProvider, type LiveDocumentHandle } from './liveDocumentSession';
 import type { VaultClient } from './vaultClient';
@@ -41,6 +42,20 @@ export interface LiveJsonSession extends LiveDocumentHandle {
   writeJson(value: JsonObject): void;
   /** Subscribe to remote changes (not the caller's own writes). */
   onChange(cb: (value: JsonObject) => void): () => void;
+}
+
+export interface UseLiveJsonDocumentSessionOptions<TDocument> {
+  client: VaultClient | null;
+  relativePath: string | null;
+  enabled: boolean;
+  fromJson(value: JsonObject): TDocument | null;
+  /**
+   * Validates the initial live state before the view adopts it. Use this to
+   * reject an empty/corrupt offline seed that would otherwise replace the
+   * REST-canonical document.
+   */
+  validateInitial?(document: TDocument): boolean;
+  applyDocument(document: TDocument, source: 'initial' | 'remote'): void;
 }
 
 function isPlainObject(value: unknown): value is JsonObject {
@@ -205,4 +220,68 @@ export async function openLiveJsonSession(
       return () => root.unobserveDeep(observer);
     },
   };
+}
+
+/**
+ * Reusable React binding for structured live JSON documents. It intentionally
+ * keeps document parsing/validation in the caller so each file type can enforce
+ * its own invariants before accepting a live seed.
+ */
+export function useLiveJsonDocumentSession<TDocument>({
+  client,
+  relativePath,
+  enabled,
+  fromJson,
+  validateInitial,
+  applyDocument,
+}: UseLiveJsonDocumentSessionOptions<TDocument>): LiveJsonSession | null {
+  const [session, setSession] = useState<LiveJsonSession | null>(null);
+
+  useEffect(() => {
+    if (!enabled || !client || !relativePath || !client.resolveLiveSession) {
+      setSession(null);
+      return;
+    }
+
+    let cancelled = false;
+    let opened: LiveJsonSession | null = null;
+    let off: (() => void) | undefined;
+
+    openLiveJsonSession(client, relativePath)
+      .then((liveSession) => {
+        if (cancelled || !liveSession) {
+          liveSession?.destroy();
+          return;
+        }
+
+        const initialJson = liveSession.readJson();
+        const initial = Object.keys(initialJson).length > 0 ? fromJson(initialJson) : null;
+        if (!initial || validateInitial?.(initial) === false) {
+          liveSession.discardOfflineState();
+          liveSession.destroy();
+          return;
+        }
+
+        opened = liveSession;
+        applyDocument(initial, 'initial');
+        off = liveSession.onChange((json) => {
+          if (cancelled) return;
+          const next = fromJson(json);
+          if (next) applyDocument(next, 'remote');
+        });
+        setSession(liveSession);
+      })
+      .catch(() => {
+        // Best-effort; the caller's REST session remains active.
+      });
+
+    return () => {
+      cancelled = true;
+      off?.();
+      opened?.destroy();
+      setSession(null);
+    };
+  }, [applyDocument, client, enabled, fromJson, relativePath, validateInitial]);
+
+  return session;
 }

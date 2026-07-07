@@ -15,6 +15,11 @@ const tauriMocks = vi.hoisted(() => ({
   writeNote: vi.fn(),
 }));
 
+const liveJsonMocks = vi.hoisted(() => ({
+  useLiveJsonDocumentSession: vi.fn(() => null),
+  writeJson: vi.fn(),
+}));
+
 vi.mock('@tauri-apps/api/event', () => ({
   listen: vi.fn(async (eventName: string, handler: (event: { payload: { path: string } }) => void | Promise<void>) => {
     if (eventName === 'vault:file-modified') logicEvents.fileModifiedHandler = handler;
@@ -34,6 +39,10 @@ vi.mock('../lib/tauri', () => ({
 vi.mock('../lib/vaultReplica', () => ({
   onReplicaMutated: vi.fn(() => () => {}),
   replicaMutationAffectsPath: vi.fn(() => true),
+}));
+
+vi.mock('../lib/liveJsonDocument', () => ({
+  useLiveJsonDocumentSession: liveJsonMocks.useLiveJsonDocumentSession,
 }));
 
 vi.mock('sonner', () => ({
@@ -105,6 +114,7 @@ function seedVault() {
 describe('LogicDiagramView safe reload policy', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    liveJsonMocks.useLiveJsonDocumentSession.mockReturnValue(null);
     logicEvents.fileModifiedHandler = null;
     seedVault();
     tauriMocks.writeNote.mockResolvedValue({ hash: 'v-write' });
@@ -169,5 +179,31 @@ describe('LogicDiagramView safe reload policy', () => {
     });
 
     expect(screen.getByText(/0 gates/)).toBeTruthy();
+  });
+
+  it('writes local structural edits to the live JSON session instead of REST autosave', async () => {
+    tauriMocks.readNote.mockResolvedValueOnce({ content: logicDoc([]), hash: 'v1', modifiedAt: 1 });
+    liveJsonMocks.useLiveJsonDocumentSession.mockReturnValue({
+      writeJson: liveJsonMocks.writeJson,
+      awareness: {
+        clientID: 1,
+        getStates: () => new Map(),
+        on: vi.fn(),
+        off: vi.fn(),
+        setLocalStateField: vi.fn(),
+      },
+      getStatus: () => 'connected',
+      onStatus: vi.fn(() => () => {}),
+      discardOfflineState: vi.fn(),
+      destroy: vi.fn(),
+    } as never);
+
+    render(<LogicDiagramView relativePath={PATH} />);
+    expect(await screen.findByText(/0 gates/)).toBeTruthy();
+
+    fireEvent.click(screen.getByRole('button', { name: /add/i }));
+
+    await waitFor(() => expect(liveJsonMocks.writeJson).toHaveBeenCalled());
+    expect(tauriMocks.writeNote).not.toHaveBeenCalled();
   });
 });

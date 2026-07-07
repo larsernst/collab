@@ -22,7 +22,7 @@ export interface LiveAwarenessUser {
 
 /** Document context so a peer state can be matched to the right document. */
 export interface LiveAwarenessDocument {
-  kind: 'note' | 'kanban' | 'canvas';
+  kind: 'note' | 'kanban' | 'canvas' | 'logic';
   relativePath: string;
 }
 
