@@ -34,6 +34,8 @@ import {
   getDocumentBaseName,
   getDocumentFolderPath,
 } from '../layout/DocumentTopBar';
+import { DocumentStatusPill } from '../layout/DocumentStatusPill';
+import type { DocumentStatus } from '../../lib/documentSessionController';
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '../ui/dialog';
 import { Input } from '../ui/input';
 import { Button } from '../ui/button';
@@ -63,6 +65,7 @@ import { requestNotePdfExport } from '../../lib/notePdfExport';
 interface EditorToolbarProps {
   relativePath: string;
   editorRef: RefObject<MarkdownEditorHandle | null>;
+  documentStatus?: DocumentStatus;
 }
 
 interface InlineBtn {
@@ -297,7 +300,7 @@ function ImageInsertDialog({
   );
 }
 
-export function EditorToolbar({ relativePath, editorRef }: EditorToolbarProps) {
+export function EditorToolbar({ relativePath, editorRef, documentStatus }: EditorToolbarProps) {
   const ed = () => editorRef.current;
   const restoreEditorFocus = () => {
     window.requestAnimationFrame(() => {
@@ -502,6 +505,7 @@ export function EditorToolbar({ relativePath, editorRef }: EditorToolbarProps) {
         title={getDocumentBaseName(relativePath, 'Note')}
         subtitle={getDocumentFolderPath(relativePath)}
         icon={<FileText size={15} />}
+        meta={documentStatus ? <DocumentStatusPill status={documentStatus} compact /> : undefined}
         secondary={
           <>
             <div className={documentTopBarGroupClass}>

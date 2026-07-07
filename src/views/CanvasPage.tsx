@@ -87,6 +87,7 @@ import { isVaultReadOnly, type KnownUser } from '../types/vault';
 import { ReadOnlyBanner } from '../components/layout/ReadOnlyBanner';
 import LivePeers from '../components/collaboration/LivePeers';
 import { dedupePeersByUser, useLivePeers } from '../lib/liveAwareness';
+import { DocumentStatusPill } from '../components/layout/DocumentStatusPill';
 import { useDocumentStatusRegistration } from '../store/documentStatusStore';
 import type {
   DocumentSessionController,
@@ -1483,6 +1484,7 @@ function CanvasBoard({ relativePath }: { relativePath: string | null }) {
             <span className="shrink-0 text-xs text-muted-foreground">
               {nodes.length} {nodes.length === 1 ? 'card' : 'cards'} and {edges.length} {edges.length === 1 ? 'link' : 'links'}
             </span>
+            <DocumentStatusPill status={canvasSnapshot.status} compact />
             <LivePeers peers={livePeers} />
           </>
         }

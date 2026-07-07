@@ -23,7 +23,7 @@ even before full live co-editing exists.
 | 3. Merge and conflict UX | Done | Add graceful remote-update banners, merge outcomes, and recovery actions. |
 | 4. Hosted cache and replica hardening | Done | Prevent stale hosted cache reads from replacing newer in-memory/editor state. |
 | 5. Live structured documents | Done | Move suitable hosted JSON documents onto the existing Yjs live path. |
-| 6. Collaboration polish | Planned | Add presence/status/reconnect UX and operational hardening. |
+| 6. Collaboration polish | Done | Add presence/status/reconnect UX and operational hardening. |
 | 7. Advanced Office-like behavior | Deferred | Explore richer per-type concurrent editing after the safe baseline is proven. |
 
 ## Current System Snapshot
@@ -678,6 +678,21 @@ Acceptance criteria:
 - Users can tell whether edits are live, saved, queued, or conflicted.
 - Brief network drops do not interrupt an active document.
 - Unsupported live collaboration degrades predictably to the safe session path.
+
+### Phase 6 Outcome — Done (2026-07-07)
+
+- Added a shared live-status hook that subscribes to the live provider and maps
+  connected sessions to `live-connected` and transient socket drops/reconnects
+  to `live-reconnecting`, without dropping the document back to REST mid-session.
+- Surfaced the shared `DocumentStatusPill` in live-capable document top bars:
+  notes, Canvas, Kanban, and Logic diagrams now show live, reconnecting, saved,
+  dirty, queued, and conflict state near the document controls.
+- Kept existing live peer strips consistent across supported views and preserved
+  per-type awareness: note cursors through Yjs bindings, Canvas selected-node
+  rings, Kanban card-edit indicators, and Logic live peer presence.
+- Reused the existing safe REST fallback path for unsupported or failed live
+  startup, including incompatible protocol recovery and offline replica CRDT
+  persistence from the live provider.
 
 ## Phase 7: Advanced Office-Like Behavior
 

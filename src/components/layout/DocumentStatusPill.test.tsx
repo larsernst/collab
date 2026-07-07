@@ -19,6 +19,9 @@ describe('DocumentStatusPill', () => {
     rerender(<DocumentStatusPill status="live-connected" />);
     expect(screen.getByText('Live')).toBeTruthy();
 
+    rerender(<DocumentStatusPill status="live-reconnecting" />);
+    expect(screen.getByText('Reconnecting…')).toBeTruthy();
+
     rerender(<DocumentStatusPill status="idle" />);
     expect(screen.getByText('Saved')).toBeTruthy();
   });

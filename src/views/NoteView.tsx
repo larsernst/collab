@@ -26,6 +26,7 @@ import {
 import { mergeText } from '../lib/textMerge';
 import { saveConflictedCopy } from '../lib/conflictedCopy';
 import { openLiveNoteSession, type LiveDocumentSession } from '../lib/liveDocumentSession';
+import { useLiveDocumentStatus } from '../lib/useLiveDocumentStatus';
 import { onReplicaMutated, replicaMutationAffectsPath } from '../lib/vaultReplica';
 import { useLivePeers } from '../lib/liveAwareness';
 import LivePeers from '../components/collaboration/LivePeers';
@@ -184,6 +185,7 @@ export default function NoteView({ relativePath }: { relativePath: string }) {
     compareVersions: compareDocumentVersions,
     autosaveDebounceMs: 600,
   });
+  useLiveDocumentStatus(controller, liveSession);
 
   // Initial load: establish the session baseline (force explicit reload policy).
   useEffect(() => {
@@ -200,11 +202,6 @@ export default function NoteView({ relativePath }: { relativePath: string }) {
       });
     return () => { cancelled = true; };
   }, [client, controller, relativePath, vault?.path]);
-
-  // Reflect the live connection in the shared status vocabulary.
-  useEffect(() => {
-    controller.setLiveState(liveSession ? 'live-connected' : null);
-  }, [controller, liveSession]);
 
   // Open a live collaboration session for hosted notes; fall back to REST when
   // unavailable. The session is torn down when the note or vault changes.
@@ -435,7 +432,7 @@ export default function NoteView({ relativePath }: { relativePath: string }) {
 
   return (
     <div className={`flex flex-col h-full overflow-hidden app-document-ready ${refreshPulse ? 'app-refresh-pulse' : ''}`}>
-      {readOnly ? <ReadOnlyBanner /> : <EditorToolbar relativePath={relativePath} editorRef={editorRef} />}
+      {readOnly ? <ReadOnlyBanner /> : <EditorToolbar relativePath={relativePath} editorRef={editorRef} documentStatus={snapshot.status} />}
       {/* position:relative establishes the containing block for the absolutely-positioned
           CodeMirror container. This avoids flex % height resolution bugs in WebKitGTK
           where height:100% on a flex-1 child resolves to 0 (the flex-basis) rather than

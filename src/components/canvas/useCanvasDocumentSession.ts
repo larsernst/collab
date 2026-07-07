@@ -15,6 +15,7 @@ import {
 import { saveConflictedCopy } from '../../lib/conflictedCopy';
 import { openLiveJsonSession, type LiveJsonSession, type JsonObject } from '../../lib/liveJsonDocument';
 import { onReplicaMutated, replicaMutationAffectsPath } from '../../lib/vaultReplica';
+import { useLiveDocumentStatus } from '../../lib/useLiveDocumentStatus';
 import type { CanvasData, CanvasEdge } from '../../types/canvas';
 import type { VaultMeta } from '../../types/vault';
 import type { CanvasNodeData } from './CanvasNodeTypes';
@@ -289,6 +290,7 @@ export function useCanvasDocumentSession({
     compareVersions: compareDocumentVersions,
     autosaveDebounceMs: SAVE_DEBOUNCE_MS,
   });
+  useLiveDocumentStatus(controller, liveSession);
 
   // Initial load: sanitize, repair/seed the file if needed, then establish the
   // controller baseline (force explicit reload policy).

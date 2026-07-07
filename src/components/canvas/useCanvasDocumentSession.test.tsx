@@ -317,6 +317,8 @@ describe('useCanvasDocumentSession', () => {
       writeJson,
       onChange: () => () => {},
       awareness: { setLocalStateField: vi.fn() },
+      getStatus: () => 'connected',
+      onStatus: () => () => {},
       destroy: vi.fn(),
     });
 
@@ -361,6 +363,8 @@ describe('useCanvasDocumentSession', () => {
       writeJson: vi.fn(),
       onChange: () => () => {},
       awareness: { setLocalStateField },
+      getStatus: () => 'connected',
+      onStatus: () => () => {},
       destroy: vi.fn(),
     });
 

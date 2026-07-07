@@ -92,8 +92,10 @@ import { isVaultReadOnly } from '../types/vault';
 import { useDocumentStatusRegistration } from '../store/documentStatusStore';
 import { useCollabIdentity } from '../lib/collabIdentity';
 import LivePeers from '../components/collaboration/LivePeers';
+import { DocumentStatusPill } from '../components/layout/DocumentStatusPill';
 import { useLivePeers } from '../lib/liveAwareness';
 import { useLiveJsonDocumentSession, type JsonObject, type LiveJsonSession } from '../lib/liveJsonDocument';
+import { useLiveDocumentStatus } from '../lib/useLiveDocumentStatus';
 import {
   createEmptyLogicDiagram,
   normalizeLogicDiagramDocument,
@@ -621,10 +623,11 @@ function LogicDiagramEditor({ relativePath }: Props) {
     applyDocument: applyLiveLogicDocument,
   });
 
+  useLiveDocumentStatus(controller, liveSession);
+
   useEffect(() => {
     liveSessionRef.current = liveSession;
-    controller.setLiveState(liveSession ? 'live-connected' : null);
-  }, [controller, liveSession]);
+  }, [liveSession]);
 
   useEffect(() => {
     if (!liveSession) return;
@@ -1356,6 +1359,7 @@ function LogicDiagramEditor({ relativePath }: Props) {
 
   const meta = (
     <div className="flex items-center gap-2">
+      <DocumentStatusPill status={snapshot.status} compact />
       <LivePeers peers={livePeers} />
       <div className="rounded-full border border-border/60 px-2 py-1 text-[11px] text-muted-foreground">
         {counts.gateCount} gates · {counts.groupCount} groups · {edges.length} wires

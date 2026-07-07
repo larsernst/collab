@@ -26,6 +26,7 @@ import { useCollabContext } from '../components/collaboration/CollabProvider';
 import { buildKanbanCardEditors, useLivePeers, type LivePeer, type LiveAwarenessUser } from '../lib/liveAwareness';
 import { useKanbanStore } from '../store/kanbanStore';
 import { useDocumentStatusRegistration } from '../store/documentStatusStore';
+import { useLiveDocumentStatus } from '../lib/useLiveDocumentStatus';
 
 // ── Context ───────────────────────────────────────────────────────────────────
 
@@ -284,10 +285,7 @@ export default function KanbanPage({ relativePath }: { relativePath: string | nu
     loadBoard(true);
   }, [loadBoard]);
 
-  // Reflect the live connection in the shared status vocabulary.
-  useEffect(() => {
-    controller.setLiveState(liveSession ? 'live-connected' : null);
-  }, [controller, liveSession]);
+  useLiveDocumentStatus(controller, liveSession);
 
   // Bridge the controller's dirty/version state to the tab dirty indicator.
   useEffect(() => {

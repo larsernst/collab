@@ -43,6 +43,7 @@ import { useKanbanContext } from '../../views/KanbanPage';
 import { useCollabStore } from '../../store/collabStore';
 import { useKanbanStore } from '../../store/kanbanStore';
 import LivePeers from '../collaboration/LivePeers';
+import { DocumentStatusPill } from '../layout/DocumentStatusPill';
 import { formatDate, useUiStore } from '../../store/uiStore';
 import { useVaultStore } from '../../store/vaultStore';
 import { createVaultClient } from '../../lib/vaultClient';
@@ -537,7 +538,7 @@ function ArchiveView({ onOpenCard }: { onOpenCard: (card: KanbanCard, columnId: 
 // ── Main board ────────────────────────────────────────────────────────────────
 
 export default function KanbanBoardView() {
-  const { board, updateBoard, relativePath, knownUsers, readOnly, caps, livePeers } = useKanbanContext();
+  const { board, updateBoard, relativePath, knownUsers, readOnly, caps, livePeers, sessionStatus } = useKanbanContext();
   const { vault } = useVaultStore();
   // Vault-scoped filter/automation presets live on the local filesystem under
   // .collab/templates/. Hosted vaults have no such endpoint, so only app-scoped
@@ -1132,6 +1133,7 @@ export default function KanbanBoardView() {
             <span className="shrink-0 text-xs text-muted-foreground">
               {archivedCount} archived
             </span>
+            <DocumentStatusPill status={sessionStatus} compact />
             {boardPeers.length > 0 && (
               <div className="flex items-center gap-1" title="Also viewing this board">
                 {boardPeers.map(p => (
