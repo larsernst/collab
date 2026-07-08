@@ -162,6 +162,9 @@ pub fn run() {
             commands::server::hosted_user_directory,
             commands::server::hosted_vault_export_zip,
             commands::server::hosted_ws_ticket,
+            commands::live_ws::live_ws_connect,
+            commands::live_ws::live_ws_send,
+            commands::live_ws::live_ws_close,
             // templates
             commands::templates::list_kanban_templates,
             commands::templates::save_kanban_template,

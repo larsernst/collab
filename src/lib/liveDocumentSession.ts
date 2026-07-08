@@ -7,6 +7,7 @@ import {
 } from 'y-protocols/awareness';
 import { tauriCommands } from './tauri';
 import { isLiveCollabDebugEnabled, liveDebugPush } from './liveDebugLog';
+import { createLiveSocket, LIVE_SOCKET_OPEN, type LiveSocket, type LiveSocketMessage } from './liveSocket';
 import type { VaultClient } from './vaultClient';
 
 /**
@@ -146,7 +147,7 @@ export class WebSocketYProvider {
   readonly doc = new Y.Doc();
   readonly awareness = new Awareness(this.doc);
 
-  private socket: WebSocket | null = null;
+  private socket: LiveSocket | null = null;
   private status: LiveStatus = 'connecting';
   private statusCallbacks = new Set<(status: LiveStatus) => void>();
   private readonly fileIdBytes: Uint8Array;
@@ -299,7 +300,7 @@ export class WebSocketYProvider {
   }
 
   private sendBinary(tag: number, payload: Uint8Array) {
-    if (this.socket?.readyState === WebSocket.OPEN) {
+    if (this.socket?.readyState === LIVE_SOCKET_OPEN) {
       this.socket.send(frame(tag, this.fileIdBytes, payload));
       liveLog(this.target.fileId, `send ${tagName(tag)} (${payload.length}B)`);
     } else {
@@ -364,15 +365,17 @@ export class WebSocketYProvider {
     }
 
     liveLog(this.target.fileId, `opening socket -> ${ticket.websocketUrl}`);
-    let socket: WebSocket;
+    let socket: LiveSocket;
     try {
-      socket = new WebSocket(ticket.websocketUrl);
+      // The socket is opened through the Rust backend so it reuses the connected
+      // server's TLS configuration (including the untrusted-certificate opt-in);
+      // the webview's own WebSocket cannot reach a self-signed / mismatched cert.
+      socket = createLiveSocket(this.target.serverUrl, ticket.websocketUrl);
     } catch {
       onSubscribed?.(false);
       this.scheduleReconnect();
       return;
     }
-    socket.binaryType = 'arraybuffer';
     this.socket = socket;
     this.subscribedCallback = onSubscribed;
     this.initialSyncPending = false;
@@ -391,7 +394,7 @@ export class WebSocketYProvider {
       // `onclose` follows and handles reconnect.
     };
     socket.onclose = (event) => {
-      liveLog(this.target.fileId, `socket closed`, { code: (event as CloseEvent)?.code, reason: (event as CloseEvent)?.reason });
+      liveLog(this.target.fileId, `socket closed`, { code: event?.code });
       if (this.socket === socket) this.socket = null;
       onSubscribed?.(false);
       if (!this.destroyed) {
@@ -401,7 +404,7 @@ export class WebSocketYProvider {
     };
   }
 
-  private handleMessage(event: MessageEvent, onSubscribed?: (ok: boolean) => void) {
+  private handleMessage(event: LiveSocketMessage, onSubscribed?: (ok: boolean) => void) {
     if (typeof event.data === 'string') {
       let control: { type?: string; protocolVersion?: number; code?: string };
       try {

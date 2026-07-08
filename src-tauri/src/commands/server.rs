@@ -372,7 +372,7 @@ fn validate_server_url(value: &str) -> Result<String, String> {
     Ok(url.as_str().trim_end_matches('/').to_owned())
 }
 
-fn server_client(allow_invalid_certificates: bool) -> Result<reqwest::Client, String> {
+pub(crate) fn server_client(allow_invalid_certificates: bool) -> Result<reqwest::Client, String> {
     let client = if allow_invalid_certificates {
         &*INSECURE_SERVER_CLIENT
     } else {
@@ -452,7 +452,7 @@ fn validate_identifier(value: &str) -> Result<(), String> {
     Ok(())
 }
 
-fn require_connected_server(session: &ServerSessionState, server_url: &str) -> Result<(), String> {
+pub(crate) fn require_connected_server(session: &ServerSessionState, server_url: &str) -> Result<(), String> {
     let expected = validate_server_url(server_url)?;
     if session.server_url != expected {
         return Err("This hosted vault belongs to a different Collab server.".into());

@@ -1,4 +1,4 @@
-import { invoke } from '@tauri-apps/api/core';
+import { invoke, Channel } from '@tauri-apps/api/core';
 import { getVersion } from '@tauri-apps/api/app';
 import { open, save } from '@tauri-apps/plugin-dialog';
 import { revealItemInDir } from '@tauri-apps/plugin-opener';
@@ -34,6 +34,14 @@ import type {
   ReplicaSyncState,
   Tombstone,
 } from './vaultReplica';
+
+export { Channel };
+
+/** Inbound frame from a backend-proxied live-collaboration WebSocket. */
+export type LiveWsEvent =
+  | { type: 'text'; data: string }
+  | { type: 'binary'; data: string }
+  | { type: 'closed'; code: number | null };
 
 export interface LinkPreviewData {
   resolvedUrl: string;
@@ -376,6 +384,17 @@ export const tauriCommands = {
       'hosted_ws_ticket',
       { serverUrl, vaultId },
     ),
+
+  // Backend-proxied live-collaboration WebSocket. The socket is held in Rust so
+  // it reuses the connected server's TLS configuration (including the untrusted
+  // certificate opt-in) — the webview's own WebSocket cannot reach a self-signed
+  // or hostname-mismatched server. Inbound frames arrive on `onEvent`.
+  liveWsConnect: (serverUrl: string, websocketUrl: string, onEvent: Channel<LiveWsEvent>) =>
+    invoke<number>('live_ws_connect', { serverUrl, websocketUrl, onEvent }),
+  liveWsSend: (id: number, kind: 'text' | 'binary', data: string) =>
+    invoke<void>('live_ws_send', { id, kind, data }),
+  liveWsClose: (id: number) =>
+    invoke<void>('live_ws_close', { id }),
 
   // Native hosted-vault replica store (offline sync)
   replicaSeed: (

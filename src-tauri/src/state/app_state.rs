@@ -22,6 +22,10 @@ pub struct AppState {
     pub encryption_key: RwLock<Option<[u8; 32]>>,
     /// Native server access tokens are intentionally memory-only.
     pub server_session: RwLock<Option<ServerSessionState>>,
+    /// Active backend-proxied live-collaboration WebSockets. Routing the live
+    /// socket through Rust lets it reuse the session TLS config (including the
+    /// untrusted-certificate opt-in), which the webview's own `WebSocket` cannot.
+    pub live_ws: crate::commands::live_ws::LiveWsRegistry,
 }
 
 impl AppState {
@@ -32,6 +36,7 @@ impl AppState {
             note_index: RwLock::new(Vec::new()),
             encryption_key: RwLock::new(None),
             server_session: RwLock::new(None),
+            live_ws: crate::commands::live_ws::LiveWsRegistry::default(),
         }
     }
 }
