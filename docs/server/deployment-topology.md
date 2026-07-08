@@ -69,12 +69,18 @@ one reverse-proxy gateway. The reference stack is the published Compose file
 #### nginx WebSocket forwarding
 
 When nginx sits in front of the bundled Caddy gateway or the `collab-server`
-process, it must proxy WebSocket upgrades. Live collaboration uses
-`GET /ws/v1/vaults/{vaultId}`; if nginx forwards the request but strips the
-`Connection: Upgrade` hop-by-hop header, the server rejects the request with
-`400 Bad Request` and a body like `Connection header did not include 'upgrade'`.
+process, it must proxy WebSocket upgrades. Normal browser/admin traffic may use
+HTTP/2 at the public TLS edge, but the live-collaboration WebSocket itself uses
+the standard HTTP/1.1 `Upgrade` handshake on `GET /ws/v1/vaults/{vaultId}`.
+Classic WebSocket upgrades do not run over HTTP/2; RFC 8441 extended CONNECT is
+a different transport path and is not supported by the current Axum
+`WebSocketUpgrade` / native `reqwest-websocket` client stack. If nginx forwards
+the request but strips the `Connection: Upgrade` hop-by-hop header, the server
+rejects the request with `400 Bad Request` and a body like
+`Connection header did not include 'upgrade'`.
 
-Use an nginx `map` plus HTTP/1.1 upstream proxying:
+Use an nginx `map` plus HTTP/1.1 upstream proxying for the WebSocket path. The
+public listener can still advertise HTTP/2 for regular HTTPS requests:
 
 ```nginx
 map $http_upgrade $connection_upgrade {
