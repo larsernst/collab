@@ -60,10 +60,45 @@ one reverse-proxy gateway. The reference stack is the published Compose file
   Point it at the gateway and let Caddy keep serving `/admin/`, the redirect, and
   the baseline security headers, **or** bypass Caddy and target `collab-server`
   directly — in which case the upstream proxy must reproduce the security
-  headers, the `/ → /admin/` redirect, and a correct `X-Forwarded-For`.
+  headers, the `/ → /admin/` redirect, a correct `X-Forwarded-For`, and
+  WebSocket upgrade forwarding for `/ws/v1/*`.
 - **HTTPS is required for production.** Set `COLLAB_BROWSER_SECURE_COOKIES=true`
   whenever the public origin is HTTPS so browser admin cookies get the `Secure`
   attribute.
+
+#### nginx WebSocket forwarding
+
+When nginx sits in front of the bundled Caddy gateway or the `collab-server`
+process, it must proxy WebSocket upgrades. Live collaboration uses
+`GET /ws/v1/vaults/{vaultId}`; if nginx forwards the request but strips the
+`Connection: Upgrade` hop-by-hop header, the server rejects the request with
+`400 Bad Request` and a body like `Connection header did not include 'upgrade'`.
+
+Use an nginx `map` plus HTTP/1.1 upstream proxying:
+
+```nginx
+map $http_upgrade $connection_upgrade {
+    default upgrade;
+    '' close;
+}
+
+server {
+    listen 443 ssl http2;
+    server_name collab.example.com;
+
+    location / {
+        proxy_pass http://127.0.0.1:8788;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection $connection_upgrade;
+        proxy_read_timeout 3600s;
+    }
+}
+```
 
 ## Resource Sizing
 
