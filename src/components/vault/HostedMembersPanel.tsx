@@ -474,7 +474,7 @@ export function HostedMembersPanel() {
     toast.success('Permissions updated');
     // When the current user's own grant changed, refresh the open vault DTO so
     // capability-gated UI reflects the new permissions immediately.
-    if (wasSelf) await loadHostedVaults().catch(() => {});
+    if (wasSelf && vault?.kind === 'hosted') await loadHostedVaults(vault.serverUrl).catch(() => {});
     await refresh();
   };
 

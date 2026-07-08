@@ -79,7 +79,7 @@ describe('serverIdentityForVault', () => {
 describe('useCollabIdentity', () => {
   beforeEach(() => {
     useVaultStore.setState({ vault: null } as never);
-    useServerStore.setState({ status: null } as never);
+    useServerStore.setState({ connections: {} } as never);
     useCollabStore.setState({
       myUserId: 'local-uuid',
       myUserName: 'Local Name',
@@ -99,7 +99,7 @@ describe('useCollabIdentity', () => {
 
   it('uses the local identity for local vaults even while connected', () => {
     useVaultStore.setState({ vault: localVault } as never);
-    useServerStore.setState({ status: connectedStatus } as never);
+    useServerStore.setState({ connections: { [connectedStatus.serverUrl!]: { status: connectedStatus, hostedVaults: [] } } } as never);
     const { result } = renderHook(() => useCollabIdentity());
     expect(result.current.source).toBe('local');
     expect(result.current.userId).toBe('local-uuid');
@@ -107,7 +107,7 @@ describe('useCollabIdentity', () => {
 
   it('uses the server identity for the matching hosted vault', () => {
     useVaultStore.setState({ vault: hostedVault } as never);
-    useServerStore.setState({ status: connectedStatus } as never);
+    useServerStore.setState({ connections: { [connectedStatus.serverUrl!]: { status: connectedStatus, hostedVaults: [] } } } as never);
     const { result } = renderHook(() => useCollabIdentity());
     expect(result.current.source).toBe('server');
     expect(result.current.userId).toBe('server-user-9');

@@ -3,10 +3,8 @@ import { toast } from 'sonner';
 import { Cloud, CloudOff, RefreshCw } from 'lucide-react';
 import { useVaultStore } from '../../store/vaultStore';
 import { useServerStore, isServerSessionExpired } from '../../store/serverStore';
-import { vaultKind } from '../../types/vault';
+import { knownServerFor } from '../../lib/hostedServers';
 import { cn } from '../../lib/utils';
-
-const ALLOW_INVALID_CERTIFICATES_KEY = 'collab-hosted-allow-invalid-certificates';
 
 type ConnectionState = 'online' | 'expired' | 'offline';
 
@@ -17,13 +15,14 @@ type ConnectionState = 'online' | 'expired' | 'offline';
  */
 export default function HostedConnectionStatus() {
   const vault = useVaultStore((state) => state.vault);
-  const status = useServerStore((state) => state.status);
+  const serverUrl = vault?.kind === 'hosted' ? vault.serverUrl : null;
+  const status = useServerStore((state) => (serverUrl ? state.connections[serverUrl]?.status ?? null : null));
   const reconnect = useServerStore((state) => state.reconnect);
   const [busy, setBusy] = useState(false);
   // Re-evaluate time-based expiry periodically since it does not emit a store change.
   const [, setTick] = useState(0);
 
-  const isHosted = vault != null && vaultKind(vault) === 'hosted';
+  const isHosted = serverUrl != null;
   useEffect(() => {
     if (!isHosted) return;
     const interval = setInterval(() => setTick((value) => value + 1), 15000);
@@ -32,7 +31,7 @@ export default function HostedConnectionStatus() {
 
   if (!vault || vault.kind !== 'hosted') return null;
 
-  const onExpectedServer = status?.connected === true && status.serverUrl === vault.serverUrl;
+  const onExpectedServer = status?.connected === true;
   let state: ConnectionState = 'offline';
   if (onExpectedServer) {
     state = isServerSessionExpired(status) ? 'expired' : 'online';
@@ -42,10 +41,9 @@ export default function HostedConnectionStatus() {
     setBusy(true);
     try {
       const allowInvalidCertificates =
-        (status?.connected === true && status.serverUrl === vault.serverUrl
-          ? status.allowInvalidCertificates
-          : undefined) ??
-        localStorage.getItem(ALLOW_INVALID_CERTIFICATES_KEY) === 'true';
+        (status?.connected === true ? status.allowInvalidCertificates : undefined) ??
+        knownServerFor(vault.serverUrl)?.allowInvalidCertificates ??
+        false;
       await reconnect(vault.serverUrl, allowInvalidCertificates);
       toast.success('Server session restored');
     } catch (reason) {

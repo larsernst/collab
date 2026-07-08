@@ -7,8 +7,10 @@
 //! live co-editing dead against private servers even though REST worked.
 //!
 //! These commands move the live socket into Rust so it rides the *same* TLS
-//! configuration as every other hosted request (via [`super::server::server_client`],
-//! honoring `allow_invalid_certificates`). The webview drives the socket over the
+//! configuration as every other hosted request (via
+//! [`super::server::ws_server_client`], honoring `allow_invalid_certificates`; it
+//! is HTTP/1.1-only because the WS upgrade fails over the HTTP/2 a modern server
+//! would negotiate via ALPN). The webview drives the socket over the
 //! Tauri IPC boundary: control/CRDT frames are sent with [`live_ws_send`] and
 //! inbound frames are streamed back through a [`Channel`]. The app-level protocol
 //! handshake (authenticate / subscribe / Yjs sync) still runs in the frontend
@@ -25,7 +27,7 @@ use tauri::ipc::Channel;
 use tauri::State;
 use tokio::sync::{mpsc, Mutex};
 
-use super::server::{require_connected_server, server_client};
+use super::server::{session_for, ws_server_client};
 use crate::state::AppState;
 
 /// An inbound event forwarded from the server socket to the webview.
@@ -74,17 +76,18 @@ pub async fn live_ws_connect(
     websocket_url: String,
     on_event: Channel<LiveWsEvent>,
 ) -> Result<u64, String> {
-    let session = state
-        .server_session
-        .read()
-        .clone()
-        .ok_or_else(|| "Connect to the Collab server before starting live collaboration.".to_string())?;
-    require_connected_server(&session, &server_url)?;
+    let session = session_for(
+        &state,
+        &server_url,
+        "Connect to the Collab server before starting live collaboration.",
+    )?;
 
     // reqwest speaks http(s); the WS upgrade rides that scheme. Reusing the
     // server client is what makes the untrusted-certificate opt-in apply here.
     let http_url = to_http_url(&websocket_url)?;
-    let client = server_client(session.allow_invalid_certificates)?;
+    // HTTP/1.1-only: the WS upgrade fails over HTTP/2, which a modern server
+    // (valid cert) would otherwise negotiate via ALPN.
+    let client = ws_server_client(session.allow_invalid_certificates)?;
     let response = client
         .get(&http_url)
         .upgrade()

@@ -46,7 +46,7 @@ describe('ChatPanel', () => {
       chatMessages: [],
       chatTypingUntil: null,
     } as never);
-    useServerStore.setState({ status: null, hostedVaults: [], isLoading: false, error: null } as never);
+    useServerStore.setState({ connections: {}, isLoading: false, error: null } as never);
   });
 
   it('renders the composer for local (filesystem-backed) vaults', () => {
@@ -90,7 +90,7 @@ describe('ChatPanel', () => {
   it('treats echoed hosted messages from the authenticated server user as self', () => {
     useVaultStore.setState({ vault: hostedVault } as never);
     useServerStore.setState({
-      status: {
+      connections: { 'https://collab.example.test': { hostedVaults: [], status: {
         connected: true,
         serverUrl: 'https://collab.example.test',
         allowInvalidCertificates: false,
@@ -106,7 +106,7 @@ describe('ChatPanel', () => {
           isPrimaryAdmin: true,
         },
         accessExpiresAt: '2999-01-01T00:00:00Z',
-      },
+      } } },
     } as never);
     useCollabStore.setState({
       chatMessages: [{

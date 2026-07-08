@@ -1,25 +1,20 @@
 import { create } from 'zustand';
 import { tauriCommands, type ServerConnectionStatus } from '../lib/tauri';
 import { useVaultStore } from './vaultStore';
+import {
+  knownServerFor,
+  listKnownServers,
+  removeKnownServer,
+  upsertKnownServer,
+} from '../lib/hostedServers';
 import type { HostedVaultSummary } from '../types/vault';
 
+// Retained for the login form's "last used" prefill; the durable list of servers
+// to restore lives in `hostedServers` (`collab-hosted-servers`).
 export const SERVER_URL_KEY = 'collab-hosted-server-url';
-const ALLOW_INVALID_CERTIFICATES_KEY = 'collab-hosted-allow-invalid-certificates';
-// Linux-only preference: persist the refresh token in the Secret Service (durable
-// across reboots) instead of the default silent keyutils keyring. Ignored on
-// Windows/macOS, whose native keystores are already silent and durable.
-const PERSIST_ACROSS_REBOOTS_KEY = 'collab-hosted-persist-across-reboots';
 const NO_SAVED_SESSION_MESSAGE = 'No saved server session was found.';
 
 export type RestoreSessionResult = 'connected' | 'failed' | 'skipped';
-
-const DISCONNECTED: ServerConnectionStatus = {
-  connected: false,
-  serverUrl: null,
-  allowInvalidCertificates: false,
-  user: null,
-  accessExpiresAt: null,
-};
 
 /**
  * Whether a connected session's access token has already expired. A connected
@@ -38,10 +33,7 @@ export function isServerSessionExpired(
 
 /**
  * Whether the session can currently make authenticated server requests: connected
- * to a known server URL with an access token that has not expired. A connected
- * session whose access token has expired is not effectively connected, so
- * authenticated actions like hosted-vault creation must be gated on this rather
- * than the raw `connected` flag (which only reflects that a session object exists).
+ * to a known server URL with an access token that has not expired.
  */
 export function isEffectivelyConnected(
   status: ServerConnectionStatus | null,
@@ -50,161 +42,220 @@ export function isEffectivelyConnected(
   return status?.connected === true && !!status.serverUrl && !isServerSessionExpired(status, now);
 }
 
-// Deduplicates concurrent `restoreSession` calls (e.g. the React StrictMode
-// double-invoked startup effect) so a single restore attempt — and a single
-// failure toast — happens per app launch.
+/** A single connected server: its status plus its loaded hosted-vault inventory. */
+export interface ServerConnection {
+  status: ServerConnectionStatus;
+  hostedVaults: HostedVaultSummary[];
+}
+
+// Deduplicates concurrent `restoreAllSessions` calls (e.g. the React StrictMode
+// double-invoked startup effect) so a single restore pass happens per launch.
 let restoreInFlight: Promise<RestoreSessionResult> | null = null;
 
 interface ServerState {
-  status: ServerConnectionStatus | null;
-  hostedVaults: HostedVaultSummary[];
+  /** Connected servers, keyed by normalized server URL. */
+  connections: Record<string, ServerConnection>;
   isLoading: boolean;
   error: string | null;
-  refresh: () => Promise<void>;
-  restoreSession: () => Promise<RestoreSessionResult>;
-  /** Internal: the un-deduplicated restore implementation. Use `restoreSession`. */
-  _restoreSessionOnce: () => Promise<RestoreSessionResult>;
+
+  // ── Selectors ──────────────────────────────────────────────────────────────
+  connectionFor: (serverUrl: string) => ServerConnection | undefined;
+  statusFor: (serverUrl: string) => ServerConnectionStatus | null;
+  hostedVaultsFor: (serverUrl: string) => HostedVaultSummary[];
+  connectedStatuses: () => ServerConnectionStatus[];
+
+  // ── Lifecycle ───────────────────────────────────────────────────────────────
+  /** Reload connection statuses (and each server's vaults) from the backend. */
+  refreshAll: () => Promise<void>;
+  /** Restore every saved server on launch (reuse live sessions, else reconnect). */
+  restoreAllSessions: () => Promise<RestoreSessionResult>;
   connect: (serverUrl: string, username: string, password: string, allowInvalidCertificates?: boolean, persistAcrossReboots?: boolean) => Promise<void>;
   reconnect: (serverUrl: string, allowInvalidCertificates?: boolean, persistAcrossReboots?: boolean) => Promise<void>;
   /**
-   * Quiet, best-effort reconnect from the OS-stored refresh token for the saved
-   * session. Unlike {@link reconnect} it never toggles `isLoading` or sets an
-   * error (so a background retry loop does not churn the UI), and it is a no-op
-   * when already effectively connected. Drives the automatic reconnect retry.
+   * Quiet, best-effort reconnect for one server from its stored refresh token.
+   * Never toggles `isLoading`/`error` and only mutates the store on success, so a
+   * failed background retry produces no UI churn. Drives the auto-reconnect loop.
    */
-  autoReconnect: () => Promise<RestoreSessionResult>;
-  disconnect: () => Promise<void>;
-  loadHostedVaults: () => Promise<void>;
-  createHostedVault: (name: string) => Promise<HostedVaultSummary>;
+  autoReconnect: (serverUrl: string) => Promise<RestoreSessionResult>;
+  disconnect: (serverUrl: string) => Promise<void>;
+  loadHostedVaults: (serverUrl: string) => Promise<void>;
+  createHostedVault: (serverUrl: string, name: string) => Promise<HostedVaultSummary>;
 }
 
-export const useServerStore = create<ServerState>()((set, get) => ({
-  status: null,
-  hostedVaults: [],
-  isLoading: false,
-  error: null,
-  refresh: async () => {
-    set({ isLoading: true, error: null });
-    try {
-      const status = await tauriCommands.serverConnectionStatus();
-      set({ status, hostedVaults: status.connected ? get().hostedVaults : [], isLoading: false });
-      if (status.connected) await get().loadHostedVaults();
-    } catch (error) {
-      set({ status: DISCONNECTED, hostedVaults: [], isLoading: false, error: String(error) });
-    }
-  },
-  restoreSession: () => {
-    if (restoreInFlight) return restoreInFlight;
-    const attempt = get()._restoreSessionOnce();
-    restoreInFlight = attempt;
-    void attempt.finally(() => {
-      if (restoreInFlight === attempt) restoreInFlight = null;
+export const useServerStore = create<ServerState>()((set, get) => {
+  const setConnection = (status: ServerConnectionStatus, hostedVaults: HostedVaultSummary[]) => {
+    if (!status.serverUrl) return;
+    set((state) => ({
+      connections: { ...state.connections, [status.serverUrl!]: { status, hostedVaults } },
+    }));
+  };
+
+  const removeConnection = (serverUrl: string) => {
+    set((state) => {
+      if (!(serverUrl in state.connections)) return {};
+      const next = { ...state.connections };
+      delete next[serverUrl];
+      return { connections: next };
     });
-    return attempt;
-  },
-  _restoreSessionOnce: async () => {
-    const serverUrl = localStorage.getItem(SERVER_URL_KEY);
-    if (!serverUrl) return 'skipped';
-    const allowInvalidCertificates = localStorage.getItem(ALLOW_INVALID_CERTIFICATES_KEY) === 'true';
-    const persistAcrossReboots = localStorage.getItem(PERSIST_ACROSS_REBOOTS_KEY) === 'true';
-    // A still-live in-memory session (e.g. after a soft reload) needs no refresh.
-    try {
-      const status = await tauriCommands.serverConnectionStatus();
-      if (status.connected) {
-        set({ status });
-        await get().loadHostedVaults();
-        return 'connected';
+  };
+
+  return {
+    connections: {},
+    isLoading: false,
+    error: null,
+
+    connectionFor: (serverUrl) => get().connections[serverUrl],
+    statusFor: (serverUrl) => get().connections[serverUrl]?.status ?? null,
+    hostedVaultsFor: (serverUrl) => get().connections[serverUrl]?.hostedVaults ?? [],
+    connectedStatuses: () => Object.values(get().connections).map((c) => c.status),
+
+    refreshAll: async () => {
+      set({ isLoading: true, error: null });
+      try {
+        const statuses = await tauriCommands.serverConnectionStatuses();
+        // Rebuild the connection map from the authoritative backend list.
+        const previous = get().connections;
+        const connections: Record<string, ServerConnection> = {};
+        for (const status of statuses) {
+          if (!status.connected || !status.serverUrl) continue;
+          connections[status.serverUrl] = {
+            status,
+            hostedVaults: previous[status.serverUrl]?.hostedVaults ?? [],
+          };
+        }
+        set({ connections, isLoading: false });
+        await Promise.all(
+          Object.keys(connections).map((serverUrl) => get().loadHostedVaults(serverUrl).catch(() => {})),
+        );
+      } catch (error) {
+        set({ isLoading: false, error: String(error) });
       }
-    } catch {
-      // Fall through to a refresh-token reconnect.
-    }
-    try {
-      await get().reconnect(serverUrl, allowInvalidCertificates, persistAcrossReboots);
-      return 'connected';
-    } catch (error) {
-      if (String(error).includes(NO_SAVED_SESSION_MESSAGE)) return 'skipped';
-      return 'failed';
-    }
-  },
-  connect: async (serverUrl, username, password, allowInvalidCertificates = false, persistAcrossReboots = false) => {
-    set({ isLoading: true, error: null });
-    try {
-      const status = await tauriCommands.connectServer(serverUrl, username, password, allowInvalidCertificates, persistAcrossReboots);
-      set({ status, isLoading: false });
-      await get().loadHostedVaults();
-    } catch (error) {
-      set({ isLoading: false, error: String(error) });
-      throw error;
-    }
-  },
-  reconnect: async (serverUrl, allowInvalidCertificates = false, persistAcrossReboots = false) => {
-    set({ isLoading: true, error: null });
-    try {
-      const status = await tauriCommands.reconnectServer(serverUrl, allowInvalidCertificates, persistAcrossReboots);
-      set({ status, isLoading: false });
-      await get().loadHostedVaults();
-    } catch (error) {
-      set({ isLoading: false, error: String(error) });
-      throw error;
-    }
-  },
-  autoReconnect: async () => {
-    const serverUrl = localStorage.getItem(SERVER_URL_KEY);
-    if (!serverUrl) return 'skipped';
-    if (isEffectivelyConnected(get().status) && get().status?.serverUrl === serverUrl) {
-      return 'connected';
-    }
-    const allowInvalidCertificates = localStorage.getItem(ALLOW_INVALID_CERTIFICATES_KEY) === 'true';
-    const persistAcrossReboots = localStorage.getItem(PERSIST_ACROSS_REBOOTS_KEY) === 'true';
-    try {
-      const status = await tauriCommands.reconnectServer(serverUrl, allowInvalidCertificates, persistAcrossReboots);
-      // Only mutate the store on success so a failed background attempt (e.g. the
-      // server is still unreachable) produces no state churn and no re-trigger.
-      set({ status, error: null });
-      await get().loadHostedVaults();
-      return 'connected';
-    } catch (error) {
-      if (String(error).includes(NO_SAVED_SESSION_MESSAGE)) return 'skipped';
-      return 'failed';
-    }
-  },
-  disconnect: async () => {
-    await tauriCommands.disconnectServer();
-    set({ status: DISCONNECTED, hostedVaults: [], error: null });
-  },
-  loadHostedVaults: async () => {
-    const status = get().status;
-    if (!status?.connected || !status.serverUrl) {
-      set({ hostedVaults: [] });
-      return;
-    }
-    set({ isLoading: true, error: null });
-    try {
-      const hostedVaults = await tauriCommands.hostedVaultRequest<HostedVaultSummary[]>(
+    },
+
+    restoreAllSessions: () => {
+      if (restoreInFlight) return restoreInFlight;
+      const attempt = (async (): Promise<RestoreSessionResult> => {
+        const servers = listKnownServers();
+        if (servers.length === 0) return 'skipped';
+        // Adopt any still-live in-memory sessions first (e.g. after a soft reload).
+        try {
+          const statuses = await tauriCommands.serverConnectionStatuses();
+          for (const status of statuses) {
+            if (status.connected && status.serverUrl) setConnection(status, get().connections[status.serverUrl]?.hostedVaults ?? []);
+          }
+        } catch {
+          // Fall through to per-server refresh-token reconnects.
+        }
+        const results = await Promise.all(
+          servers.map(async (server): Promise<RestoreSessionResult> => {
+            if (isEffectivelyConnected(get().statusFor(server.serverUrl))) {
+              await get().loadHostedVaults(server.serverUrl).catch(() => {});
+              return 'connected';
+            }
+            try {
+              await get().reconnect(server.serverUrl, server.allowInvalidCertificates, server.persistAcrossReboots);
+              return 'connected';
+            } catch (error) {
+              return String(error).includes(NO_SAVED_SESSION_MESSAGE) ? 'skipped' : 'failed';
+            }
+          }),
+        );
+        if (results.includes('connected')) return 'connected';
+        if (results.includes('failed')) return 'failed';
+        return 'skipped';
+      })();
+      restoreInFlight = attempt;
+      void attempt.finally(() => {
+        if (restoreInFlight === attempt) restoreInFlight = null;
+      });
+      return attempt;
+    },
+
+    connect: async (serverUrl, username, password, allowInvalidCertificates = false, persistAcrossReboots = false) => {
+      set({ isLoading: true, error: null });
+      try {
+        const status = await tauriCommands.connectServer(serverUrl, username, password, allowInvalidCertificates, persistAcrossReboots);
+        upsertKnownServer({ serverUrl: status.serverUrl ?? serverUrl, username, allowInvalidCertificates, persistAcrossReboots });
+        setConnection(status, []);
+        set({ isLoading: false });
+        await get().loadHostedVaults(status.serverUrl ?? serverUrl);
+      } catch (error) {
+        set({ isLoading: false, error: String(error) });
+        throw error;
+      }
+    },
+
+    reconnect: async (serverUrl, allowInvalidCertificates = false, persistAcrossReboots = false) => {
+      set({ isLoading: true, error: null });
+      try {
+        const status = await tauriCommands.reconnectServer(serverUrl, allowInvalidCertificates, persistAcrossReboots);
+        setConnection(status, get().connections[status.serverUrl ?? serverUrl]?.hostedVaults ?? []);
+        set({ isLoading: false });
+        await get().loadHostedVaults(status.serverUrl ?? serverUrl);
+      } catch (error) {
+        set({ isLoading: false, error: String(error) });
+        throw error;
+      }
+    },
+
+    autoReconnect: async (serverUrl) => {
+      const known = knownServerFor(serverUrl);
+      if (!known) return 'skipped';
+      if (isEffectivelyConnected(get().statusFor(serverUrl))) return 'connected';
+      try {
+        const status = await tauriCommands.reconnectServer(serverUrl, known.allowInvalidCertificates, known.persistAcrossReboots);
+        // Only mutate the store on success so a failed background attempt causes
+        // no state churn and no re-trigger of the reconnect loop.
+        setConnection(status, get().connections[status.serverUrl ?? serverUrl]?.hostedVaults ?? []);
+        set({ error: null });
+        await get().loadHostedVaults(status.serverUrl ?? serverUrl);
+        return 'connected';
+      } catch (error) {
+        return String(error).includes(NO_SAVED_SESSION_MESSAGE) ? 'skipped' : 'failed';
+      }
+    },
+
+    disconnect: async (serverUrl) => {
+      await tauriCommands.disconnectServer(serverUrl);
+      removeKnownServer(serverUrl);
+      removeConnection(serverUrl);
+      set({ error: null });
+    },
+
+    loadHostedVaults: async (serverUrl) => {
+      const status = get().statusFor(serverUrl);
+      if (!status?.connected || !status.serverUrl) return;
+      set({ isLoading: true, error: null });
+      try {
+        const hostedVaults = await tauriCommands.hostedVaultRequest<HostedVaultSummary[]>(
+          status.serverUrl,
+          'GET',
+          '/api/v1/vaults',
+        );
+        useVaultStore.getState().refreshHostedVaultMetadata(status.serverUrl, hostedVaults);
+        setConnection(status, hostedVaults);
+        set({ isLoading: false });
+      } catch (error) {
+        setConnection(status, []);
+        set({ isLoading: false, error: String(error) });
+        throw error;
+      }
+    },
+
+    createHostedVault: async (serverUrl, name) => {
+      const status = get().statusFor(serverUrl);
+      if (!isEffectivelyConnected(status) || !status?.serverUrl) {
+        throw new Error('Connect to a Collab server before creating a hosted vault.');
+      }
+      const created = await tauriCommands.hostedVaultRequest<HostedVaultSummary>(
         status.serverUrl,
-        'GET',
+        'POST',
         '/api/v1/vaults',
+        { name },
       );
-      useVaultStore.getState().refreshHostedVaultMetadata(status.serverUrl, hostedVaults);
-      set({ hostedVaults, isLoading: false });
-    } catch (error) {
-      set({ hostedVaults: [], isLoading: false, error: String(error) });
-      throw error;
-    }
-  },
-  createHostedVault: async (name) => {
-    const status = get().status;
-    if (!isEffectivelyConnected(status) || !status?.serverUrl) {
-      throw new Error('Connect to a Collab server before creating a hosted vault.');
-    }
-    const created = await tauriCommands.hostedVaultRequest<HostedVaultSummary>(
-      status.serverUrl,
-      'POST',
-      '/api/v1/vaults',
-      { name },
-    );
-    // The creator becomes the vault admin/owner; refresh so it appears in the inventory.
-    await get().loadHostedVaults();
-    return created;
-  },
-}));
+      // The creator becomes the vault admin/owner; refresh so it appears in the inventory.
+      await get().loadHostedVaults(status.serverUrl);
+      return created;
+    },
+  };
+});

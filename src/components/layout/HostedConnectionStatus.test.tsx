@@ -42,7 +42,10 @@ const reconnect = vi.fn().mockResolvedValue(undefined);
 
 function setState(vault: HostedVaultMeta | LocalVaultMeta | null, status: ServerConnectionStatus | null) {
   useVaultStore.setState({ vault } as never);
-  useServerStore.setState({ status, reconnect } as never);
+  const connections = status?.connected && status.serverUrl
+    ? { [status.serverUrl]: { status, hostedVaults: [] } }
+    : {};
+  useServerStore.setState({ connections, reconnect } as never);
 }
 
 describe('HostedConnectionStatus', () => {
@@ -83,7 +86,10 @@ describe('HostedConnectionStatus', () => {
   });
 
   it('uses the saved untrusted-certificate preference when reconnecting from a disconnected status', async () => {
-    localStorage.setItem('collab-hosted-allow-invalid-certificates', 'true');
+    localStorage.setItem(
+      'collab-hosted-servers',
+      JSON.stringify([{ serverUrl: 'https://collab.example.test', username: '', allowInvalidCertificates: true, persistAcrossReboots: false }]),
+    );
     setState(hostedVault, { ...connected, connected: false, serverUrl: null, user: null, allowInvalidCertificates: false });
     render(<HostedConnectionStatus />);
     fireEvent.click(screen.getByText('Offline'));

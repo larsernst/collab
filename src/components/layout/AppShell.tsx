@@ -9,7 +9,6 @@ import { useServerStore } from '../../store/serverStore';
 import { createVaultClient } from '../../lib/vaultClient';
 import { onReplicaMutated } from '../../lib/vaultReplica';
 import { cn } from '../../lib/utils';
-import { vaultKind } from '../../types/vault';
 import NoteView from '../../views/NoteView';
 import ImageView from '../../views/ImageView';
 import SvgVectorView from '../../views/SvgVectorView';
@@ -127,9 +126,10 @@ export default function AppShell() {
   // the app is open. Refresh the hosted inventory periodically (and on focus) so
   // the active vault metadata updates without requiring an app restart.
   useEffect(() => {
-    if (!vault || vaultKind(vault) !== 'hosted') return;
+    if (!vault || vault.kind !== 'hosted') return;
+    const serverUrl = vault.serverUrl;
     const refreshHostedAccess = () => {
-      loadHostedVaults().catch(() => {});
+      loadHostedVaults(serverUrl).catch(() => {});
     };
     refreshHostedAccess();
     const interval = window.setInterval(refreshHostedAccess, 15000);

@@ -88,7 +88,9 @@ function PendingRow({ operation }: { operation: PendingOperation }) {
 export default function SyncStatusIndicator() {
   const vault = useVaultStore((state) => state.vault);
   const closeVault = useVaultStore((state) => state.closeVault);
-  const serverStatus = useServerStore((state) => state.status);
+  const serverStatus = useServerStore((state) =>
+    vault?.kind === 'hosted' ? state.connections[vault.serverUrl]?.status ?? null : null,
+  );
   const { status, lastSyncedAt, pending, failed, access, isSyncing, refresh, syncNow, retry, discard, removeReplica } =
     useSyncStore();
   const clear = useSyncStore((state) => state.clear);

@@ -105,7 +105,7 @@ describe('CollabProvider presence lifecycle', () => {
       chatMessages: [],
       chatTypingUntil: null,
     });
-    useServerStore.setState({ status: null } as never);
+    useServerStore.setState({ connections: {} } as never);
   });
 
   afterEach(() => {
@@ -171,7 +171,7 @@ describe('CollabProvider presence lifecycle', () => {
       },
     });
     useServerStore.setState({
-      status: {
+      connections: { 'https://collab.example.test': { hostedVaults: [], status: {
         connected: true,
         serverUrl: 'https://collab.example.test',
         allowInvalidCertificates: false,
@@ -183,7 +183,7 @@ describe('CollabProvider presence lifecycle', () => {
           status: 'active',
         },
         accessExpiresAt: '2026-06-17T12:00:00Z',
-      },
+      } } },
     } as never);
 
     render(

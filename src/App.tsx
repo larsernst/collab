@@ -292,9 +292,9 @@ export default function App() {
   }, [liveCollabDebug]);
 
   useEffect(() => {
-    useServerStore.getState().restoreSession().then((result) => {
+    useServerStore.getState().restoreAllSessions().then((result) => {
       if (result === 'failed') {
-        toast.error('Could not restore your hosted server session. Reconnect from Settings → Hosted server.', {
+        toast.error('Could not restore one of your hosted server sessions. Reconnect from Settings → Hosted server.', {
           duration: 6000,
         });
       }

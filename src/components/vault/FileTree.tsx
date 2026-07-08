@@ -70,7 +70,9 @@ function isManagedPicturesFolder(node: Pick<NoteFile, 'isFolder' | 'relativePath
 
 export default function FileTree() {
   const { vault, fileTree, refreshFileTree } = useVaultStore();
-  const serverStatus = useServerStore((state) => state.status);
+  const serverStatus = useServerStore((state) =>
+    vault?.kind === 'hosted' ? state.connections[vault.serverUrl]?.status ?? null : null,
+  );
   const { openTab, closeTab, renameTab, activeTabPath } = useEditorStore();
   const {
     setActiveView,

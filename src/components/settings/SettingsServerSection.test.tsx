@@ -6,7 +6,7 @@ import { useServerStore } from '../../store/serverStore';
 
 vi.mock('../../lib/tauri', () => ({
   tauriCommands: {
-    serverConnectionStatus: vi.fn(),
+    serverConnectionStatuses: vi.fn(),
     connectServer: vi.fn(),
     reconnectServer: vi.fn(),
     disconnectServer: vi.fn(),
@@ -21,14 +21,8 @@ describe('SettingsServerSection', () => {
   beforeEach(() => {
     localStorage.clear();
     vi.clearAllMocks();
-    useServerStore.setState({ status: null, hostedVaults: [], isLoading: false, error: null });
-    vi.mocked(tauriCommands.serverConnectionStatus).mockResolvedValue({
-      connected: false,
-      serverUrl: null,
-      allowInvalidCertificates: false,
-      user: null,
-      accessExpiresAt: null,
-    });
+    useServerStore.setState({ connections: {}, isLoading: false, error: null });
+    vi.mocked(tauriCommands.serverConnectionStatuses).mockResolvedValue([]);
   });
 
   it('connects through the typed Tauri boundary and persists only the server URL', async () => {
@@ -41,6 +35,7 @@ describe('SettingsServerSection', () => {
     });
     vi.mocked(tauriCommands.hostedVaultRequest).mockResolvedValue([]);
     render(<SettingsServerSection />);
+    fireEvent.click(screen.getByRole('button', { name: /Connect a server/ }));
     await waitFor(() => expect((screen.getByRole('button', { name: 'Connect' }) as HTMLButtonElement).disabled).toBe(false));
     fireEvent.change(screen.getByLabelText('Server URL'), { target: { value: 'https://collab.example.com' } });
     fireEvent.change(screen.getByLabelText('Username'), { target: { value: 'alice' } });
@@ -61,6 +56,7 @@ describe('SettingsServerSection', () => {
     });
     vi.mocked(tauriCommands.hostedVaultRequest).mockResolvedValue([]);
     render(<SettingsServerSection />);
+    fireEvent.click(screen.getByRole('button', { name: /Connect a server/ }));
     await waitFor(() => expect((screen.getByRole('button', { name: 'Connect' }) as HTMLButtonElement).disabled).toBe(false));
     fireEvent.change(screen.getByLabelText('Server URL'), { target: { value: 'https://collab-server.net.local' } });
     fireEvent.change(screen.getByLabelText('Username'), { target: { value: 'alice' } });
@@ -88,6 +84,7 @@ describe('SettingsServerSection', () => {
     });
     vi.mocked(tauriCommands.hostedVaultRequest).mockResolvedValue([]);
     render(<SettingsServerSection />);
+    fireEvent.click(screen.getByRole('button', { name: /Connect a server/ }));
     await waitFor(() => expect((screen.getByRole('button', { name: 'Connect' }) as HTMLButtonElement).disabled).toBe(false));
     fireEvent.change(screen.getByLabelText('Server URL'), { target: { value: 'https://collab.example.com' } });
     fireEvent.change(screen.getByLabelText('Username'), { target: { value: 'alice' } });
@@ -106,13 +103,13 @@ describe('SettingsServerSection', () => {
   });
 
   it('lets the current client always prepare hosted vaults for offline use', async () => {
-    vi.mocked(tauriCommands.serverConnectionStatus).mockResolvedValue({
+    vi.mocked(tauriCommands.serverConnectionStatuses).mockResolvedValue([{
       connected: true,
       serverUrl: 'https://collab.example.com',
       allowInvalidCertificates: false,
       user: { id: '1', username: 'alice', displayName: 'Alice', role: 'member', status: 'active' },
       accessExpiresAt: '2026-06-09T12:00:00Z',
-    });
+    }]);
     vi.mocked(tauriCommands.hostedVaultRequest).mockResolvedValue([]);
 
     render(<SettingsServerSection />);

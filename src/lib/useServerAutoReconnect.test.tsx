@@ -3,23 +3,36 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const SAVED_KEY = 'collab-hosted-server-url';
 const mocks = vi.hoisted(() => ({
-  serverState: { status: null as unknown },
+  statuses: {} as Record<string, unknown>,
   subscribers: new Set<() => void>(),
   autoReconnect: vi.fn().mockResolvedValue('failed'),
   syncAllForServer: vi.fn(),
 }));
-const { serverState, subscribers, autoReconnect, syncAllForServer } = mocks;
+const { subscribers, autoReconnect, syncAllForServer } = mocks;
 
 vi.mock('../store/serverStore', () => ({
-  SERVER_URL_KEY: 'collab-hosted-server-url',
   isEffectivelyConnected: (status: { connected?: boolean; serverUrl?: string } | null) =>
     !!status?.connected && !!status?.serverUrl,
   useServerStore: {
-    getState: () => ({ status: mocks.serverState.status, autoReconnect: mocks.autoReconnect }),
+    getState: () => ({
+      statusFor: (serverUrl: string) => mocks.statuses[serverUrl] ?? null,
+      autoReconnect: mocks.autoReconnect,
+    }),
     subscribe: (listener: () => void) => {
       mocks.subscribers.add(listener);
       return () => mocks.subscribers.delete(listener);
     },
+  },
+}));
+
+// The reconnect loop iterates the known-servers list; derive a single saved
+// server from the legacy key so the existing test bodies stay simple.
+vi.mock('../lib/hostedServers', () => ({
+  listKnownServers: () => {
+    const url = localStorage.getItem(SAVED_KEY);
+    return url
+      ? [{ serverUrl: url, username: '', allowInvalidCertificates: false, persistAcrossReboots: false }]
+      : [];
   },
 }));
 
@@ -30,6 +43,10 @@ vi.mock('../store/syncStore', () => ({
 import { AUTO_RECONNECT_INTERVAL_MS, useServerAutoReconnect } from './useServerAutoReconnect';
 
 const CONNECTED = { connected: true, serverUrl: 'https://collab.example.test' };
+
+function setConnected() {
+  mocks.statuses[CONNECTED.serverUrl] = CONNECTED;
+}
 
 function emitStoreChange() {
   for (const listener of [...subscribers]) listener();
@@ -47,7 +64,7 @@ describe('useServerAutoReconnect', () => {
     vi.clearAllMocks();
     autoReconnect.mockResolvedValue('failed');
     subscribers.clear();
-    serverState.status = null;
+    mocks.statuses = {};
     localStorage.clear();
   });
 
@@ -67,13 +84,13 @@ describe('useServerAutoReconnect', () => {
     localStorage.setItem(SAVED_KEY, CONNECTED.serverUrl);
     render(<Harness />);
     await flush();
-    expect(autoReconnect).toHaveBeenCalledTimes(1);
+    expect(autoReconnect).toHaveBeenCalledWith(CONNECTED.serverUrl);
     expect(syncAllForServer).not.toHaveBeenCalled();
   });
 
   it('does not attempt a reconnect when already effectively connected', async () => {
     localStorage.setItem(SAVED_KEY, CONNECTED.serverUrl);
-    serverState.status = CONNECTED;
+    setConnected();
     render(<Harness />);
     await flush();
     expect(autoReconnect).not.toHaveBeenCalled();
@@ -87,7 +104,7 @@ describe('useServerAutoReconnect', () => {
 
     // The session comes back (by this loop or a manual reconnect): a store change
     // fires, and the rising edge triggers the automatic sync exactly once.
-    serverState.status = CONNECTED;
+    setConnected();
     await act(async () => {
       emitStoreChange();
       await Promise.resolve();

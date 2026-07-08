@@ -365,9 +365,14 @@ function VaultsTab({
   onRequestRemove: (meta: VaultMeta) => void;
 }) {
   const { vault, recentVaults, openVault, openHostedVault, loadRecentVaults, closeVault } = useVaultStore();
-  const { status, hostedVaults, isLoading: serverLoading, refresh, loadHostedVaults, createHostedVault } = useServerStore();
+  const connections = useServerStore((state) => state.connections);
+  const serverLoading = useServerStore((state) => state.isLoading);
+  const refreshAll = useServerStore((state) => state.refreshAll);
+  const loadHostedVaults = useServerStore((state) => state.loadHostedVaults);
+  const createHostedVault = useServerStore((state) => state.createHostedVault);
   const [creating, setCreating] = useState(false);
-  const [creatingHosted, setCreatingHosted] = useState(false);
+  // The server URL whose "new hosted vault" input is open, or null.
+  const [creatingForServer, setCreatingForServer] = useState<string | null>(null);
   const [hostedName, setHostedName] = useState('');
   const [hostedBusy, setHostedBusy] = useState(false);
   const [vaults, setVaults] = useState<VaultMeta[]>(recentVaults);
@@ -380,7 +385,7 @@ function VaultsTab({
   useEffect(() => {
     loadRecentVaults().then(() => setVaults(useVaultStore.getState().recentVaults));
     // Pull the latest hosted inventory so connected users can open server vaults here too.
-    refresh().catch(() => {});
+    refreshAll().catch(() => {});
     refreshOfflineReplicas();
   }, []);
 
@@ -388,8 +393,16 @@ function VaultsTab({
   useEffect(() => { setVaults(recentVaults); }, [recentVaults]);
 
   const localVaults = vaults.filter((meta) => vaultKind(meta) === 'local');
-  const activeHostedVaults = hostedVaults.filter((hosted) => hosted.status === 'active');
-  const activeHostedKeys = new Set(activeHostedVaults.map((hosted) => `${status?.serverUrl ?? ''}|${hosted.id}`));
+  const connectedServers = Object.values(connections).filter((c) => c.status.connected && c.status.serverUrl);
+  const totalActiveHosted = connectedServers.reduce(
+    (sum, c) => sum + c.hostedVaults.filter((hosted) => hosted.status === 'active').length,
+    0,
+  );
+  const activeHostedKeys = new Set(
+    connectedServers.flatMap((c) =>
+      c.hostedVaults.filter((hosted) => hosted.status === 'active').map((hosted) => `${c.status.serverUrl}|${hosted.id}`),
+    ),
+  );
   const offlineOnlyReplicas = offlineReplicas.filter(
     (replica) => !activeHostedKeys.has(`${replica.serverUrl}|${replica.vaultId}`),
   );
@@ -401,10 +414,6 @@ function VaultsTab({
       return groups;
     }, new Map<string, ReplicaSummary[]>()),
   ).sort(([left], [right]) => left.localeCompare(right));
-  const isConnected = status?.connected === true && !!status.serverUrl;
-  // Vault creation needs a non-expired session that can make authenticated requests.
-  const canCreateHosted = isEffectivelyConnected(status);
-
   const handleOpen = async (path: string) => {
     try {
       await openVault(path);
@@ -414,10 +423,9 @@ function VaultsTab({
     }
   };
 
-  const handleOpenHosted = async (summary: HostedVaultSummary) => {
-    if (!status?.serverUrl) return;
+  const handleOpenHosted = async (serverUrl: string, summary: HostedVaultSummary) => {
     try {
-      await openHostedVault(hostedVaultMeta(status.serverUrl, summary));
+      await openHostedVault(hostedVaultMeta(serverUrl, summary));
       onClose();
     } catch (e) {
       toast.error('Failed to open hosted vault: ' + e);
@@ -457,15 +465,15 @@ function VaultsTab({
     }
   };
 
-  const handleCreateHosted = async () => {
+  const handleCreateHosted = async (serverUrl: string) => {
     const name = hostedName.trim();
-    if (!name || !status?.serverUrl) return;
+    if (!name) return;
     setHostedBusy(true);
     try {
-      const created = await createHostedVault(name);
+      const created = await createHostedVault(serverUrl, name);
       setHostedName('');
-      setCreatingHosted(false);
-      await openHostedVault(hostedVaultMeta(status.serverUrl, created));
+      setCreatingForServer(null);
+      await openHostedVault(hostedVaultMeta(serverUrl, created));
       onClose();
       toast.success(`Created hosted vault "${created.name}"`);
     } catch (e) {
@@ -538,79 +546,87 @@ function VaultsTab({
 
         {/* Vault list */}
         <div className="flex-1 overflow-y-auto min-h-0">
-          {localVaults.length === 0 && activeHostedVaults.length === 0 && offlineOnlyReplicas.length === 0 && !creating && (
+          {localVaults.length === 0 && totalActiveHosted === 0 && offlineOnlyReplicas.length === 0 && !creating && (
             <div className="flex flex-col items-center justify-center py-12 gap-2 text-muted-foreground">
               <Vault size={32} className="opacity-20" />
               <p className="text-sm">No vaults yet. Create or import one.</p>
             </div>
           )}
 
-          {/* Hosted vaults from the connected server */}
-          {isConnected && (
-            <div className="mb-4">
-              <div className="mb-2 flex items-center justify-between">
-                <span className="flex items-center gap-1.5 text-[11px] font-medium uppercase tracking-widest text-muted-foreground">
-                  <Server size={11} />
-                  Hosted · {status?.serverUrl}
-                </span>
-                <div className="flex items-center gap-0.5">
-                  {canCreateHosted && (
+          {/* Hosted vaults, grouped by connected server */}
+          {connectedServers.map(({ status, hostedVaults }) => {
+            const serverUrl = status.serverUrl!;
+            const activeHostedVaults = hostedVaults.filter((hosted) => hosted.status === 'active');
+            const canCreateHosted = isEffectivelyConnected(status);
+            return (
+              <div key={serverUrl} className="mb-4">
+                <div className="mb-2 flex items-center justify-between">
+                  <span className="flex items-center gap-1.5 text-[11px] font-medium uppercase tracking-widest text-muted-foreground">
+                    <Server size={11} />
+                    Hosted · {serverUrl}
+                  </span>
+                  <div className="flex items-center gap-0.5">
+                    {canCreateHosted && (
+                      <button
+                        onClick={() => {
+                          setCreatingForServer((value) => (value === serverUrl ? null : serverUrl));
+                          setHostedName('');
+                        }}
+                        title="New hosted vault"
+                        className="w-6 h-6 flex items-center justify-center rounded text-muted-foreground hover:text-foreground hover:bg-accent/60 transition-colors app-motion-fast"
+                      >
+                        <Plus size={13} />
+                      </button>
+                    )}
                     <button
-                      onClick={() => setCreatingHosted((value) => !value)}
-                      title="New hosted vault"
+                      onClick={() => loadHostedVaults(serverUrl).catch((reason) => toast.error(String(reason)))}
+                      title="Refresh hosted vaults"
                       className="w-6 h-6 flex items-center justify-center rounded text-muted-foreground hover:text-foreground hover:bg-accent/60 transition-colors app-motion-fast"
                     >
-                      <Plus size={13} />
+                      <RefreshCw size={12} className={serverLoading ? 'animate-spin' : undefined} />
                     </button>
-                  )}
-                  <button
-                    onClick={() => loadHostedVaults().catch((reason) => toast.error(String(reason)))}
-                    title="Refresh hosted vaults"
-                    className="w-6 h-6 flex items-center justify-center rounded text-muted-foreground hover:text-foreground hover:bg-accent/60 transition-colors app-motion-fast"
-                  >
-                    <RefreshCw size={12} className={serverLoading ? 'animate-spin' : undefined} />
-                  </button>
+                  </div>
                 </div>
-              </div>
-              {creatingHosted && canCreateHosted && (
-                <div className="mb-2 flex items-center gap-2 rounded-lg border border-border/50 bg-card/30 p-2">
-                  <Input
-                    autoFocus
-                    value={hostedName}
-                    onChange={(e) => setHostedName(e.target.value)}
-                    onKeyDown={(e) => {
-                      if (e.key === 'Enter') handleCreateHosted();
-                      if (e.key === 'Escape') { setCreatingHosted(false); setHostedName(''); }
-                    }}
-                    placeholder="New hosted vault name"
-                    className="h-7 text-sm"
-                  />
-                  <Button size="sm" className="h-7 gap-1 text-xs" disabled={hostedBusy || !hostedName.trim()} onClick={handleCreateHosted}>
-                    <Check size={12} />
-                    {hostedBusy ? 'Creating…' : 'Create'}
-                  </Button>
-                </div>
-              )}
-              <div className="flex flex-col gap-2">
-                {activeHostedVaults.map((summary) => (
-                  <HostedVaultRow
-                    key={summary.id}
-                    summary={summary}
-                    isCurrent={vault?.kind === 'hosted' && vault.hostedVaultId === summary.id}
-                    onOpen={() => handleOpenHosted(summary)}
-                    onExport={
-                      summary.role === 'admin' && status?.serverUrl
-                        ? () => handleExport(hostedVaultMeta(status.serverUrl!, summary))
-                        : undefined
-                    }
-                  />
-                ))}
-                {!serverLoading && activeHostedVaults.length === 0 && (
-                  <p className="py-2 text-center text-xs text-muted-foreground">No hosted vaults available on this server.</p>
+                {creatingForServer === serverUrl && canCreateHosted && (
+                  <div className="mb-2 flex items-center gap-2 rounded-lg border border-border/50 bg-card/30 p-2">
+                    <Input
+                      autoFocus
+                      value={hostedName}
+                      onChange={(e) => setHostedName(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter') handleCreateHosted(serverUrl);
+                        if (e.key === 'Escape') { setCreatingForServer(null); setHostedName(''); }
+                      }}
+                      placeholder="New hosted vault name"
+                      className="h-7 text-sm"
+                    />
+                    <Button size="sm" className="h-7 gap-1 text-xs" disabled={hostedBusy || !hostedName.trim()} onClick={() => handleCreateHosted(serverUrl)}>
+                      <Check size={12} />
+                      {hostedBusy ? 'Creating…' : 'Create'}
+                    </Button>
+                  </div>
                 )}
+                <div className="flex flex-col gap-2">
+                  {activeHostedVaults.map((summary) => (
+                    <HostedVaultRow
+                      key={summary.id}
+                      summary={summary}
+                      isCurrent={vault?.kind === 'hosted' && vault.hostedVaultId === summary.id && vault.serverUrl === serverUrl}
+                      onOpen={() => handleOpenHosted(serverUrl, summary)}
+                      onExport={
+                        summary.role === 'admin'
+                          ? () => handleExport(hostedVaultMeta(serverUrl, summary))
+                          : undefined
+                      }
+                    />
+                  ))}
+                  {!serverLoading && activeHostedVaults.length === 0 && (
+                    <p className="py-2 text-center text-xs text-muted-foreground">No hosted vaults available on this server.</p>
+                  )}
+                </div>
               </div>
-            </div>
-          )}
+            );
+          })}
 
           {/* Offline hosted replicas from any server */}
           {offlineReplicasByServer.map(([serverUrl, replicas]) => (
@@ -640,7 +656,7 @@ function VaultsTab({
           ))}
 
           {/* Local vaults */}
-          {(localVaults.length > 0 || isConnected || offlineOnlyReplicas.length > 0) && (
+          {(localVaults.length > 0 || connectedServers.length > 0 || offlineOnlyReplicas.length > 0) && (
             <div className="mb-2 flex items-center gap-1.5 text-[11px] font-medium uppercase tracking-widest text-muted-foreground">
               <Clock size={11} />
               Local

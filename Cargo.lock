@@ -781,7 +781,7 @@ dependencies = [
 
 [[package]]
 name = "collab"
-version = "0.6.1"
+version = "0.6.2"
 dependencies = [
  "aes-gcm",
  "anyhow",
@@ -828,7 +828,7 @@ dependencies = [
 
 [[package]]
 name = "collab-core"
-version = "0.6.1"
+version = "0.6.2"
 dependencies = [
  "hex",
  "regex",
@@ -842,7 +842,7 @@ dependencies = [
 
 [[package]]
 name = "collab-protocol"
-version = "0.6.1"
+version = "0.6.2"
 dependencies = [
  "serde",
  "serde_json",
@@ -850,7 +850,7 @@ dependencies = [
 
 [[package]]
 name = "collab-server"
-version = "0.6.1"
+version = "0.6.2"
 dependencies = [
  "anyhow",
  "argon2",

@@ -94,19 +94,23 @@ const createHostedVault = vi.fn(async () => hostedVault);
 
 function connect(connected: boolean) {
   useServerStore.setState({
-    status: connected
+    connections: connected
       ? {
-          connected: true,
-          serverUrl: 'https://collab.example.test',
-          allowInvalidCertificates: false,
-          user: { id: 'user-1', username: 'alice', displayName: 'Alice', role: 'member', status: 'active' },
-          accessExpiresAt: '2999-01-01T00:00:00Z',
+          'https://collab.example.test': {
+            status: {
+              connected: true,
+              serverUrl: 'https://collab.example.test',
+              allowInvalidCertificates: false,
+              user: { id: 'user-1', username: 'alice', displayName: 'Alice', role: 'member', status: 'active' },
+              accessExpiresAt: '2999-01-01T00:00:00Z',
+            },
+            hostedVaults: [hostedVault],
+          },
         }
-      : { connected: false, serverUrl: null, allowInvalidCertificates: false, user: null, accessExpiresAt: null },
-    hostedVaults: connected ? [hostedVault] : [],
+      : {},
     isLoading: false,
     error: null,
-    refresh: vi.fn(async () => {}),
+    refreshAll: vi.fn(async () => {}),
     loadHostedVaults: vi.fn(async () => {}),
     createHostedVault,
   } as never);
@@ -167,7 +171,7 @@ describe('VaultManagerModal hosted vaults', () => {
     fireEvent.click(await screen.findByTitle('New hosted vault'));
     fireEvent.change(screen.getByPlaceholderText('New hosted vault name'), { target: { value: 'Fresh Vault' } });
     fireEvent.click(screen.getByRole('button', { name: 'Create' }));
-    await waitFor(() => expect(createHostedVault).toHaveBeenCalledWith('Fresh Vault'));
+    await waitFor(() => expect(createHostedVault).toHaveBeenCalledWith('https://collab.example.test', 'Fresh Vault'));
     await waitFor(() =>
       expect(openHostedVault).toHaveBeenCalledWith(expect.objectContaining({ kind: 'hosted', hostedVaultId: 'vault-1' })),
     );

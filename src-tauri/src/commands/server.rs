@@ -24,6 +24,27 @@ static INSECURE_SERVER_CLIENT: LazyLock<Result<reqwest::Client, String>> = LazyL
         .map_err(|_| "Could not initialize the Collab server connection.".to_string())
 });
 
+// Live-collaboration WebSocket clients are HTTP/1.1-only. `reqwest-websocket`
+// only performs the RFC 6455 upgrade over HTTP/1.1 and errors on HTTP/2, but a
+// normal reqwest client advertises `h2` via ALPN — so a modern server (valid
+// cert, HTTP/2 enabled) would negotiate h2 and the live socket would fail while
+// REST kept working. Forcing `http1_only` here makes the upgrade succeed against
+// any server; REST keeps using the h2-capable clients above.
+static WS_SERVER_CLIENT: LazyLock<Result<reqwest::Client, String>> = LazyLock::new(|| {
+    reqwest::Client::builder()
+        .http1_only()
+        .build()
+        .map_err(|_| "Could not initialize the Collab server connection.".to_string())
+});
+
+static WS_INSECURE_SERVER_CLIENT: LazyLock<Result<reqwest::Client, String>> = LazyLock::new(|| {
+    reqwest::Client::builder()
+        .http1_only()
+        .danger_accept_invalid_certs(true)
+        .build()
+        .map_err(|_| "Could not initialize the Collab server connection.".to_string())
+});
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ServerConnectionStatus {
@@ -56,14 +77,24 @@ pub async fn connect_server(
         .map_err(server_request_error)?;
     let session = decode_session(response).await?;
     store_refresh_token(&base, &session.refresh_token, persist_across_reboots)?;
+    // Cache the refresh token in memory so later reconnects never re-read the
+    // keyring (which can prompt to unlock the Secret Service on Linux).
+    state
+        .refresh_token_cache
+        .write()
+        .insert(base.clone(), session.refresh_token.clone());
     let status = status_from_session(&base, allow_invalid_certificates, &session);
-    *state.server_session.write() = Some(ServerSessionState {
-        server_url: base,
-        allow_invalid_certificates,
-        access_token: session.access_token,
-        access_expires_at: session.access_expires_at,
-        user: session.user,
-    });
+    state.server_sessions.write().insert(
+        base.clone(),
+        ServerSessionState {
+            server_url: base,
+            allow_invalid_certificates,
+            access_token: session.access_token,
+            refresh_token: session.refresh_token,
+            access_expires_at: session.access_expires_at,
+            user: session.user,
+        },
+    );
     Ok(status)
 }
 
@@ -75,8 +106,12 @@ pub async fn reconnect_server(
     persist_across_reboots: bool,
 ) -> Result<ServerConnectionStatus, String> {
     let base = validate_server_url(&server_url)?;
-    let refresh_token =
-        read_refresh_token(&base).ok_or_else(|| "No saved server session was found.".to_string())?;
+    // Resolve the refresh token without touching the keyring on the hot path:
+    // prefer the live session, then the per-launch cache, and only read the
+    // keyring (once) when neither is primed. The keyring read primes the cache
+    // immediately, so a refresh that then fails (e.g. the server is down at
+    // startup) does not make the auto-reconnect retry loop re-read the keyring.
+    let refresh_token = resolve_refresh_token(&state, &base)?;
     let response = server_client(allow_invalid_certificates)?
         .post(format!("{base}/api/v1/auth/refresh"))
         .json(&serde_json::json!({ "refreshToken": refresh_token }))
@@ -84,21 +119,36 @@ pub async fn reconnect_server(
         .await
         .map_err(server_request_error)?;
     let session = decode_session(response).await?;
-    store_refresh_token(&base, &session.refresh_token, persist_across_reboots)?;
+    // Persist the rotated token only when it actually changed, to avoid redundant
+    // Secret Service writes (each a potential unlock prompt on Linux).
+    if should_persist_rotation(&refresh_token, &session.refresh_token) {
+        store_refresh_token(&base, &session.refresh_token, persist_across_reboots)?;
+    }
+    state
+        .refresh_token_cache
+        .write()
+        .insert(base.clone(), session.refresh_token.clone());
     let status = status_from_session(&base, allow_invalid_certificates, &session);
-    *state.server_session.write() = Some(ServerSessionState {
-        server_url: base,
-        allow_invalid_certificates,
-        access_token: session.access_token,
-        access_expires_at: session.access_expires_at,
-        user: session.user,
-    });
+    state.server_sessions.write().insert(
+        base.clone(),
+        ServerSessionState {
+            server_url: base,
+            allow_invalid_certificates,
+            access_token: session.access_token,
+            refresh_token: session.refresh_token,
+            access_expires_at: session.access_expires_at,
+            user: session.user,
+        },
+    );
     Ok(status)
 }
 
 #[tauri::command]
-pub async fn disconnect_server(state: State<'_, AppState>) -> Result<(), String> {
-    let session = state.server_session.read().clone();
+pub async fn disconnect_server(state: State<'_, AppState>, server_url: String) -> Result<(), String> {
+    let base = validate_server_url(&server_url)?;
+    // Remove only this server's session, leaving any other connected servers
+    // intact (the app can be signed in to several servers at once).
+    let session = state.server_sessions.write().remove(&base);
     if let Some(session) = session {
         if let Ok(client) = server_client(session.allow_invalid_certificates) {
             let _ = client
@@ -107,10 +157,38 @@ pub async fn disconnect_server(state: State<'_, AppState>) -> Result<(), String>
                 .send()
                 .await;
         }
-        delete_refresh_token(&session.server_url);
     }
-    *state.server_session.write() = None;
+    delete_refresh_token(&base);
+    state.refresh_token_cache.write().remove(&base);
     Ok(())
+}
+
+/// Resolves the refresh token for `base` while touching the OS keyring at most
+/// once per launch: prefers the in-memory session, then the per-launch cache,
+/// and only then reads the keyring (priming the cache with what it read).
+fn resolve_refresh_token(state: &AppState, base: &str) -> Result<String, String> {
+    if let Some(session) = state.server_sessions.read().get(base) {
+        if !session.refresh_token.is_empty() {
+            return Ok(session.refresh_token.clone());
+        }
+    }
+    if let Some(token) = state.refresh_token_cache.read().get(base) {
+        return Ok(token.clone());
+    }
+    let token =
+        read_refresh_token(base).ok_or_else(|| "No saved server session was found.".to_string())?;
+    state
+        .refresh_token_cache
+        .write()
+        .insert(base.to_string(), token.clone());
+    Ok(token)
+}
+
+/// Whether a rotated refresh token must be re-written to the keyring. Skipping
+/// an unchanged write avoids a redundant Secret Service access (a potential
+/// unlock prompt on Linux).
+fn should_persist_rotation(previous: &str, next: &str) -> bool {
+    previous != next
 }
 
 /// Whether a refresh token for `server_url` exists in the OS credential store.
@@ -123,24 +201,41 @@ pub fn server_has_saved_session(server_url: String) -> Result<bool, String> {
     Ok(read_refresh_token(&base).is_some())
 }
 
+/// One status entry per currently connected server (the app may be signed in to
+/// several at once). An empty list means no servers are connected.
 #[tauri::command]
-pub fn server_connection_status(state: State<'_, AppState>) -> ServerConnectionStatus {
-    match state.server_session.read().as_ref() {
-        Some(session) => ServerConnectionStatus {
+pub fn server_connection_statuses(state: State<'_, AppState>) -> Vec<ServerConnectionStatus> {
+    state
+        .server_sessions
+        .read()
+        .values()
+        .map(|session| ServerConnectionStatus {
             connected: true,
             server_url: Some(session.server_url.clone()),
             allow_invalid_certificates: session.allow_invalid_certificates,
             user: Some(session.user.clone()),
             access_expires_at: Some(session.access_expires_at.clone()),
-        },
-        None => ServerConnectionStatus {
-            connected: false,
-            server_url: None,
-            allow_invalid_certificates: false,
-            user: None,
-            access_expires_at: None,
-        },
-    }
+        })
+        .collect()
+}
+
+/// Resolves the connected session for `server_url`, or the given "not connected"
+/// message when the app is not signed in to that server. The message intentionally
+/// contains "Connect to the Collab server" so the frontend's
+/// `isLikelyConnectivityError` treats an unconnected server's vault as offline
+/// (replica fallback + queued writes) rather than a hard failure.
+pub(crate) fn session_for(
+    state: &AppState,
+    server_url: &str,
+    not_connected_message: &str,
+) -> Result<ServerSessionState, String> {
+    let base = validate_server_url(server_url)?;
+    state
+        .server_sessions
+        .read()
+        .get(&base)
+        .cloned()
+        .ok_or_else(|| not_connected_message.to_string())
 }
 
 #[tauri::command]
@@ -151,11 +246,11 @@ pub async fn hosted_vault_request(
     path: String,
     body: Option<Value>,
 ) -> Result<Value, String> {
-    let session =
-        state.server_session.read().clone().ok_or_else(|| {
-            "Connect to the Collab server before opening hosted vaults.".to_string()
-        })?;
-    require_connected_server(&session, &server_url)?;
+    let session = session_for(
+        &state,
+        &server_url,
+        "Connect to the Collab server before opening hosted vaults.",
+    )?;
     let method = hosted_request_method(&method)?;
     let path = validate_hosted_vault_path(&path)?;
     let mut request = server_client(session.allow_invalid_certificates)?
@@ -178,10 +273,11 @@ pub async fn hosted_ws_ticket(
     vault_id: String,
 ) -> Result<Value, String> {
     validate_identifier(&vault_id)?;
-    let session = state.server_session.read().clone().ok_or_else(|| {
-        "Connect to the Collab server before starting live collaboration.".to_string()
-    })?;
-    require_connected_server(&session, &server_url)?;
+    let session = session_for(
+        &state,
+        &server_url,
+        "Connect to the Collab server before starting live collaboration.",
+    )?;
     let response = server_client(session.allow_invalid_certificates)?
         .post(format!("{}/api/v1/auth/ws-ticket", session.server_url))
         .bearer_auth(&session.access_token)
@@ -222,10 +318,11 @@ pub async fn hosted_vault_asset_data_url(
 ) -> Result<String, String> {
     validate_identifier(&vault_id)?;
     validate_identifier(&file_id)?;
-    let session = state.server_session.read().clone().ok_or_else(|| {
-        "Connect to the Collab server before downloading hosted assets.".to_string()
-    })?;
-    require_connected_server(&session, &server_url)?;
+    let session = session_for(
+        &state,
+        &server_url,
+        "Connect to the Collab server before downloading hosted assets.",
+    )?;
     let response = server_client(session.allow_invalid_certificates)?
         .get(format!(
             "{}/api/v1/vaults/{vault_id}/files/{file_id}/content",
@@ -266,10 +363,11 @@ pub async fn hosted_vault_upload_file(
     if let Some(parent_id) = parent_id.as_deref() {
         validate_identifier(parent_id)?;
     }
-    let session = state.server_session.read().clone().ok_or_else(|| {
-        "Connect to the Collab server before uploading hosted assets.".to_string()
-    })?;
-    require_connected_server(&session, &server_url)?;
+    let session = session_for(
+        &state,
+        &server_url,
+        "Connect to the Collab server before uploading hosted assets.",
+    )?;
     let payload = super::files::read_file_for_upload(source_path)?;
     let response = server_client(session.allow_invalid_certificates)?
         .post(format!("{}/api/v1/vaults/{vault_id}/uploads", session.server_url))
@@ -296,12 +394,11 @@ pub async fn hosted_user_directory(
     server_url: String,
     query: String,
 ) -> Result<Value, String> {
-    let session = state
-        .server_session
-        .read()
-        .clone()
-        .ok_or_else(|| "Connect to the Collab server before browsing users.".to_string())?;
-    require_connected_server(&session, &server_url)?;
+    let session = session_for(
+        &state,
+        &server_url,
+        "Connect to the Collab server before browsing users.",
+    )?;
     let request = server_client(session.allow_invalid_certificates)?
         .get(format!("{}/api/v1/users/directory", session.server_url))
         .query(&[("q", query.as_str())])
@@ -320,10 +417,11 @@ pub async fn hosted_vault_export_zip(
     destination_path: String,
 ) -> Result<(), String> {
     validate_identifier(&vault_id)?;
-    let session = state.server_session.read().clone().ok_or_else(|| {
-        "Connect to the Collab server before exporting hosted vaults.".to_string()
-    })?;
-    require_connected_server(&session, &server_url)?;
+    let session = session_for(
+        &state,
+        &server_url,
+        "Connect to the Collab server before exporting hosted vaults.",
+    )?;
     let response = server_client(session.allow_invalid_certificates)?
         .get(format!(
             "{}/api/v1/vaults/{vault_id}/export",
@@ -377,6 +475,17 @@ pub(crate) fn server_client(allow_invalid_certificates: bool) -> Result<reqwest:
         &*INSECURE_SERVER_CLIENT
     } else {
         &*SERVER_CLIENT
+    };
+    client.clone()
+}
+
+/// HTTP/1.1-only client for the live-collaboration WebSocket upgrade (see the
+/// `WS_SERVER_CLIENT` note). Shares the session's untrusted-certificate choice.
+pub(crate) fn ws_server_client(allow_invalid_certificates: bool) -> Result<reqwest::Client, String> {
+    let client = if allow_invalid_certificates {
+        &*WS_INSECURE_SERVER_CLIENT
+    } else {
+        &*WS_SERVER_CLIENT
     };
     client.clone()
 }
@@ -448,14 +557,6 @@ fn validate_identifier(value: &str) -> Result<(), String> {
             .all(|character| character.is_ascii_alphanumeric() || character == '-')
     {
         return Err("Hosted-vault identifiers are invalid.".into());
-    }
-    Ok(())
-}
-
-pub(crate) fn require_connected_server(session: &ServerSessionState, server_url: &str) -> Result<(), String> {
-    let expected = validate_server_url(server_url)?;
-    if session.server_url != expected {
-        return Err("This hosted vault belongs to a different Collab server.".into());
     }
     Ok(())
 }
@@ -612,9 +713,77 @@ fn status_from_session(
 #[cfg(test)]
 mod tests {
     use super::{
-        hosted_request_method, server_request_error, validate_hosted_vault_path,
-        validate_identifier, validate_server_url,
+        hosted_request_method, server_request_error, should_persist_rotation,
+        validate_hosted_vault_path, validate_identifier, validate_server_url,
     };
+
+    #[test]
+    fn multiple_server_sessions_resolve_independently_by_url() {
+        use crate::state::{AppState, ServerSessionState};
+        use collab_protocol::{ServerUser, ServerUserRole, ServerUserStatus};
+
+        fn session(url: &str, user: &str) -> ServerSessionState {
+            ServerSessionState {
+                server_url: url.to_string(),
+                allow_invalid_certificates: false,
+                access_token: format!("{user}-access"),
+                refresh_token: format!("{user}-refresh"),
+                access_expires_at: "2099-01-01T00:00:00Z".to_string(),
+                user: ServerUser {
+                    id: user.to_string(),
+                    username: user.to_string(),
+                    display_name: user.to_string(),
+                    role: ServerUserRole::Member,
+                    status: ServerUserStatus::Active,
+                    created_at: String::new(),
+                    last_login_at: None,
+                    active_sessions: 1,
+                    is_primary_admin: false,
+                    has_avatar: false,
+                    avatar_updated_at: None,
+                    preferences: serde_json::Value::Null,
+                },
+            }
+        }
+
+        let state = AppState::new();
+        state
+            .server_sessions
+            .write()
+            .insert("https://a.example.com".to_string(), session("https://a.example.com", "alice"));
+        state
+            .server_sessions
+            .write()
+            .insert("https://b.example.com".to_string(), session("https://b.example.com", "bob"));
+
+        // Each server resolves to its own session, concurrently.
+        assert_eq!(
+            super::session_for(&state, "https://a.example.com", "nope").unwrap().access_token,
+            "alice-access"
+        );
+        assert_eq!(
+            super::session_for(&state, "https://b.example.com/admin", "nope").unwrap().user.id,
+            "bob"
+        );
+        // A server we are not connected to yields the connectivity message.
+        assert_eq!(
+            super::session_for(&state, "https://c.example.com", "not connected").unwrap_err(),
+            "not connected"
+        );
+
+        // Dropping one server leaves the other intact.
+        state.server_sessions.write().remove("https://a.example.com");
+        assert!(super::session_for(&state, "https://a.example.com", "gone").is_err());
+        assert!(super::session_for(&state, "https://b.example.com", "gone").is_ok());
+    }
+
+    #[test]
+    fn rotated_refresh_token_is_persisted_only_when_it_changes() {
+        // A server that returns the same refresh token on refresh must not
+        // trigger a redundant keyring write (which can prompt on Linux).
+        assert!(!should_persist_rotation("same-token", "same-token"));
+        assert!(should_persist_rotation("old-token", "new-token"));
+    }
 
     #[test]
     fn server_urls_require_https_except_for_local_development() {

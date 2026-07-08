@@ -3,12 +3,17 @@ use collab_protocol::ServerUser;
 use notify::RecommendedWatcher;
 use notify_debouncer_mini::Debouncer;
 use parking_lot::RwLock;
+use std::collections::HashMap;
 
 #[derive(Debug, Clone)]
 pub struct ServerSessionState {
     pub server_url: String,
     pub allow_invalid_certificates: bool,
     pub access_token: String,
+    /// Held in memory (like `access_token`) so reconnects and the auto-reconnect
+    /// retry loop can rotate the session without re-reading the OS keyring — the
+    /// keyring is otherwise touched once per launch. Never leaves the backend.
+    pub refresh_token: String,
     pub access_expires_at: String,
     pub user: ServerUser,
 }
@@ -20,8 +25,16 @@ pub struct AppState {
     /// AES-256 key derived from the vault password. Present only while the
     /// vault is unlocked. Cleared whenever a new vault is opened.
     pub encryption_key: RwLock<Option<[u8; 32]>>,
-    /// Native server access tokens are intentionally memory-only.
-    pub server_session: RwLock<Option<ServerSessionState>>,
+    /// Native server access tokens are intentionally memory-only. Keyed by
+    /// normalized server URL so the app can be connected to several hosted
+    /// servers at once; every hosted request selects its session by URL.
+    pub server_sessions: RwLock<HashMap<String, ServerSessionState>>,
+    /// In-memory cache of the current refresh token per server URL, primed from
+    /// the OS keyring on the first reconnect of a launch. Lets the reconnect
+    /// retry loop rotate the session without re-reading the keyring (which on
+    /// Linux can trigger a Secret Service unlock prompt each time). Keyed by
+    /// normalized server URL so it extends unchanged to multiple servers.
+    pub refresh_token_cache: RwLock<HashMap<String, String>>,
     /// Active backend-proxied live-collaboration WebSockets. Routing the live
     /// socket through Rust lets it reuse the session TLS config (including the
     /// untrusted-certificate opt-in), which the webview's own `WebSocket` cannot.
@@ -35,7 +48,8 @@ impl AppState {
             watcher: parking_lot::Mutex::new(None),
             note_index: RwLock::new(Vec::new()),
             encryption_key: RwLock::new(None),
-            server_session: RwLock::new(None),
+            server_sessions: RwLock::new(HashMap::new()),
+            refresh_token_cache: RwLock::new(HashMap::new()),
             live_ws: crate::commands::live_ws::LiveWsRegistry::default(),
         }
     }

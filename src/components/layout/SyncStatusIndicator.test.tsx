@@ -86,7 +86,9 @@ function recovery(id: string): PendingOperationRecovery {
 beforeEach(() => {
   vi.clearAllMocks();
   useSyncStore.getState().clear();
-  useServerStore.setState({ status: { connected: true, serverUrl: hostedVault.serverUrl } } as never);
+  useServerStore.setState({
+    connections: { [hostedVault.serverUrl]: { status: { connected: true, serverUrl: hostedVault.serverUrl }, hostedVaults: [] } },
+  } as never);
   vi.mocked(tauriCommands.replicaReadSyncState).mockResolvedValue({
     manifestSequence: 3,
     lastSyncedAt: new Date().toISOString(),
@@ -171,14 +173,16 @@ describe('SyncStatusIndicator', () => {
   });
 
   it('automatically syncs when the matching hosted server reconnects', async () => {
-    useServerStore.setState({ status: { connected: false, serverUrl: null } } as never);
+    useServerStore.setState({ connections: {} } as never);
     useVaultStore.setState({ vault: hostedVault } as never);
     render(<SyncStatusIndicator />);
 
     await screen.findByText('Synced');
     expect(syncReplicaManifestDelta).not.toHaveBeenCalled();
 
-    useServerStore.setState({ status: { connected: true, serverUrl: hostedVault.serverUrl } } as never);
+    useServerStore.setState({
+    connections: { [hostedVault.serverUrl]: { status: { connected: true, serverUrl: hostedVault.serverUrl }, hostedVaults: [] } },
+  } as never);
 
     await waitFor(() => expect(syncReplicaManifestDelta).toHaveBeenCalledWith(hostedVault));
   });

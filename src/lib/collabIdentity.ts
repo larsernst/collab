@@ -55,7 +55,9 @@ export function serverIdentityForVault(
  */
 export function useCollabIdentity(): CollabIdentity {
   const vault = useVaultStore((state) => state.vault);
-  const status = useServerStore((state) => state.status);
+  const status = useServerStore((state) =>
+    vault?.kind === 'hosted' ? state.connections[vault.serverUrl]?.status ?? null : null,
+  );
   const userId = useCollabStore((state) => state.myUserId);
   const userName = useCollabStore((state) => state.myUserName);
   const userColor = useCollabStore((state) => state.myUserColor);

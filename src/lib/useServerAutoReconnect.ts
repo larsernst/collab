@@ -1,66 +1,61 @@
 import { useEffect } from 'react';
 
-import {
-  isEffectivelyConnected,
-  SERVER_URL_KEY,
-  useServerStore,
-} from '../store/serverStore';
+import { isEffectivelyConnected, useServerStore } from '../store/serverStore';
+import { listKnownServers } from '../lib/hostedServers';
 import { useSyncStore } from '../store/syncStore';
 
 /** How often to retry a dropped/expired server session while disconnected. */
 export const AUTO_RECONNECT_INTERVAL_MS = 15_000;
 
-/** Whether we currently have a live, non-expired session to the saved server. */
-function connectedToSavedServer(): boolean {
-  const savedServerUrl = localStorage.getItem(SERVER_URL_KEY);
-  if (!savedServerUrl) return false;
-  const status = useServerStore.getState().status;
-  return isEffectivelyConnected(status) && status?.serverUrl === savedServerUrl;
+/** Whether we currently have a live, non-expired session to `serverUrl`. */
+function connectedTo(serverUrl: string): boolean {
+  return isEffectivelyConnected(useServerStore.getState().statusFor(serverUrl));
 }
 
 /**
- * Keeps the hosted server session alive automatically. While a saved session is
- * disconnected or its access token has expired, it retries a quiet refresh-token
- * reconnect on a fixed interval (and immediately when the OS reports the network
- * came back or the window regains focus). The moment a connection to the saved
- * server is (re)established — by this loop, a manual reconnect, or startup
- * restore — it runs an automatic sync of every local replica for that server, so
- * offline edits queued across all of that server's vaults are pushed without the
- * user having to act.
+ * Keeps every saved hosted server session alive automatically. For each known
+ * server that is disconnected or whose access token has expired, it retries a
+ * quiet refresh-token reconnect on a fixed interval (and immediately on the
+ * network `online` / window `focus` events). The moment a connection to a server
+ * is (re)established — by this loop, a manual reconnect, or startup restore — it
+ * runs an automatic sync of every local replica for that server, so offline edits
+ * queued across all of that server's vaults are pushed without the user acting.
  *
- * Mounted once at the app root. All work is guarded so nothing runs when there
- * is no saved session (e.g. after an explicit logout).
+ * Mounted once at the app root. All work is guarded so nothing runs for servers
+ * that have been forgotten (e.g. after an explicit logout).
  */
 export function useServerAutoReconnect(): void {
   useEffect(() => {
     let cancelled = false;
-    let wasConnected = connectedToSavedServer();
-    let reconnecting = false;
+    const wasConnected = new Map<string, boolean>();
+    const reconnecting = new Set<string>();
 
     const evaluate = async () => {
       if (cancelled) return;
-      const savedServerUrl = localStorage.getItem(SERVER_URL_KEY);
-      const connected = connectedToSavedServer();
+      await Promise.all(
+        listKnownServers().map(async ({ serverUrl }) => {
+          const connected = connectedTo(serverUrl);
 
-      // Rising edge: a connection to the saved server just came back (from any
-      // source). Push all of that server's queued offline edits.
-      if (connected && !wasConnected && savedServerUrl) {
-        void useSyncStore.getState().syncAllForServer(savedServerUrl);
-      }
-      wasConnected = connected;
+          // Rising edge: a connection to this server just came back (from any
+          // source). Push all of that server's queued offline edits.
+          if (connected && !wasConnected.get(serverUrl)) {
+            void useSyncStore.getState().syncAllForServer(serverUrl);
+          }
+          wasConnected.set(serverUrl, connected);
 
-      // Attempt a quiet reconnect while we have a saved session but no live one.
-      // `autoReconnect` only mutates the store on success, so a failed attempt
-      // does not re-trigger this via the subscription (avoiding a tight loop);
-      // the interval drives the next retry.
-      if (savedServerUrl && !connected && !reconnecting) {
-        reconnecting = true;
-        try {
-          await useServerStore.getState().autoReconnect();
-        } finally {
-          reconnecting = false;
-        }
-      }
+          // Quiet reconnect while saved but not live. `autoReconnect` only mutates
+          // the store on success, so a failed attempt does not re-trigger this via
+          // the subscription; the interval drives the next retry.
+          if (!connected && !reconnecting.has(serverUrl)) {
+            reconnecting.add(serverUrl);
+            try {
+              await useServerStore.getState().autoReconnect(serverUrl);
+            } finally {
+              reconnecting.delete(serverUrl);
+            }
+          }
+        }),
+      );
     };
 
     // React to store changes (reconnect success, manual reconnect, disconnect).

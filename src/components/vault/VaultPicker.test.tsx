@@ -55,21 +55,25 @@ describe('VaultPicker hosted vaults', () => {
       loadRecentVaults: vi.fn(async () => {}),
     });
     useServerStore.setState({
-      status: {
-        connected: true,
-        serverUrl: 'https://collab.example.test',
-        allowInvalidCertificates: false,
-        user: { id: 'user-1', username: 'alice', displayName: 'Alice', role: 'member', status: 'active' },
-        accessExpiresAt: '2999-01-01T00:00:00Z',
+      connections: {
+        'https://collab.example.test': {
+          status: {
+            connected: true,
+            serverUrl: 'https://collab.example.test',
+            allowInvalidCertificates: false,
+            user: { id: 'user-1', username: 'alice', displayName: 'Alice', role: 'member', status: 'active' },
+            accessExpiresAt: '2999-01-01T00:00:00Z',
+          },
+          hostedVaults: [hostedVault],
+        },
       },
-      hostedVaults: [hostedVault],
       isLoading: false,
       error: null,
-      refresh: vi.fn(async () => {}),
+      refreshAll: vi.fn(async () => {}),
       loadHostedVaults: vi.fn(async () => {}),
       createHostedVault,
       disconnect,
-    });
+    } as never);
   });
 
   it('opens a listed hosted vault with server-backed metadata', async () => {
@@ -91,7 +95,7 @@ describe('VaultPicker hosted vaults', () => {
     fireEvent.change(screen.getByPlaceholderText('New hosted vault name'), { target: { value: 'Fresh Vault' } });
     fireEvent.click(screen.getByRole('button', { name: 'Create' }));
 
-    await waitFor(() => expect(createHostedVault).toHaveBeenCalledWith('Fresh Vault'));
+    await waitFor(() => expect(createHostedVault).toHaveBeenCalledWith('https://collab.example.test', 'Fresh Vault'));
     await waitFor(() => expect(openHostedVault).toHaveBeenCalledWith(expect.objectContaining({
       kind: 'hosted',
       hostedVaultId: 'vault-1',
@@ -100,8 +104,7 @@ describe('VaultPicker hosted vaults', () => {
 
   it('reveals an inline hosted login form when disconnected', async () => {
     useServerStore.setState({
-      status: { connected: false, serverUrl: null, allowInvalidCertificates: false, user: null, accessExpiresAt: null },
-      hostedVaults: [],
+      connections: {},
     });
 
     render(<VaultPicker />);
@@ -142,8 +145,7 @@ describe('VaultPicker hosted vaults', () => {
       },
     ]);
     useServerStore.setState({
-      status: { connected: false, serverUrl: null, allowInvalidCertificates: false, user: null, accessExpiresAt: null },
-      hostedVaults: [],
+      connections: {},
     });
 
     render(<VaultPicker />);
@@ -178,8 +180,7 @@ describe('VaultPicker hosted vaults', () => {
       .mockResolvedValueOnce([staleReplica])
       .mockResolvedValueOnce([]);
     useServerStore.setState({
-      status: { connected: false, serverUrl: null, allowInvalidCertificates: false, user: null, accessExpiresAt: null },
-      hostedVaults: [],
+      connections: {},
     });
 
     render(<VaultPicker />);
