@@ -1,5 +1,6 @@
 use crate::state::{AppState, ServerSessionState};
 use base64::Engine as _;
+use chrono::{DateTime, Duration, Utc};
 use collab_protocol::{DataResponse, ErrorResponse, NativeSession, ServerUser};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -10,6 +11,7 @@ use tokio::io::AsyncWriteExt;
 use url::Url;
 
 const KEYRING_SERVICE: &str = "collab-server";
+const ACCESS_REFRESH_SKEW_SECONDS: i64 = 120;
 
 static SERVER_CLIENT: LazyLock<Result<reqwest::Client, String>> = LazyLock::new(|| {
     reqwest::Client::builder()
@@ -89,6 +91,7 @@ pub async fn connect_server(
         ServerSessionState {
             server_url: base,
             allow_invalid_certificates,
+            persist_across_reboots,
             access_token: session.access_token,
             refresh_token: session.refresh_token,
             access_expires_at: session.access_expires_at,
@@ -106,45 +109,29 @@ pub async fn reconnect_server(
     persist_across_reboots: bool,
 ) -> Result<ServerConnectionStatus, String> {
     let base = validate_server_url(&server_url)?;
-    // Resolve the refresh token without touching the keyring on the hot path:
-    // prefer the live session, then the per-launch cache, and only read the
-    // keyring (once) when neither is primed. The keyring read primes the cache
-    // immediately, so a refresh that then fails (e.g. the server is down at
-    // startup) does not make the auto-reconnect retry loop re-read the keyring.
-    let refresh_token = resolve_refresh_token(&state, &base)?;
-    let response = server_client(allow_invalid_certificates)?
-        .post(format!("{base}/api/v1/auth/refresh"))
-        .json(&serde_json::json!({ "refreshToken": refresh_token }))
-        .send()
-        .await
-        .map_err(server_request_error)?;
-    let session = decode_session(response).await?;
-    // Persist the rotated token only when it actually changed, to avoid redundant
-    // Secret Service writes (each a potential unlock prompt on Linux).
-    if should_persist_rotation(&refresh_token, &session.refresh_token) {
-        store_refresh_token(&base, &session.refresh_token, persist_across_reboots)?;
-    }
-    state
-        .refresh_token_cache
-        .write()
-        .insert(base.clone(), session.refresh_token.clone());
-    let status = status_from_session(&base, allow_invalid_certificates, &session);
-    state.server_sessions.write().insert(
-        base.clone(),
-        ServerSessionState {
-            server_url: base,
-            allow_invalid_certificates,
-            access_token: session.access_token,
-            refresh_token: session.refresh_token,
-            access_expires_at: session.access_expires_at,
-            user: session.user,
-        },
-    );
+    let session = refresh_session_locked(
+        &state,
+        &base,
+        allow_invalid_certificates,
+        persist_across_reboots,
+        false,
+    )
+    .await?;
+    let status = ServerConnectionStatus {
+        connected: true,
+        server_url: Some(session.server_url),
+        allow_invalid_certificates: session.allow_invalid_certificates,
+        user: Some(session.user),
+        access_expires_at: Some(session.access_expires_at),
+    };
     Ok(status)
 }
 
 #[tauri::command]
-pub async fn disconnect_server(state: State<'_, AppState>, server_url: String) -> Result<(), String> {
+pub async fn disconnect_server(
+    state: State<'_, AppState>,
+    server_url: String,
+) -> Result<(), String> {
     let base = validate_server_url(&server_url)?;
     // Remove only this server's session, leaving any other connected servers
     // intact (the app can be signed in to several servers at once).
@@ -166,7 +153,11 @@ pub async fn disconnect_server(state: State<'_, AppState>, server_url: String) -
 /// Resolves the refresh token for `base` while touching the OS keyring at most
 /// once per launch: prefers the in-memory session, then the per-launch cache,
 /// and only then reads the keyring (priming the cache with what it read).
-fn resolve_refresh_token(state: &AppState, base: &str) -> Result<String, String> {
+fn resolve_refresh_token(
+    state: &AppState,
+    base: &str,
+    persist_across_reboots: bool,
+) -> Result<String, String> {
     if let Some(session) = state.server_sessions.read().get(base) {
         if !session.refresh_token.is_empty() {
             return Ok(session.refresh_token.clone());
@@ -175,8 +166,8 @@ fn resolve_refresh_token(state: &AppState, base: &str) -> Result<String, String>
     if let Some(token) = state.refresh_token_cache.read().get(base) {
         return Ok(token.clone());
     }
-    let token =
-        read_refresh_token(base).ok_or_else(|| "No saved server session was found.".to_string())?;
+    let token = read_refresh_token(base, persist_across_reboots)
+        .ok_or_else(|| "No saved server session was found.".to_string())?;
     state
         .refresh_token_cache
         .write()
@@ -191,6 +182,68 @@ fn should_persist_rotation(previous: &str, next: &str) -> bool {
     previous != next
 }
 
+fn access_token_needs_refresh(session: &ServerSessionState) -> bool {
+    DateTime::parse_from_rfc3339(&session.access_expires_at)
+        .map(|expires| {
+            expires.with_timezone(&Utc)
+                <= Utc::now() + Duration::seconds(ACCESS_REFRESH_SKEW_SECONDS)
+        })
+        .unwrap_or(false)
+}
+
+async fn refresh_session_locked(
+    state: &AppState,
+    base: &str,
+    allow_invalid_certificates: bool,
+    persist_across_reboots: bool,
+    only_if_needed: bool,
+) -> Result<ServerSessionState, String> {
+    let _guard = state.server_refresh_lock.lock().await;
+
+    if let Some(current) = state.server_sessions.read().get(base).cloned() {
+        if only_if_needed && !access_token_needs_refresh(&current) {
+            return Ok(current);
+        }
+    }
+
+    // Resolve the refresh token without touching the keyring on the hot path:
+    // prefer the live session, then the per-launch cache, and only read the
+    // keyring (once) when neither is primed. The keyring read primes the cache
+    // immediately, so a refresh that then fails (e.g. the server is down at
+    // startup) does not make the auto-reconnect retry loop re-read the keyring.
+    let refresh_token = resolve_refresh_token(state, base, persist_across_reboots)?;
+    let response = server_client(allow_invalid_certificates)?
+        .post(format!("{base}/api/v1/auth/refresh"))
+        .json(&serde_json::json!({ "refreshToken": refresh_token }))
+        .send()
+        .await
+        .map_err(server_request_error)?;
+    let session = decode_session(response).await?;
+    // Persist the rotated token only when it actually changed, to avoid redundant
+    // Secret Service writes (each a potential unlock prompt on Linux).
+    if should_persist_rotation(&refresh_token, &session.refresh_token) {
+        store_refresh_token(base, &session.refresh_token, persist_across_reboots)?;
+    }
+    state
+        .refresh_token_cache
+        .write()
+        .insert(base.to_string(), session.refresh_token.clone());
+    let next = ServerSessionState {
+        server_url: base.to_string(),
+        allow_invalid_certificates,
+        persist_across_reboots,
+        access_token: session.access_token,
+        refresh_token: session.refresh_token,
+        access_expires_at: session.access_expires_at,
+        user: session.user,
+    };
+    state
+        .server_sessions
+        .write()
+        .insert(base.to_string(), next.clone());
+    Ok(next)
+}
+
 /// Whether a refresh token for `server_url` exists in the OS credential store.
 /// Used to decide if an automatic startup reconnect should even be attempted, so
 /// a stale saved server URL (e.g. left over after a disconnect) does not surface
@@ -198,7 +251,7 @@ fn should_persist_rotation(previous: &str, next: &str) -> bool {
 #[tauri::command]
 pub fn server_has_saved_session(server_url: String) -> Result<bool, String> {
     let base = validate_server_url(&server_url)?;
-    Ok(read_refresh_token(&base).is_some())
+    Ok(read_refresh_token(&base, true).is_some())
 }
 
 /// One status entry per currently connected server (the app may be signed in to
@@ -238,6 +291,25 @@ pub(crate) fn session_for(
         .ok_or_else(|| not_connected_message.to_string())
 }
 
+pub(crate) async fn fresh_session_for(
+    state: &AppState,
+    server_url: &str,
+    not_connected_message: &str,
+) -> Result<ServerSessionState, String> {
+    let session = session_for(state, server_url, not_connected_message)?;
+    if !access_token_needs_refresh(&session) {
+        return Ok(session);
+    }
+    refresh_session_locked(
+        state,
+        &session.server_url,
+        session.allow_invalid_certificates,
+        session.persist_across_reboots,
+        true,
+    )
+    .await
+}
+
 #[tauri::command]
 pub async fn hosted_vault_request(
     state: State<'_, AppState>,
@@ -246,11 +318,12 @@ pub async fn hosted_vault_request(
     path: String,
     body: Option<Value>,
 ) -> Result<Value, String> {
-    let session = session_for(
+    let session = fresh_session_for(
         &state,
         &server_url,
         "Connect to the Collab server before opening hosted vaults.",
-    )?;
+    )
+    .await?;
     let method = hosted_request_method(&method)?;
     let path = validate_hosted_vault_path(&path)?;
     let mut request = server_client(session.allow_invalid_certificates)?
@@ -273,11 +346,12 @@ pub async fn hosted_ws_ticket(
     vault_id: String,
 ) -> Result<Value, String> {
     validate_identifier(&vault_id)?;
-    let session = session_for(
+    let session = fresh_session_for(
         &state,
         &server_url,
         "Connect to the Collab server before starting live collaboration.",
-    )?;
+    )
+    .await?;
     let response = server_client(session.allow_invalid_certificates)?
         .post(format!("{}/api/v1/auth/ws-ticket", session.server_url))
         .bearer_auth(&session.access_token)
@@ -318,11 +392,12 @@ pub async fn hosted_vault_asset_data_url(
 ) -> Result<String, String> {
     validate_identifier(&vault_id)?;
     validate_identifier(&file_id)?;
-    let session = session_for(
+    let session = fresh_session_for(
         &state,
         &server_url,
         "Connect to the Collab server before downloading hosted assets.",
-    )?;
+    )
+    .await?;
     let response = server_client(session.allow_invalid_certificates)?
         .get(format!(
             "{}/api/v1/vaults/{vault_id}/files/{file_id}/content",
@@ -363,14 +438,18 @@ pub async fn hosted_vault_upload_file(
     if let Some(parent_id) = parent_id.as_deref() {
         validate_identifier(parent_id)?;
     }
-    let session = session_for(
+    let session = fresh_session_for(
         &state,
         &server_url,
         "Connect to the Collab server before uploading hosted assets.",
-    )?;
+    )
+    .await?;
     let payload = super::files::read_file_for_upload(source_path)?;
     let response = server_client(session.allow_invalid_certificates)?
-        .post(format!("{}/api/v1/vaults/{vault_id}/uploads", session.server_url))
+        .post(format!(
+            "{}/api/v1/vaults/{vault_id}/uploads",
+            session.server_url
+        ))
         .bearer_auth(&session.access_token)
         .json(&serde_json::json!({
             "parentId": parent_id,
@@ -394,11 +473,12 @@ pub async fn hosted_user_directory(
     server_url: String,
     query: String,
 ) -> Result<Value, String> {
-    let session = session_for(
+    let session = fresh_session_for(
         &state,
         &server_url,
         "Connect to the Collab server before browsing users.",
-    )?;
+    )
+    .await?;
     let request = server_client(session.allow_invalid_certificates)?
         .get(format!("{}/api/v1/users/directory", session.server_url))
         .query(&[("q", query.as_str())])
@@ -417,11 +497,12 @@ pub async fn hosted_vault_export_zip(
     destination_path: String,
 ) -> Result<(), String> {
     validate_identifier(&vault_id)?;
-    let session = session_for(
+    let session = fresh_session_for(
         &state,
         &server_url,
         "Connect to the Collab server before exporting hosted vaults.",
-    )?;
+    )
+    .await?;
     let response = server_client(session.allow_invalid_certificates)?
         .get(format!(
             "{}/api/v1/vaults/{vault_id}/export",
@@ -481,7 +562,9 @@ pub(crate) fn server_client(allow_invalid_certificates: bool) -> Result<reqwest:
 
 /// HTTP/1.1-only client for the live-collaboration WebSocket upgrade (see the
 /// `WS_SERVER_CLIENT` note). Shares the session's untrusted-certificate choice.
-pub(crate) fn ws_server_client(allow_invalid_certificates: bool) -> Result<reqwest::Client, String> {
+pub(crate) fn ws_server_client(
+    allow_invalid_certificates: bool,
+) -> Result<reqwest::Client, String> {
     let client = if allow_invalid_certificates {
         &*WS_INSECURE_SERVER_CLIENT
     } else {
@@ -633,26 +716,26 @@ fn store_refresh_token(
         // Intentionally do NOT touch the Secret Service on this default path:
         // reading or deleting from a locked collection could trigger the unlock
         // prompt this silent path exists to avoid. A stale Secret Service token
-        // from a previous opt-in is harmless — keyutils is read first, the server
-        // rotates the refresh token on next use, and explicit disconnect clears
-        // both backends.
+        // from a previous opt-in is harmless: silent reconnects ignore it, and
+        // explicit disconnect clears both backends.
     }
     Ok(())
 }
 
 #[cfg(target_os = "linux")]
-fn read_refresh_token(server_url: &str) -> Option<String> {
-    // Read from both backends so a saved token is found regardless of the
-    // current preference (e.g. after the user flips the toggle, or after
-    // upgrading from a version that only used the Secret Service).
-    keyutils_entry(server_url)
+fn read_refresh_token(server_url: &str, persist_across_reboots: bool) -> Option<String> {
+    let keyutils_token = keyutils_entry(server_url)
+        .ok()
+        .and_then(|entry| entry.get_password().ok());
+    if keyutils_token.is_some() || !persist_across_reboots {
+        return keyutils_token;
+    }
+    // Secret Service is durable but can prompt to unlock the desktop keyring, so
+    // only read it when the saved server preference explicitly asked for
+    // cross-reboot persistence.
+    secret_service_entry(server_url)
         .ok()
         .and_then(|entry| entry.get_password().ok())
-        .or_else(|| {
-            secret_service_entry(server_url)
-                .ok()
-                .and_then(|entry| entry.get_password().ok())
-        })
 }
 
 #[cfg(target_os = "linux")]
@@ -677,13 +760,15 @@ fn store_refresh_token(
     refresh_token: &str,
     _persist_across_reboots: bool,
 ) -> Result<(), String> {
-    native_entry(server_url)?.set_password(refresh_token).map_err(|_| {
-        "Could not save the server session in the operating system credential store.".into()
-    })
+    native_entry(server_url)?
+        .set_password(refresh_token)
+        .map_err(|_| {
+            "Could not save the server session in the operating system credential store.".into()
+        })
 }
 
 #[cfg(not(target_os = "linux"))]
-fn read_refresh_token(server_url: &str) -> Option<String> {
+fn read_refresh_token(server_url: &str, _persist_across_reboots: bool) -> Option<String> {
     native_entry(server_url)
         .ok()
         .and_then(|entry| entry.get_password().ok())
@@ -726,6 +811,7 @@ mod tests {
             ServerSessionState {
                 server_url: url.to_string(),
                 allow_invalid_certificates: false,
+                persist_across_reboots: false,
                 access_token: format!("{user}-access"),
                 refresh_token: format!("{user}-refresh"),
                 access_expires_at: "2099-01-01T00:00:00Z".to_string(),
@@ -747,22 +833,27 @@ mod tests {
         }
 
         let state = AppState::new();
-        state
-            .server_sessions
-            .write()
-            .insert("https://a.example.com".to_string(), session("https://a.example.com", "alice"));
-        state
-            .server_sessions
-            .write()
-            .insert("https://b.example.com".to_string(), session("https://b.example.com", "bob"));
+        state.server_sessions.write().insert(
+            "https://a.example.com".to_string(),
+            session("https://a.example.com", "alice"),
+        );
+        state.server_sessions.write().insert(
+            "https://b.example.com".to_string(),
+            session("https://b.example.com", "bob"),
+        );
 
         // Each server resolves to its own session, concurrently.
         assert_eq!(
-            super::session_for(&state, "https://a.example.com", "nope").unwrap().access_token,
+            super::session_for(&state, "https://a.example.com", "nope")
+                .unwrap()
+                .access_token,
             "alice-access"
         );
         assert_eq!(
-            super::session_for(&state, "https://b.example.com/admin", "nope").unwrap().user.id,
+            super::session_for(&state, "https://b.example.com/admin", "nope")
+                .unwrap()
+                .user
+                .id,
             "bob"
         );
         // A server we are not connected to yields the connectivity message.
@@ -772,7 +863,10 @@ mod tests {
         );
 
         // Dropping one server leaves the other intact.
-        state.server_sessions.write().remove("https://a.example.com");
+        state
+            .server_sessions
+            .write()
+            .remove("https://a.example.com");
         assert!(super::session_for(&state, "https://a.example.com", "gone").is_err());
         assert!(super::session_for(&state, "https://b.example.com", "gone").is_ok());
     }

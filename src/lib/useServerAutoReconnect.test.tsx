@@ -13,6 +13,8 @@ const { subscribers, autoReconnect, syncAllForServer } = mocks;
 vi.mock('../store/serverStore', () => ({
   isEffectivelyConnected: (status: { connected?: boolean; serverUrl?: string } | null) =>
     !!status?.connected && !!status?.serverUrl,
+  shouldRefreshServerSession: (status: { connected?: boolean; serverUrl?: string; refreshSoon?: boolean } | null) =>
+    !status?.connected || status.refreshSoon === true,
   useServerStore: {
     getState: () => ({
       statusFor: (serverUrl: string) => mocks.statuses[serverUrl] ?? null,
@@ -43,6 +45,7 @@ vi.mock('../store/syncStore', () => ({
 import { AUTO_RECONNECT_INTERVAL_MS, useServerAutoReconnect } from './useServerAutoReconnect';
 
 const CONNECTED = { connected: true, serverUrl: 'https://collab.example.test' };
+const NEAR_EXPIRY = { ...CONNECTED, refreshSoon: true };
 
 function setConnected() {
   mocks.statuses[CONNECTED.serverUrl] = CONNECTED;
@@ -94,6 +97,14 @@ describe('useServerAutoReconnect', () => {
     render(<Harness />);
     await flush();
     expect(autoReconnect).not.toHaveBeenCalled();
+  });
+
+  it('refreshes proactively when an effective connection is close to expiry', async () => {
+    localStorage.setItem(SAVED_KEY, CONNECTED.serverUrl);
+    mocks.statuses[CONNECTED.serverUrl] = NEAR_EXPIRY;
+    render(<Harness />);
+    await flush();
+    expect(autoReconnect).toHaveBeenCalledWith(CONNECTED.serverUrl);
   });
 
   it('syncs all of the server\'s replicas when the connection is (re)established', async () => {

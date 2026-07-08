@@ -13,6 +13,7 @@ import type { HostedVaultSummary } from '../types/vault';
 // to restore lives in `hostedServers` (`collab-hosted-servers`).
 export const SERVER_URL_KEY = 'collab-hosted-server-url';
 const NO_SAVED_SESSION_MESSAGE = 'No saved server session was found.';
+export const SERVER_SESSION_REFRESH_SKEW_MS = 120_000;
 
 export type RestoreSessionResult = 'connected' | 'failed' | 'skipped';
 
@@ -40,6 +41,15 @@ export function isEffectivelyConnected(
   now: number = Date.now(),
 ): boolean {
   return status?.connected === true && !!status.serverUrl && !isServerSessionExpired(status, now);
+}
+
+export function shouldRefreshServerSession(
+  status: ServerConnectionStatus | null,
+  now: number = Date.now(),
+): boolean {
+  if (!status?.connected || !status.serverUrl || !status.accessExpiresAt) return !status?.connected;
+  const expiry = Date.parse(status.accessExpiresAt);
+  return Number.isFinite(expiry) && expiry <= now + SERVER_SESSION_REFRESH_SKEW_MS;
 }
 
 /** A single connected server: its status plus its loaded hosted-vault inventory. */
@@ -201,7 +211,8 @@ export const useServerStore = create<ServerState>()((set, get) => {
     autoReconnect: async (serverUrl) => {
       const known = knownServerFor(serverUrl);
       if (!known) return 'skipped';
-      if (isEffectivelyConnected(get().statusFor(serverUrl))) return 'connected';
+      const status = get().statusFor(serverUrl);
+      if (isEffectivelyConnected(status) && !shouldRefreshServerSession(status)) return 'connected';
       try {
         const status = await tauriCommands.reconnectServer(serverUrl, known.allowInvalidCertificates, known.persistAcrossReboots);
         // Only mutate the store on success so a failed background attempt causes

@@ -1,6 +1,12 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { tauriCommands } from '../lib/tauri';
-import { useServerStore, isServerSessionExpired, isEffectivelyConnected, type ServerConnection } from './serverStore';
+import {
+  useServerStore,
+  isServerSessionExpired,
+  isEffectivelyConnected,
+  shouldRefreshServerSession,
+  type ServerConnection,
+} from './serverStore';
 import { useVaultStore } from './vaultStore';
 
 vi.mock('../lib/tauri', () => ({
@@ -147,6 +153,18 @@ describe('serverStore', () => {
       expect(tauriCommands.reconnectServer).not.toHaveBeenCalled();
     });
 
+    it('refreshes proactively when the access token is close to expiry', async () => {
+      localStorage.setItem('collab-hosted-server-url', SERVER_URL);
+      const nearExpiry = { ...connected, accessExpiresAt: new Date(Date.now() + 30_000).toISOString() };
+      useServerStore.setState({ connections: seed(nearExpiry) });
+      vi.mocked(tauriCommands.reconnectServer).mockResolvedValue(connected);
+      vi.mocked(tauriCommands.hostedVaultRequest).mockResolvedValue([hostedVault]);
+
+      expect(await useServerStore.getState().autoReconnect(SERVER_URL)).toBe('connected');
+      expect(tauriCommands.reconnectServer).toHaveBeenCalledWith(SERVER_URL, false, false);
+      expect(useServerStore.getState().statusFor(SERVER_URL)).toEqual(connected);
+    });
+
     it('reconnects from the saved refresh token and loads hosted vaults', async () => {
       localStorage.setItem('collab-hosted-server-url', SERVER_URL);
       vi.mocked(tauriCommands.reconnectServer).mockResolvedValue(connected);
@@ -190,6 +208,20 @@ describe('isEffectivelyConnected', () => {
 
   it('is false when the access token has expired', () => {
     expect(isEffectivelyConnected({ ...connected, accessExpiresAt: '2026-06-11T09:00:00Z' }, now)).toBe(false);
+  });
+});
+
+describe('shouldRefreshServerSession', () => {
+  const now = Date.parse('2026-06-11T10:00:00Z');
+
+  it('is true when disconnected or close to access-token expiry', () => {
+    expect(shouldRefreshServerSession(null, now)).toBe(true);
+    expect(shouldRefreshServerSession({ ...connected, connected: false }, now)).toBe(true);
+    expect(shouldRefreshServerSession({ ...connected, accessExpiresAt: '2026-06-11T10:01:00Z' }, now)).toBe(true);
+  });
+
+  it('is false for a connected session with enough access-token lifetime left', () => {
+    expect(shouldRefreshServerSession({ ...connected, accessExpiresAt: '2026-06-11T10:05:00Z' }, now)).toBe(false);
   });
 });
 

@@ -9,6 +9,7 @@ use std::collections::HashMap;
 pub struct ServerSessionState {
     pub server_url: String,
     pub allow_invalid_certificates: bool,
+    pub persist_across_reboots: bool,
     pub access_token: String,
     /// Held in memory (like `access_token`) so reconnects and the auto-reconnect
     /// retry loop can rotate the session without re-reading the OS keyring — the
@@ -35,6 +36,10 @@ pub struct AppState {
     /// Linux can trigger a Secret Service unlock prompt each time). Keyed by
     /// normalized server URL so it extends unchanged to multiple servers.
     pub refresh_token_cache: RwLock<HashMap<String, String>>,
+    /// Serializes native refresh-token rotation. Refresh tokens are single-use on
+    /// the server; concurrent refreshes with the same token would otherwise
+    /// revoke the session.
+    pub server_refresh_lock: tokio::sync::Mutex<()>,
     /// Active backend-proxied live-collaboration WebSockets. Routing the live
     /// socket through Rust lets it reuse the session TLS config (including the
     /// untrusted-certificate opt-in), which the webview's own `WebSocket` cannot.
@@ -50,6 +55,7 @@ impl AppState {
             encryption_key: RwLock::new(None),
             server_sessions: RwLock::new(HashMap::new()),
             refresh_token_cache: RwLock::new(HashMap::new()),
+            server_refresh_lock: tokio::sync::Mutex::new(()),
             live_ws: crate::commands::live_ws::LiveWsRegistry::default(),
         }
     }

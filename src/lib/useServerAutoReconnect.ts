@@ -1,6 +1,6 @@
 import { useEffect } from 'react';
 
-import { isEffectivelyConnected, useServerStore } from '../store/serverStore';
+import { isEffectivelyConnected, shouldRefreshServerSession, useServerStore } from '../store/serverStore';
 import { listKnownServers } from '../lib/hostedServers';
 import { useSyncStore } from '../store/syncStore';
 
@@ -10,6 +10,10 @@ export const AUTO_RECONNECT_INTERVAL_MS = 15_000;
 /** Whether we currently have a live, non-expired session to `serverUrl`. */
 function connectedTo(serverUrl: string): boolean {
   return isEffectivelyConnected(useServerStore.getState().statusFor(serverUrl));
+}
+
+function needsRefresh(serverUrl: string): boolean {
+  return shouldRefreshServerSession(useServerStore.getState().statusFor(serverUrl));
 }
 
 /**
@@ -46,7 +50,7 @@ export function useServerAutoReconnect(): void {
           // Quiet reconnect while saved but not live. `autoReconnect` only mutates
           // the store on success, so a failed attempt does not re-trigger this via
           // the subscription; the interval drives the next retry.
-          if (!connected && !reconnecting.has(serverUrl)) {
+          if ((!connected || needsRefresh(serverUrl)) && !reconnecting.has(serverUrl)) {
             reconnecting.add(serverUrl);
             try {
               await useServerStore.getState().autoReconnect(serverUrl);
