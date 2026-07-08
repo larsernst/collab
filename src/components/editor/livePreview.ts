@@ -557,6 +557,122 @@ interface Item {
   to: number;
   deco: Decoration;
   excl: boolean; // replace/widget decorations are exclusive (cannot overlap)
+  debug?: InlineDebugItem;
+}
+
+interface InlineDebugItem {
+  kind: 'hide' | 'mark' | 'widget';
+  className?: string;
+  widget?: string;
+}
+
+interface FormatSpan {
+  from: number;
+  to: number;
+  contentFrom: number;
+  contentTo: number;
+  marker: string;
+  className: string;
+}
+
+function rangesOverlap(aFrom: number, aTo: number, bFrom: number, bTo: number) {
+  return aFrom < bTo && bFrom < aTo;
+}
+
+function codeRanges(text: string, start: number, end: number): Array<{ from: number; to: number }> {
+  const ranges: Array<{ from: number; to: number }> = [];
+  let i = start;
+  while (i < end) {
+    if (text[i] !== '`') {
+      i += 1;
+      continue;
+    }
+    const close = text.indexOf('`', i + 1);
+    if (close === -1 || close >= end) break;
+    ranges.push({ from: i, to: close + 1 });
+    i = close + 1;
+  }
+  return ranges;
+}
+
+function insideAnyRange(index: number, ranges: Array<{ from: number; to: number }>) {
+  return ranges.some((range) => index >= range.from && index < range.to);
+}
+
+function isSingleDelimiter(text: string, index: number, marker: '*' | '_') {
+  return text[index] === marker && text[index - 1] !== marker && text[index + 1] !== marker;
+}
+
+function validUnderscoreItalicClose(text: string, closeEnd: number) {
+  const after = text[closeEnd];
+  return !after || !/\w/.test(after);
+}
+
+function findClosingMarker(
+  text: string,
+  marker: string,
+  from: number,
+  end: number,
+  protectedRanges: Array<{ from: number; to: number }>,
+) {
+  for (let i = from; i <= end - marker.length; i += 1) {
+    if (insideAnyRange(i, protectedRanges)) continue;
+    if (marker.length === 1 && !isSingleDelimiter(text, i, marker as '*' | '_')) continue;
+    if (text.startsWith(marker, i)) {
+      if (marker === '_' && !validUnderscoreItalicClose(text, i + 1)) continue;
+      return i;
+    }
+  }
+  return -1;
+}
+
+function findFormattedSpans(text: string, start = 0, end = text.length): FormatSpan[] {
+  const spans: FormatSpan[] = [];
+  const protectedRanges = codeRanges(text, start, end);
+
+  for (let i = start; i < end; i += 1) {
+    if (insideAnyRange(i, protectedRanges)) continue;
+
+    const candidates: Array<{ marker: string; className: string }> = [];
+    if (text.startsWith('**', i)) candidates.push({ marker: '**', className: 'cm-lp-strong' });
+    if (text.startsWith('__', i)) candidates.push({ marker: '__', className: 'cm-lp-strong' });
+    if (text.startsWith('~~', i)) candidates.push({ marker: '~~', className: 'cm-lp-strike' });
+    if (text.startsWith('==', i)) candidates.push({ marker: '==', className: 'cm-lp-mark' });
+    if (isSingleDelimiter(text, i, '*')) candidates.push({ marker: '*', className: 'cm-lp-em' });
+    if (isSingleDelimiter(text, i, '_')) candidates.push({ marker: '_', className: 'cm-lp-em' });
+
+    for (const candidate of candidates) {
+      const contentFrom = i + candidate.marker.length;
+      const close = findClosingMarker(text, candidate.marker, contentFrom, end, protectedRanges);
+      if (close <= contentFrom) continue;
+      spans.push({
+        from: i,
+        to: close + candidate.marker.length,
+        contentFrom,
+        contentTo: close,
+        marker: candidate.marker,
+        className: candidate.className,
+      });
+      break;
+    }
+  }
+
+  return spans;
+}
+
+function resolveSpanOverlaps(spans: FormatSpan[]): FormatSpan[] {
+  const selected: FormatSpan[] = [];
+  for (const span of [...spans].sort((a, b) => {
+    const width = (b.to - b.from) - (a.to - a.from);
+    if (width !== 0) return width;
+    return a.from - b.from;
+  })) {
+    if (selected.some((existing) => rangesOverlap(span.from, span.to, existing.from, existing.to))) {
+      continue;
+    }
+    selected.push(span);
+  }
+  return selected.sort((a, b) => a.from - b.from);
 }
 
 // ─── Inline decoration scan ───────────────────────────────────────────────────
@@ -575,6 +691,7 @@ function processInline(
   base: number, // document position of text[0]
   cursor: number,
   noteRelativePath: string,
+  debug?: InlineDebugItem[],
 ) {
   const len = text.length;
   const used = new Uint8Array(len); // 1 = consumed
@@ -582,9 +699,14 @@ function processInline(
   const occupy = (s: number, e: number) => { for (let i = s; i < e; i++) used[i] = 1; };
   const free   = (s: number, e: number) => { for (let i = s; i < e; i++) { if (used[i]) return false; } return true; };
 
-  const hide   = (s: number, e: number): Item => ({ from: base + s, to: base + e, deco: Decoration.replace({}), excl: true });
-  const mark   = (s: number, e: number, cls: string, attrs?: Record<string, string>): Item => ({ from: base + s, to: base + e, deco: Decoration.mark({ class: cls, attributes: attrs }), excl: false });
-  const widget = (s: number, e: number, w: WidgetType): Item => ({ from: base + s, to: base + e, deco: Decoration.replace({ widget: w }), excl: true });
+  const push = (item: Item) => {
+    out.push(item);
+    if (item.debug) debug?.push(item.debug);
+  };
+
+  const hide   = (s: number, e: number): Item => ({ from: base + s, to: base + e, deco: Decoration.replace({}), excl: true, debug: { kind: 'hide' } });
+  const mark   = (s: number, e: number, cls: string, attrs?: Record<string, string>): Item => ({ from: base + s, to: base + e, deco: Decoration.mark({ class: cls, attributes: attrs }), excl: false, debug: { kind: 'mark', className: cls } });
+  const widget = (s: number, e: number, w: WidgetType): Item => ({ from: base + s, to: base + e, deco: Decoration.replace({ widget: w }), excl: true, debug: { kind: 'widget', widget: w.constructor.name } });
 
   function run(re: RegExp, handle: (m: RegExpExecArray, s: number, e: number) => Item[] | null) {
     re.lastIndex = 0;
@@ -598,7 +720,22 @@ function processInline(
       // Cursor inside → show raw
       if (cursor > docS && cursor < docE) continue;
       const result = handle(m, s, e);
-      if (result) { occupy(s, e); for (const it of result) out.push(it); }
+      if (result) { occupy(s, e); for (const it of result) push(it); }
+    }
+  }
+
+  function processInlineWithin(start: number, end: number) {
+    const spans = resolveSpanOverlaps(findFormattedSpans(text, start, end));
+    for (const span of spans) {
+      const docS = base + span.from;
+      const docE = base + span.to;
+      if (cursor > docS && cursor < docE) continue;
+      push(hide(span.from, span.contentFrom));
+      push(mark(span.contentFrom, span.contentTo, span.className));
+      push(hide(span.contentTo, span.to));
+      occupy(span.from, span.contentFrom);
+      occupy(span.contentTo, span.to);
+      processInlineWithin(span.contentFrom, span.contentTo);
     }
   }
 
@@ -622,46 +759,16 @@ function processInline(
     return [widget(s, e, new ImageWidget(target, alt))];
   });
 
-  // ── Inline math $...$ — run before bold/italic to catch $ signs ─────────
+  // ── Formatting spans: resolve outer spans first, recurse for inner spans ─
+  processInlineWithin(0, len);
+
+  // ── Inline math $...$ — after formatting so `$` works inside styled text ─
   // Avoid matching $$ by checking the char before/after manually (no lookbehind)
   run(/\$([^$\n]+?)\$/g, (m, s, e) => {
     // Skip if this is part of $$...$$
     if (text[s - 1] === '$' || text[e] === '$') return null;
     return [widget(s, e, new MathWidget(m[1], false))];
   });
-
-  // ── Bold **text** or __text__ ────────────────────────────────────────────
-  run(/\*\*([^*\n]+?)\*\*/g, (_, s, e) => [
-    hide(s, s + 2), mark(s + 2, e - 2, 'cm-lp-strong'), hide(e - 2, e),
-  ]);
-  run(/__([^_\n]+?)__/g, (_, s, e) => [
-    hide(s, s + 2), mark(s + 2, e - 2, 'cm-lp-strong'), hide(e - 2, e),
-  ]);
-
-  // ── Italic *text* — only single *, not part of ** ────────────────────────
-  run(/\*([^*\n]+?)\*/g, (_m, s, e) => {
-    // Skip if surrounded by * (i.e. part of bold)
-    if (text[s - 1] === '*' || text[e] === '*') return null;
-    return [hide(s, s + 1), mark(s + 1, e - 1, 'cm-lp-em'), hide(e - 1, e)];
-  });
-  // ── Italic _text_ — single _, not part of __ ─────────────────────────────
-  run(/_([^_\n]+?)_/g, (_m, s, e) => {
-    if (text[s - 1] === '_' || text[e] === '_') return null;
-    // Don't italicise words_with_underscores (next char after closing _ should be non-word or end)
-    const after = text[e];
-    if (after && /\w/.test(after)) return null;
-    return [hide(s, s + 1), mark(s + 1, e - 1, 'cm-lp-em'), hide(e - 1, e)];
-  });
-
-  // ── Strikethrough ~~text~~ ───────────────────────────────────────────────
-  run(/~~([^~\n]+?)~~/g, (_, s, e) => [
-    hide(s, s + 2), mark(s + 2, e - 2, 'cm-lp-strike'), hide(e - 2, e),
-  ]);
-
-  // ── Highlight ==text== ───────────────────────────────────────────────────
-  run(/==([^=\n]+?)==/g, (_, s, e) => [
-    hide(s, s + 2), mark(s + 2, e - 2, 'cm-lp-mark'), hide(e - 2, e),
-  ]);
 
   // ── Wikilinks [[Path]] or [[Path|Label]] ─────────────────────────────────
   run(/\[\[([^\]|]+?)(\|([^\]]+?))?\]\]/g, (m, s, e) => {
@@ -683,6 +790,18 @@ function processInline(
     const textE  = textS + m[1].length;
     return [hide(s, textS), mark(textS, textE, 'cm-lp-link', { 'data-url': url }), hide(textE, e)];
   });
+}
+
+export function collectInlinePreviewDebugItems(text: string) {
+  const out: Item[] = [];
+  const debug: InlineDebugItem[] = [];
+  processInline(out, text, 0, -1, '', debug);
+  return out.map((item, index) => ({
+    from: item.from,
+    to: item.to,
+    excl: item.excl,
+    ...debug[index],
+  }));
 }
 
 // ─── Core decoration builder ──────────────────────────────────────────────────

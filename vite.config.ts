@@ -85,6 +85,7 @@ export default defineConfig(async () => ({
         "**/flatpak-build/**",
         "**/flatpak-repo/**",
         "**/dist-builds/**",
+        "**/target/**",
       ],
     },
   },
