@@ -13,6 +13,7 @@ function file(partial: Partial<HostedFileEntry> & { id: string }): HostedFileEnt
     state: 'active',
     updatedAt: null,
     sizeBytes: null,
+    contentHash: null,
     ...partial,
   };
 }

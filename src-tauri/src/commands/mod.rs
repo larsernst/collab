@@ -14,7 +14,11 @@ pub mod vault;
 pub mod watcher;
 pub mod web;
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
+// `Path` is only used by the non-Android `app_config_dir`; importing it
+// unconditionally warns as unused on the Android target.
+#[cfg(not(target_os = "android"))]
+use std::path::Path;
 
 /// The application configuration directory (`%APPDATA%/collab` on Windows,
 /// `~/.config/collab` on Unix desktop, and app-private files storage on

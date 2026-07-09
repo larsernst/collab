@@ -15,6 +15,7 @@
     "android:dev": "node scripts/tauri-command.mjs android dev --config src-tauri/tauri.android.conf.json",
     "android:build": "node scripts/tauri-command.mjs android build --apk --config src-tauri/tauri.android.conf.json",
     "android:build:debug": "node scripts/tauri-command.mjs android build --debug --apk --config src-tauri/tauri.android.conf.json",
+    "android:build:aab": "node scripts/tauri-command.mjs android build --aab --config src-tauri/tauri.android.conf.json",
     "preview": "vite preview",
     "test": "vitest run",
     "admin:build": "vite build --config apps/admin-web/vite.config.ts && tsc --noEmit -p apps/admin-web/tsconfig.json",

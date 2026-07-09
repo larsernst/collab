@@ -1,35 +1,68 @@
-import { ChevronRight, FolderOpen, Home, Info, RefreshCw, X } from 'lucide-react';
-import { useEffect, useMemo, useState } from 'react';
+import { CloudOff, ChevronRight, FolderOpen, Home, Info, RefreshCw, X } from 'lucide-react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 
-import { Banner, EmptyState, GlyphIcon, ReadOnlyBadge, Spinner } from '../components/ui';
+import { Banner, CacheBadge, EmptyState, GlyphIcon, ReadOnlyBadge, Spinner } from '../components/ui';
 import { childrenOf, fileGlyph, formatBytes, formatRelativeTime, isReadOnlyRole } from '../lib/format';
+import type { FileCacheState } from '../lib/replica';
 import type { HostedFileEntry } from '../mobileTauri';
 import { useMobileStore } from '../state/store';
 
-interface Crumb {
-  id: string | null;
-  name: string;
-}
+const PAGE_SIZE = 60;
 
 export function FilesScreen() {
   const selected = useMobileStore((s) => s.selected);
   const files = useMobileStore((s) => s.files);
   const filesBusy = useMobileStore((s) => s.filesBusy);
   const filesError = useMobileStore((s) => s.filesError);
+  const filesOffline = useMobileStore((s) => s.filesOffline);
+  const fileCache = useMobileStore((s) => s.fileCache);
+  const trail = useMobileStore((s) => s.folderTrail);
+  const activeSheet = useMobileStore((s) => s.activeSheet);
   const loadFiles = useMobileStore((s) => s.loadFiles);
-
-  const [trail, setTrail] = useState<Crumb[]>([{ id: null, name: 'Root' }]);
-  const [detail, setDetail] = useState<HostedFileEntry | null>(null);
-
-  // Reset navigation when the active vault changes.
-  useEffect(() => {
-    setTrail([{ id: null, name: 'Root' }]);
-    setDetail(null);
-  }, [selected?.vault.id, selected?.serverUrl]);
+  const refreshCacheStatus = useMobileStore((s) => s.refreshCacheStatus);
+  const enterFolder = useMobileStore((s) => s.enterFolder);
+  const folderJumpTo = useMobileStore((s) => s.folderJumpTo);
+  const openSheet = useMobileStore((s) => s.openSheet);
+  const closeSheet = useMobileStore((s) => s.closeSheet);
 
   const currentParent = trail[trail.length - 1]?.id ?? null;
   const entries = useMemo(() => childrenOf(files, currentParent), [files, currentParent]);
   const readOnly = selected ? isReadOnlyRole(selected.vault.role) : false;
+
+  // Reveal the folder in pages so a large directory never renders (or cache-checks)
+  // thousands of rows at once; more load as the user scrolls to the bottom.
+  const [visibleCount, setVisibleCount] = useState(PAGE_SIZE);
+  const sentinelRef = useRef<HTMLDivElement | null>(null);
+
+  // Reset paging whenever the folder or vault changes.
+  useEffect(() => {
+    setVisibleCount(PAGE_SIZE);
+  }, [currentParent, selected?.vault.id, selected?.serverUrl]);
+
+  const visibleEntries = useMemo(() => entries.slice(0, visibleCount), [entries, visibleCount]);
+
+  // Load more when the bottom sentinel scrolls into view.
+  useEffect(() => {
+    const node = sentinelRef.current;
+    if (!node || visibleCount >= entries.length) return;
+    const observer = new IntersectionObserver((observed) => {
+      if (observed.some((entry) => entry.isIntersecting)) {
+        setVisibleCount((count) => Math.min(count + PAGE_SIZE, entries.length));
+      }
+    });
+    observer.observe(node);
+    return () => observer.disconnect();
+  }, [visibleCount, entries.length]);
+
+  // Check cache status only for the currently revealed files (incremental).
+  useEffect(() => {
+    if (visibleEntries.length > 0) void refreshCacheStatus(visibleEntries);
+  }, [visibleEntries, refreshCacheStatus]);
+
+  const detailFile = useMemo(() => {
+    if (activeSheet?.kind !== 'fileDetail') return null;
+    return files.find((file) => file.id === activeSheet.fileId) ?? null;
+  }, [activeSheet, files]);
 
   if (!selected) {
     return (
@@ -47,14 +80,6 @@ export function FilesScreen() {
         />
       </div>
     );
-  }
-
-  function openFolder(entry: HostedFileEntry) {
-    setTrail((prev) => [...prev, { id: entry.id, name: entry.name }]);
-  }
-
-  function jumpTo(index: number) {
-    setTrail((prev) => prev.slice(0, index + 1));
   }
 
   return (
@@ -86,7 +111,7 @@ export function FilesScreen() {
               type="button"
               className="crumb"
               disabled={index === trail.length - 1}
-              onClick={() => jumpTo(index)}
+              onClick={() => folderJumpTo(index)}
             >
               {index === 0 ? <Home size={14} aria-hidden /> : null}
               {crumb.name}
@@ -94,6 +119,13 @@ export function FilesScreen() {
           </span>
         ))}
       </nav>
+
+      {filesOffline ? (
+        <div className="offline-strip">
+          <CloudOff size={14} aria-hidden />
+          <span>Offline — showing the cached copy.</span>
+        </div>
+      ) : null}
 
       {filesError ? <Banner tone="error">{filesError}</Banner> : null}
 
@@ -113,7 +145,7 @@ export function FilesScreen() {
       ) : null}
 
       <ul className="list">
-        {entries.map((entry) => {
+        {visibleEntries.map((entry) => {
           const glyph = fileGlyph(entry);
           const isFolder = entry.kind === 'folder';
           return (
@@ -121,7 +153,11 @@ export function FilesScreen() {
               <button
                 type="button"
                 className="row-main file-row"
-                onClick={() => (isFolder ? openFolder(entry) : setDetail(entry))}
+                onClick={() =>
+                  isFolder
+                    ? enterFolder({ id: entry.id, name: entry.name })
+                    : openSheet({ kind: 'fileDetail', fileId: entry.id })
+                }
               >
                 <div className={`file-icon glyph-${glyph}`}>
                   <GlyphIcon glyph={glyph} />
@@ -140,6 +176,7 @@ export function FilesScreen() {
                           .join(' · ')}
                   </span>
                 </div>
+                {!isFolder && fileCache[entry.id] ? <CacheBadge state={fileCache[entry.id]} /> : null}
                 <ChevronRight size={18} aria-hidden className="row-chevron" />
               </button>
             </li>
@@ -147,12 +184,39 @@ export function FilesScreen() {
         })}
       </ul>
 
-      {detail ? <FileDetailSheet entry={detail} onClose={() => setDetail(null)} /> : null}
+      {visibleCount < entries.length ? (
+        <div ref={sentinelRef} className="load-more">
+          <Spinner size={16} />
+          <span>Loading more… ({visibleCount}/{entries.length})</span>
+        </div>
+      ) : null}
+
+      {detailFile ? (
+        <FileDetailSheet
+          entry={detailFile}
+          cacheState={fileCache[detailFile.id]}
+          onClose={closeSheet}
+        />
+      ) : null}
     </div>
   );
 }
 
-function FileDetailSheet({ entry, onClose }: { entry: HostedFileEntry; onClose: () => void }) {
+function cacheLabel(state: FileCacheState | undefined): string {
+  if (state === 'cached') return 'Available offline';
+  if (state === 'stale') return 'Cached copy out of date';
+  return 'Not cached';
+}
+
+function FileDetailSheet({
+  entry,
+  cacheState,
+  onClose,
+}: {
+  entry: HostedFileEntry;
+  cacheState: FileCacheState | undefined;
+  onClose: () => void;
+}) {
   const glyph = fileGlyph(entry);
   return (
     <div className="sheet-backdrop" onClick={onClose}>
@@ -179,6 +243,8 @@ function FileDetailSheet({ entry, onClose }: { entry: HostedFileEntry; onClose: 
           <dd>{formatBytes(entry.sizeBytes)}</dd>
           <dt>Updated</dt>
           <dd>{formatRelativeTime(entry.updatedAt) || '—'}</dd>
+          <dt>Offline</dt>
+          <dd>{cacheLabel(cacheState)}</dd>
         </dl>
         <div className="sheet-note">
           <Info size={15} aria-hidden />

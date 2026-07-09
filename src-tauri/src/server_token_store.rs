@@ -116,165 +116,7 @@ pub fn delete_refresh_token(server_url: &str) {
 }
 
 #[cfg(target_os = "android")]
-mod android_keystore {
-    use jni::objects::{JClass, JObject, JString, JValue};
-    use jni::{JNIEnv, JavaVM};
-    use std::mem::ManuallyDrop;
-
-    const TOKEN_STORE_CLASS: &str = "com/azazel/collab/companion/CollabTokenStore";
-
-    fn with_env<T>(
-        callback: impl for<'local> FnOnce(
-            &mut JNIEnv<'local>,
-            &JObject<'local>,
-        ) -> Result<T, String>,
-    ) -> Result<T, String> {
-        let context = ndk_context::android_context();
-        let java_vm = unsafe { JavaVM::from_raw(context.vm().cast()) }
-            .map_err(|_| "Could not access the Android Java VM.".to_string())?;
-        let mut env = java_vm
-            .attach_current_thread()
-            .map_err(|_| "Could not attach to the Android Java VM.".to_string())?;
-        // `ndk_context` owns this global context reference. Borrow it for the
-        // JNI call, but do not let `JObject` drop and delete a reference we did
-        // not create.
-        let context = ManuallyDrop::new(unsafe { JObject::from_raw(context.context().cast()) });
-        callback(&mut env, &context)
-    }
-
-    fn java_string<'local>(
-        env: &mut JNIEnv<'local>,
-        value: &str,
-    ) -> Result<JObject<'local>, String> {
-        env.new_string(value)
-            .map(JObject::from)
-            .map_err(|_| "Could not create an Android string.".to_string())
-    }
-
-    fn token_store_class<'local>(
-        env: &mut JNIEnv<'local>,
-        context: &JObject<'local>,
-    ) -> Result<JClass<'local>, String> {
-        let loader = env
-            .call_method(context, "getClassLoader", "()Ljava/lang/ClassLoader;", &[])
-            .map_err(|_| {
-                clear_exception(env);
-                "Could not access the Android class loader.".to_string()
-            })?
-            .l()
-            .map_err(|_| "Android returned an invalid class loader.".to_string())?;
-        let class_name = java_string(env, "com.azazel.collab.companion.CollabTokenStore")?;
-        let class = env
-            .call_method(
-                &loader,
-                "loadClass",
-                "(Ljava/lang/String;)Ljava/lang/Class;",
-                &[JValue::Object(&class_name)],
-            )
-            .map_err(|_| {
-                clear_exception(env);
-                "Could not load the Android token-store class.".to_string()
-            })?
-            .l()
-            .map_err(|_| "Android returned an invalid token-store class.".to_string())?;
-        Ok(JClass::from(class))
-    }
-
-    fn string_result(env: &mut JNIEnv<'_>, value: JObject<'_>) -> Option<String> {
-        if value.is_null() {
-            return None;
-        }
-        let value = JString::from(value);
-        env.get_string(&value)
-            .ok()
-            .map(|value| value.to_string_lossy().into_owned())
-    }
-
-    pub fn store_refresh_token(server_url: &str, refresh_token: &str) -> Result<(), String> {
-        with_env(|env, context| {
-            let class = token_store_class(env, context)?;
-            let server_url = java_string(env, server_url)?;
-            let refresh_token = java_string(env, refresh_token)?;
-            let error = env
-                .call_static_method(
-                    class,
-                    "storeRefreshToken",
-                    "(Landroid/content/Context;Ljava/lang/String;Ljava/lang/String;)Ljava/lang/String;",
-                    &[
-                        JValue::Object(context),
-                        JValue::Object(&server_url),
-                        JValue::Object(&refresh_token),
-                    ],
-                )
-                .map_err(|_| {
-                    clear_exception(env);
-                    "Could not save the server session in Android Keystore.".to_string()
-                })?
-                .l()
-                .map_err(|_| {
-                    clear_exception(env);
-                    "Android Keystore returned an invalid save result.".to_string()
-                })?;
-            if let Some(error) = string_result(env, error) {
-                Err(format!("Could not save the server session in Android Keystore: {error}"))
-            } else {
-                Ok(())
-            }
-        })
-    }
-
-    pub fn read_refresh_token(server_url: &str) -> Option<String> {
-        with_env(|env, context| {
-            let class = token_store_class(env, context)?;
-            let server_url = java_string(env, server_url)?;
-            let value = env
-                .call_static_method(
-                    class,
-                    "readRefreshToken",
-                    "(Landroid/content/Context;Ljava/lang/String;)Ljava/lang/String;",
-                    &[JValue::Object(context), JValue::Object(&server_url)],
-                )
-                .map_err(|_| {
-                    clear_exception(env);
-                })
-                .ok()
-                .and_then(|value| value.l().ok())
-                .filter(|value| !value.is_null());
-            let Some(value) = value else {
-                return Ok(None);
-            };
-            let value = JString::from(value);
-            Ok(env
-                .get_string(&value)
-                .ok()
-                .map(|value| value.to_string_lossy().into_owned()))
-        })
-        .ok()
-        .flatten()
-    }
-
-    pub fn delete_refresh_token(server_url: &str) {
-        let _ = with_env(|env, context| {
-            let class = token_store_class(env, context)?;
-            let server_url = java_string(env, server_url)?;
-            let _ = env.call_static_method(
-                class,
-                "deleteRefreshToken",
-                "(Landroid/content/Context;Ljava/lang/String;)Ljava/lang/String;",
-                &[JValue::Object(context), JValue::Object(&server_url)],
-            );
-            clear_exception(env);
-            Ok(())
-        });
-    }
-
-    fn clear_exception(env: &mut JNIEnv<'_>) {
-        if env.exception_check().unwrap_or(false) {
-            let _ = env.exception_describe();
-            let _ = env.exception_clear();
-        }
-    }
-}
+const TOKEN_STORE_CLASS: &str = "com.azazel.collab.companion.CollabTokenStore";
 
 #[cfg(target_os = "android")]
 pub fn store_refresh_token(
@@ -282,17 +124,33 @@ pub fn store_refresh_token(
     refresh_token: &str,
     _persist_across_reboots: bool,
 ) -> Result<(), String> {
-    android_keystore::store_refresh_token(server_url, refresh_token)
+    // The Kotlin store returns an error message string on failure, or null on success.
+    match crate::android_jni::call_static_string(
+        TOKEN_STORE_CLASS,
+        "storeRefreshToken",
+        &[server_url, refresh_token],
+    )? {
+        Some(error) => Err(format!(
+            "Could not save the server session in Android Keystore: {error}"
+        )),
+        None => Ok(()),
+    }
 }
 
 #[cfg(target_os = "android")]
 pub fn read_refresh_token(server_url: &str, _persist_across_reboots: bool) -> Option<String> {
-    android_keystore::read_refresh_token(server_url)
+    crate::android_jni::call_static_string(TOKEN_STORE_CLASS, "readRefreshToken", &[server_url])
+        .ok()
+        .flatten()
 }
 
 #[cfg(target_os = "android")]
 pub fn delete_refresh_token(server_url: &str) {
-    android_keystore::delete_refresh_token(server_url)
+    let _ = crate::android_jni::call_static_string(
+        TOKEN_STORE_CLASS,
+        "deleteRefreshToken",
+        &[server_url],
+    );
 }
 
 #[cfg(target_os = "ios")]

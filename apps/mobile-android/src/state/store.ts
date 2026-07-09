@@ -9,6 +9,8 @@ import {
   listVaultFiles,
   loadConnectionStatuses,
   reconnectServer,
+  replicaList,
+  ReplicaSummary,
   serverHasSavedSession,
   ServerConnectionStatus,
 } from '../mobileTauri';
@@ -19,15 +21,53 @@ import {
   removeKnownServer,
   upsertKnownServer,
 } from '../lib/servers';
+import {
+  FileCacheState,
+  fileCacheState,
+  makeVaultAvailableOffline,
+  OfflineProgress,
+  readReplicaFiles,
+  removeOfflineCopy,
+  replicaKey,
+} from '../lib/replica';
 
 export interface SelectedVault {
   serverUrl: string;
   vault: HostedVault;
 }
 
+export type Tab = 'servers' | 'vaults' | 'files' | 'settings';
+
+export interface Crumb {
+  id: string | null;
+  name: string;
+}
+
+/** A dismissible overlay tracked centrally so the Android back button can close
+ * it before navigating folders or tabs. */
+export type ActiveSheet =
+  | { kind: 'fileDetail'; fileId: string }
+  | { kind: 'removeOffline'; serverUrl: string; vault: HostedVault }
+  | null;
+
+const ROOT_CRUMB: Crumb = { id: null, name: 'Root' };
+
 interface MobileState {
   restored: boolean;
   servers: KnownServer[];
+
+  // ── Navigation ────────────────────────────────────────────────────────────
+  tab: Tab;
+  folderTrail: Crumb[];
+  activeSheet: ActiveSheet;
+  setTab: (tab: Tab) => void;
+  enterFolder: (crumb: Crumb) => void;
+  folderJumpTo: (index: number) => void;
+  openSheet: (sheet: NonNullable<ActiveSheet>) => void;
+  closeSheet: () => void;
+  /** Handle an Android back press. Returns true if it navigated internally. */
+  goBack: () => boolean;
+
   /** One entry per currently connected server, keyed by normalized URL. */
   statuses: Record<string, ServerConnectionStatus>;
   vaults: Record<string, HostedVault[]>;
@@ -36,9 +76,20 @@ interface MobileState {
   files: HostedFileEntry[];
   filesBusy: boolean;
   filesError: string | null;
+  /** True when the current file list was read from the local replica (offline). */
+  filesOffline: boolean;
+  /** Per-file cache state for the selected vault, keyed by file id. */
+  fileCache: Record<string, FileCacheState>;
+
+  /** Offline replicas present on this device, keyed by `replicaKey`. */
+  replicas: Record<string, ReplicaSummary>;
+  offlineBusy: Record<string, boolean>;
+  offlineProgress: Record<string, OfflineProgress | null>;
+  offlineError: string | null;
 
   restore: () => Promise<void>;
   refreshStatuses: () => Promise<void>;
+  loadReplicas: () => Promise<void>;
   connect: (
     serverUrl: string,
     username: string,
@@ -51,6 +102,9 @@ interface MobileState {
   selectVault: (serverUrl: string, vault: HostedVault) => Promise<void>;
   clearSelection: () => void;
   loadFiles: () => Promise<void>;
+  refreshCacheStatus: (files: HostedFileEntry[]) => Promise<void>;
+  makeOffline: (serverUrl: string, vault: HostedVault) => Promise<void>;
+  removeOffline: (serverUrl: string, vaultId: string) => Promise<void>;
 }
 
 function isConnected(status: ServerConnectionStatus | undefined): boolean {
@@ -67,6 +121,40 @@ export const useMobileStore = create<MobileState>((set, get) => ({
   files: [],
   filesBusy: false,
   filesError: null,
+  filesOffline: false,
+  fileCache: {},
+  replicas: {},
+  offlineBusy: {},
+  offlineProgress: {},
+  offlineError: null,
+
+  tab: 'servers',
+  folderTrail: [ROOT_CRUMB],
+  activeSheet: null,
+
+  setTab: (tab) => set({ tab }),
+  enterFolder: (crumb) => set((state) => ({ folderTrail: [...state.folderTrail, crumb] })),
+  folderJumpTo: (index) =>
+    set((state) => ({ folderTrail: state.folderTrail.slice(0, index + 1) })),
+  openSheet: (sheet) => set({ activeSheet: sheet }),
+  closeSheet: () => set({ activeSheet: null }),
+
+  goBack: () => {
+    const { activeSheet, tab, folderTrail } = get();
+    if (activeSheet) {
+      set({ activeSheet: null });
+      return true;
+    }
+    if (tab === 'files' && folderTrail.length > 1) {
+      set({ folderTrail: folderTrail.slice(0, -1) });
+      return true;
+    }
+    if (tab !== 'servers') {
+      set({ tab: 'servers' });
+      return true;
+    }
+    return false;
+  },
 
   refreshStatuses: async () => {
     const statuses = await loadConnectionStatuses();
@@ -100,11 +188,23 @@ export const useMobileStore = create<MobileState>((set, get) => ({
       }),
     );
     await get().refreshStatuses();
-    // Preload vault inventories for connected servers.
-    await Promise.all(
-      Object.keys(get().statuses).map((serverUrl) => get().loadVaults(serverUrl).catch(() => {})),
-    );
+    // Load offline replicas and preload vault inventories for connected servers.
+    await Promise.all([
+      get().loadReplicas().catch(() => {}),
+      ...Object.keys(get().statuses).map((serverUrl) =>
+        get().loadVaults(serverUrl).catch(() => {}),
+      ),
+    ]);
     set({ restored: true });
+  },
+
+  loadReplicas: async () => {
+    const summaries = await replicaList();
+    const map: Record<string, ReplicaSummary> = {};
+    for (const summary of summaries) {
+      map[replicaKey(normalizeServerUrl(summary.serverUrl), summary.vaultId)] = summary;
+    }
+    set({ replicas: map });
   },
 
   connect: async (serverUrl, username, password, opts) => {
@@ -160,23 +260,139 @@ export const useMobileStore = create<MobileState>((set, get) => ({
   },
 
   selectVault: async (serverUrl, vault) => {
-    set({ selected: { serverUrl: normalizeServerUrl(serverUrl), vault }, files: [], filesError: null });
+    set({
+      selected: { serverUrl: normalizeServerUrl(serverUrl), vault },
+      files: [],
+      filesError: null,
+      fileCache: {},
+      // Open the vault at its root in the Files tab.
+      tab: 'files',
+      folderTrail: [ROOT_CRUMB],
+      activeSheet: null,
+    });
     await get().loadFiles();
   },
 
-  clearSelection: () => set({ selected: null, files: [], filesError: null }),
+  clearSelection: () =>
+    set({
+      selected: null,
+      files: [],
+      filesError: null,
+      filesOffline: false,
+      fileCache: {},
+      folderTrail: [ROOT_CRUMB],
+    }),
 
   loadFiles: async () => {
     const selected = get().selected;
     if (!selected) return;
     set({ filesBusy: true, filesError: null });
+    const { serverUrl, vault } = selected;
+    const connected = isConnected(get().statuses[serverUrl]);
+
+    // Read from the local replica (offline). Returns true when it served files.
+    const loadFromReplica = async (): Promise<boolean> => {
+      const cached = await readReplicaFiles(serverUrl, vault.id).catch(() => null);
+      if (!cached) return false;
+      set({ files: cached, filesOffline: true });
+      return true;
+    };
+
     try {
-      const files = await listVaultFiles(selected.serverUrl, selected.vault.id);
-      set({ files: files.filter((file) => file.state === 'active') });
+      if (connected) {
+        const files = (await listVaultFiles(serverUrl, vault.id)).filter(
+          (file) => file.state === 'active',
+        );
+        set({ files, filesOffline: false });
+      } else if (!(await loadFromReplica())) {
+        throw new Error('This vault is not available offline. Reconnect to browse it.');
+      }
     } catch (reason) {
-      set({ filesError: reason instanceof Error ? reason.message : String(reason) });
+      // A live read failed (e.g. airplane mode). Fall back to the replica if present.
+      if (connected && (await loadFromReplica())) {
+        // Served from cache; clear the transient error.
+      } else {
+        set({ filesError: reason instanceof Error ? reason.message : String(reason) });
+      }
     } finally {
       set({ filesBusy: false });
+    }
+  },
+
+  refreshCacheStatus: async (files) => {
+    const selected = get().selected;
+    if (!selected) return;
+    const { serverUrl, vault } = selected;
+    // Only meaningful when an offline copy exists; otherwise everything is uncached
+    // and the browser simply shows no cache badges.
+    if (!get().replicas[replicaKey(serverUrl, vault.id)]) return;
+
+    // Check only files not already resolved, and update each badge as it lands
+    // (rather than all-at-once) with bounded concurrency so a large folder never
+    // blocks the UI thread with a burst of IPC calls.
+    const known = get().fileCache;
+    const targets = files.filter(
+      (file) => (file.kind === 'document' || file.kind === 'asset') && !(file.id in known),
+    );
+    if (targets.length === 0) return;
+
+    const stillCurrent = () => {
+      const sel = get().selected;
+      return !!sel && sel.serverUrl === serverUrl && sel.vault.id === vault.id;
+    };
+
+    let cursor = 0;
+    const worker = async () => {
+      while (cursor < targets.length) {
+        if (!stillCurrent()) return;
+        const file = targets[cursor++];
+        const state = await fileCacheState(serverUrl, vault.id, file).catch(
+          () => 'uncached' as FileCacheState,
+        );
+        if (!stillCurrent()) return;
+        set((s) => ({ fileCache: { ...s.fileCache, [file.id]: state } }));
+      }
+    };
+    await Promise.all(Array.from({ length: Math.min(6, targets.length) }, worker));
+  },
+
+  makeOffline: async (serverUrl, vault) => {
+    const normalized = normalizeServerUrl(serverUrl);
+    const key = replicaKey(normalized, vault.id);
+    set((state) => ({
+      offlineBusy: { ...state.offlineBusy, [key]: true },
+      offlineProgress: { ...state.offlineProgress, [key]: { completed: 0, total: 0 } },
+      offlineError: null,
+    }));
+    try {
+      await makeVaultAvailableOffline(normalized, vault, (progress) => {
+        set((state) => ({ offlineProgress: { ...state.offlineProgress, [key]: progress } }));
+      });
+      await get().loadReplicas();
+      // Refresh cache badges if this is the open vault.
+      if (get().selected && replicaKey(get().selected!.serverUrl, get().selected!.vault.id) === key) {
+        await get().refreshCacheStatus(get().files);
+      }
+    } catch (reason) {
+      set({ offlineError: reason instanceof Error ? reason.message : String(reason) });
+      throw reason;
+    } finally {
+      set((state) => ({
+        offlineBusy: { ...state.offlineBusy, [key]: false },
+        offlineProgress: { ...state.offlineProgress, [key]: null },
+      }));
+    }
+  },
+
+  removeOffline: async (serverUrl, vaultId) => {
+    const normalized = normalizeServerUrl(serverUrl);
+    const key = replicaKey(normalized, vaultId);
+    await removeOfflineCopy(normalized, vaultId);
+    const replicas = { ...get().replicas };
+    delete replicas[key];
+    set({ replicas });
+    if (get().selected && replicaKey(get().selected!.serverUrl, get().selected!.vault.id) === key) {
+      set({ fileCache: {} });
     }
   },
 }));

@@ -1,6 +1,6 @@
 import { Cloud, FolderOpen, Library, Settings as SettingsIcon } from 'lucide-react';
 import type { ReactNode } from 'react';
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import { Banner } from './components/ui';
 import { applyTheme, loadPrefs, savePrefs, type ThemePrefs } from './lib/theme';
@@ -8,9 +8,7 @@ import { FilesScreen } from './screens/FilesScreen';
 import { ServersScreen } from './screens/ServersScreen';
 import { SettingsScreen } from './screens/SettingsScreen';
 import { VaultsScreen } from './screens/VaultsScreen';
-import { useMobileStore } from './state/store';
-
-type Tab = 'servers' | 'vaults' | 'files' | 'settings';
+import { type Tab, useMobileStore } from './state/store';
 
 const TABS: { id: Tab; label: string; icon: ReactNode }[] = [
   { id: 'servers', label: 'Servers', icon: <Cloud size={20} aria-hidden /> },
@@ -19,8 +17,9 @@ const TABS: { id: Tab; label: string; icon: ReactNode }[] = [
   { id: 'settings', label: 'Settings', icon: <SettingsIcon size={20} aria-hidden /> },
 ];
 
+const BACK_SENTINEL = { collabBack: true };
+
 export function MobileApp() {
-  const [tab, setTab] = useState<Tab>('servers');
   const [prefs, setPrefs] = useState<ThemePrefs>(() => {
     const initial = loadPrefs();
     applyTheme(initial);
@@ -30,8 +29,15 @@ export function MobileApp() {
 
   const restore = useMobileStore((s) => s.restore);
   const refreshStatuses = useMobileStore((s) => s.refreshStatuses);
+  const tab = useMobileStore((s) => s.tab);
+  const setTab = useMobileStore((s) => s.setTab);
   const selected = useMobileStore((s) => s.selected);
   const statuses = useMobileStore((s) => s.statuses);
+
+  // Whether the Android back button has somewhere to go inside the app.
+  const canGoBack = useMobileStore(
+    (s) => !!s.activeSheet || (s.tab === 'files' && s.folderTrail.length > 1) || s.tab !== 'servers',
+  );
 
   const connectedCount = useMemo(
     () => Object.values(statuses).filter((status) => status.connected).length,
@@ -57,6 +63,53 @@ export function MobileApp() {
     };
   }, [refreshStatuses]);
 
+  // Android hardware back / back-gesture handling.
+  //
+  // The webview absorbs the system back through a history entry: we keep exactly
+  // one "sentinel" entry armed whenever there is somewhere to go back to inside
+  // the app (an open sheet, a subfolder, or a non-home tab). A back press pops the
+  // sentinel (`popstate`), we navigate one level in-app, and re-arm if more remains.
+  // When nothing remains we leave no sentinel, so the next back exits the app.
+  const armedRef = useRef(false);
+  const programmaticRef = useRef(false);
+
+  useEffect(() => {
+    const onPop = () => {
+      // Ignore the popstate caused by our own sentinel removal below.
+      if (programmaticRef.current) {
+        programmaticRef.current = false;
+        return;
+      }
+      armedRef.current = false;
+      useMobileStore.getState().goBack();
+      // Re-arm if the new location still has an in-app back target.
+      const state = useMobileStore.getState();
+      const stillBack =
+        !!state.activeSheet ||
+        (state.tab === 'files' && state.folderTrail.length > 1) ||
+        state.tab !== 'servers';
+      if (stillBack) {
+        window.history.pushState(BACK_SENTINEL, '');
+        armedRef.current = true;
+      }
+    };
+    window.addEventListener('popstate', onPop);
+    return () => window.removeEventListener('popstate', onPop);
+  }, []);
+
+  // Arm the sentinel when back becomes available; remove it (without navigating)
+  // when in-app navigation clears the last back target through the UI.
+  useEffect(() => {
+    if (canGoBack && !armedRef.current) {
+      window.history.pushState(BACK_SENTINEL, '');
+      armedRef.current = true;
+    } else if (!canGoBack && armedRef.current) {
+      armedRef.current = false;
+      programmaticRef.current = true;
+      window.history.back();
+    }
+  }, [canGoBack]);
+
   const updatePrefs = useCallback((next: ThemePrefs) => {
     setPrefs(next);
     applyTheme(next);
@@ -73,7 +126,7 @@ export function MobileApp() {
         ) : null}
 
         {tab === 'servers' ? <ServersScreen onOpenServer={() => setTab('vaults')} /> : null}
-        {tab === 'vaults' ? <VaultsScreen onOpenVault={() => setTab('files')} /> : null}
+        {tab === 'vaults' ? <VaultsScreen /> : null}
         {tab === 'files' ? <FilesScreen /> : null}
         {tab === 'settings' ? <SettingsScreen prefs={prefs} onChange={updatePrefs} /> : null}
       </main>

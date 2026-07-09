@@ -50,6 +50,65 @@ export function Banner({ tone, children }: { tone: 'error' | 'info'; children: R
   return <div className={`banner banner-${tone}`}>{children}</div>;
 }
 
+export function CacheBadge({ state }: { state: 'cached' | 'stale' | 'uncached' }) {
+  if (state === 'cached') return <span className="cache-badge cached">Offline</span>;
+  if (state === 'stale') return <span className="cache-badge stale">Update</span>;
+  return null;
+}
+
+export function ProgressBar({ completed, total }: { completed: number; total: number }) {
+  const pct = total > 0 ? Math.round((completed / total) * 100) : 0;
+  return (
+    <div className="progress-track" role="progressbar" aria-valuenow={pct}>
+      <div className="progress-fill" style={{ width: `${pct}%` }} />
+    </div>
+  );
+}
+
+export function ConfirmSheet({
+  title,
+  message,
+  confirmLabel,
+  destructive,
+  busy,
+  onConfirm,
+  onCancel,
+}: {
+  title: string;
+  message: string;
+  confirmLabel: string;
+  destructive?: boolean;
+  busy?: boolean;
+  onConfirm: () => void;
+  onCancel: () => void;
+}) {
+  return (
+    <div className="sheet-backdrop" onClick={onCancel}>
+      <div className="sheet" role="dialog" aria-label={title} onClick={(e) => e.stopPropagation()}>
+        <div className="sheet-handle" />
+        <div className="confirm-body">
+          <strong>{title}</strong>
+          <span>{message}</span>
+        </div>
+        <div className="form-actions">
+          <button type="button" className="ghost-button" onClick={onCancel} disabled={busy}>
+            Cancel
+          </button>
+          <button
+            type="button"
+            className={`primary-button ${destructive ? 'destructive' : ''}`}
+            onClick={onConfirm}
+            disabled={busy}
+          >
+            {busy ? <Spinner /> : null}
+            {confirmLabel}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export function GlyphIcon({ glyph, size = 20 }: { glyph: FileGlyph; size?: number }) {
   switch (glyph) {
     case 'folder':

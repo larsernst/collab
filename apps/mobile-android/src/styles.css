@@ -488,6 +488,16 @@ p {
   color: var(--muted-foreground);
 }
 
+.load-more {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 16px 0;
+  color: var(--muted-foreground);
+  font-size: 0.8rem;
+}
+
 /* ── Detail sheet ──────────────────────────────────────────────────────────── */
 
 .sheet-backdrop {
@@ -674,6 +684,110 @@ p {
   color: var(--muted-foreground);
   font-size: 0.76rem;
   opacity: 0.7;
+}
+
+/* ── Offline availability ──────────────────────────────────────────────────── */
+
+.vault-list-row {
+  flex-direction: column;
+  align-items: stretch;
+}
+.vault-row-inner {
+  display: flex;
+  align-items: stretch;
+}
+.offline-control {
+  display: flex;
+  align-items: center;
+  padding: 0 10px;
+}
+.offline-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 7px 11px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--muted-foreground);
+  font-size: 0.76rem;
+  font-weight: 600;
+  white-space: nowrap;
+}
+.offline-chip.available {
+  border-color: color-mix(in oklch, oklch(0.72 0.17 162) 40%, transparent);
+  background: color-mix(in oklch, oklch(0.72 0.17 162) 14%, transparent);
+  color: oklch(0.78 0.15 162);
+}
+.offline-progress {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--muted-foreground);
+  font-size: 0.76rem;
+  white-space: nowrap;
+}
+.progress-track {
+  height: 3px;
+  margin: 0 12px 10px;
+  border-radius: 999px;
+  background: var(--muted);
+  overflow: hidden;
+}
+.progress-fill {
+  height: 100%;
+  background: var(--primary);
+  transition: width 200ms ease;
+}
+
+.cache-badge {
+  flex: 0 0 auto;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 0.66rem;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+}
+.cache-badge.cached {
+  background: color-mix(in oklch, oklch(0.72 0.17 162) 16%, transparent);
+  color: oklch(0.78 0.15 162);
+}
+.cache-badge.stale {
+  background: color-mix(in oklch, oklch(0.72 0.18 50) 18%, transparent);
+  color: oklch(0.8 0.15 60);
+}
+
+.offline-strip {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 8px 12px;
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  color: var(--muted-foreground);
+  font-size: 0.8rem;
+}
+.offline-strip svg {
+  color: oklch(0.72 0.18 50);
+}
+
+.confirm-body {
+  display: grid;
+  gap: 6px;
+  padding: 4px 2px;
+}
+.confirm-body strong {
+  font-size: 1rem;
+}
+.confirm-body span {
+  color: var(--muted-foreground);
+  font-size: 0.88rem;
+  line-height: 1.5;
+}
+.primary-button.destructive {
+  background: oklch(0.62 0.2 20);
+  color: oklch(0.98 0.01 20);
+  box-shadow: none;
 }
 
 /* ── Bottom tab bar ────────────────────────────────────────────────────────── */

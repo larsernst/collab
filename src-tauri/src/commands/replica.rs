@@ -91,21 +91,62 @@ fn delete_replica_key(server_url: &str, vault_id: &str) {
     }
 }
 
-#[cfg(any(target_os = "android", target_os = "ios"))]
+// On Android the replica key is stored, like the refresh token, through the
+// AndroidKeyStore-backed Kotlin `CollabReplicaKeyStore` (AES-GCM ciphertext in
+// app-private SharedPreferences). This is durable across reboots — required
+// because losing the key orphans all cached content and unsynced offline edits.
+#[cfg(target_os = "android")]
+const REPLICA_KEY_STORE_CLASS: &str = "com.azazel.collab.companion.CollabReplicaKeyStore";
+
+#[cfg(target_os = "android")]
+fn read_replica_key_encoded(server_url: &str, vault_id: &str) -> Option<String> {
+    let account = replica_account(server_url, vault_id);
+    crate::android_jni::call_static_string(REPLICA_KEY_STORE_CLASS, "readKey", &[&account])
+        .ok()
+        .flatten()
+}
+
+#[cfg(target_os = "android")]
+fn write_replica_key_encoded(
+    server_url: &str,
+    vault_id: &str,
+    encoded: &str,
+) -> Result<(), String> {
+    let account = replica_account(server_url, vault_id);
+    // The Kotlin store returns an error message string on failure, or null on success.
+    match crate::android_jni::call_static_string(
+        REPLICA_KEY_STORE_CLASS,
+        "storeKey",
+        &[&account, encoded],
+    )? {
+        Some(error) => Err(format!(
+            "Could not save the offline replica key in Android Keystore: {error}"
+        )),
+        None => Ok(()),
+    }
+}
+
+#[cfg(target_os = "android")]
+fn delete_replica_key(server_url: &str, vault_id: &str) {
+    let account = replica_account(server_url, vault_id);
+    let _ = crate::android_jni::call_static_string(REPLICA_KEY_STORE_CLASS, "deleteKey", &[&account]);
+}
+
+#[cfg(target_os = "ios")]
 fn read_replica_key_encoded(_server_url: &str, _vault_id: &str) -> Option<String> {
     None
 }
 
-#[cfg(any(target_os = "android", target_os = "ios"))]
+#[cfg(target_os = "ios")]
 fn write_replica_key_encoded(
     _server_url: &str,
     _vault_id: &str,
     _encoded: &str,
 ) -> Result<(), String> {
-    Err("Mobile offline replica encryption keys are not implemented yet.".to_string())
+    Err("iOS offline replica encryption keys are not implemented yet.".to_string())
 }
 
-#[cfg(any(target_os = "android", target_os = "ios"))]
+#[cfg(target_os = "ios")]
 fn delete_replica_key(_server_url: &str, _vault_id: &str) {}
 
 #[cfg(target_os = "linux")]

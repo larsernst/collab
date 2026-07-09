@@ -126,8 +126,8 @@ Do not reuse directly:
 | --- | --- | --- |
 | 0. Feasibility spike | Complete | Prove Android Tauri mobile can run a Collab shell, call Rust, authenticate, and persist app data. |
 | 1. Shared client foundation | Complete | Extract enough auth/API/replica logic so desktop and Android do not fork core hosted behavior. |
-| 2. Android mobile shell | In progress | Build phone-first navigation, server access, hosted vault list, and settings/account screens. |
-| 3. Offline replica read path | Planned | Seed, cache, open, and browse hosted vault offline copies on Android. |
+| 2. Android mobile shell | Complete | Build phone-first navigation, server access, hosted vault list, and settings/account screens. |
+| 3. Offline replica read path | Complete | Seed, cache, open, and browse hosted vault offline copies on Android. |
 | 4. Notes MVP | Planned | View, edit, save, queue offline, and sync markdown notes. |
 | 5. Kanban MVP | Planned | View and edit boards/cards through a mobile-first Kanban workflow. |
 | 6. Viewer-only rich files | Planned | Add PDF, image, canvas, and logic diagram viewers without edit affordances. |
@@ -311,6 +311,13 @@ Current implementation notes:
   lists vaults and surfaces the viewer read-only affordance). On-device/emulator
   QA across a device matrix is deferred to Phase 7.
 
+Phase 2 is complete: the companion has a phone-first shell with hosted login,
+a saved-server list, reconnect/disconnect, session restore, a per-server hosted
+vault inventory and switcher, a folder-drill-in file browser, viewer read-only
+affordances, and theme/accent/text-size settings — all over the shared native
+command layer with tokens kept out of the web view. On-device QA across a device
+matrix is tracked under Phase 7.
+
 ### Phase 3: Offline Replica Read Path
 
 Estimated effort: 3-5 weeks.
@@ -332,6 +339,63 @@ Acceptance criteria:
 - File browser clearly distinguishes cached, not-yet-cached, syncing, and failed
   states.
 - Removing an offline copy removes app-local replica data after confirmation.
+
+Current implementation notes:
+
+- Implemented the previously-stubbed Android offline-replica encryption key
+  persistence — the blocker for any replica use on device. It reuses the Phase 1
+  AndroidKeyStore pattern: a new Kotlin `CollabReplicaKeyStore` (AES-GCM master
+  key in AndroidKeyStore, ciphertext in app-private SharedPreferences, its own
+  alias/prefs separate from the refresh-token store) with matching proguard keep
+  rules, called from `commands/replica.rs`. The key is durable across reboots as
+  required, since losing it would orphan all cached content. The low-level JNI
+  plumbing shared by both secret stores was extracted into `src-tauri/src/
+  android_jni.rs` (`call_static_string`), and `server_token_store.rs` was
+  refactored onto it so the two stores do not fork the class-loading logic.
+- The mobile app drives the shared native `replica_*` commands directly through a
+  new `lib/replica.ts`: `makeVaultAvailableOffline` seeds the manifest
+  (`replica_seed` with the raw server manifest so the native store keeps full
+  file entries), then downloads active document bodies and asset bytes into the
+  replica cache and marks it `offlineAvailableAt`; `removeOfflineCopy` calls
+  `replica_delete`; `readReplicaFiles` reads the cached manifest; `fileCacheState`
+  reports per-file cache status.
+- The Zustand store (`state/store.ts`) tracks offline replicas (`replica_list`),
+  per-vault offline progress, and per-file cache state, and — critically — makes
+  `loadFiles` fall back to the local replica manifest when the server is not
+  connected or a live read fails (airplane mode), setting a `filesOffline` flag.
+- UI: the Vaults screen shows an offline availability control per vault ("Save
+  offline" with a live progress bar, or an "Offline ✓" chip that opens a
+  confirm-to-remove sheet), gated on the `vault.offlineCopy` capability; the file
+  browser shows an offline banner when served from cache, per-file `Offline` /
+  `Update` cache badges, and cache status in the file detail sheet. A shared
+  `ConfirmSheet` backs the destructive "Remove offline copy" confirmation.
+- Verification: desktop `cargo check`/`cargo test --lib` (109) stay green, the
+  full `src-tauri` lib and shared crates cross-compile for
+  `aarch64-linux-android`, `pnpm mobile:build` is clean, and the
+  `pnpm mobile:test` suite grew to 10 tests including offline-flow coverage
+  (seed+cache+mark-available, offline `loadFiles` replica fallback, and
+  remove-offline). On-device offline/airplane-mode QA is tracked under Phase 7.
+
+Phase 3 is complete: users can mark a hosted vault for offline use on Android,
+the manifest and active document/asset content are cached in the durable native
+replica, seeded vaults open and browse without network, the file browser
+distinguishes cached vs not-cached vs syncing states, and offline copies can be
+removed after confirmation.
+
+Post-Phase-3 shell polish:
+
+- Android hardware back / back-gesture now navigates in-app instead of closing
+  the app: it dismisses an open sheet, then walks up one folder level, then
+  returns to the Servers tab, and only exits at the home tab. Navigation state
+  (tab, folder trail, active sheet) was centralized in the store so a single
+  `popstate`-based back interceptor in `MobileApp.tsx` can drive it — it keeps one
+  history "sentinel" armed whenever there is an in-app back target and re-arms per
+  level, so a back press is never wasted and the root still exits on one press.
+- Large folders load dynamically instead of hanging: the file list renders in
+  pages of 60 with an `IntersectionObserver` "load more" sentinel, and per-file
+  offline cache-status checks run only for the revealed rows with bounded
+  concurrency (6) that updates each badge as it resolves, so opening a folder with
+  many files no longer blocks until every status is fetched.
 
 ### Phase 4: Notes MVP
 

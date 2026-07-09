@@ -1,3 +1,4 @@
+mod android_jni;
 mod commands;
 mod crypto;
 mod hosted_client;
