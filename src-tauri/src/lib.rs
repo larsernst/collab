@@ -12,7 +12,7 @@ use state::AppState;
 pub fn run() {
     let builder = tauri::Builder::default().manage(AppState::new());
 
-    #[cfg(target_os = "linux")]
+    #[cfg(all(not(mobile), target_os = "linux"))]
     let builder = if std::env::var_os("FLATPAK_ID").is_some() {
         builder
     } else {
@@ -27,7 +27,7 @@ pub fn run() {
         )
     };
 
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(all(not(mobile), not(target_os = "linux")))]
     let builder = builder.plugin(
         tauri_plugin_updater::Builder::new()
             // Pubkey is also declared in tauri.conf.json, but passing it
@@ -38,12 +38,16 @@ pub fn run() {
             .build(),
     );
 
-    builder
+    let builder = builder
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
-        .plugin(tauri_plugin_fs::init())
-        .plugin(tauri_plugin_drag::init())
-        .setup(|app| {
+        .plugin(tauri_plugin_fs::init());
+
+    #[cfg(not(mobile))]
+    let builder = builder.plugin(tauri_plugin_drag::init());
+
+    builder
+        .setup(|_app| {
             // On Linux, WebKitGTK's touchpad pinch-to-zoom bypasses the `zoom-level` property
             // entirely — it calls WebPageProxy::scalePage() internally, firing no GObject signals.
             // The only way to block it is to intercept the GtkGestureZoom that WebKitWebViewBase
@@ -55,7 +59,7 @@ pub fn run() {
                 use tauri::Manager;
                 use webkit2gtk::{SettingsExt, WebViewExt};
 
-                if let Some(webview_window) = app.get_webview_window("main") {
+                if let Some(webview_window) = _app.get_webview_window("main") {
                     webview_window
                         .with_webview(|wv| {
                             let webview = wv.inner();
@@ -155,6 +159,7 @@ pub fn run() {
             commands::server::reconnect_server,
             commands::server::disconnect_server,
             commands::server::server_connection_statuses,
+            commands::server::server_health_check,
             commands::server::server_has_saved_session,
             commands::server::hosted_vault_request,
             commands::server::hosted_vault_asset_data_url,
@@ -165,6 +170,7 @@ pub fn run() {
             commands::live_ws::live_ws_connect,
             commands::live_ws::live_ws_send,
             commands::live_ws::live_ws_close,
+            commands::mobile::mobile_app_data_probe,
             // templates
             commands::templates::list_kanban_templates,
             commands::templates::save_kanban_template,

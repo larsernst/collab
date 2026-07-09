@@ -57,6 +57,14 @@ pub struct ServerConnectionStatus {
     pub access_expires_at: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ServerHealthStatus {
+    pub ok: bool,
+    pub server_url: String,
+    pub message: String,
+}
+
 #[tauri::command]
 pub async fn connect_server(
     state: State<'_, AppState>,
@@ -270,6 +278,29 @@ pub fn server_connection_statuses(state: State<'_, AppState>) -> Vec<ServerConne
             access_expires_at: Some(session.access_expires_at.clone()),
         })
         .collect()
+}
+
+#[tauri::command]
+pub async fn server_health_check(
+    server_url: String,
+    allow_invalid_certificates: bool,
+) -> Result<ServerHealthStatus, String> {
+    let base = validate_server_url(&server_url)?;
+    let response = server_client(allow_invalid_certificates)?
+        .get(format!("{base}/health/live"))
+        .send()
+        .await
+        .map_err(server_request_error)?;
+    let status = response.status();
+    Ok(ServerHealthStatus {
+        ok: status.is_success(),
+        server_url: base,
+        message: if status.is_success() {
+            "The server health endpoint responded successfully.".to_string()
+        } else {
+            format!("The server health endpoint returned HTTP {status}.")
+        },
+    })
 }
 
 /// Resolves the connected session for `server_url`, or the given "not connected"
@@ -748,13 +779,13 @@ fn delete_refresh_token(server_url: &str) {
     }
 }
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(any(target_os = "windows", target_os = "macos"))]
 fn native_entry(server_url: &str) -> Result<keyring::Entry, String> {
     keyring::Entry::new(KEYRING_SERVICE, server_url)
         .map_err(|_| "The operating system credential store is unavailable.".into())
 }
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(any(target_os = "windows", target_os = "macos"))]
 fn store_refresh_token(
     server_url: &str,
     refresh_token: &str,
@@ -767,19 +798,39 @@ fn store_refresh_token(
         })
 }
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(any(target_os = "windows", target_os = "macos"))]
 fn read_refresh_token(server_url: &str, _persist_across_reboots: bool) -> Option<String> {
     native_entry(server_url)
         .ok()
         .and_then(|entry| entry.get_password().ok())
 }
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(any(target_os = "windows", target_os = "macos"))]
 fn delete_refresh_token(server_url: &str) {
     if let Ok(entry) = native_entry(server_url) {
         let _ = entry.delete_credential();
     }
 }
+
+#[cfg(any(target_os = "android", target_os = "ios"))]
+fn store_refresh_token(
+    _server_url: &str,
+    _refresh_token: &str,
+    _persist_across_reboots: bool,
+) -> Result<(), String> {
+    // Phase 0 keeps mobile token persistence compile-safe only. Phase 1 should
+    // replace this with Android Keystore-backed storage before mobile login is
+    // treated as durable across app restarts.
+    Ok(())
+}
+
+#[cfg(any(target_os = "android", target_os = "ios"))]
+fn read_refresh_token(_server_url: &str, _persist_across_reboots: bool) -> Option<String> {
+    None
+}
+
+#[cfg(any(target_os = "android", target_os = "ios"))]
+fn delete_refresh_token(_server_url: &str) {}
 
 fn status_from_session(
     server_url: &str,

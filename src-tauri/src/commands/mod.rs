@@ -3,6 +3,7 @@ pub mod crypto;
 pub mod files;
 pub mod index;
 pub mod live_ws;
+pub mod mobile;
 pub mod ocr;
 pub mod replica;
 pub mod server;

@@ -22,6 +22,7 @@ webkit2gtk = { version = "2", features = ["v2_40"] }
 gtk = "0.18"
 glib = "0.18"
 gtk-sys = "0.18"
+tauri-plugin-drag = "2.1.1"
 # Both Linux keyring backends: kernel keyutils (silent default) and D-Bus Secret
 # Service (durable, opt-in). The backend is chosen at runtime in commands/server.rs.
 keyring = { version = "3", features = ["sync-secret-service", "linux-native"] }
@@ -58,7 +59,6 @@ scraper = "0.24"
 url = "2.5"
 regex = "1"
 tempfile = "3"
-tauri-plugin-drag = "2.1.1"
 reqwest-websocket = { version = "0.5", default-features = false }
 futures-util = { version = "0.3", default-features = false, features = ["std", "sink"] }
 
@@ -66,9 +66,11 @@ futures-util = { version = "0.3", default-features = false, features = ["std", "
 # which is silent and durable, so they never pull in the D-Bus dependency.
 [target.'cfg(target_os = "windows")'.dependencies]
 keyring = { version = "3", features = ["windows-native"] }
+tauri-plugin-drag = "2.1.1"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 keyring = { version = "3", features = ["apple-native"] }
+tauri-plugin-drag = "2.1.1"
 
 [dev-dependencies]
 httpmock = "0.7"

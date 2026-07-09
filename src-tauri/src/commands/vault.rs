@@ -429,25 +429,34 @@ pub async fn show_save_dialog(
 
 #[tauri::command]
 pub async fn show_open_vault_dialog(app: AppHandle) -> Result<Option<String>, String> {
-    use tauri_plugin_dialog::DialogExt;
+    #[cfg(mobile)]
+    {
+        let _ = app;
+        return Ok(None);
+    }
 
-    let result = app
-        .dialog()
-        .file()
-        .set_title("Open Vault")
-        .blocking_pick_folder();
+    #[cfg(not(mobile))]
+    {
+        use tauri_plugin_dialog::DialogExt;
 
-    match result {
-        Some(file_path) => {
-            // FilePath implements ToString / Into<PathBuf> on desktop
-            let path_str = file_path
-                .into_path()
-                .map_err(|e| e.to_string())?
-                .to_string_lossy()
-                .to_string();
-            Ok(Some(path_str))
+        let result = app
+            .dialog()
+            .file()
+            .set_title("Open Vault")
+            .blocking_pick_folder();
+
+        match result {
+            Some(file_path) => {
+                // FilePath implements ToString / Into<PathBuf> on desktop
+                let path_str = file_path
+                    .into_path()
+                    .map_err(|e| e.to_string())?
+                    .to_string_lossy()
+                    .to_string();
+                Ok(Some(path_str))
+            }
+            None => Ok(None),
         }
-        None => Ok(None),
     }
 }
 

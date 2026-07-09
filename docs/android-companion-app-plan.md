@@ -124,7 +124,7 @@ Do not reuse directly:
 
 | Phase | Status | Goal |
 | --- | --- | --- |
-| 0. Feasibility spike | Planned | Prove Android Tauri mobile can run a Collab shell, call Rust, authenticate, and persist app data. |
+| 0. Feasibility spike | In progress | Prove Android Tauri mobile can run a Collab shell, call Rust, authenticate, and persist app data. |
 | 1. Shared client foundation | Planned | Extract enough auth/API/replica logic so desktop and Android do not fork core hosted behavior. |
 | 2. Android mobile shell | Planned | Build phone-first navigation, server access, hosted vault list, and settings/account screens. |
 | 3. Offline replica read path | Planned | Seed, cache, open, and browse hosted vault offline copies on Android. |
@@ -156,6 +156,18 @@ Acceptance criteria:
 - Native command invocation works from React on Android.
 - App-local persistence works across restarts.
 - Any blocking Tauri mobile/plugin limitation is documented before deeper work.
+
+Current implementation notes:
+
+- Added a mobile-specific React entrypoint in `apps/mobile-android`.
+- Added `src-tauri/tauri.android.conf.json` so Android builds use the mobile
+  shell and `dist-mobile` instead of the desktop app.
+- Added a native server health command and a native app-data persistence probe.
+- Added Android build scripts and detailed APK build instructions in
+  `docs/android-companion-build.md`.
+- Android refresh-token persistence is currently a compile-safe placeholder.
+  Replace it with Android Keystore-backed storage in Phase 1 before durable
+  mobile login is considered complete.
 
 Exit decision:
 

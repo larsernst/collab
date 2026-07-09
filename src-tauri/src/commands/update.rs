@@ -57,6 +57,7 @@ pub async fn download_and_install_update(app: AppHandle) -> Result<(), String> {
     let downloaded = Arc::new(AtomicU64::new(0));
     let downloaded_clone = downloaded.clone();
     let app_clone = app.clone();
+    #[cfg(target_os = "linux")]
     let app_restart = app.clone();
 
     update

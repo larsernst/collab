@@ -53,31 +53,60 @@ fn replica_account(server_url: &str, vault_id: &str) -> String {
 // fixes the failure where a lost keyutils key was silently regenerated, leaving
 // previously-encrypted replica content undecryptable ("Decryption failed …").
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(any(target_os = "windows", target_os = "macos"))]
 fn read_replica_key_encoded(server_url: &str, vault_id: &str) -> Option<String> {
-    keyring::Entry::new(REPLICA_KEYRING_SERVICE, &replica_account(server_url, vault_id))
-        .ok()
-        .and_then(|entry| entry.get_password().ok())
+    keyring::Entry::new(
+        REPLICA_KEYRING_SERVICE,
+        &replica_account(server_url, vault_id),
+    )
+    .ok()
+    .and_then(|entry| entry.get_password().ok())
 }
 
-#[cfg(not(target_os = "linux"))]
-fn write_replica_key_encoded(server_url: &str, vault_id: &str, encoded: &str) -> Result<(), String> {
-    keyring::Entry::new(REPLICA_KEYRING_SERVICE, &replica_account(server_url, vault_id))
-        .map_err(|_| "The operating system credential store is unavailable.".to_string())?
-        .set_password(encoded)
-        .map_err(|_| {
-            "Could not save the offline replica key in the operating system credential store.".to_string()
-        })
+#[cfg(any(target_os = "windows", target_os = "macos"))]
+fn write_replica_key_encoded(
+    server_url: &str,
+    vault_id: &str,
+    encoded: &str,
+) -> Result<(), String> {
+    keyring::Entry::new(
+        REPLICA_KEYRING_SERVICE,
+        &replica_account(server_url, vault_id),
+    )
+    .map_err(|_| "The operating system credential store is unavailable.".to_string())?
+    .set_password(encoded)
+    .map_err(|_| {
+        "Could not save the offline replica key in the operating system credential store."
+            .to_string()
+    })
 }
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(any(target_os = "windows", target_os = "macos"))]
 fn delete_replica_key(server_url: &str, vault_id: &str) {
-    if let Ok(entry) =
-        keyring::Entry::new(REPLICA_KEYRING_SERVICE, &replica_account(server_url, vault_id))
-    {
+    if let Ok(entry) = keyring::Entry::new(
+        REPLICA_KEYRING_SERVICE,
+        &replica_account(server_url, vault_id),
+    ) {
         let _ = entry.delete_credential();
     }
 }
+
+#[cfg(any(target_os = "android", target_os = "ios"))]
+fn read_replica_key_encoded(_server_url: &str, _vault_id: &str) -> Option<String> {
+    None
+}
+
+#[cfg(any(target_os = "android", target_os = "ios"))]
+fn write_replica_key_encoded(
+    _server_url: &str,
+    _vault_id: &str,
+    _encoded: &str,
+) -> Result<(), String> {
+    Err("Mobile offline replica encryption keys are not implemented yet.".to_string())
+}
+
+#[cfg(any(target_os = "android", target_os = "ios"))]
+fn delete_replica_key(_server_url: &str, _vault_id: &str) {}
 
 #[cfg(target_os = "linux")]
 fn replica_keyutils_entry(server_url: &str, vault_id: &str) -> Result<keyring::Entry, String> {
@@ -91,7 +120,10 @@ fn replica_keyutils_entry(server_url: &str, vault_id: &str) -> Result<keyring::E
 }
 
 #[cfg(target_os = "linux")]
-fn replica_secret_service_entry(server_url: &str, vault_id: &str) -> Result<keyring::Entry, String> {
+fn replica_secret_service_entry(
+    server_url: &str,
+    vault_id: &str,
+) -> Result<keyring::Entry, String> {
     let cred = keyring::secret_service::SsCredential::new_with_target(
         None,
         REPLICA_KEYRING_SERVICE,
@@ -114,7 +146,11 @@ fn read_replica_key_encoded(server_url: &str, vault_id: &str) -> Option<String> 
 }
 
 #[cfg(target_os = "linux")]
-fn write_replica_key_encoded(server_url: &str, vault_id: &str, encoded: &str) -> Result<(), String> {
+fn write_replica_key_encoded(
+    server_url: &str,
+    vault_id: &str,
+    encoded: &str,
+) -> Result<(), String> {
     // Durable Secret Service first, then mirror to keyutils; succeed if either
     // persists so a missing/locked Secret Service (e.g. headless) still works via
     // keyutils and is never worse than before.
@@ -125,7 +161,10 @@ fn write_replica_key_encoded(server_url: &str, vault_id: &str, encoded: &str) ->
     if ss.is_ok() || ku.is_ok() {
         Ok(())
     } else {
-        Err("Could not save the offline replica key in the operating system credential store.".to_string())
+        Err(
+            "Could not save the offline replica key in the operating system credential store."
+                .to_string(),
+        )
     }
 }
 
