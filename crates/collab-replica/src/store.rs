@@ -11,7 +11,7 @@ use super::models::{
     ReplicaIntegrityReport, ReplicaMeta, ReplicaSummary, ReplicaSyncState, Tombstone,
     REPLICA_SCHEMA_VERSION,
 };
-use crate::crypto;
+use collab_core::crypto;
 use collab_protocol::HostedVaultManifest;
 use serde::de::DeserializeOwned;
 use serde::Serialize;
@@ -810,7 +810,7 @@ fn write_file_atomic(path: &Path, bytes: &[u8]) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::replica::models::{PendingOpKind, SyncStatus};
+    use crate::models::{PendingOpKind, SyncStatus};
     use collab_protocol::HostedVaultManifest;
     use serde_json::json;
     use tempfile::TempDir;

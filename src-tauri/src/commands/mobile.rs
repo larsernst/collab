@@ -5,6 +5,7 @@ use tauri::Manager;
 #[serde(rename_all = "camelCase")]
 pub struct MobileAppDataProbe {
     pub value: String,
+    pub previous_value: Option<String>,
     pub file_path: String,
 }
 
@@ -21,6 +22,7 @@ pub async fn mobile_app_data_probe(
         .await
         .map_err(|_| "Could not create the app data directory.".to_string())?;
     let path = dir.join("mobile-phase0-probe.txt");
+    let previous_value = tokio::fs::read_to_string(&path).await.ok();
     tokio::fs::write(&path, value.as_bytes())
         .await
         .map_err(|_| "Could not write the app data probe.".to_string())?;
@@ -29,6 +31,7 @@ pub async fn mobile_app_data_probe(
         .map_err(|_| "Could not read the app data probe.".to_string())?;
     Ok(MobileAppDataProbe {
         value: restored,
+        previous_value,
         file_path: path.display().to_string(),
     })
 }

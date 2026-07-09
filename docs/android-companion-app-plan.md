@@ -124,8 +124,8 @@ Do not reuse directly:
 
 | Phase | Status | Goal |
 | --- | --- | --- |
-| 0. Feasibility spike | In progress | Prove Android Tauri mobile can run a Collab shell, call Rust, authenticate, and persist app data. |
-| 1. Shared client foundation | Planned | Extract enough auth/API/replica logic so desktop and Android do not fork core hosted behavior. |
+| 0. Feasibility spike | Complete | Prove Android Tauri mobile can run a Collab shell, call Rust, authenticate, and persist app data. |
+| 1. Shared client foundation | Complete | Extract enough auth/API/replica logic so desktop and Android do not fork core hosted behavior. |
 | 2. Android mobile shell | Planned | Build phone-first navigation, server access, hosted vault list, and settings/account screens. |
 | 3. Offline replica read path | Planned | Seed, cache, open, and browse hosted vault offline copies on Android. |
 | 4. Notes MVP | Planned | View, edit, save, queue offline, and sync markdown notes. |
@@ -162,12 +162,14 @@ Current implementation notes:
 - Added a mobile-specific React entrypoint in `apps/mobile-android`.
 - Added `src-tauri/tauri.android.conf.json` so Android builds use the mobile
   shell and `dist-mobile` instead of the desktop app.
-- Added a native server health command and a native app-data persistence probe.
+- Added a native server health command, native auth probe, and app-data
+  persistence probe that reports whether a previous value was restored.
 - Added Android build scripts and detailed APK build instructions in
   `docs/android-companion-build.md`.
-- Android refresh-token persistence is currently a compile-safe placeholder.
-  Replace it with Android Keystore-backed storage in Phase 1 before durable
-  mobile login is considered complete.
+- Verified on a physical Android device with a debug APK and reachable hosted
+  test server.
+- Android refresh-token persistence started as a compile-safe placeholder during
+  Phase 0 and is replaced by Android Keystore-backed storage in Phase 1.
 
 Exit decision:
 
@@ -197,6 +199,59 @@ Acceptance criteria:
 - Refresh-token rotation remains serialized per server.
 - Local replica data is stored in Android app-private storage.
 - Existing desktop tests still pass.
+
+Current implementation notes:
+
+- Extracted hosted server URL validation, HTTP client construction, WebSocket
+  HTTP/1.1 client construction, request error normalization, hosted request
+  method/path validation, identifier validation, native-session decoding, and
+  hosted JSON/error decoding into `src-tauri/src/hosted_client.rs`.
+- Extracted refresh-token persistence into `src-tauri/src/server_token_store.rs`
+  so Android Keystore support can replace the current mobile placeholder without
+  changing hosted session orchestration.
+- Added Android Keystore-backed refresh-token persistence through the generated
+  Android project and a mobile restore-session probe for testing app restart
+  session recovery.
+- Added a mobile hosted-vault list probe through the native hosted request
+  gateway, verifying that restored Android sessions can call authenticated
+  hosted APIs without exposing bearer tokens to the WebView.
+- Routed Android app configuration and replica storage through the app-private
+  files directory, with a mobile replica-list probe to verify the native replica
+  store can open on device before full offline seeding is added.
+- Rewired desktop and Android Tauri commands to use the shared hosted-client and
+  token-store modules while leaving live session state in the Tauri boundary for
+  the next Phase 1 slice.
+- Extracted the native hosted-session orchestration (refresh-token resolution,
+  the serialized refresh-token rotation lock, access-token freshness checks, and
+  `session_for`/`fresh_session_for`) out of `commands/server.rs` into the shared
+  `src-tauri/src/hosted_session.rs` module. The desktop and Android command
+  wrappers, plus the live-collaboration WebSocket, now share one session
+  lifecycle instead of forking it, refresh-token rotation stays serialized per
+  server through `AppState.server_refresh_lock`, and bearer/access tokens still
+  never leave the backend. Desktop behavior and all existing backend tests are
+  unchanged.
+- Promoted the native hosted-vault replica store into the shared
+  `crates/collab-replica` workspace crate (moved `models.rs` and `store.rs` out
+  of `src-tauri/src/replica/`). `src-tauri/src/replica.rs` is now a thin
+  re-export so the `replica_*` Tauri command wrappers in `commands/replica.rs`
+  are unchanged and remain the desktop/Android boundary. To avoid forking the
+  `CENC` at-rest container format between desktop vault encryption and the
+  replica store, the byte-level AES-256-GCM primitives (`encrypt_bytes`,
+  `decrypt_bytes`, `is_encrypted_data`) moved into `collab_core::crypto`;
+  `src-tauri/src/crypto.rs` re-exports them (keeping Argon2 key derivation and
+  the vault.enc password helpers) and `collab-replica` consumes them directly.
+- Verified the whole extraction: `cargo check --workspace` is clean, the desktop
+  lib (`109`), `collab-replica` (`18`), and `collab-core` (`42`) test suites all
+  pass, and the shared crates plus the full `src-tauri` lib cross-compile for
+  `aarch64-linux-android`, so the desktop client, standalone server, and Android
+  companion all continue to build against the shared foundation.
+
+Phase 1 is complete: hosted auth/session refresh, the hosted request/client
+layer, refresh-token storage, and the offline replica store are all shared
+between the desktop and Android clients through `hosted_client`,
+`hosted_session`, `server_token_store`, and the `collab-replica` /
+`collab-core::crypto` crates, with token storage kept platform-specific and
+bearer tokens never entering the webview.
 
 ### Phase 2: Android Mobile Shell
 

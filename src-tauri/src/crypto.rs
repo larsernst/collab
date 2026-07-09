@@ -5,18 +5,14 @@
 ///
 /// vault.enc (JSON in {vault}/.collab/vault.enc):
 ///   { "salt": "<hex 32B>", "check": "<hex CENC+nonce+ciphertext of VERIFY_PLAIN>" }
-use aes_gcm::{
-    aead::{Aead, KeyInit},
-    Aes256Gcm, Key, Nonce,
-};
 use argon2::Argon2;
-use rand::RngCore;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
-// Magic prefix that marks an encrypted file.
-pub const MAGIC: &[u8; 4] = b"CENC";
-const NONCE_LEN: usize = 12;
+// The byte-level CENC container primitives are shared with the hosted-vault
+// replica store through `collab-core`, so both use one on-disk format.
+pub use collab_core::crypto::{decrypt_bytes, encrypt_bytes, is_encrypted_data};
+
 // Known plaintext encrypted with the vault key — used to verify a password.
 const VERIFY_PLAIN: &[u8] = b"collab-vault-v1";
 
@@ -30,48 +26,6 @@ pub fn derive_key(password: &str, salt: &[u8]) -> Result<[u8; 32], String> {
         .hash_password_into(password.as_bytes(), salt, &mut key)
         .map_err(|e| format!("Key derivation failed: {e}"))?;
     Ok(key)
-}
-
-/// Returns true when `data` starts with the CENC magic header.
-pub fn is_encrypted_data(data: &[u8]) -> bool {
-    data.len() >= 4 && data[..4] == *MAGIC
-}
-
-/// Encrypt `plaintext` with `key`. Returns `MAGIC || nonce || ciphertext+tag`.
-pub fn encrypt_bytes(key: &[u8; 32], plaintext: &[u8]) -> Result<Vec<u8>, String> {
-    let mut nonce_bytes = [0u8; NONCE_LEN];
-    rand::thread_rng().fill_bytes(&mut nonce_bytes);
-    let nonce = Nonce::from_slice(&nonce_bytes);
-
-    let cipher = Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(key));
-    let ciphertext = cipher
-        .encrypt(nonce, plaintext)
-        .map_err(|e| format!("Encryption failed: {e}"))?;
-
-    let mut out = Vec::with_capacity(4 + NONCE_LEN + ciphertext.len());
-    out.extend_from_slice(MAGIC);
-    out.extend_from_slice(&nonce_bytes);
-    out.extend(ciphertext);
-    Ok(out)
-}
-
-/// Decrypt data produced by `encrypt_bytes`. Returns the original plaintext.
-/// Fails with a clear error if the MAGIC header is missing or authentication fails.
-pub fn decrypt_bytes(key: &[u8; 32], data: &[u8]) -> Result<Vec<u8>, String> {
-    if data.len() < 4 + NONCE_LEN + 16 {
-        return Err("File is too short to be a valid encrypted file".to_string());
-    }
-    if &data[..4] != MAGIC {
-        return Err("File does not have the encrypted-file header".to_string());
-    }
-
-    let nonce = Nonce::from_slice(&data[4..4 + NONCE_LEN]);
-    let ciphertext = &data[4 + NONCE_LEN..];
-    let cipher = Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(key));
-
-    cipher
-        .decrypt(nonce, ciphertext)
-        .map_err(|_| "Decryption failed — incorrect password or corrupted file".to_string())
 }
 
 // ─── vault.enc helpers ────────────────────────────────────────────────────────
@@ -205,9 +159,10 @@ pub fn decrypt_vault_files(vault_path: &str, key: &[u8; 32]) -> Result<(), Strin
 mod tests {
     use super::{
         create_enc_header, decrypt_bytes, derive_key, encrypt_bytes, is_encrypted_data,
-        load_enc_header, load_key_from_password, save_enc_header, verify_enc_header, MAGIC,
+        load_enc_header, load_key_from_password, save_enc_header, verify_enc_header,
     };
     use crate::test_support::TempVault;
+    use collab_core::crypto::MAGIC;
 
     fn sample_salt() -> [u8; 32] {
         [

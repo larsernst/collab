@@ -1,7 +1,10 @@
 mod commands;
 mod crypto;
+mod hosted_client;
+mod hosted_session;
 mod models;
 mod replica;
+mod server_token_store;
 mod state;
 #[cfg(test)]
 pub mod test_support;

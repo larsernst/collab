@@ -169,6 +169,17 @@ h2 {
   opacity: 0.72;
 }
 
+.secondary-button {
+  background: #f472b6;
+  color: #3b0822;
+}
+
+.ghost-button {
+  border: 1px solid rgba(148, 163, 184, 0.28);
+  background: rgba(15, 23, 42, 0.82);
+  color: #f8fafc;
+}
+
 .spin {
   animation: spin 0.8s linear infinite;
 }
@@ -217,6 +228,30 @@ h2 {
   font-size: 0.86rem;
   text-align: right;
   word-break: break-word;
+}
+
+.vault-list {
+  display: grid;
+  gap: 8px;
+}
+
+.vault-row {
+  display: grid;
+  gap: 4px;
+  padding: 10px 12px;
+  border: 1px solid rgba(148, 163, 184, 0.16);
+  border-radius: 8px;
+  background: rgba(2, 6, 23, 0.38);
+}
+
+.vault-row strong {
+  color: #f8fafc;
+  font-size: 0.92rem;
+}
+
+.vault-row span {
+  color: #a8b3c5;
+  font-size: 0.78rem;
 }
 
 .feature-list {

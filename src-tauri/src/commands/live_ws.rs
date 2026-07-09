@@ -8,7 +8,7 @@
 //!
 //! These commands move the live socket into Rust so it rides the *same* TLS
 //! configuration as every other hosted request (via
-//! [`super::server::ws_server_client`], honoring `allow_invalid_certificates`; it
+//! [`crate::hosted_client::ws_server_client`], honoring `allow_invalid_certificates`; it
 //! is HTTP/1.1-only because the WS upgrade fails over the HTTP/2 a modern server
 //! would negotiate via ALPN). The webview drives the socket over the
 //! Tauri IPC boundary: control/CRDT frames are sent with [`live_ws_send`] and
@@ -27,7 +27,8 @@ use tauri::ipc::Channel;
 use tauri::State;
 use tokio::sync::{mpsc, Mutex};
 
-use super::server::{session_for, ws_server_client};
+use crate::hosted_client::ws_server_client;
+use crate::hosted_session::session_for;
 use crate::state::AppState;
 
 /// An inbound event forwarded from the server socket to the webview.
@@ -137,12 +138,14 @@ pub async fn live_ws_connect(
     });
 
     let id = state.live_ws.next_id.fetch_add(1, Ordering::Relaxed);
-    state
-        .live_ws
-        .conns
-        .lock()
-        .await
-        .insert(id, LiveConn { outbound, reader, writer });
+    state.live_ws.conns.lock().await.insert(
+        id,
+        LiveConn {
+            outbound,
+            reader,
+            writer,
+        },
+    );
     Ok(id)
 }
 

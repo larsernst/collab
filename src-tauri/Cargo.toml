@@ -30,6 +30,7 @@ keyring = { version = "3", features = ["sync-secret-service", "linux-native"] }
 [dependencies]
 collab-core = { path = "../crates/collab-core" }
 collab-protocol = { path = "../crates/collab-protocol" }
+collab-replica = { path = "../crates/collab-replica" }
 tauri = { version = "2", features = [] }
 tauri-plugin-opener = "2"
 tauri-plugin-dialog = "2"
@@ -71,6 +72,10 @@ tauri-plugin-drag = "2.1.1"
 [target.'cfg(target_os = "macos")'.dependencies]
 keyring = { version = "3", features = ["apple-native"] }
 tauri-plugin-drag = "2.1.1"
+
+[target.'cfg(target_os = "android")'.dependencies]
+jni = "0.21"
+ndk-context = "0.1"
 
 [dev-dependencies]
 httpmock = "0.7"

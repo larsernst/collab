@@ -3,6 +3,7 @@ resolver = "2"
 members = [
   "crates/collab-core",
   "crates/collab-protocol",
+  "crates/collab-replica",
   "crates/collab-server",
   "src-tauri",
 ]
@@ -13,6 +14,7 @@ edition = "2021"
 license = "MIT"
 
 [workspace.dependencies]
+aes-gcm = "0.10"
 anyhow = "1"
 argon2 = "0.5"
 async-trait = "0.1"

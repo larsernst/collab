@@ -1,3 +1,4 @@
+pub mod crypto;
 mod hashing;
 pub mod kanban;
 mod paths;
