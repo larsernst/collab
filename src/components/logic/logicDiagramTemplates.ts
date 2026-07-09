@@ -47,53 +47,6 @@ function doc(title: string, nodes: LogicDiagramNode[], wires: LogicDiagramWire[]
   };
 }
 
-// ── Basic Gates ──────────────────────────────────────────────────────────────
-// One of each gate type, with two shared inputs and one output, so the user can
-// toggle the inputs and see every gate evaluate.
-function basicGatesDocument(): LogicDiagramDocument {
-  const inA = nodeId('in');
-  const inB = nodeId('in');
-  const gateSpecs: Array<[string, LogicDiagramNode['kind'], number]> = [
-    ['and', 'and', 0],
-    ['or', 'or', 1],
-    ['not', 'not', 2],
-    ['xor', 'xor', 3],
-    ['nand', 'nand', 4],
-    ['nor', 'nor', 5],
-    ['xnor', 'xnor', 6],
-  ];
-  const gates: Array<[string, LogicDiagramNode['kind'], number]> = gateSpecs.map(
-    ([id, kind, row]) => [nodeId(id), kind, row],
-  );
-
-  const outIds = gates.map(([, , row]) => nodeId(`out-${row}`));
-
-  const nodes: LogicDiagramNode[] = [
-    node(inA, 'input', 0, 80, { label: 'A' }),
-    node(inB, 'input', 0, 320, { label: 'B' }),
-  ];
-
-  for (const [id, kind, row] of gates) {
-    nodes.push(node(id, kind, 280, 40 + row * 100));
-    const outId = outIds[row];
-    nodes.push(node(outId, 'output', 520, 40 + row * 100));
-  }
-
-  const wires: LogicDiagramWire[] = [];
-  for (const [gateId, kind, row] of gates) {
-    const outId = outIds[row];
-    if (kind === 'not') {
-      wires.push(wire(nodeId('w'), inA, gateId, 'out', 'in'));
-    } else {
-      wires.push(wire(nodeId('w'), inA, gateId, 'out', 'in-a'));
-      wires.push(wire(nodeId('w'), inB, gateId, 'out', 'in-b'));
-    }
-    wires.push(wire(nodeId('w'), gateId, outId, 'out', 'in'));
-  }
-
-  return doc('Basic Gates', nodes, wires);
-}
-
 // ── Half-Adder ───────────────────────────────────────────────────────────────
 // Sum = A XOR B, Carry = A AND B
 function halfAdderDocument(): LogicDiagramDocument {
@@ -254,12 +207,6 @@ export function getLogicDiagramTemplates(): LogicDiagramTemplate[] {
   if (cachedTemplates) return cachedTemplates;
   templateIdCounter = 0;
   cachedTemplates = [
-    {
-      id: 'basic-gates',
-      name: 'Basic Gates',
-      description: 'One of each gate (AND, OR, NOT, XOR, NAND, NOR, XNOR) with shared A/B inputs.',
-      document: basicGatesDocument(),
-    },
     {
       id: 'half-adder',
       name: 'Half-Adder',

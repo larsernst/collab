@@ -7,12 +7,12 @@ import {
 import { normalizeLogicDiagramDocument } from '../../types/logicDiagram';
 import { evaluateLogicDiagram, getLogicInputHandles, getLogicOutputHandles } from './logicDiagramEvaluator';
 
-const TEMPLATE_IDS = ['basic-gates', 'half-adder', 'full-adder', 'multiplexer', 'sr-flip-flop'];
+const TEMPLATE_IDS = ['half-adder', 'full-adder', 'multiplexer', 'sr-flip-flop'];
 
 describe('logicDiagramTemplates', () => {
-  it('exposes the five starter templates', () => {
+  it('exposes the four starter templates', () => {
     const templates = getLogicDiagramTemplates();
-    expect(templates).toHaveLength(5);
+    expect(templates).toHaveLength(4);
     expect(templates.map((t) => t.id).sort()).toEqual([...TEMPLATE_IDS].sort());
   });
 
