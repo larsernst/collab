@@ -1,0 +1,129 @@
+/**
+ * Mobile theming. Reuses the desktop visual language (theme palettes, accent
+ * colors, base font size) but applies it through a small self-contained helper
+ * instead of the desktop `uiStore`, which is coupled to desktop-only features.
+ * Preferences persist in the companion app's localStorage.
+ */
+
+export type Theme = 'dark' | 'midnight' | 'warm' | 'light';
+export type AccentColor = 'violet' | 'blue' | 'emerald' | 'rose' | 'orange' | 'cyan';
+
+export interface ThemePrefs {
+  theme: Theme;
+  accent: AccentColor;
+  fontScale: number;
+}
+
+export const DEFAULT_PREFS: ThemePrefs = { theme: 'dark', accent: 'violet', fontScale: 1 };
+
+export const THEMES: { id: Theme; label: string }[] = [
+  { id: 'dark', label: 'Dark' },
+  { id: 'midnight', label: 'Midnight' },
+  { id: 'warm', label: 'Warm' },
+  { id: 'light', label: 'Light' },
+];
+
+export const ACCENTS: { id: AccentColor; label: string; oklch: string }[] = [
+  { id: 'violet', label: 'Violet', oklch: '0.68 0.22 293' },
+  { id: 'blue', label: 'Blue', oklch: '0.65 0.19 237' },
+  { id: 'emerald', label: 'Emerald', oklch: '0.72 0.17 162' },
+  { id: 'rose', label: 'Rose', oklch: '0.66 0.22 13' },
+  { id: 'orange', label: 'Orange', oklch: '0.72 0.18 50' },
+  { id: 'cyan', label: 'Cyan', oklch: '0.74 0.14 200' },
+];
+
+// Theme-base CSS variables, mirrored from the desktop `THEME_VARS` in App.tsx.
+const THEME_VARS: Record<Theme, Record<string, string>> = {
+  dark: {
+    '--background': 'oklch(0.17 0.015 264)',
+    '--foreground': 'oklch(0.93 0.01 264)',
+    '--card': 'oklch(0.20 0.015 264)',
+    '--muted': 'oklch(0.23 0.015 264)',
+    '--muted-foreground': 'oklch(0.62 0.02 264)',
+    '--surface': 'oklch(0.22 0.016 264)',
+    '--border': 'oklch(1 0 0 / 11%)',
+    '--sidebar': 'oklch(0.15 0.018 264)',
+  },
+  midnight: {
+    '--background': 'oklch(0.07 0.00 0)',
+    '--foreground': 'oklch(0.90 0.00 0)',
+    '--card': 'oklch(0.10 0.00 0)',
+    '--muted': 'oklch(0.14 0.00 0)',
+    '--muted-foreground': 'oklch(0.55 0.01 264)',
+    '--surface': 'oklch(0.12 0.005 264)',
+    '--border': 'oklch(1 0 0 / 8%)',
+    '--sidebar': 'oklch(0.08 0.00 0)',
+  },
+  warm: {
+    '--background': 'oklch(0.11 0.02 60)',
+    '--foreground': 'oklch(0.92 0.02 60)',
+    '--card': 'oklch(0.14 0.02 60)',
+    '--muted': 'oklch(0.18 0.02 60)',
+    '--muted-foreground': 'oklch(0.60 0.03 60)',
+    '--surface': 'oklch(0.16 0.022 60)',
+    '--border': 'oklch(1 0 0 / 9%)',
+    '--sidebar': 'oklch(0.12 0.025 60)',
+  },
+  light: {
+    '--background': 'oklch(0.97 0 0)',
+    '--foreground': 'oklch(0.14 0 0)',
+    '--card': 'oklch(1 0 0)',
+    '--muted': 'oklch(0.94 0 0)',
+    '--muted-foreground': 'oklch(0.45 0.01 264)',
+    '--surface': 'oklch(0.99 0 0)',
+    '--border': 'oklch(0 0 0 / 10%)',
+    '--sidebar': 'oklch(0.94 0 0)',
+  },
+};
+
+const STORAGE_KEY = 'collab-mobile-theme';
+const BASE_FONT_SIZE = 15;
+
+export function loadPrefs(): ThemePrefs {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    if (raw) {
+      const parsed = JSON.parse(raw) as Partial<ThemePrefs>;
+      return {
+        theme: THEMES.some((t) => t.id === parsed.theme) ? (parsed.theme as Theme) : DEFAULT_PREFS.theme,
+        accent: ACCENTS.some((a) => a.id === parsed.accent)
+          ? (parsed.accent as AccentColor)
+          : DEFAULT_PREFS.accent,
+        fontScale:
+          typeof parsed.fontScale === 'number' && parsed.fontScale >= 0.85 && parsed.fontScale <= 1.3
+            ? parsed.fontScale
+            : DEFAULT_PREFS.fontScale,
+      };
+    }
+  } catch {
+    // Fall through to defaults.
+  }
+  return { ...DEFAULT_PREFS };
+}
+
+export function savePrefs(prefs: ThemePrefs): void {
+  try {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(prefs));
+  } catch {
+    // Best-effort persistence.
+  }
+}
+
+export function applyTheme(prefs: ThemePrefs): void {
+  const root = document.documentElement;
+  const isLight = prefs.theme === 'light';
+  root.classList.toggle('dark', !isLight);
+  root.setAttribute('data-theme', prefs.theme);
+
+  const vars = THEME_VARS[prefs.theme] ?? THEME_VARS.dark;
+  for (const [key, value] of Object.entries(vars)) {
+    root.style.setProperty(key, value);
+  }
+
+  const accent = ACCENTS.find((a) => a.id === prefs.accent) ?? ACCENTS[0];
+  root.style.setProperty('--primary', `oklch(${accent.oklch})`);
+  root.style.setProperty('--primary-foreground', isLight ? 'oklch(1 0 0)' : 'oklch(0.10 0 0)');
+  root.style.setProperty('--glow', `oklch(${accent.oklch} / 28%)`);
+
+  root.style.setProperty('--base-font-size', `${Math.round(BASE_FONT_SIZE * prefs.fontScale)}px`);
+}

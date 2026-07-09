@@ -126,7 +126,7 @@ Do not reuse directly:
 | --- | --- | --- |
 | 0. Feasibility spike | Complete | Prove Android Tauri mobile can run a Collab shell, call Rust, authenticate, and persist app data. |
 | 1. Shared client foundation | Complete | Extract enough auth/API/replica logic so desktop and Android do not fork core hosted behavior. |
-| 2. Android mobile shell | Planned | Build phone-first navigation, server access, hosted vault list, and settings/account screens. |
+| 2. Android mobile shell | In progress | Build phone-first navigation, server access, hosted vault list, and settings/account screens. |
 | 3. Offline replica read path | Planned | Seed, cache, open, and browse hosted vault offline copies on Android. |
 | 4. Notes MVP | Planned | View, edit, save, queue offline, and sync markdown notes. |
 | 5. Kanban MVP | Planned | View and edit boards/cards through a mobile-first Kanban workflow. |
@@ -273,6 +273,43 @@ Acceptance criteria:
 - User can select a hosted vault and browse its active files.
 - Viewer-role users see read-only affordances.
 - Navigation is ergonomic on a phone without desktop sidebars or tabs.
+
+Current implementation notes:
+
+- Replaced the Phase 0 probe screen with a real phone-first shell in
+  `apps/mobile-android/src/`: a bottom tab bar (`Servers`, `Vaults`, `Files`,
+  `Settings`) with drill-in navigation (`MobileApp.tsx`), deliberately not
+  importing the desktop `AppShell`, sidebar, or tab model.
+- The shell has its own lightweight state layer (`state/store.ts`, a Zustand
+  store) and IPC layer (`mobileTauri.ts`) that reuse the existing shared native
+  commands — `connect_server`, `reconnect_server`, `disconnect_server`,
+  `server_connection_statuses`, `server_has_saved_session`, and the
+  bearer-hidden `hosted_vault_request` gateway — so no new Rust commands were
+  needed and access/refresh tokens still never enter the web view.
+- `ServersScreen` implements hosted login (URL/username/password + optional
+  untrusted-certificate opt-in), a saved-server list persisted in
+  `lib/servers.ts` (`collab-mobile-servers`, mirroring the desktop
+  `KnownServer` shape), per-server connect/reconnect/disconnect, and online
+  status dots. On launch `store.restore()` reconnects every saved server that
+  has a stored refresh token, so the app reopens without re-entering a password
+  while the token is valid.
+- `VaultsScreen` lists the hosted vault inventory per connected server with
+  storage/member/role metadata and acts as the vault switcher; `FilesScreen` is
+  a phone-first browser (folder drill-in with breadcrumbs) over
+  `GET /api/v1/vaults/{id}/files`, with a read-only detail sheet. Viewer-role
+  vaults show a shared `Read only` badge on both the vault row and the file
+  browser header, and no edit affordances are presented (editing lands in
+  Phases 4–5).
+- `SettingsScreen` exposes theme, accent color, and text-size controls backed by
+  `lib/theme.ts`, which mirrors the desktop theme/accent tokens and applies them
+  as CSS custom properties so the companion shares the desktop visual language;
+  preferences persist in `collab-mobile-theme`.
+- Verification: `pnpm mobile:build` (tsc + Vite) is clean and a new
+  `pnpm mobile:test` Vitest suite (7 tests, `apps/mobile-android/vitest.config.ts`)
+  covers the format/file-tree helpers and a shell render smoke test (login form
+  + bottom nav when no servers are saved; refresh-token session restore that
+  lists vaults and surfaces the viewer read-only affordance). On-device/emulator
+  QA across a device matrix is deferred to Phase 7.
 
 ### Phase 3: Offline Replica Read Path
 
