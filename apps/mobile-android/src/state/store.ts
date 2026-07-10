@@ -49,6 +49,7 @@ export interface Crumb {
 export type ActiveSheet =
   | { kind: 'fileDetail'; fileId: string }
   | { kind: 'note'; fileId: string }
+  | { kind: 'kanban'; fileId: string }
   | { kind: 'removeOffline'; serverUrl: string; vault: HostedVault }
   | null;
 

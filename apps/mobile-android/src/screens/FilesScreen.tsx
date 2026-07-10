@@ -9,10 +9,12 @@ import {
   formatRelativeTime,
   isReadOnlyRole,
 } from '../lib/format';
+import { isKanbanFile } from '../lib/kanban';
 import { isNoteFile } from '../lib/notes';
 import type { FileCacheState } from '../lib/replica';
 import type { ThemePrefs } from '../lib/theme';
 import type { HostedFileEntry } from '../mobileTauri';
+import { KanbanScreen } from './KanbanScreen';
 import { NoteScreen } from './NoteScreen';
 import { useMobileStore } from '../state/store';
 
@@ -77,6 +79,10 @@ export function FilesScreen({ prefs }: { prefs: ThemePrefs }) {
     if (activeSheet?.kind !== 'note') return null;
     return files.find((file) => file.id === activeSheet.fileId) ?? null;
   }, [activeSheet, files]);
+  const kanbanFile = useMemo(() => {
+    if (activeSheet?.kind !== 'kanban') return null;
+    return files.find((file) => file.id === activeSheet.fileId) ?? null;
+  }, [activeSheet, files]);
 
   if (!selected) {
     return (
@@ -98,6 +104,10 @@ export function FilesScreen({ prefs }: { prefs: ThemePrefs }) {
 
   if (noteFile) {
     return <NoteScreen file={noteFile} prefs={prefs} />;
+  }
+
+  if (kanbanFile) {
+    return <KanbanScreen file={kanbanFile} />;
   }
 
   return (
@@ -176,7 +186,9 @@ export function FilesScreen({ prefs }: { prefs: ThemePrefs }) {
                     ? enterFolder({ id: entry.id, name: entry.name })
                     : isNoteFile(entry)
                       ? openSheet({ kind: 'note', fileId: entry.id })
-                      : openSheet({ kind: 'fileDetail', fileId: entry.id })
+                      : isKanbanFile(entry)
+                        ? openSheet({ kind: 'kanban', fileId: entry.id })
+                        : openSheet({ kind: 'fileDetail', fileId: entry.id })
                 }
               >
                 <div className={`file-icon glyph-${glyph}`}>

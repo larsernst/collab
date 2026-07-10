@@ -111,13 +111,15 @@ export async function pendingEditsForFile(
 }
 
 /**
- * Queue an offline note edit. Any earlier queued edit for the same file is
- * coalesced away (dropped) so only the latest content is replayed — this avoids
- * a chain of offline edits self-conflicting on their revision sequences. The
- * edited content is written into the replica document cache so it is visible
- * when the note is reopened, even after an app restart.
+ * Queue an offline edit for a text-backed document (a note or a `.kanban` /
+ * `.canvas` JSON document — the replay path is content-agnostic). Any earlier
+ * queued edit for the same file is coalesced away (dropped) so only the latest
+ * content is replayed — this avoids a chain of offline edits self-conflicting on
+ * their revision sequences. The edited content is written into the replica
+ * document cache so it is visible when the document is reopened, even after an
+ * app restart.
  */
-export async function enqueueNoteEdit(
+export async function enqueueDocumentEdit(
   serverUrl: string,
   vaultId: string,
   file: HostedFileEntry,
@@ -150,6 +152,12 @@ export async function enqueueNoteEdit(
   await replicaCacheDocument(serverUrl, vaultId, file.id, content).catch(() => {});
   return operation;
 }
+
+/**
+ * Back-compat alias for {@link enqueueDocumentEdit}. The queue is content
+ * agnostic, so notes and Kanban boards enqueue through the same path.
+ */
+export const enqueueNoteEdit = enqueueDocumentEdit;
 
 /** Re-queue a failed operation for another replay attempt. */
 export async function retryPendingOperation(

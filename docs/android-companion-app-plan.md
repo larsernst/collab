@@ -129,7 +129,7 @@ Do not reuse directly:
 | 2. Android mobile shell | Complete | Build phone-first navigation, server access, hosted vault list, and settings/account screens. |
 | 3. Offline replica read path | Complete | Seed, cache, open, and browse hosted vault offline copies on Android. |
 | 4. Notes MVP | Complete | View, edit, save, queue offline, and sync markdown notes. |
-| 5. Kanban MVP | Planned | View and edit boards/cards through a mobile-first Kanban workflow. |
+| 5. Kanban MVP | Complete | View and edit boards/cards through a mobile-first Kanban workflow. |
 | 6. Viewer-only rich files | Planned | Add PDF, image, canvas, and logic diagram viewers without edit affordances. |
 | 7. Android hardening and release prep | Planned | Device QA, lifecycle handling, signing, release packaging, and operational docs. |
 | 8. Later expansion | Deferred | Decide whether to add live editing, push/background sync, iOS, or richer viewers. |
@@ -502,6 +502,68 @@ Acceptance criteria:
 - User can create/edit/move cards with touch-friendly controls.
 - Offline card edits queue and sync.
 - Viewer-role users cannot mutate boards.
+
+Current implementation notes:
+
+- Added a mobile-first Kanban board screen (`screens/KanbanScreen.tsx`) opened
+  from the file browser for `.kanban` documents. It deliberately avoids the
+  desktop wide-board layout: columns are a horizontally scrollable chip strip
+  (each with a card count), and the selected column's active cards render as a
+  vertical, touch-friendly list. Tapping a card opens a bottom-sheet detail
+  editor. There is no horizontal desktop-board dependence.
+- The board document model is shared, not forked: `lib/kanban.ts` reads/writes
+  the `.kanban` JSON text document through the same hosted text-document +
+  offline-replica path the notes MVP uses, and reuses the desktop
+  `src/types/kanban.ts` schema, `normalizeKanbanBoard`, and `setCardDoneState`
+  (recurring-card spawning included). Only small, pure, touch-oriented board
+  mutation helpers (add/move/remove card, tags, checklist, comments,
+  done-toggle) live in the mobile lib, and they are unit-tested.
+- Card detail supports title, description, column move, priority, start date,
+  due date, done state, tags (add/remove chips), a checkable checklist with
+  add/remove, and comments (view + add, authored with the effective hosted
+  identity from the connected server session and a deterministic presence color
+  via the shared `userColorForId`). Drag-and-drop is intentionally omitted for
+  v1 — moving a card is a column chooser in the detail sheet — matching the
+  "buttons/menus are acceptable" guidance.
+- Touch-first board interactions: swiping the card area left/right pages between
+  columns with a direction-aware slide-in animation (reduced-motion opt-out).
+  Only the active column is rendered, so the pager height always matches the
+  current column — the bottom dot indicator sits directly beneath it with no
+  dead scroll on short columns. The top column chip strip scrolls the active
+  column into view as you paginate; a header
+  filter/sort panel applies a view-local text filter and a sort (priority, due
+  date, title, created, or manual) without mutating stored order; priority is
+  shown as a colored chip on cards and the priority selector colors itself per
+  level; column chips, the move-to-column chooser, and the column dots all
+  reflect each column's own color; and the tag editor suggests existing board
+  tags (filtered by what you type) for one-tap reuse.
+- Dates use a custom in-app calendar (`components/DateField.tsx`) styled to the
+  app's sheet/visual language rather than the platform `<input type="date">`
+  chrome — a month grid with prev/next navigation, min/max range enforcement
+  (start ≤ due), and Today/Clear actions.
+- Editing reuses the Phase 4 offline write model end to end. Board mutations
+  schedule a debounced (`500ms`), serialized save that posts a hosted revision
+  when connected and otherwise queues a coalesced `edit` operation through the
+  shared native replica queue via the generalized `enqueueDocumentEdit`
+  (`enqueueNoteEdit` is now a thin alias — the queue is content-agnostic, so
+  notes and boards replay through one store). Offline board edits are cached to
+  the replica document cache (visible on reopen after restart) and replay
+  automatically when the vault's server reconnects (`store.syncServer`). The
+  header shows `Saving…` / `Saved` / `Queued to sync` / `Sync failed` / `Cached
+  board`, and a failed sync surfaces the same Retry/Discard recovery banner as
+  notes.
+- Viewer-role vaults open boards fully read-only: no add-card control, no
+  move/priority/tag/checklist/comment/delete affordances, inputs are
+  `readOnly`, and `commitBoard`/save are guarded so a viewer never attempts a
+  write.
+- Verification: `pnpm mobile:build` (tsc + Vite) is clean and `pnpm mobile:test`
+  grew to 36 tests, adding `lib/kanban.test.ts` (document recognition,
+  parse/serialize round-trip with normalization and invalid-content fallback,
+  add/move/remove cards, tags/checklist/done/comment mutations, board-tag
+  collection plus non-mutating view filter/sort, online read with replica
+  cache-warming, offline cache fallback, and hosted-revision save against the
+  current sequence). Two-client offline-convergence device QA remains tracked
+  under Phase 7.
 
 ### Phase 6: Viewer-Only Rich Files
 
