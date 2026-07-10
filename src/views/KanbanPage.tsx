@@ -129,6 +129,11 @@ function parseBoardContent(content: string): KanbanBoard {
 export default function KanbanPage({ relativePath }: { relativePath: string | null }) {
   const { vault } = useVaultStore();
   const client = useMemo(() => (vault ? createVaultClient(vault) : null), [vault]);
+  const liveVaultKey = vault?.kind === 'hosted' ? `${vault.serverUrl}::${vault.hostedVaultId}` : null;
+  const liveClient = useMemo(
+    () => (vault?.kind === 'hosted' ? createVaultClient(vault) : null),
+    [liveVaultKey],
+  );
   const readOnly = isVaultReadOnly(vault);
   // Per-action capability gates. A viewer (readOnly) holds none; local vaults
   // hold all. Hosted writes also require baseline file.write, which the viewer
@@ -318,14 +323,14 @@ export default function KanbanPage({ relativePath }: { relativePath: string | nu
   // unavailable. Remote changes (and the initial seeded state) flow in through
   // `onChange`; the board seeds the room if the server has not already.
   useEffect(() => {
-    if (!client || !relativePath || !client.resolveLiveSession) {
+    if (!liveClient || !relativePath || !liveClient.resolveLiveSession) {
       setLiveSession(null);
       return;
     }
     let cancelled = false;
     let opened: LiveJsonSession | null = null;
     let off: (() => void) | undefined;
-    openLiveJsonSession(client, relativePath)
+    openLiveJsonSession(liveClient, relativePath)
       .then((session) => {
         if (cancelled || !session) {
           session?.destroy();
@@ -366,7 +371,7 @@ export default function KanbanPage({ relativePath }: { relativePath: string | nu
       liveSessionRef.current = null;
       setLiveSession(null);
     };
-  }, [client, relativePath]);
+  }, [liveClient, relativePath]);
 
   useEffect(() => {
     if (!liveSession) return;

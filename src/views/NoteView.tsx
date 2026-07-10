@@ -83,6 +83,11 @@ export default function NoteView({ relativePath }: { relativePath: string }) {
   const editorRef = useRef<MarkdownEditorHandle | null>(null);
   const refreshPulseTimerRef = useRef<number | null>(null);
   const client = useMemo(() => (vault ? createVaultClient(vault) : null), [vault]);
+  const liveVaultKey = vault?.kind === 'hosted' ? `${vault.serverUrl}::${vault.hostedVaultId}` : null;
+  const liveClient = useMemo(
+    () => (vault?.kind === 'hosted' ? createVaultClient(vault) : null),
+    [liveVaultKey],
+  );
   const readOnly = isVaultReadOnly(vault);
   // Live co-editing session for hosted notes. When present, the Yjs document
   // drives the editor and the server persists edits; the REST autosave path is
@@ -206,13 +211,13 @@ export default function NoteView({ relativePath }: { relativePath: string }) {
   // Open a live collaboration session for hosted notes; fall back to REST when
   // unavailable. The session is torn down when the note or vault changes.
   useEffect(() => {
-    if (!client || !relativePath || !client.resolveLiveSession) {
+    if (!liveClient || !relativePath || !liveClient.resolveLiveSession) {
       setLiveSession(null);
       return;
     }
     let cancelled = false;
     let opened: LiveDocumentSession | null = null;
-    openLiveNoteSession(client, relativePath)
+    openLiveNoteSession(liveClient, relativePath)
       .then((session) => {
         if (cancelled) {
           session?.destroy();
@@ -229,7 +234,7 @@ export default function NoteView({ relativePath }: { relativePath: string }) {
       opened?.destroy();
       setLiveSession(null);
     };
-  }, [client, relativePath]);
+  }, [liveClient, relativePath]);
 
   useEffect(() => {
     if (!liveSession) return;
