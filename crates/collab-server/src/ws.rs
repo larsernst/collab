@@ -2547,6 +2547,70 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn offline_live_edit_uploads_on_reconnect_and_materializes() {
+        let Some((pool, _db_guard)) = test_pool().await else {
+            return;
+        };
+        let owner = insert_user(&pool, "offline-owner").await;
+        let vault = insert_vault(&pool, owner).await;
+        let file = insert_document(&pool, vault, "offline.md").await;
+        insert_ticket(&pool, owner, vault, "offline-first").await;
+        insert_ticket(&pool, owner, vault, "offline-reconnect").await;
+
+        let (addr, state) = serve(pool.clone()).await;
+        insert_note_revision(&pool, &state.blobs, vault, file, "base").await;
+
+        let mut first = TestClient::connect(&addr, vault, "offline-first").await;
+        first.expect_ready().await;
+        first.subscribe(file).await;
+        let _ = first.next_binary(ws_message::SYNC_STEP1).await;
+        first
+            .send_binary(
+                ws_message::SYNC_STEP1,
+                file,
+                &StateVector::default().encode_v1(),
+            )
+            .await;
+        let (_, seeded_state) = first
+            .next_binary(ws_message::SYNC_UPDATE)
+            .await
+            .expect("seeded note state");
+
+        let offline_doc = Doc::new();
+        apply_update_bytes(&offline_doc, &seeded_state);
+        {
+            let text = offline_doc.get_or_insert_text(NOTE_TEXT_NAME);
+            let mut txn = offline_doc.transact_mut();
+            let len = text.len(&txn);
+            if len > 0 {
+                text.remove_range(&mut txn, 0, len);
+            }
+            text.insert(&mut txn, 0, "offline edit");
+        }
+
+        let mut reconnect = TestClient::connect(&addr, vault, "offline-reconnect").await;
+        reconnect.expect_ready().await;
+        reconnect.subscribe(file).await;
+        let (_, server_state_vector) = reconnect
+            .next_binary(ws_message::SYNC_STEP1)
+            .await
+            .expect("server state vector");
+        let server_sv = StateVector::decode_v1(&server_state_vector).expect("valid server sv");
+        let missing_update = offline_doc
+            .transact()
+            .encode_state_as_update_v1(&server_sv);
+        reconnect
+            .send_binary(ws_message::SYNC_UPDATE, file, &missing_update)
+            .await;
+
+        tokio::time::sleep(Duration::from_millis(2500)).await;
+        let content = api::load_current_document_text(&pool, &*state.blobs, vault, file)
+            .await
+            .expect("current text");
+        assert_eq!(content, "offline edit");
+    }
+
+    #[tokio::test]
     async fn stale_live_materialization_does_not_overwrite_newer_rest_revision() {
         let Some((pool, _db_guard)) = test_pool().await else {
             return;

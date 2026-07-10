@@ -390,6 +390,7 @@ class MobileLiveProvider implements MobileLiveNoteSession {
         this.reconnectAttempts = 0;
         this.initialSyncPending = true;
         this.sendBinary(SYNC_STEP1, Y.encodeStateVector(this.doc));
+        this.sendBinary(SYNC_UPDATE, Y.encodeStateAsUpdate(this.doc));
         this.sendLocalAwareness();
       } else if (control.type === 'error') {
         this.subscribedCallback?.(false);

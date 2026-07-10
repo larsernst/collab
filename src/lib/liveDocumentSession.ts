@@ -430,9 +430,14 @@ export class WebSocketYProvider {
           break;
         case 'document.subscribed':
           this.reconnectAttempts = 0;
-          // Pull anything the server has that we are missing.
+          // Pull anything the server has that we are missing, and proactively
+          // push our current state as well. The push is idempotent when the
+          // server already has it, and closes the reconnect gap where local
+          // edits made while the socket was down depended entirely on the
+          // server's SYNC_STEP1 arriving and being processed in order.
           this.initialSyncPending = true;
           this.sendBinary(SYNC_STEP1, Y.encodeStateVector(this.doc));
+          this.sendBinary(SYNC_UPDATE, Y.encodeStateAsUpdate(this.doc));
           this.sendLocalAwareness();
           break;
         case 'error':
