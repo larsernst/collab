@@ -128,7 +128,7 @@ Do not reuse directly:
 | 1. Shared client foundation | Complete | Extract enough auth/API/replica logic so desktop and Android do not fork core hosted behavior. |
 | 2. Android mobile shell | Complete | Build phone-first navigation, server access, hosted vault list, and settings/account screens. |
 | 3. Offline replica read path | Complete | Seed, cache, open, and browse hosted vault offline copies on Android. |
-| 4. Notes MVP | Planned | View, edit, save, queue offline, and sync markdown notes. |
+| 4. Notes MVP | Complete | View, edit, save, queue offline, and sync markdown notes. |
 | 5. Kanban MVP | Planned | View and edit boards/cards through a mobile-first Kanban workflow. |
 | 6. Viewer-only rich files | Planned | Add PDF, image, canvas, and logic diagram viewers without edit affordances. |
 | 7. Android hardening and release prep | Planned | Device QA, lifecycle handling, signing, release packaging, and operational docs. |
@@ -424,6 +424,64 @@ Implementation note:
 CodeMirror should be tested early on Android. If keyboard/selection behavior is
 poor, use a simpler textarea-based editor for the MVP and reserve CodeMirror for
 later.
+
+Current implementation notes:
+
+- Started Phase 4 with a mobile note document screen opened from the file
+  browser for hosted Markdown/note documents. The screen uses a textarea editor
+  for the MVP, plus a sanitized `markdown-it` preview, so Android keyboard and
+  selection behavior stays simple while the document flow is validated.
+- Added typed mobile note helpers for online hosted reads/writes and cached
+  replica reads. Opening a note reads through `hosted_vault_request` when online
+  and warms the native document cache; when offline it falls back to
+  `replica_read_cached_document` if available.
+- Online saves post a new hosted text revision with the current revision
+  sequence, update the file-browser entry from the server response, and refresh
+  the local document cache. Viewer-role vaults can open notes but do not see edit
+  or save controls.
+- Hardened the mobile Markdown preview toward desktop parity for the common note
+  surface: soft line breaks, KaTeX inline/display math, plot directives,
+  highlighting, task lists, code highlighting, wikilinks, vault-relative links,
+  cached/hosted image assets, document-backed SVG images, bundled Nerd Font
+  glyphs, and tighter heading/list/table spacing.
+- Replaced the textarea MVP with a mobile-focused CodeMirror editor. The editor
+  applies desktop-aligned indentation controls (`spaces`/`tabs` and tab width),
+  inline color previews, Markdown syntax highlighting, search/history basics,
+  and the shared ASCII arrow ligature decorations while keeping the mobile shell
+  separate from desktop-only live-preview/autocomplete integrations.
+- Wired note writes into the replica pending-operation model and a sync replay
+  path, completing the Phase 4 acceptance criteria. New mobile IPC wrappers
+  (`replicaEnqueueOperation`, `replicaListPendingOperations`,
+  `replicaUpdateOperationStatus`, `replicaRecordOperationFailure`,
+  `replicaRemoveOperation` in `mobileTauri.ts`) reuse the same shared native
+  `replica_*` queue the desktop uses, so both clients replay through one store.
+- `lib/sync.ts` owns the offline write model: `enqueueNoteEdit` caches the edited
+  body into the replica document cache (so an offline edit is visible on reopen,
+  even after an app restart) and appends a coalesced `edit` operation — any
+  earlier queued edit for the same file is dropped so a chain of offline edits
+  never self-conflicts on its revision sequence. `replayPendingOperations`
+  re-posts queued edits as hosted document revisions, removing each on success,
+  leaving it queued on a connectivity error, and recording a classified,
+  recoverable failure (`revision_conflict`, `permission_revoked`, etc.) when the
+  server rejects it. `retryPendingOperation`/`discardPendingOperation` back the
+  recovery actions.
+- Replay is triggered automatically when a vault's own server (re)connects:
+  `store.syncServer` replays every replica belonging to a connected server and is
+  called from `restore` (startup), `connect`, `reconnect`, and on app foreground
+  (`MobileApp` focus/visibility), matching the "sync on foreground and explicit
+  action" guidance since Android may suspend background work.
+- `NoteScreen` now saves offline: a save while disconnected (or a live write that
+  fails purely for connectivity) queues the edit and clears the dirty state,
+  showing a "Queued offline" banner; a failed sync shows a "Couldn’t sync this
+  note" banner with the failure reason and Retry/Discard actions. The header
+  status reflects `Queued to sync` / `Sync failed`. Viewer-role vaults still see
+  no edit or save controls. The Vaults screen surfaces per-vault pending counts.
+- Verification: `pnpm mobile:build` (tsc + Vite) is clean and `pnpm mobile:test`
+  grew to 28 tests, adding `lib/sync.test.ts` (connectivity vs. real-failure
+  classification, offline enqueue + coalescing + content caching, successful
+  replay removal, recorded conflict failure, connectivity requeue, and per-file
+  pending listing). Two-client offline-convergence device QA is tracked under
+  Phase 7.
 
 ### Phase 5: Kanban MVP
 

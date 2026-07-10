@@ -47,6 +47,12 @@ export interface HostedFileEntry {
   updatedAt: string | null;
   sizeBytes: number | null;
   contentHash: string | null;
+  revisionSequence: number | null;
+}
+
+export interface HostedTextDocument {
+  file: HostedFileEntry;
+  content: string;
 }
 
 /**
@@ -204,6 +210,7 @@ function parseFileEntry(item: unknown): HostedFileEntry {
     updatedAt: optString(entry.updatedAt),
     sizeBytes: revisionRecord ? optNumber(revisionRecord.sizeBytes) : null,
     contentHash: revisionRecord ? optString(revisionRecord.contentHash) : null,
+    revisionSequence: revisionRecord ? optNumber(revisionRecord.sequence) : null,
   };
 }
 
@@ -241,6 +248,44 @@ export function hostedAssetDataUrl(
   fileId: string,
 ): Promise<string> {
   return invoke('hosted_vault_asset_data_url', { serverUrl, vaultId, fileId });
+}
+
+function parseHostedTextDocument(value: unknown): HostedTextDocument {
+  const entry = asRecord(value, 'The server returned an invalid document.');
+  if (typeof entry.content !== 'string') {
+    throw new Error('The server returned an invalid document.');
+  }
+  return {
+    file: parseFileEntry(entry.file),
+    content: entry.content,
+  };
+}
+
+export async function readHostedDocument(
+  serverUrl: string,
+  vaultId: string,
+  fileId: string,
+): Promise<HostedTextDocument> {
+  return parseHostedTextDocument(
+    await hostedRequest<unknown>(serverUrl, 'GET', `/api/v1/vaults/${vaultId}/files/${fileId}`),
+  );
+}
+
+export async function writeHostedDocument(
+  serverUrl: string,
+  vaultId: string,
+  fileId: string,
+  expectedRevisionSequence: number,
+  content: string,
+): Promise<HostedTextDocument> {
+  return parseHostedTextDocument(
+    await hostedRequest<unknown>(
+      serverUrl,
+      'POST',
+      `/api/v1/vaults/${vaultId}/files/${fileId}/revisions`,
+      { expectedRevisionSequence, content },
+    ),
+  );
 }
 
 // ── Native replica store (offline availability) ─────────────────────────────
@@ -316,6 +361,22 @@ export function replicaCacheDocument(
   return invoke('replica_cache_document', { serverUrl, vaultId, fileId, content });
 }
 
+export function replicaReadCachedDocument(
+  serverUrl: string,
+  vaultId: string,
+  fileId: string,
+): Promise<string | null> {
+  return invoke('replica_read_cached_document', { serverUrl, vaultId, fileId });
+}
+
+export function replicaReadCachedAsset(
+  serverUrl: string,
+  vaultId: string,
+  fileId: string,
+): Promise<string | null> {
+  return invoke('replica_read_cached_asset', { serverUrl, vaultId, fileId });
+}
+
 export function replicaCacheAsset(
   serverUrl: string,
   vaultId: string,
@@ -327,4 +388,86 @@ export function replicaCacheAsset(
 
 export function replicaDelete(serverUrl: string, vaultId: string): Promise<void> {
   return invoke('replica_delete', { serverUrl, vaultId });
+}
+
+// ── Pending-operation queue (offline writes) ─────────────────────────────────
+
+export type PendingOpKind =
+  | 'create'
+  | 'edit'
+  | 'rename'
+  | 'move'
+  | 'trash'
+  | 'restore'
+  | 'delete'
+  | 'assetUpload';
+
+export type PendingOpStatus = 'pending' | 'inflight' | 'failed';
+
+/**
+ * An append-only offline write queued in the native replica. Mirrors the desktop
+ * `PendingOperation` shape so both clients replay through the same native store.
+ * The notes MVP only produces `edit` operations; the type covers the full set so
+ * the queue stays forward-compatible with Kanban/structural offline writes.
+ */
+export interface PendingOperation {
+  id: string;
+  kind: PendingOpKind;
+  fileId: string | null;
+  relativePath: string | null;
+  payload: unknown;
+  /** The manifest sequence the operation was authored against. */
+  baseManifestSequence: number;
+  createdAt: string;
+  status: PendingOpStatus;
+  failureCode?: string | null;
+  failureMessage?: string | null;
+}
+
+export function replicaEnqueueOperation(
+  serverUrl: string,
+  vaultId: string,
+  operation: PendingOperation,
+): Promise<void> {
+  return invoke('replica_enqueue_operation', { serverUrl, vaultId, operation });
+}
+
+export function replicaListPendingOperations(
+  serverUrl: string,
+  vaultId: string,
+): Promise<PendingOperation[]> {
+  return invoke('replica_list_pending_operations', { serverUrl, vaultId });
+}
+
+export function replicaUpdateOperationStatus(
+  serverUrl: string,
+  vaultId: string,
+  operationId: string,
+  status: PendingOpStatus,
+): Promise<void> {
+  return invoke('replica_update_operation_status', { serverUrl, vaultId, operationId, status });
+}
+
+export function replicaRecordOperationFailure(
+  serverUrl: string,
+  vaultId: string,
+  operationId: string,
+  failureCode: string,
+  failureMessage: string,
+): Promise<void> {
+  return invoke('replica_record_operation_failure', {
+    serverUrl,
+    vaultId,
+    operationId,
+    failureCode,
+    failureMessage,
+  });
+}
+
+export function replicaRemoveOperation(
+  serverUrl: string,
+  vaultId: string,
+  operationId: string,
+): Promise<void> {
+  return invoke('replica_remove_operation', { serverUrl, vaultId, operationId });
 }

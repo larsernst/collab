@@ -30,6 +30,7 @@ import {
   removeOfflineCopy,
   replicaKey,
 } from '../lib/replica';
+import { replayPendingOperations } from '../lib/sync';
 
 export interface SelectedVault {
   serverUrl: string;
@@ -47,6 +48,7 @@ export interface Crumb {
  * it before navigating folders or tabs. */
 export type ActiveSheet =
   | { kind: 'fileDetail'; fileId: string }
+  | { kind: 'note'; fileId: string }
   | { kind: 'removeOffline'; serverUrl: string; vault: HostedVault }
   | null;
 
@@ -90,6 +92,8 @@ interface MobileState {
   restore: () => Promise<void>;
   refreshStatuses: () => Promise<void>;
   loadReplicas: () => Promise<void>;
+  /** Replay every offline-queued write for a connected server's replicas. */
+  syncServer: (serverUrl: string) => Promise<void>;
   connect: (
     serverUrl: string,
     username: string,
@@ -103,6 +107,7 @@ interface MobileState {
   clearSelection: () => void;
   loadFiles: () => Promise<void>;
   refreshCacheStatus: (files: HostedFileEntry[]) => Promise<void>;
+  replaceFile: (file: HostedFileEntry) => void;
   makeOffline: (serverUrl: string, vault: HostedVault) => Promise<void>;
   removeOffline: (serverUrl: string, vaultId: string) => Promise<void>;
 }
@@ -188,11 +193,15 @@ export const useMobileStore = create<MobileState>((set, get) => ({
       }),
     );
     await get().refreshStatuses();
-    // Load offline replicas and preload vault inventories for connected servers.
+    // Load offline replicas first so a reconnected server can immediately replay
+    // any writes queued while it was offline, then preload vault inventories.
+    await get().loadReplicas().catch(() => {});
     await Promise.all([
-      get().loadReplicas().catch(() => {}),
       ...Object.keys(get().statuses).map((serverUrl) =>
         get().loadVaults(serverUrl).catch(() => {}),
+      ),
+      ...Object.keys(get().statuses).map((serverUrl) =>
+        get().syncServer(serverUrl).catch(() => {}),
       ),
     ]);
     set({ restored: true });
@@ -207,6 +216,31 @@ export const useMobileStore = create<MobileState>((set, get) => ({
     set({ replicas: map });
   },
 
+  syncServer: async (serverUrl) => {
+    const normalized = normalizeServerUrl(serverUrl);
+    if (!isConnected(get().statuses[normalized])) return;
+    const replicas = Object.values(get().replicas).filter(
+      (replica) => normalizeServerUrl(replica.serverUrl) === normalized,
+    );
+    let synced = false;
+    for (const replica of replicas) {
+      try {
+        const result = await replayPendingOperations(normalized, replica.vaultId);
+        if (result.replayed > 0 || result.stoppedForFailure) synced = true;
+      } catch {
+        // Still offline for this vault; leave its queue for the next attempt.
+      }
+    }
+    if (!synced) return;
+    // Refresh pending counts, and re-read the open vault so replayed edits and
+    // any resulting server state are reflected.
+    await get().loadReplicas().catch(() => {});
+    const selected = get().selected;
+    if (selected && normalizeServerUrl(selected.serverUrl) === normalized) {
+      await get().loadFiles().catch(() => {});
+    }
+  },
+
   connect: async (serverUrl, username, password, opts) => {
     const normalized = normalizeServerUrl(serverUrl);
     await connectServer(normalized, username, password, opts);
@@ -219,6 +253,7 @@ export const useMobileStore = create<MobileState>((set, get) => ({
     set({ servers: listKnownServers() });
     await get().refreshStatuses();
     await get().loadVaults(normalized);
+    await get().syncServer(normalized).catch(() => {});
   },
 
   reconnect: async (serverUrl) => {
@@ -230,6 +265,7 @@ export const useMobileStore = create<MobileState>((set, get) => ({
     });
     await get().refreshStatuses();
     await get().loadVaults(normalized);
+    await get().syncServer(normalized).catch(() => {});
   },
 
   disconnect: async (serverUrl) => {
@@ -354,6 +390,13 @@ export const useMobileStore = create<MobileState>((set, get) => ({
       }
     };
     await Promise.all(Array.from({ length: Math.min(6, targets.length) }, worker));
+  },
+
+  replaceFile: (file) => {
+    set((state) => ({
+      files: state.files.map((entry) => (entry.id === file.id ? file : entry)),
+      fileCache: { ...state.fileCache, [file.id]: 'cached' },
+    }));
   },
 
   makeOffline: async (serverUrl, vault) => {

@@ -29,6 +29,7 @@ export function MobileApp() {
 
   const restore = useMobileStore((s) => s.restore);
   const refreshStatuses = useMobileStore((s) => s.refreshStatuses);
+  const syncServer = useMobileStore((s) => s.syncServer);
   const tab = useMobileStore((s) => s.tab);
   const setTab = useMobileStore((s) => s.setTab);
   const selected = useMobileStore((s) => s.selected);
@@ -50,10 +51,20 @@ export function MobileApp() {
     });
   }, [restore]);
 
-  // Keep connection status fresh when the app returns to the foreground.
+  // Keep connection status fresh when the app returns to the foreground, and
+  // replay any offline-queued writes for still-connected servers (foreground
+  // sync — Android may suspend background work, so this is the primary trigger).
   useEffect(() => {
     const onFocus = () => {
-      refreshStatuses().catch(() => {});
+      void (async () => {
+        await refreshStatuses().catch(() => {});
+        const { statuses: current, syncServer: sync } = useMobileStore.getState();
+        await Promise.all(
+          Object.values(current)
+            .filter((status) => status.connected && status.serverUrl)
+            .map((status) => sync(status.serverUrl as string).catch(() => {})),
+        );
+      })();
     };
     window.addEventListener('focus', onFocus);
     document.addEventListener('visibilitychange', onFocus);
@@ -61,7 +72,7 @@ export function MobileApp() {
       window.removeEventListener('focus', onFocus);
       document.removeEventListener('visibilitychange', onFocus);
     };
-  }, [refreshStatuses]);
+  }, [refreshStatuses, syncServer]);
 
   // Android hardware back / back-gesture handling.
   //
@@ -127,7 +138,7 @@ export function MobileApp() {
 
         {tab === 'servers' ? <ServersScreen onOpenServer={() => setTab('vaults')} /> : null}
         {tab === 'vaults' ? <VaultsScreen /> : null}
-        {tab === 'files' ? <FilesScreen /> : null}
+        {tab === 'files' ? <FilesScreen prefs={prefs} /> : null}
         {tab === 'settings' ? <SettingsScreen prefs={prefs} onChange={updatePrefs} /> : null}
       </main>
 

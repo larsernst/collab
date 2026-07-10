@@ -7,14 +7,50 @@
 
 export type Theme = 'dark' | 'midnight' | 'warm' | 'light';
 export type AccentColor = 'violet' | 'blue' | 'emerald' | 'rose' | 'orange' | 'cyan';
+export type IndentStyle = 'spaces' | 'tabs';
+export type ColorPreviewFormat = 'hex' | 'rgb' | 'hsl' | 'oklch' | 'oklab';
 
 export interface ThemePrefs {
   theme: Theme;
   accent: AccentColor;
   fontScale: number;
+  indentStyle: IndentStyle;
+  tabWidth: number;
+  showInlineColorPreviews: boolean;
+  colorPreviewShowSwatch: boolean;
+  colorPreviewTintText: boolean;
+  colorPreviewFormats: Record<ColorPreviewFormat, boolean>;
 }
 
-export const DEFAULT_PREFS: ThemePrefs = { theme: 'dark', accent: 'violet', fontScale: 1 };
+export const TAB_WIDTH_OPTIONS = [2, 3, 4, 6, 8] as const;
+
+export const COLOR_PREVIEW_FORMAT_OPTIONS: Record<ColorPreviewFormat, { label: string; description: string }> = {
+  hex: { label: 'Hex', description: '#rgb, #rgba, #rrggbb, #rrggbbaa' },
+  rgb: { label: 'RGB / RGBA', description: 'rgb(...) and rgba(...)' },
+  hsl: { label: 'HSL / HSLA', description: 'hsl(...) and hsla(...)' },
+  oklch: { label: 'OKLCH', description: 'oklch(...) color strings' },
+  oklab: { label: 'OKLAB', description: 'oklab(...) color strings' },
+};
+
+export const DEFAULT_COLOR_PREVIEW_FORMATS: Record<ColorPreviewFormat, boolean> = {
+  hex: true,
+  rgb: true,
+  hsl: true,
+  oklch: true,
+  oklab: true,
+};
+
+export const DEFAULT_PREFS: ThemePrefs = {
+  theme: 'dark',
+  accent: 'violet',
+  fontScale: 1,
+  indentStyle: 'spaces',
+  tabWidth: 2,
+  showInlineColorPreviews: true,
+  colorPreviewShowSwatch: true,
+  colorPreviewTintText: true,
+  colorPreviewFormats: { ...DEFAULT_COLOR_PREVIEW_FORMATS },
+};
 
 export const THEMES: { id: Theme; label: string }[] = [
   { id: 'dark', label: 'Dark' },
@@ -79,6 +115,17 @@ const THEME_VARS: Record<Theme, Record<string, string>> = {
 const STORAGE_KEY = 'collab-mobile-theme';
 const BASE_FONT_SIZE = 15;
 
+function normalizeColorPreviewFormats(value: unknown): Record<ColorPreviewFormat, boolean> {
+  const record = value && typeof value === 'object' ? (value as Partial<Record<ColorPreviewFormat, unknown>>) : {};
+  return {
+    hex: typeof record.hex === 'boolean' ? record.hex : DEFAULT_COLOR_PREVIEW_FORMATS.hex,
+    rgb: typeof record.rgb === 'boolean' ? record.rgb : DEFAULT_COLOR_PREVIEW_FORMATS.rgb,
+    hsl: typeof record.hsl === 'boolean' ? record.hsl : DEFAULT_COLOR_PREVIEW_FORMATS.hsl,
+    oklch: typeof record.oklch === 'boolean' ? record.oklch : DEFAULT_COLOR_PREVIEW_FORMATS.oklch,
+    oklab: typeof record.oklab === 'boolean' ? record.oklab : DEFAULT_COLOR_PREVIEW_FORMATS.oklab,
+  };
+}
+
 export function loadPrefs(): ThemePrefs {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
@@ -93,6 +140,24 @@ export function loadPrefs(): ThemePrefs {
           typeof parsed.fontScale === 'number' && parsed.fontScale >= 0.85 && parsed.fontScale <= 1.3
             ? parsed.fontScale
             : DEFAULT_PREFS.fontScale,
+        indentStyle: parsed.indentStyle === 'tabs' ? 'tabs' : DEFAULT_PREFS.indentStyle,
+        tabWidth:
+          typeof parsed.tabWidth === 'number' && TAB_WIDTH_OPTIONS.includes(parsed.tabWidth as typeof TAB_WIDTH_OPTIONS[number])
+            ? parsed.tabWidth
+            : DEFAULT_PREFS.tabWidth,
+        showInlineColorPreviews:
+          typeof parsed.showInlineColorPreviews === 'boolean'
+            ? parsed.showInlineColorPreviews
+            : DEFAULT_PREFS.showInlineColorPreviews,
+        colorPreviewShowSwatch:
+          typeof parsed.colorPreviewShowSwatch === 'boolean'
+            ? parsed.colorPreviewShowSwatch
+            : DEFAULT_PREFS.colorPreviewShowSwatch,
+        colorPreviewTintText:
+          typeof parsed.colorPreviewTintText === 'boolean'
+            ? parsed.colorPreviewTintText
+            : DEFAULT_PREFS.colorPreviewTintText,
+        colorPreviewFormats: normalizeColorPreviewFormats(parsed.colorPreviewFormats),
       };
     }
   } catch {

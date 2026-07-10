@@ -34,8 +34,8 @@
       "icons/icon.ico"
     ],
     "android": {
-      "versionCode": 6004
+      "versionCode": 6005
     }
   },
-  "version": "0.6.4"
+  "version": "0.6.5"
 }

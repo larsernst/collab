@@ -1,5 +1,11 @@
 import React from 'react';
 import ReactDOM from 'react-dom/client';
+import '@fontsource-variable/inter';
+import '@fontsource/fira-code';
+import '@fontsource/jetbrains-mono';
+import '@azurity/pure-nerd-font/pure-nerd-font.css';
+import 'katex/dist/katex.min.css';
+import 'highlight.js/styles/atom-one-dark.css';
 
 import { MobileApp } from './MobileApp';
 import './styles.css';

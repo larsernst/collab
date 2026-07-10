@@ -64,8 +64,12 @@ class AsciiArrowLigatureWidget extends WidgetType {
 export const ASCII_LIGATURE_PAIRS: Record<string, string> = {
   '/\\': '↑',
   '\\/': '↓',
+  '->': '→',
+  '<-': '←',
+  '=>': '⇒',
   '<=': '≤',
   '>=': '≥',
+  '!=': '≠',
 };
 
 function buildAsciiArrowLigatureDecorations(view: EditorView): DecorationSet {

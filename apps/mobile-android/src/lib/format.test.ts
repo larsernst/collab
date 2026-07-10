@@ -14,6 +14,7 @@ function file(partial: Partial<HostedFileEntry> & { id: string }): HostedFileEnt
     updatedAt: null,
     sizeBytes: null,
     contentHash: null,
+    revisionSequence: null,
     ...partial,
   };
 }

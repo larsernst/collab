@@ -52,5 +52,8 @@ describe('indentationPlugins', () => {
   it('includes <= and >= operator ligatures in the substitution map', () => {
     expect(ASCII_LIGATURE_PAIRS['<=']).toBe('≤');
     expect(ASCII_LIGATURE_PAIRS['>=']).toBe('≥');
+    expect(ASCII_LIGATURE_PAIRS['->']).toBe('→');
+    expect(ASCII_LIGATURE_PAIRS['=>']).toBe('⇒');
+    expect(ASCII_LIGATURE_PAIRS['!=']).toBe('≠');
   });
 });

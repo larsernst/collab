@@ -1,6 +1,13 @@
-import { Palette, Server, Type } from 'lucide-react';
+import { Code2, Palette, Server, Type } from 'lucide-react';
 
-import { ACCENTS, THEMES, type ThemePrefs } from '../lib/theme';
+import {
+  ACCENTS,
+  COLOR_PREVIEW_FORMAT_OPTIONS,
+  TAB_WIDTH_OPTIONS,
+  THEMES,
+  type ColorPreviewFormat,
+  type ThemePrefs,
+} from '../lib/theme';
 import { useMobileStore } from '../state/store';
 
 const FONT_SCALES: { value: number; label: string }[] = [
@@ -20,6 +27,20 @@ export function SettingsScreen({
   const servers = useMobileStore((s) => s.servers);
   const statuses = useMobileStore((s) => s.statuses);
   const connectedCount = Object.values(statuses).filter((s) => s.connected).length;
+  const colorFormats = Object.entries(COLOR_PREVIEW_FORMAT_OPTIONS) as [
+    ColorPreviewFormat,
+    typeof COLOR_PREVIEW_FORMAT_OPTIONS[ColorPreviewFormat],
+  ][];
+
+  const updateColorFormat = (format: ColorPreviewFormat, enabled: boolean) => {
+    onChange({
+      ...prefs,
+      colorPreviewFormats: {
+        ...prefs.colorPreviewFormats,
+        [format]: enabled,
+      },
+    });
+  };
 
   return (
     <div className="screen">
@@ -82,6 +103,105 @@ export function SettingsScreen({
               onClick={() => onChange({ ...prefs, fontScale: scale.value })}
             >
               {scale.label}
+            </button>
+          ))}
+        </div>
+      </section>
+
+      <section className="card">
+        <div className="card-title">
+          <Code2 size={18} aria-hidden />
+          <span>Editor</span>
+        </div>
+        <div className="setting-row">
+          <div>
+            <strong>Indent with</strong>
+            <span>Controls what the note editor inserts when pressing Tab.</span>
+          </div>
+          <div className="segmented-control">
+            {(['spaces', 'tabs'] as const).map((style) => (
+              <button
+                key={style}
+                type="button"
+                className={prefs.indentStyle === style ? 'selected' : ''}
+                onClick={() => onChange({ ...prefs, indentStyle: style })}
+              >
+                {style === 'spaces' ? 'Spaces' : 'Tabs'}
+              </button>
+            ))}
+          </div>
+        </div>
+        <div className="setting-row">
+          <div>
+            <strong>Tab width</strong>
+            <span>Matches the desktop tab stop options.</span>
+          </div>
+          <div className="segmented-control compact">
+            {TAB_WIDTH_OPTIONS.map((width) => (
+              <button
+                key={width}
+                type="button"
+                className={prefs.tabWidth === width ? 'selected' : ''}
+                onClick={() => onChange({ ...prefs, tabWidth: width })}
+              >
+                {width}
+              </button>
+            ))}
+          </div>
+        </div>
+      </section>
+
+      <section className="card">
+        <div className="card-title">
+          <span className="accent-dot" style={{ background: 'linear-gradient(135deg, #fb7185, #facc15, #34d399)' }} />
+          <span>Color previews</span>
+        </div>
+        <label className="toggle-row">
+          <span>
+            <strong>Enable color previews</strong>
+            <small>Preview recognized color strings in note preview.</small>
+          </span>
+          <input
+            type="checkbox"
+            checked={prefs.showInlineColorPreviews}
+            onChange={(event) => onChange({ ...prefs, showInlineColorPreviews: event.currentTarget.checked })}
+          />
+        </label>
+        <label className="toggle-row disabled-when-off">
+          <span>
+            <strong>Show swatches</strong>
+            <small>Render a small color block before each match.</small>
+          </span>
+          <input
+            type="checkbox"
+            disabled={!prefs.showInlineColorPreviews}
+            checked={prefs.colorPreviewShowSwatch}
+            onChange={(event) => onChange({ ...prefs, colorPreviewShowSwatch: event.currentTarget.checked })}
+          />
+        </label>
+        <label className="toggle-row disabled-when-off">
+          <span>
+            <strong>Tint matching text</strong>
+            <small>Add a soft color background behind each match.</small>
+          </span>
+          <input
+            type="checkbox"
+            disabled={!prefs.showInlineColorPreviews}
+            checked={prefs.colorPreviewTintText}
+            onChange={(event) => onChange({ ...prefs, colorPreviewTintText: event.currentTarget.checked })}
+          />
+        </label>
+        <div className="format-grid">
+          {colorFormats.map(([format, meta]) => (
+            <button
+              key={format}
+              type="button"
+              disabled={!prefs.showInlineColorPreviews}
+              className={prefs.colorPreviewFormats[format] ? 'selected' : ''}
+              onClick={() => updateColorFormat(format, !prefs.colorPreviewFormats[format])}
+            >
+              <strong>{meta.label}</strong>
+              <span>{meta.description}</span>
             </button>
           ))}
         </div>

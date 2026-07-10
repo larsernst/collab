@@ -225,9 +225,17 @@ export function VaultsScreen() {
                                 ]
                                   .filter(Boolean)
                                   .join(' · ')
-                              : `${formatBytes(vault.storageBytes)} · ${vault.members} member${
-                                  vault.members === 1 ? '' : 's'
-                                }${isOffline ? ' · offline copy' : ''}`}
+                              : [
+                                  `${formatBytes(vault.storageBytes)} · ${vault.members} member${
+                                    vault.members === 1 ? '' : 's'
+                                  }`,
+                                  isOffline ? 'offline copy' : null,
+                                  replica && replica.pendingCount > 0
+                                    ? `${replica.pendingCount} pending`
+                                    : null,
+                                ]
+                                  .filter(Boolean)
+                                  .join(' · ')}
                           </span>
                         </div>
                         <div className="vault-badges">

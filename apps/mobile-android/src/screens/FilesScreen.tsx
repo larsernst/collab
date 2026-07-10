@@ -9,13 +9,16 @@ import {
   formatRelativeTime,
   isReadOnlyRole,
 } from '../lib/format';
+import { isNoteFile } from '../lib/notes';
 import type { FileCacheState } from '../lib/replica';
+import type { ThemePrefs } from '../lib/theme';
 import type { HostedFileEntry } from '../mobileTauri';
+import { NoteScreen } from './NoteScreen';
 import { useMobileStore } from '../state/store';
 
 const PAGE_SIZE = 60;
 
-export function FilesScreen() {
+export function FilesScreen({ prefs }: { prefs: ThemePrefs }) {
   const selected = useMobileStore((s) => s.selected);
   const files = useMobileStore((s) => s.files);
   const filesBusy = useMobileStore((s) => s.filesBusy);
@@ -70,6 +73,10 @@ export function FilesScreen() {
     if (activeSheet?.kind !== 'fileDetail') return null;
     return files.find((file) => file.id === activeSheet.fileId) ?? null;
   }, [activeSheet, files]);
+  const noteFile = useMemo(() => {
+    if (activeSheet?.kind !== 'note') return null;
+    return files.find((file) => file.id === activeSheet.fileId) ?? null;
+  }, [activeSheet, files]);
 
   if (!selected) {
     return (
@@ -87,6 +94,10 @@ export function FilesScreen() {
         />
       </div>
     );
+  }
+
+  if (noteFile) {
+    return <NoteScreen file={noteFile} prefs={prefs} />;
   }
 
   return (
@@ -163,7 +174,9 @@ export function FilesScreen() {
                 onClick={() =>
                   isFolder
                     ? enterFolder({ id: entry.id, name: entry.name })
-                    : openSheet({ kind: 'fileDetail', fileId: entry.id })
+                    : isNoteFile(entry)
+                      ? openSheet({ kind: 'note', fileId: entry.id })
+                      : openSheet({ kind: 'fileDetail', fileId: entry.id })
                 }
               >
                 <div className={`file-icon glyph-${glyph}`}>
