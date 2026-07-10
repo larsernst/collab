@@ -223,12 +223,14 @@ export function KanbanScreen({ file }: { file: HostedFileEntry }) {
     let cancelled = false;
     async function load() {
       if (!selected) return;
+      if (liveSessionRef.current) return;
       setBusy(true);
       setError(null);
       setMessage(null);
       try {
         const loaded = await readKanbanDocument(serverUrl, vaultId, file, connected);
         if (cancelled) return;
+        if (liveSessionRef.current) return;
         setCurrentFile(loaded.file);
         setBoard(loaded.board);
         markSaved(serializeBoard(loaded.board));
@@ -312,7 +314,7 @@ export function KanbanScreen({ file }: { file: HostedFileEntry }) {
       setLiveSession(null);
       setLiveStatus(null);
     };
-  }, [file.id, markSaved, readOnly, selected, serverUrl, vaultId]);
+  }, [file.id, markSaved, readOnly, selected?.serverUrl, selected?.vault.id, serverUrl, vaultId]);
 
   // ── Save ──────────────────────────────────────────────────────────────────
   const queueOffline = useCallback(

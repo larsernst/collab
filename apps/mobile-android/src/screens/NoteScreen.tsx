@@ -96,6 +96,10 @@ export function NoteScreen({ file, prefs }: { file: HostedFileEntry; prefs: Them
 
   const connected = selected ? !!statuses[selected.serverUrl]?.connected : false;
   const readOnly = selected ? isReadOnlyRole(selected.vault.role) : true;
+  const connectedRef = useRef(connected);
+  connectedRef.current = connected;
+  const liveSessionRef = useRef<MobileLiveNoteSession | null>(null);
+  liveSessionRef.current = liveSession;
   const liveActive = !!liveSession;
   const dirty = !liveActive && content !== savedContent;
   const pendingFailed = pending?.status === 'failed';
@@ -122,12 +126,14 @@ export function NoteScreen({ file, prefs }: { file: HostedFileEntry; prefs: Them
     let cancelled = false;
     async function load() {
       if (!selected) return;
+      if (liveSessionRef.current) return;
       setBusy(true);
       setError(null);
       setMessage(null);
       try {
         const document = await readNoteDocument(selected.serverUrl, selected.vault.id, file, connected);
         if (cancelled) return;
+        if (liveSessionRef.current) return;
         setCurrentFile(document.file);
         setContent(document.content);
         setSavedContent(document.content);
@@ -149,7 +155,7 @@ export function NoteScreen({ file, prefs }: { file: HostedFileEntry; prefs: Them
   }, [connected, file, selected]);
 
   useEffect(() => {
-    if (!selected || readOnly || !connected) {
+    if (!selected || readOnly || !connectedRef.current) {
       setLiveSession(null);
       setLiveStatus('disconnected');
       return;
@@ -197,7 +203,7 @@ export function NoteScreen({ file, prefs }: { file: HostedFileEntry; prefs: Them
       setLiveSession(null);
       setLiveStatus('disconnected');
     };
-  }, [connected, file.id, readOnly, selected]);
+  }, [file.id, readOnly, selected?.serverUrl, selected?.vault.id]);
 
   const loadImageSource = useCallback(
     async (target: HostedFileEntry): Promise<string | null> => {
