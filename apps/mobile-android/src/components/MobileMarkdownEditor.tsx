@@ -145,11 +145,13 @@ export function MobileMarkdownEditor({
   prefs,
   onChange,
   onSave,
+  collabExtension = null,
 }: {
   value: string;
   prefs: ThemePrefs;
   onChange: (value: string) => void;
   onSave: () => void;
+  collabExtension?: Extension | null;
 }) {
   const hostRef = useRef<HTMLDivElement | null>(null);
   const viewRef = useRef<EditorView | null>(null);
@@ -206,9 +208,10 @@ export function MobileMarkdownEditor({
       saveKeymap,
       updateListener,
       asciiArrowLigatures(),
+      collabExtension ?? [],
       EditorView.lineWrapping,
     ];
-  }, [prefs]);
+  }, [collabExtension, prefs]);
 
   useEffect(() => {
     const host = hostRef.current;
@@ -228,12 +231,13 @@ export function MobileMarkdownEditor({
   useEffect(() => {
     const view = viewRef.current;
     if (!view) return;
+    if (collabExtension) return;
     const current = view.state.doc.toString();
     if (current === value) return;
     view.dispatch({
       changes: { from: 0, to: current.length, insert: value },
     });
-  }, [value]);
+  }, [collabExtension, value]);
 
   return <div ref={hostRef} className="mobile-codemirror-editor" />;
 }

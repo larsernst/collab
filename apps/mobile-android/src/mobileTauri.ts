@@ -1,4 +1,4 @@
-import { invoke } from '@tauri-apps/api/core';
+import { Channel, invoke } from '@tauri-apps/api/core';
 
 export interface ServerHealthStatus {
   ok: boolean;
@@ -54,6 +54,17 @@ export interface HostedTextDocument {
   file: HostedFileEntry;
   content: string;
 }
+
+export interface WsTicket {
+  ticket: string;
+  websocketUrl: string;
+  protocolVersion: number | null;
+}
+
+export type LiveWsEvent =
+  | { type: 'text'; data: string }
+  | { type: 'binary'; data: string }
+  | { type: 'closed'; code: number | null };
 
 /**
  * The native manifest as it crosses the IPC boundary — the raw server shape with
@@ -288,6 +299,26 @@ export async function writeHostedDocument(
   );
 }
 
+export function hostedWsTicket(serverUrl: string, vaultId: string): Promise<WsTicket> {
+  return invoke('hosted_ws_ticket', { serverUrl, vaultId });
+}
+
+export function liveWsConnect(
+  serverUrl: string,
+  websocketUrl: string,
+  onEvent: Channel<LiveWsEvent>,
+): Promise<number> {
+  return invoke('live_ws_connect', { serverUrl, websocketUrl, onEvent });
+}
+
+export function liveWsSend(id: number, kind: 'text' | 'binary', data: string): Promise<void> {
+  return invoke('live_ws_send', { id, kind, data });
+}
+
+export function liveWsClose(id: number): Promise<void> {
+  return invoke('live_ws_close', { id });
+}
+
 // ── Native replica store (offline availability) ─────────────────────────────
 
 export function replicaList(): Promise<ReplicaSummary[]> {
@@ -359,6 +390,31 @@ export function replicaCacheDocument(
   content: string,
 ): Promise<void> {
   return invoke('replica_cache_document', { serverUrl, vaultId, fileId, content });
+}
+
+export function replicaCacheCrdtState(
+  serverUrl: string,
+  vaultId: string,
+  fileId: string,
+  base64Content: string,
+): Promise<void> {
+  return invoke('replica_cache_crdt_state', { serverUrl, vaultId, fileId, base64Content });
+}
+
+export function replicaReadCrdtState(
+  serverUrl: string,
+  vaultId: string,
+  fileId: string,
+): Promise<string | null> {
+  return invoke('replica_read_crdt_state', { serverUrl, vaultId, fileId });
+}
+
+export function replicaClearCrdtState(
+  serverUrl: string,
+  vaultId: string,
+  fileId: string,
+): Promise<void> {
+  return invoke('replica_clear_crdt_state', { serverUrl, vaultId, fileId });
 }
 
 export function replicaReadCachedDocument(

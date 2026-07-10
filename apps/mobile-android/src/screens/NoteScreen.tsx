@@ -1,5 +1,6 @@
 import { ArrowLeft, CloudOff, Edit3, Eye, RefreshCw, Save, Trash2 } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useRef, useState, type MouseEvent } from 'react';
+import { yCollab } from 'y-codemirror.next';
 
 import { Banner, ReadOnlyBadge, Spinner } from '../components/ui';
 import { MobileMarkdownEditor } from '../components/MobileMarkdownEditor';
@@ -30,6 +31,7 @@ import {
   type PendingOperation,
 } from '../mobileTauri';
 import type { ThemePrefs } from '../lib/theme';
+import { openMobileLiveNoteSession, type LiveStatus, type MobileLiveNoteSession } from '../lib/liveNote';
 import { useMobileStore } from '../state/store';
 import { MathPlot2D } from '../../../../src/components/editor/MathPlot2D';
 import { MathPlot3D } from '../../../../src/components/editor/MathPlot3D';
@@ -86,24 +88,35 @@ export function NoteScreen({ file, prefs }: { file: HostedFileEntry; prefs: Them
   const [busy, setBusy] = useState(true);
   const [saving, setSaving] = useState(false);
   const [recovering, setRecovering] = useState(false);
+  const [liveSession, setLiveSession] = useState<MobileLiveNoteSession | null>(null);
+  const [liveStatus, setLiveStatus] = useState<LiveStatus>('disconnected');
   const [pending, setPending] = useState<PendingOperation | null>(null);
   const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   const connected = selected ? !!statuses[selected.serverUrl]?.connected : false;
   const readOnly = selected ? isReadOnlyRole(selected.vault.role) : true;
-  const dirty = content !== savedContent;
+  const liveActive = !!liveSession;
+  const dirty = !liveActive && content !== savedContent;
   const pendingFailed = pending?.status === 'failed';
   const statusLabel = pendingFailed
     ? 'Sync failed'
     : pending
       ? 'Queued to sync'
+      : liveActive
+        ? liveStatus === 'connected'
+          ? 'Live'
+          : 'Live offline'
       : source === 'cache'
         ? 'Cached note'
         : dirty
           ? 'Unsaved changes'
           : 'Saved';
   const rendered = useMemo(() => renderMarkdownDocument(content, prefs), [content, prefs]);
+  const collabExtension = useMemo(
+    () => (liveSession ? yCollab(liveSession.text, liveSession.awareness) : null),
+    [liveSession],
+  );
 
   useEffect(() => {
     let cancelled = false;
@@ -134,6 +147,57 @@ export function NoteScreen({ file, prefs }: { file: HostedFileEntry; prefs: Them
       cancelled = true;
     };
   }, [connected, file, selected]);
+
+  useEffect(() => {
+    if (!selected || readOnly || !connected) {
+      setLiveSession(null);
+      setLiveStatus('disconnected');
+      return;
+    }
+    let cancelled = false;
+    let session: MobileLiveNoteSession | null = null;
+    let cleanupSession: (() => void) | null = null;
+    openMobileLiveNoteSession(selected.serverUrl, selected.vault.id, file.id)
+      .then((opened) => {
+        if (cancelled) {
+          opened?.destroy();
+          return;
+        }
+        if (!opened) return;
+        session = opened;
+        setLiveSession(opened);
+        setLiveStatus(opened.getStatus());
+        opened.awareness.setLocalStateField('user', {
+          id: 'mobile',
+          name: 'Mobile',
+          color: 'var(--primary)',
+        });
+        const syncFromText = () => {
+          const next = opened.text.toString();
+          setContent(next);
+          setSavedContent(next);
+          void replicaCacheDocument(selected.serverUrl, selected.vault.id, file.id, next).catch(() => {});
+        };
+        syncFromText();
+        opened.text.observe(syncFromText);
+        const unsubscribe = opened.onStatus(setLiveStatus);
+        cleanupSession = () => {
+          opened.text.unobserve(syncFromText);
+          unsubscribe();
+          opened.destroy();
+        };
+      })
+      .catch(() => {
+        // Live collaboration is best-effort. The REST/offline save path remains.
+      });
+    return () => {
+      cancelled = true;
+      if (cleanupSession) cleanupSession();
+      else session?.destroy();
+      setLiveSession(null);
+      setLiveStatus('disconnected');
+    };
+  }, [connected, file.id, readOnly, selected]);
 
   const loadImageSource = useCallback(
     async (target: HostedFileEntry): Promise<string | null> => {
@@ -242,6 +306,11 @@ export function NoteScreen({ file, prefs }: { file: HostedFileEntry; prefs: Them
   }, [content, currentFile, selected]);
 
   async function save() {
+    if (liveActive) {
+      setSavedContent(content);
+      setMessage(liveStatus === 'connected' ? 'Synced live.' : 'Saved to the offline live cache.');
+      return;
+    }
     if (!selected || readOnly || saving || !dirty) return;
     setSaving(true);
     setError(null);
@@ -268,6 +337,14 @@ export function NoteScreen({ file, prefs }: { file: HostedFileEntry; prefs: Them
       setError(reason instanceof Error ? reason.message : String(reason));
     } finally {
       setSaving(false);
+    }
+  }
+
+  function handleEditorChange(next: string) {
+    setContent(next);
+    if (liveSession && selected) {
+      setSavedContent(next);
+      void replicaCacheDocument(selected.serverUrl, selected.vault.id, currentFile.id, next).catch(() => {});
     }
   }
 
@@ -347,7 +424,7 @@ export function NoteScreen({ file, prefs }: { file: HostedFileEntry; prefs: Them
               type="button"
               className="icon-button"
               aria-label="Save"
-              disabled={saving || !dirty}
+              disabled={saving || (!dirty && !liveActive)}
               onClick={() => void save()}
             >
               {saving ? <Spinner size={16} /> : <Save size={17} aria-hidden />}
@@ -412,12 +489,13 @@ export function NoteScreen({ file, prefs }: { file: HostedFileEntry; prefs: Them
           <span>Loading note...</span>
         </div>
       ) : mode === 'edit' && !readOnly ? (
-        <MobileMarkdownEditor
-          value={content}
-          prefs={prefs}
-          onChange={setContent}
-          onSave={() => void save()}
-        />
+          <MobileMarkdownEditor
+            value={content}
+            prefs={prefs}
+            onChange={handleEditorChange}
+            onSave={() => void save()}
+            collabExtension={collabExtension}
+          />
       ) : (
         <>
           <article

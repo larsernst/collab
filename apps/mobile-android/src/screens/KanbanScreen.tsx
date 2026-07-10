@@ -35,6 +35,7 @@ import {
   createCard,
   findCard,
   moveCardToColumn,
+  parseBoardContent,
   readKanbanDocument,
   removeCard,
   removeChecklistItem,
@@ -52,6 +53,12 @@ import {
   type KanbanPriority,
 } from '../lib/kanban';
 import {
+  openMobileLiveJsonSession,
+  type JsonObject,
+  type LiveStatus,
+  type MobileLiveJsonSession,
+} from '../lib/liveNote';
+import {
   describePendingFailure,
   discardPendingOperation,
   enqueueDocumentEdit,
@@ -59,7 +66,7 @@ import {
   pendingEditsForFile,
   retryPendingOperation,
 } from '../lib/sync';
-import type { HostedFileEntry, PendingOperation } from '../mobileTauri';
+import { replicaCacheDocument, type HostedFileEntry, type PendingOperation } from '../mobileTauri';
 import { useMobileStore } from '../state/store';
 import { getCardDueStatus, type KanbanDueStatus } from '../../../../src/types/kanban';
 import { userColorForId } from '../../../../src/lib/userColor';
@@ -90,6 +97,14 @@ const SORT_OPTIONS: Array<{ value: CardSortField; label: string }> = [
 
 const SWIPE_THRESHOLD = 60;
 const SAVE_DEBOUNCE_MS = 500;
+
+function boardToJson(board: KanbanBoard): JsonObject {
+  return JSON.parse(serializeBoard(board)) as JsonObject;
+}
+
+function boardFromJson(value: JsonObject): KanbanBoard {
+  return parseBoardContent(JSON.stringify(value));
+}
 
 function formatTime(ts: number): string {
   const date = new Date(ts);
@@ -123,6 +138,8 @@ export function KanbanScreen({ file }: { file: HostedFileEntry }) {
   const [savedContent, setSavedContent] = useState('');
   const [busy, setBusy] = useState(true);
   const [saving, setSaving] = useState(false);
+  const [liveSession, setLiveSession] = useState<MobileLiveJsonSession | null>(null);
+  const [liveStatus, setLiveStatus] = useState<LiveStatus | null>(null);
   const [recovering, setRecovering] = useState(false);
   const [pending, setPending] = useState<PendingOperation | null>(null);
   const [message, setMessage] = useState<string | null>(null);
@@ -146,6 +163,10 @@ export function KanbanScreen({ file }: { file: HostedFileEntry }) {
   connectedRef.current = connected;
   const mountedRef = useRef(true);
   const saveTimerRef = useRef<number | null>(null);
+  const liveSessionRef = useRef<MobileLiveJsonSession | null>(null);
+  liveSessionRef.current = liveSession;
+  const openCardIdRef = useRef<string | null>(null);
+  openCardIdRef.current = openCardId;
 
   // Record the last-persisted serialization in both a ref (read synchronously by
   // the save loop) and state (so the dirty/status label re-renders on save).
@@ -164,12 +185,17 @@ export function KanbanScreen({ file }: { file: HostedFileEntry }) {
     };
   }, [statuses, serverUrl]);
 
-  const dirty = useMemo(() => serializeBoard(board) !== savedContent, [board, savedContent]);
+  const liveActive = !!liveSession;
+  const dirty = useMemo(() => !liveActive && serializeBoard(board) !== savedContent, [board, liveActive, savedContent]);
   const pendingFailed = pending?.status === 'failed';
   const statusLabel = pendingFailed
     ? 'Sync failed'
     : pending
       ? 'Queued to sync'
+      : liveActive
+        ? liveStatus === 'connected'
+          ? 'Live'
+          : 'Live offline'
       : saving
         ? 'Saving…'
         : source === 'cache'
@@ -225,6 +251,69 @@ export function KanbanScreen({ file }: { file: HostedFileEntry }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [connected, file, selected]);
 
+  useEffect(() => {
+    let cancelled = false;
+    let opened: MobileLiveJsonSession | null = null;
+    let offStatus: (() => void) | undefined;
+    let offChange: (() => void) | undefined;
+
+    setLiveSession(null);
+    setLiveStatus(null);
+
+    if (!selected || readOnly || !connectedRef.current) {
+      return () => {
+        cancelled = true;
+      };
+    }
+
+    const applyLiveBoard = (next: KanbanBoard, nextSource: 'network' | 'cache') => {
+      const content = serializeBoard(next);
+      setBoard(next);
+      boardRef.current = next;
+      markSaved(content);
+      setSource(nextSource);
+      setError(null);
+      setSelectedColumnId((prev) => {
+        if (prev && next.columns.some((column) => column.id === prev)) return prev;
+        return next.columns[0]?.id ?? null;
+      });
+      if (openCardIdRef.current && !findCard(next, openCardIdRef.current)) setOpenCardId(null);
+      void replicaCacheDocument(serverUrl, vaultId, file.id, content).catch(() => {});
+    };
+
+    openMobileLiveJsonSession(serverUrl, vaultId, file.id, 'kanban')
+      .then((session) => {
+        if (cancelled || !session) {
+          session?.destroy();
+          return;
+        }
+        opened = session;
+        setLiveSession(session);
+        setLiveStatus(session.getStatus());
+        offStatus = session.onStatus((status) => {
+          if (!cancelled) setLiveStatus(status);
+        });
+
+        const initialJson = session.readJson();
+        if (Object.keys(initialJson).length > 0) applyLiveBoard(boardFromJson(initialJson), 'network');
+        offChange = session.onChange((json) => {
+          if (!cancelled) applyLiveBoard(boardFromJson(json), session.getStatus() === 'connected' ? 'network' : 'cache');
+        });
+      })
+      .catch(() => {
+        // Best effort. The REST/offline queue path remains active if live cannot open.
+      });
+
+    return () => {
+      cancelled = true;
+      offChange?.();
+      offStatus?.();
+      opened?.destroy();
+      setLiveSession(null);
+      setLiveStatus(null);
+    };
+  }, [file.id, markSaved, readOnly, selected, serverUrl, vaultId]);
+
   // ── Save ──────────────────────────────────────────────────────────────────
   const queueOffline = useCallback(
     async (content: string) => {
@@ -245,7 +334,7 @@ export function KanbanScreen({ file }: { file: HostedFileEntry }) {
   );
 
   const flushSave = useCallback(async () => {
-    if (savingRef.current || readOnly) return;
+    if (savingRef.current || readOnly || liveSessionRef.current) return;
     const content = serializeBoard(boardRef.current);
     if (content === savedContentRef.current) return;
     savingRef.current = true;
@@ -282,6 +371,7 @@ export function KanbanScreen({ file }: { file: HostedFileEntry }) {
   }, [readOnly, serverUrl, vaultId, queueOffline, replaceFile, markSaved]);
 
   const scheduleSave = useCallback(() => {
+    if (liveSessionRef.current) return;
     if (saveTimerRef.current !== null) window.clearTimeout(saveTimerRef.current);
     saveTimerRef.current = window.setTimeout(() => {
       saveTimerRef.current = null;
@@ -308,9 +398,18 @@ export function KanbanScreen({ file }: { file: HostedFileEntry }) {
       boardRef.current = next;
       setError(null);
       setMessage(null);
+      const live = liveSessionRef.current;
+      if (live) {
+        const content = serializeBoard(next);
+        live.writeJson(boardToJson(next));
+        markSaved(content);
+        setSource(live.getStatus() === 'connected' ? 'network' : 'cache');
+        void replicaCacheDocument(serverUrl, vaultId, fileRef.current.id, content).catch(() => {});
+        return;
+      }
       scheduleSave();
     },
-    [readOnly, scheduleSave],
+    [markSaved, readOnly, scheduleSave, serverUrl, vaultId],
   );
 
   // ── Recovery ────────────────────────────────────────────────────────────────
