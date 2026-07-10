@@ -2663,16 +2663,34 @@ pub async fn restore_file_snapshot(
     ))
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct MaterializedDocumentMarker {
+    pub revision_sequence: i64,
+    pub content_hash: String,
+}
+
+pub(crate) struct MaterializedDocumentSnapshot {
+    pub marker: MaterializedDocumentMarker,
+    pub content: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum MaterializeDocumentOutcome {
+    Persisted(MaterializedDocumentMarker),
+    Unchanged(Option<MaterializedDocumentMarker>),
+    Stale(Option<MaterializedDocumentMarker>),
+    Skipped,
+}
+
 /// Materializes live CRDT document content (note text, or serialized Kanban /
 /// canvas JSON) into a normal text revision so REST reads, history, search, and
 /// export stay valid while a document is being co-edited. Called by the
 /// live-collaboration layer after edits settle.
 ///
-/// Returns `Ok(true)` when a new revision was written, `Ok(false)` when nothing
-/// changed (identical content) or the target is not an active document in an
-/// active vault. The write reuses the same revision/manifest/activity path as
-/// `write_text_revision` but is authoritative: it carries no optimistic
-/// expected-sequence check because the CRDT room is the source of truth.
+/// The write reuses the same revision/manifest/activity path as
+/// `write_text_revision`, but it is still guarded by the REST revision marker the
+/// live room was based on. This prevents a stale live room from materializing old
+/// CRDT content over a newer mobile/offline REST save.
 pub(crate) async fn persist_materialized_document(
     database: &PgPool,
     blobs: &dyn crate::storage::BlobStorage,
@@ -2680,13 +2698,11 @@ pub(crate) async fn persist_materialized_document(
     file_id: Uuid,
     content: &str,
     author: Option<Uuid>,
-) -> Result<bool, ApiFailure> {
+    expected_current: Option<&MaterializedDocumentMarker>,
+) -> Result<MaterializeDocumentOutcome, ApiFailure> {
     let request_id = Uuid::new_v4().to_string();
     let bytes = content.as_bytes();
-    let digest = blobs
-        .put(bytes)
-        .await
-        .map_err(|_| ApiFailure::server(request_id.clone()))?;
+    let digest = collab_core::sha256_bytes(bytes);
     let mut transaction = database
         .begin()
         .await
@@ -2699,9 +2715,11 @@ pub(crate) async fn persist_materialized_document(
             .fetch_optional(&mut *transaction)
             .await
             .map_err(|_| ApiFailure::server(request_id.clone()))?;
-    let Some(vault) = vault else { return Ok(false) };
+    let Some(vault) = vault else {
+        return Ok(MaterializeDocumentOutcome::Skipped);
+    };
     if vault.get::<String, _>("status") != "active" {
-        return Ok(false);
+        return Ok(MaterializeDocumentOutcome::Skipped);
     }
     let current = sqlx::query(
         r#"
@@ -2718,18 +2736,46 @@ pub(crate) async fn persist_materialized_document(
     .await
     .map_err(|_| ApiFailure::server(request_id.clone()))?;
     let Some(current) = current else {
-        return Ok(false);
+        return Ok(MaterializeDocumentOutcome::Skipped);
     };
     if current.get::<String, _>("kind") != "document"
         || current.get::<String, _>("state") != "active"
     {
-        return Ok(false);
+        return Ok(MaterializeDocumentOutcome::Skipped);
+    }
+    let current_marker = current
+        .get::<Option<i64>, _>("sequence")
+        .zip(current.get::<Option<String>, _>("blob_digest"))
+        .map(
+            |(revision_sequence, content_hash)| MaterializedDocumentMarker {
+                revision_sequence,
+                content_hash,
+            },
+        );
+    if let Some(expected) = expected_current {
+        if current_marker.as_ref() != Some(expected) {
+            return Ok(MaterializeDocumentOutcome::Stale(current_marker));
+        }
+    } else if current_marker.is_some() {
+        return Ok(MaterializeDocumentOutcome::Stale(current_marker));
     }
     // Skip when the live content already matches the current revision.
-    if current.get::<Option<String>, _>("blob_digest").as_deref() == Some(digest.as_str()) {
-        return Ok(false);
+    if current_marker
+        .as_ref()
+        .map(|marker| marker.content_hash.as_str())
+        == Some(digest.as_str())
+    {
+        return Ok(MaterializeDocumentOutcome::Unchanged(current_marker));
     }
-    let next_sequence = current.get::<Option<i64>, _>("sequence").unwrap_or(0) + 1;
+    let digest = blobs
+        .put(bytes)
+        .await
+        .map_err(|_| ApiFailure::server(request_id.clone()))?;
+    let next_sequence = current_marker
+        .as_ref()
+        .map(|marker| marker.revision_sequence)
+        .unwrap_or(0)
+        + 1;
     let revision_id = Uuid::now_v7();
     insert_blob_record(
         &mut transaction,
@@ -2784,7 +2830,46 @@ pub(crate) async fn persist_materialized_document(
         .commit()
         .await
         .map_err(|_| ApiFailure::server(request_id.clone()))?;
-    Ok(true)
+    Ok(MaterializeDocumentOutcome::Persisted(
+        MaterializedDocumentMarker {
+            revision_sequence: next_sequence,
+            content_hash: digest,
+        },
+    ))
+}
+
+/// Loads the current materialized text content and revision marker of a
+/// document, used to seed a new live CRDT room from existing REST content.
+/// Returns `None` when the file has no current text revision.
+pub(crate) async fn load_current_document_snapshot(
+    database: &PgPool,
+    blobs: &dyn crate::storage::BlobStorage,
+    vault_id: Uuid,
+    file_id: Uuid,
+) -> Option<MaterializedDocumentSnapshot> {
+    let row = sqlx::query(
+        r#"
+        SELECT r.sequence, r.blob_digest
+        FROM hosted_file_entries f
+        JOIN hosted_file_revisions r ON r.id = f.current_revision_id
+        WHERE f.vault_id = $1 AND f.id = $2 AND f.kind = 'document' AND f.state = 'active'
+        "#,
+    )
+    .bind(vault_id)
+    .bind(file_id)
+    .fetch_optional(database)
+    .await
+    .ok()
+    .flatten()?;
+    let digest: String = row.get("blob_digest");
+    let bytes = blobs.get(&digest).await.ok().flatten()?;
+    Some(MaterializedDocumentSnapshot {
+        marker: MaterializedDocumentMarker {
+            revision_sequence: row.get("sequence"),
+            content_hash: digest,
+        },
+        content: String::from_utf8(bytes).ok()?,
+    })
 }
 
 /// Loads the current materialized text content of a document, used to seed a new
@@ -2796,23 +2881,9 @@ pub(crate) async fn load_current_document_text(
     vault_id: Uuid,
     file_id: Uuid,
 ) -> Option<String> {
-    let digest: Option<String> = sqlx::query_scalar(
-        r#"
-        SELECT r.blob_digest
-        FROM hosted_file_entries f
-        JOIN hosted_file_revisions r ON r.id = f.current_revision_id
-        WHERE f.vault_id = $1 AND f.id = $2 AND f.kind = 'document' AND f.state = 'active'
-        "#,
-    )
-    .bind(vault_id)
-    .bind(file_id)
-    .fetch_optional(database)
-    .await
-    .ok()
-    .flatten();
-    let digest = digest?;
-    let bytes = blobs.get(&digest).await.ok().flatten()?;
-    String::from_utf8(bytes).ok()
+    load_current_document_snapshot(database, blobs, vault_id, file_id)
+        .await
+        .map(|snapshot| snapshot.content)
 }
 
 /// Issues a single-use, short-lived ticket for opening a live-collaboration
@@ -2878,20 +2949,7 @@ pub async fn write_text_revision(
         &request_id,
     )
     .await?;
-    let content = payload.content.into_bytes();
-    let settings = load_effective_runtime_settings(&state.config);
-    enforce_storage_quota(
-        &state.database,
-        settings.storage_quota_bytes,
-        &[(collab_core::sha256_bytes(&content), content.len())],
-        &request_id,
-    )
-    .await?;
-    let digest = state
-        .blobs
-        .put(&content)
-        .await
-        .map_err(|_| ApiFailure::server(request_id.clone()))?;
+    let incoming_content = payload.content;
     let actor_id = user_uuid(&actor.user);
     let revision_id = Uuid::now_v7();
     let mut transaction = state
@@ -2928,6 +2986,47 @@ pub async fn write_text_revision(
     if current_sequence != payload.expected_revision_sequence {
         return Err(ApiFailure::revision_conflict(request_id));
     }
+    let prior_content = match current.get::<Option<String>, _>("blob_digest") {
+        Some(prior_digest) => state
+            .blobs
+            .get(&prior_digest)
+            .await
+            .map_err(|_| ApiFailure::server(request_id.clone()))?,
+        None => None,
+    };
+    let base_content = match prior_content.as_deref() {
+        Some(bytes) => {
+            String::from_utf8(bytes.to_vec()).map_err(|_| ApiFailure::server(request_id.clone()))?
+        }
+        None => String::new(),
+    };
+    let content = match state
+        .hub
+        .merge_external_content(vault_id, file_id, &base_content, incoming_content)
+        .await
+    {
+        crate::ws::ExternalRevisionMerge::Merged(content) => content,
+        crate::ws::ExternalRevisionMerge::Conflict => {
+            return Err(ApiFailure::revision_conflict(request_id));
+        }
+    };
+    let content_bytes = content.as_bytes();
+    let settings = load_effective_runtime_settings(&state.config);
+    enforce_storage_quota(
+        &state.database,
+        settings.storage_quota_bytes,
+        &[(
+            collab_core::sha256_bytes(content_bytes),
+            content_bytes.len(),
+        )],
+        &request_id,
+    )
+    .await?;
+    let digest = state
+        .blobs
+        .put(content_bytes)
+        .await
+        .map_err(|_| ApiFailure::server(request_id.clone()))?;
     // Kanban boards are semantically enforced: a `.kanban` write must hold the
     // specific kanban capabilities for the changes it makes (move, comment,
     // edit content, etc.), not just the baseline `file.write`.
@@ -2936,15 +3035,12 @@ pub async fn write_text_revision(
         .to_lowercase()
         .ends_with(".kanban")
     {
-        let prior_content = match current.get::<Option<String>, _>("blob_digest") {
-            Some(prior_digest) => state
-                .blobs
-                .get(&prior_digest)
-                .await
-                .map_err(|_| ApiFailure::server(request_id.clone()))?,
-            None => None,
-        };
-        enforce_kanban_write(&access, prior_content.as_deref(), &content, &request_id)?;
+        enforce_kanban_write(
+            &access,
+            prior_content.as_deref(),
+            content_bytes,
+            &request_id,
+        )?;
     }
     let next_sequence = current_sequence + 1;
     insert_blob_record(
@@ -2963,7 +3059,7 @@ pub async fn write_text_revision(
     .bind(file_id)
     .bind(next_sequence)
     .bind(&digest)
-    .bind(content.len() as i64)
+    .bind(content_bytes.len() as i64)
     .bind(actor_id)
     .execute(&mut *transaction)
     .await
@@ -3000,13 +3096,23 @@ pub async fn write_text_revision(
         .commit()
         .await
         .map_err(|_| ApiFailure::server(request_id.clone()))?;
+    state
+        .hub
+        .apply_external_revision(
+            vault_id,
+            file_id,
+            content.clone(),
+            MaterializedDocumentMarker {
+                revision_sequence: next_sequence,
+                content_hash: digest,
+            },
+            Some(actor_id),
+        )
+        .await;
     let file = load_vault_file_entry(&state.database, vault_id, file_id, &request_id).await?;
     Ok((
         StatusCode::CREATED,
-        Json(DataResponse::new(HostedTextDocument {
-            file,
-            content: String::from_utf8(content).expect("request JSON strings are UTF-8"),
-        })),
+        Json(DataResponse::new(HostedTextDocument { file, content })),
     ))
 }
 
@@ -9806,10 +9912,7 @@ async fn load_vault_manifest_delta(
     .fetch_all(pool)
     .await
     .map_err(|_| ApiFailure::server(request_id.to_owned()))?;
-    let changed_files = rows
-        .iter()
-        .map(file_entry_from_single_row)
-        .collect();
+    let changed_files = rows.iter().map(file_entry_from_single_row).collect();
     Ok(HostedVaultManifestDelta {
         vault_id: vault_id.to_string(),
         base_sequence: since,

@@ -81,6 +81,145 @@ impl MaterializeKind {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct TextEditHunk {
+    base_start: usize,
+    base_end: usize,
+    replacement: Vec<String>,
+}
+
+fn split_text_preserving_newlines(content: &str) -> Vec<String> {
+    content
+        .split_inclusive('\n')
+        .map(|part| part.to_string())
+        .collect()
+}
+
+fn compute_line_edit_hunks(base: &str, modified: &str) -> Vec<TextEditHunk> {
+    let base_lines = split_text_preserving_newlines(base);
+    let modified_lines = split_text_preserving_newlines(modified);
+    let n = base_lines.len();
+    let m = modified_lines.len();
+    let mut lcs = vec![vec![0usize; m + 1]; n + 1];
+
+    for i in (0..n).rev() {
+        for j in (0..m).rev() {
+            lcs[i][j] = if base_lines[i] == modified_lines[j] {
+                lcs[i + 1][j + 1] + 1
+            } else {
+                lcs[i + 1][j].max(lcs[i][j + 1])
+            };
+        }
+    }
+
+    let mut i = 0usize;
+    let mut j = 0usize;
+    let mut base_index = 0usize;
+    let mut hunks = Vec::new();
+    let mut active_start: Option<usize> = None;
+    let mut active_end = 0usize;
+    let mut replacement = Vec::new();
+
+    while i < n || j < m {
+        if i < n && j < m && base_lines[i] == modified_lines[j] {
+            if let Some(start) = active_start.take() {
+                hunks.push(TextEditHunk {
+                    base_start: start,
+                    base_end: active_end,
+                    replacement: std::mem::take(&mut replacement),
+                });
+            }
+            i += 1;
+            j += 1;
+            base_index += 1;
+            continue;
+        }
+
+        if active_start.is_none() {
+            active_start = Some(base_index);
+            active_end = base_index;
+        }
+
+        if j < m && (i == n || lcs[i][j + 1] >= lcs[i + 1][j]) {
+            replacement.push(modified_lines[j].clone());
+            j += 1;
+        } else if i < n {
+            i += 1;
+            base_index += 1;
+            active_end += 1;
+        }
+    }
+
+    if let Some(start) = active_start.take() {
+        hunks.push(TextEditHunk {
+            base_start: start,
+            base_end: active_end,
+            replacement,
+        });
+    }
+
+    hunks
+}
+
+fn try_auto_merge_text(base: &str, ours: &str, theirs: &str) -> Option<String> {
+    if ours == theirs {
+        return Some(ours.to_string());
+    }
+
+    let our_hunks = compute_line_edit_hunks(base, ours);
+    let their_hunks = compute_line_edit_hunks(base, theirs);
+    let base_lines = split_text_preserving_newlines(base);
+    let mut merged_hunks = Vec::new();
+    let mut our_index = 0usize;
+    let mut their_index = 0usize;
+
+    while our_index < our_hunks.len() || their_index < their_hunks.len() {
+        match (our_hunks.get(our_index), their_hunks.get(their_index)) {
+            (Some(our_hunk), Some(their_hunk)) => {
+                if our_hunk.base_end <= their_hunk.base_start {
+                    merged_hunks.push(our_hunk.clone());
+                    our_index += 1;
+                } else if their_hunk.base_end <= our_hunk.base_start {
+                    merged_hunks.push(their_hunk.clone());
+                    their_index += 1;
+                } else if our_hunk == their_hunk {
+                    merged_hunks.push(our_hunk.clone());
+                    our_index += 1;
+                    their_index += 1;
+                } else {
+                    return None;
+                }
+            }
+            (Some(our_hunk), None) => {
+                merged_hunks.push(our_hunk.clone());
+                our_index += 1;
+            }
+            (None, Some(their_hunk)) => {
+                merged_hunks.push(their_hunk.clone());
+                their_index += 1;
+            }
+            (None, None) => break,
+        }
+    }
+
+    let mut merged = String::new();
+    let mut cursor = 0usize;
+    for hunk in merged_hunks {
+        for line in &base_lines[cursor..hunk.base_start] {
+            merged.push_str(line);
+        }
+        for line in &hunk.replacement {
+            merged.push_str(line);
+        }
+        cursor = hunk.base_end;
+    }
+    for line in &base_lines[cursor..] {
+        merged.push_str(line);
+    }
+
+    Some(merged)
+}
+
 /// How long a document must be quiet (no new updates) before its live CRDT state
 /// is materialized into a normal text revision.
 const MATERIALIZE_DEBOUNCE: Duration = Duration::from_millis(1500);
@@ -110,6 +249,11 @@ struct Room {
     vault_id: Uuid,
     /// How this document's live state is materialized into REST revisions.
     materialize: MaterializeKind,
+    /// REST revision this live room was seeded from or last materialized to.
+    /// Materialization is allowed only while this marker still matches the
+    /// canonical revision, so mobile/offline REST saves cannot be overwritten by
+    /// stale live CRDT content.
+    materialized_revision: StdMutex<Option<api::MaterializedDocumentMarker>>,
     /// The authoritative materialized CRDT document. Guarded by `seq` for writes;
     /// reads take a short lock for state-vector / diff snapshots.
     doc: StdMutex<Doc>,
@@ -182,8 +326,11 @@ impl Room {
             _ => MaterializeKind::None,
         };
 
-        let current_content =
-            api::load_current_document_text(db, &**blobs, vault_id, file_id).await;
+        let current_snapshot =
+            api::load_current_document_snapshot(db, &**blobs, vault_id, file_id).await;
+        let current_content = current_snapshot
+            .as_ref()
+            .map(|snapshot| snapshot.content.as_str());
 
         // Seed a fresh room from existing REST content so the first collaborator
         // sees the existing document, not a blank one.
@@ -271,6 +418,7 @@ impl Room {
             file_id,
             vault_id,
             materialize,
+            materialized_revision: StdMutex::new(current_snapshot.map(|snapshot| snapshot.marker)),
             doc: StdMutex::new(doc),
             seq: Mutex::new(last_seq),
             last_author: StdMutex::new(None),
@@ -387,6 +535,98 @@ impl Room {
         }
     }
 
+    /// Applies a just-committed REST revision to the in-memory CRDT room and
+    /// broadcasts the resulting Yjs update to live subscribers.
+    async fn apply_external_revision(
+        &self,
+        db: &PgPool,
+        content: &str,
+        marker: api::MaterializedDocumentMarker,
+        author: Option<Uuid>,
+        debug: bool,
+    ) -> Result<bool, sqlx::Error> {
+        let mut seq_guard = self.seq.lock().await;
+        let update = {
+            let doc = self.doc.lock().expect("room doc lock poisoned");
+            let before = doc.transact().state_vector();
+            match self.materialize {
+                MaterializeKind::NoteText => {
+                    let text = doc.get_or_insert_text(NOTE_TEXT_NAME);
+                    let mut txn = doc.transact_mut();
+                    let len = text.len(&txn);
+                    if len > 0 {
+                        text.remove_range(&mut txn, 0, len);
+                    }
+                    if !content.is_empty() {
+                        text.insert(&mut txn, 0, content);
+                    }
+                }
+                MaterializeKind::Json | MaterializeKind::Canvas => {
+                    let root = doc.get_or_insert_map(JSON_ROOT_NAME);
+                    let mut txn = doc.transact_mut();
+                    root.clear(&mut txn);
+                    if let Ok(serde_json::Value::Object(map)) =
+                        serde_json::from_str::<serde_json::Value>(content)
+                    {
+                        for (key, value) in map {
+                            root.insert(&mut txn, key, json_to_in(&value));
+                        }
+                    }
+                }
+                MaterializeKind::None => return Ok(false),
+            }
+            let update = doc.transact().encode_state_as_update_v1(&before);
+            update
+        };
+        if update.is_empty() {
+            *self
+                .materialized_revision
+                .lock()
+                .expect("materialized revision lock poisoned") = Some(marker);
+            return Ok(false);
+        }
+        let next = *seq_guard + 1;
+        sqlx::query(
+            "INSERT INTO crdt_updates (id, file_id, vault_id, seq, update_bytes, author_user_id) VALUES ($1, $2, $3, $4, $5, $6)",
+        )
+        .bind(Uuid::now_v7())
+        .bind(self.file_id)
+        .bind(self.vault_id)
+        .bind(next)
+        .bind(&update)
+        .bind(author)
+        .execute(db)
+        .await?;
+        *seq_guard = next;
+        drop(seq_guard);
+        *self
+            .materialized_revision
+            .lock()
+            .expect("materialized revision lock poisoned") = Some(marker);
+        if let Some(author) = author {
+            *self.last_author.lock().expect("author lock poisoned") = Some(author);
+        }
+        let delivered = self
+            .tx
+            .send(RoomBroadcast {
+                origin: Uuid::nil(),
+                tag: ws_message::SYNC_UPDATE,
+                payload: Arc::new(update),
+            })
+            .unwrap_or(0);
+        if debug {
+            tracing::info!(
+                target: "collab_server::ws",
+                file_id = %self.file_id,
+                seq = next,
+                broadcast_receivers = delivered,
+                "applied external REST revision to live room"
+            );
+        }
+        self.dirty.notify_one();
+        Ok(true)
+    }
+
     /// Stores and relays an opaque y-protocols awareness update. Awareness is
     /// intentionally never persisted or materialized into document content.
     fn apply_awareness(&self, payload: &[u8], origin: Uuid) {
@@ -454,18 +694,60 @@ fn spawn_materializer(room: Arc<Room>, db: PgPool, blobs: Arc<dyn BlobStorage>) 
                 }
             }
             let author = *room.last_author.lock().expect("author lock poisoned");
-            if api::persist_materialized_document(
+            let expected = room
+                .materialized_revision
+                .lock()
+                .expect("materialized revision lock poisoned")
+                .clone();
+            let outcome = api::persist_materialized_document(
                 &db,
                 &*blobs,
                 room.vault_id,
                 room.file_id,
                 &content,
                 author,
+                expected.as_ref(),
             )
-            .await
-            .is_ok()
-            {
-                let _ = compact_room_log(&room, &db).await;
+            .await;
+            match outcome {
+                Ok(api::MaterializeDocumentOutcome::Persisted(marker)) => {
+                    *room
+                        .materialized_revision
+                        .lock()
+                        .expect("materialized revision lock poisoned") = Some(marker);
+                    let _ = compact_room_log(&room, &db).await;
+                }
+                Ok(api::MaterializeDocumentOutcome::Unchanged(marker)) => {
+                    *room
+                        .materialized_revision
+                        .lock()
+                        .expect("materialized revision lock poisoned") = marker;
+                    let _ = compact_room_log(&room, &db).await;
+                }
+                Ok(api::MaterializeDocumentOutcome::Stale(current)) => {
+                    tracing::warn!(
+                        target: "collab_server::ws",
+                        vault_id = %room.vault_id,
+                        file_id = %room.file_id,
+                        expected_revision_sequence = expected.as_ref().map(|marker| marker.revision_sequence),
+                        current_revision_sequence = current.as_ref().map(|marker| marker.revision_sequence),
+                        "skipped stale live materialization because the REST revision changed"
+                    );
+                    // Keep the old marker. Until this room is reloaded or the
+                    // external REST revision is merged into the CRDT document,
+                    // every later materialization from this stale room must be
+                    // refused too.
+                }
+                Ok(api::MaterializeDocumentOutcome::Skipped) => {}
+                Err(error) => {
+                    tracing::warn!(
+                        target: "collab_server::ws",
+                        vault_id = %room.vault_id,
+                        file_id = %room.file_id,
+                        ?error,
+                        "failed to materialize live document"
+                    );
+                }
             }
         }
     });
@@ -607,6 +889,11 @@ pub struct ConnectionGuard {
     hub: Arc<Hub>,
 }
 
+pub(crate) enum ExternalRevisionMerge {
+    Merged(String),
+    Conflict,
+}
+
 impl Hub {
     pub fn new(db: PgPool, blobs: Arc<dyn BlobStorage>) -> Self {
         Self {
@@ -663,6 +950,74 @@ impl Hub {
         spawn_materializer(room.clone(), self.db.clone(), self.blobs.clone());
         rooms.insert(file_id, room.clone());
         Ok(room)
+    }
+
+    pub(crate) async fn apply_external_revision(
+        &self,
+        vault_id: Uuid,
+        file_id: Uuid,
+        content: String,
+        marker: api::MaterializedDocumentMarker,
+        author: Option<Uuid>,
+    ) {
+        let room = {
+            let rooms = self.rooms.lock().await;
+            rooms.get(&file_id).cloned()
+        };
+        let Some(room) = room else { return };
+        if room.vault_id != vault_id {
+            return;
+        }
+        if let Err(error) = room
+            .apply_external_revision(&self.db, &content, marker, author, self.live_debug())
+            .await
+        {
+            tracing::warn!(
+                target: "collab_server::ws",
+                %vault_id,
+                %file_id,
+                ?error,
+                "failed to apply external REST revision to live room"
+            );
+        }
+    }
+
+    pub(crate) async fn merge_external_content(
+        &self,
+        vault_id: Uuid,
+        file_id: Uuid,
+        base_content: &str,
+        incoming_content: String,
+    ) -> ExternalRevisionMerge {
+        let room = {
+            let rooms = self.rooms.lock().await;
+            rooms.get(&file_id).cloned()
+        };
+        let Some(room) = room else {
+            return ExternalRevisionMerge::Merged(incoming_content);
+        };
+        if room.vault_id != vault_id {
+            return ExternalRevisionMerge::Merged(incoming_content);
+        }
+        let Some(live_content) = room.materialized_content() else {
+            return ExternalRevisionMerge::Merged(incoming_content);
+        };
+        if live_content == base_content || live_content == incoming_content {
+            return ExternalRevisionMerge::Merged(incoming_content);
+        }
+        if incoming_content == base_content {
+            return ExternalRevisionMerge::Merged(live_content);
+        }
+        match room.materialize {
+            MaterializeKind::NoteText => {
+                match try_auto_merge_text(base_content, &incoming_content, &live_content) {
+                    Some(merged) => ExternalRevisionMerge::Merged(merged),
+                    None => ExternalRevisionMerge::Conflict,
+                }
+            }
+            MaterializeKind::Json | MaterializeKind::Canvas => ExternalRevisionMerge::Conflict,
+            MaterializeKind::None => ExternalRevisionMerge::Merged(incoming_content),
+        }
     }
 }
 
@@ -1316,6 +1671,37 @@ mod tests {
         value
     }
 
+    /// Applies a base state plus multiple deltas and reads back the `content`
+    /// text.
+    fn read_text_after_updates(base_update: &[u8], updates: &[&[u8]]) -> String {
+        let doc = Doc::new();
+        let text = doc.get_or_insert_text("content");
+        apply_update_bytes(&doc, base_update);
+        for update in updates {
+            apply_update_bytes(&doc, update);
+        }
+        let value = text.get_string(&doc.transact());
+        value
+    }
+
+    /// Builds a Yjs v1 delta that replaces the seeded `content` text.
+    fn replace_text_update(base_update: &[u8], content: &str) -> Vec<u8> {
+        let doc = Doc::new();
+        apply_update_bytes(&doc, base_update);
+        let before = doc.transact().state_vector();
+        let text = doc.get_or_insert_text("content");
+        {
+            let mut txn = doc.transact_mut();
+            let len = text.len(&txn);
+            if len > 0 {
+                text.remove_range(&mut txn, 0, len);
+            }
+            text.insert(&mut txn, 0, content);
+        }
+        let update = doc.transact().encode_state_as_update_v1(&before);
+        update
+    }
+
     /// Connects to the shared test database, holding the live-PostgreSQL guard so
     /// truncating tests do not race. The returned guard must be kept alive for
     /// the duration of the test.
@@ -1411,8 +1797,9 @@ mod tests {
         .unwrap();
     }
 
-    /// Writes an initial REST text revision for a document (blob + revision row +
-    /// current pointer), so live rooms can seed from it.
+    /// Writes a REST text revision for a document (blob + revision row + current
+    /// pointer), so live rooms can seed from it or tests can simulate REST/mobile
+    /// saves racing a live room.
     async fn insert_note_revision(
         pool: &sqlx::PgPool,
         blobs: &Arc<dyn BlobStorage>,
@@ -1421,6 +1808,13 @@ mod tests {
         content: &str,
     ) {
         let digest = blobs.put(content.as_bytes()).await.unwrap();
+        let sequence: i64 = sqlx::query_scalar(
+            "SELECT COALESCE(MAX(sequence), 0) + 1 FROM hosted_file_revisions WHERE file_id = $1",
+        )
+        .bind(file)
+        .fetch_one(pool)
+        .await
+        .unwrap();
         sqlx::query(
             "INSERT INTO hosted_blobs (digest, size_bytes, media_type, storage_key) VALUES ($1, $2, 'text/plain', $1) ON CONFLICT (digest) DO NOTHING",
         )
@@ -1431,11 +1825,12 @@ mod tests {
         .unwrap();
         let revision = Uuid::now_v7();
         sqlx::query(
-            "INSERT INTO hosted_file_revisions (id, vault_id, file_id, sequence, blob_digest, content_hash, size_bytes) VALUES ($1, $2, $3, 1, $4, $4, $5)",
+            "INSERT INTO hosted_file_revisions (id, vault_id, file_id, sequence, blob_digest, content_hash, size_bytes) VALUES ($1, $2, $3, $4, $5, $5, $6)",
         )
         .bind(revision)
         .bind(vault)
         .bind(file)
+        .bind(sequence)
         .bind(&digest)
         .bind(content.len() as i64)
         .execute(pool)
@@ -2149,5 +2544,152 @@ mod tests {
                 .await
                 .unwrap();
         assert_eq!(revisions, 1, "exactly one materialized revision");
+    }
+
+    #[tokio::test]
+    async fn stale_live_materialization_does_not_overwrite_newer_rest_revision() {
+        let Some((pool, _db_guard)) = test_pool().await else {
+            return;
+        };
+        let owner = insert_user(&pool, "stale-owner").await;
+        let vault = insert_vault(&pool, owner).await;
+        let file = insert_document(&pool, vault, "stale.md").await;
+        insert_ticket(&pool, owner, vault, "stale-t").await;
+
+        let (addr, state) = serve(pool.clone()).await;
+        insert_note_revision(&pool, &state.blobs, vault, file, "base").await;
+
+        let mut client = TestClient::connect(&addr, vault, "stale-t").await;
+        client.expect_ready().await;
+        client.subscribe(file).await;
+        let _ = client.next_binary(ws_message::SYNC_STEP1).await;
+        client
+            .send_binary(
+                ws_message::SYNC_STEP1,
+                file,
+                &StateVector::default().encode_v1(),
+            )
+            .await;
+        let (_, seeded_state) = client
+            .next_binary(ws_message::SYNC_UPDATE)
+            .await
+            .expect("seeded note state");
+
+        client
+            .send_binary(
+                ws_message::SYNC_UPDATE,
+                file,
+                &replace_text_update(&seeded_state, "stale live edit"),
+            )
+            .await;
+
+        // Simulate the Android companion writing through the REST/offline path
+        // while the desktop live room is still waiting for its debounce.
+        insert_note_revision(&pool, &state.blobs, vault, file, "mobile edit").await;
+
+        tokio::time::sleep(Duration::from_millis(2500)).await;
+        let content = api::load_current_document_text(&pool, &*state.blobs, vault, file)
+            .await
+            .expect("current text");
+        assert_eq!(
+            content, "mobile edit",
+            "stale live materialization must not revert a newer REST/mobile save",
+        );
+        let current_sequence: i64 = sqlx::query_scalar(
+            r#"
+            SELECT r.sequence
+            FROM hosted_file_entries f
+            JOIN hosted_file_revisions r ON r.id = f.current_revision_id
+            WHERE f.id = $1
+            "#,
+        )
+        .bind(file)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(current_sequence, 2);
+    }
+
+    #[tokio::test]
+    async fn external_rest_revision_is_merged_and_broadcast_to_live_subscribers() {
+        let Some((pool, _db_guard)) = test_pool().await else {
+            return;
+        };
+        let owner = insert_user(&pool, "external-owner").await;
+        let vault = insert_vault(&pool, owner).await;
+        let file = insert_document(&pool, vault, "external.md").await;
+        insert_ticket(&pool, owner, vault, "external-t").await;
+
+        let (addr, state) = serve(pool.clone()).await;
+        let base = "alpha\nbeta\ngamma\n";
+        insert_note_revision(&pool, &state.blobs, vault, file, base).await;
+
+        let mut client = TestClient::connect(&addr, vault, "external-t").await;
+        client.expect_ready().await;
+        client.subscribe(file).await;
+        let _ = client.next_binary(ws_message::SYNC_STEP1).await;
+        client
+            .send_binary(
+                ws_message::SYNC_STEP1,
+                file,
+                &StateVector::default().encode_v1(),
+            )
+            .await;
+        let (_, seeded_state) = client
+            .next_binary(ws_message::SYNC_UPDATE)
+            .await
+            .expect("seeded note state");
+
+        // Desktop has an unmaterialized live edit.
+        let desktop_update = replace_text_update(&seeded_state, "alpha\nbeta\ngamma desktop\n");
+        client
+            .send_binary(ws_message::SYNC_UPDATE, file, &desktop_update)
+            .await;
+        tokio::time::sleep(Duration::from_millis(100)).await;
+
+        // Mobile writes a disjoint edit against the same REST base. The server
+        // merges that REST content with the live room before broadcasting.
+        let incoming = "alpha mobile\nbeta\ngamma\n".to_string();
+        let merged = match state
+            .hub
+            .merge_external_content(vault, file, base, incoming)
+            .await
+        {
+            ExternalRevisionMerge::Merged(content) => content,
+            ExternalRevisionMerge::Conflict => panic!("disjoint edits should merge"),
+        };
+        assert_eq!(merged, "alpha mobile\nbeta\ngamma desktop\n");
+        insert_note_revision(&pool, &state.blobs, vault, file, &merged).await;
+        let snapshot = api::load_current_document_snapshot(&pool, &*state.blobs, vault, file)
+            .await
+            .expect("current snapshot");
+        state
+            .hub
+            .apply_external_revision(
+                vault,
+                file,
+                snapshot.content.clone(),
+                snapshot.marker,
+                Some(owner),
+            )
+            .await;
+
+        let (_, external_update) = client
+            .next_binary(ws_message::SYNC_UPDATE)
+            .await
+            .expect("live subscriber receives merged external revision");
+        assert_eq!(
+            read_text_after_updates(
+                &seeded_state,
+                &[desktop_update.as_slice(), external_update.as_slice()],
+            ),
+            "alpha mobile\nbeta\ngamma desktop\n",
+        );
+
+        tokio::time::sleep(Duration::from_millis(2500)).await;
+        let content = api::load_current_document_text(&pool, &*state.blobs, vault, file)
+            .await
+            .expect("current text");
+        assert_eq!(content, "alpha mobile\nbeta\ngamma desktop\n");
     }
 }
