@@ -31,8 +31,8 @@ until the items below are resolved.
   for each new upstream version.
 - Keep `pkgdesc` short, non-self-referential, and close to 80 characters.
 - The stable package should use immutable upstream release sources and real
-  checksums. The draft PKGBUILD therefore targets the GitHub release tag tarball
-  for `v${pkgver}` and has a checksum placeholder.
+  checksums. The draft PKGBUILD therefore targets the GitHub desktop release tag
+  tarball for `desktop-v${pkgver}` and has a checksum placeholder.
 - Prefer HTTPS sources and PGP/source verification where upstream provides it.
   If Git tags become signed, consider building from the signed tag object hash
   rather than a mutable tag name.
@@ -72,7 +72,7 @@ until the items below are resolved.
 
 ## Current blockers before publishing
 
-1. Create or confirm the upstream `v0.5.6` tag/release tarball, then replace
+1. Create or confirm the upstream `desktop-v${pkgver}` tag/release tarball, then replace
    `TODO_REPLACE_WITH_RELEASE_TARBALL_SHA256` in `PKGBUILD`.
 2. Generate `.SRCINFO` from the final `PKGBUILD`. Do not hand-edit it.
 3. Reconcile project licensing metadata. The workspace Cargo metadata says

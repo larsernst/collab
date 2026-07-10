@@ -1,0 +1,71 @@
+<svg width="1024" height="500" viewBox="0 0 1024 500" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1024" y2="500" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#131c33"/>
+      <stop offset="0.55" stop-color="#0c1224"/>
+      <stop offset="1" stop-color="#080b16"/>
+    </linearGradient>
+    <radialGradient id="glowBlue" cx="0" cy="0" r="1" gradientUnits="userSpaceOnUse"
+      gradientTransform="translate(250 250) scale(300)">
+      <stop offset="0" stop-color="#4aa8f0" stop-opacity="0.42"/>
+      <stop offset="0.6" stop-color="#2f7ed0" stop-opacity="0.12"/>
+      <stop offset="1" stop-color="#2f7ed0" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="glowViolet" cx="0" cy="0" r="1" gradientUnits="userSpaceOnUse"
+      gradientTransform="translate(980 470) scale(340)">
+      <stop offset="0" stop-color="#8b5cf6" stop-opacity="0.18"/>
+      <stop offset="1" stop-color="#8b5cf6" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="cardBack" x1="40" y1="95" x2="190" y2="245" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#8ec9f4"/>
+      <stop offset="1" stop-color="#5fb0ef"/>
+    </linearGradient>
+    <linearGradient id="cardFront" x1="110" y1="52" x2="260" y2="202" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#f2f9ff"/>
+      <stop offset="1" stop-color="#d3ecfe"/>
+    </linearGradient>
+    <radialGradient id="shadow" cx="0" cy="0" r="1" gradientUnits="userSpaceOnUse"
+      gradientTransform="translate(150 272) scale(160 30)">
+      <stop offset="0" stop-color="#04070f" stop-opacity="0.55"/>
+      <stop offset="1" stop-color="#04070f" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+
+  <!-- Background -->
+  <rect width="1024" height="500" fill="url(#bg)"/>
+  <rect width="1024" height="500" fill="url(#glowViolet)"/>
+  <rect width="1024" height="500" fill="url(#glowBlue)"/>
+
+  <!-- App mark: two overlapping document cards (matches the launcher icon) -->
+  <g transform="translate(96 102)">
+    <!-- soft base shadow -->
+    <rect x="-20" y="230" width="340" height="90" fill="url(#shadow)"/>
+
+    <!-- back card -->
+    <rect x="40" y="95" width="150" height="150" rx="36" fill="url(#cardBack)"/>
+
+    <!-- front card (glassy, slightly translucent so the overlap deepens) -->
+    <rect x="110" y="52" width="150" height="150" rx="36" fill="url(#cardFront)" opacity="0.9"/>
+
+    <!-- corner bracket, top-right of front card -->
+    <path d="M206 86 H238 V120" fill="none" stroke="#3a9bec" stroke-width="16"
+      stroke-linecap="round" stroke-linejoin="round"/>
+    <!-- text lines -->
+    <path d="M150 150 H232" stroke="#3a9bec" stroke-width="16" stroke-linecap="round"/>
+    <path d="M150 184 H206" stroke="#8fc9f6" stroke-width="16" stroke-linecap="round"/>
+  </g>
+
+  <!-- Wordmark + tagline -->
+  <g font-family="Noto Sans, sans-serif">
+    <text x="452" y="196" font-size="21" font-weight="700" letter-spacing="5"
+      fill="#5cb8f7" opacity="0.9">ANDROID COMPANION</text>
+    <text x="450" y="300" font-size="118" font-weight="700" letter-spacing="-2"
+      fill="#f4f8ff">Collab</text>
+    <text x="454" y="356" font-size="35" font-weight="400"
+      fill="#a3b8d8">Your hosted vaults, on the go.</text>
+
+    <!-- tiny feature cues, low-key -->
+    <text x="454" y="420" font-size="24" font-weight="600" fill="#6f86ab"
+      letter-spacing="0.5">Notes  ·  Boards  ·  Offline</text>
+  </g>
+</svg>

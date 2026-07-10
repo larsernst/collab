@@ -4,11 +4,15 @@ This covers going from the source tree to a signed release on the Google Play
 Store. It assumes you can already build the app locally (see
 `docs/android-companion-build.md`) and have a Google Play Developer account.
 
-The app's package name (Play "application ID") is **`com.azazel.collab.companion`**
-(set in `src-tauri/gen/android/app/build.gradle.kts` and
-`src-tauri/tauri.android.conf.json`). **This is permanent once published** — you
-can never change it or reuse it for another app. Decide now if you want a
-different one.
+The app's package name (Play "application ID") is **`com.collab.companion`**
+(the `applicationId` in `src-tauri/gen/android/app/build.gradle.kts`). **This is
+permanent once published** — you can never change it or reuse it for another app.
+
+Note: the *internal* code package (`namespace`, and the Tauri `identifier` in
+`src-tauri/tauri.android.conf.json`) intentionally stays
+`com.azazel.collab.companion`. Android allows the public `applicationId` to differ
+from the code namespace, and Tauri/wry + our JNI class lookups resolve against the
+namespace at compile time, so only `applicationId` is the user-facing/Play name.
 
 ## Overview
 
@@ -53,13 +57,31 @@ nothing else changes, so this is safe to leave wired up.
 
 ## 3. Set the version
 
-The version comes from the root `package.json` `version` (currently `0.6.3`) via
-`tauri.conf.json`. Tauri derives the Android `versionName` (the human string) and
-a numeric `versionCode` from it.
+The mobile app version is independent from the desktop client. Edit
+`versions.json`:
+
+```json
+{
+  "mobile": {
+    "versionName": "0.6.4",
+    "versionCode": 6004
+  }
+}
+```
+
+Then sync generated manifests:
+
+```bash
+pnpm versions:sync
+```
+
+The sync step writes the mobile `versionName` to
+`src-tauri/tauri.android.conf.json` and the explicit Play `versionCode` to
+`bundle.android.versionCode`.
 
 **Play requires a strictly increasing `versionCode` for every upload.** Bump the
-`package.json` version before each Play upload (e.g. `0.6.3` → `0.6.4`). If two
-builds ever compute the same `versionCode`, Play will reject the second.
+mobile `versionCode` before each Play upload. You can bump only the mobile
+version without changing the desktop client, admin web UI, or server versions.
 
 ## 4. Build a signed AAB
 
@@ -137,9 +159,10 @@ a checklist under **Policy** / **App content**):
 ## Versioning cheat-sheet for future releases
 
 ```text
-1. Bump "version" in package.json (increments Android versionCode/Name).
-2. pnpm android:build:aab
-3. Play Console → Testing/Production → Create new release → upload AAB → roll out.
+1. Bump versions.json mobile.versionName and mobile.versionCode.
+2. pnpm versions:sync
+3. pnpm android:build:aab
+4. Play Console → Testing/Production → Create new release → upload AAB → roll out.
 ```
 
 ## Notes and gotchas

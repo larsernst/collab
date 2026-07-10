@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import type { HostedFileEntry } from '../mobileTauri';
-import { childrenOf, fileGlyph, formatBytes, isReadOnlyRole } from './format';
+import { childrenIndex, childrenOf, fileGlyph, formatBytes, isReadOnlyRole } from './format';
 
 function file(partial: Partial<HostedFileEntry> & { id: string }): HostedFileEntry {
   return {
@@ -62,5 +62,11 @@ describe('childrenOf', () => {
 
   it('returns nested folder children', () => {
     expect(childrenOf(files, 'folder').map((f) => f.id)).toEqual(['child']);
+  });
+
+  it('indexes all parents once for cheap folder lookups', () => {
+    const index = childrenIndex(files);
+    expect(index.get(null)?.map((f) => f.id)).toEqual(['folder', 'root-note']);
+    expect(index.get('folder')?.map((f) => f.id)).toEqual(['child']);
   });
 });

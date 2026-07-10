@@ -32,6 +32,10 @@
       "icons/128x128@2x.png",
       "icons/icon.icns",
       "icons/icon.ico"
-    ]
-  }
+    ],
+    "android": {
+      "versionCode": 6004
+    }
+  },
+  "version": "0.6.4"
 }

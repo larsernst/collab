@@ -1,7 +1,7 @@
 # Maintainer: Azazel <TODO: aur-email>
 
 pkgname=collab
-pkgver=0.6.2
+pkgver=0.6.4
 pkgrel=1
 pkgdesc="Local-first Markdown workspace with notes, canvases, Kanban, PDFs, and sync"
 arch=('x86_64')
@@ -31,11 +31,11 @@ makedepends=(
 )
 checkdepends=('appstream')
 options=('!lto')
-source=("${pkgname}-${pkgver}.tar.gz::${url}/archive/refs/tags/v${pkgver}.tar.gz")
+source=("${pkgname}-${pkgver}.tar.gz::${url}/archive/refs/tags/desktop-v${pkgver}.tar.gz")
 sha256sums=('TODO_REPLACE_WITH_RELEASE_TARBALL_SHA256')
 
 prepare() {
-  cd "${pkgname}-${pkgver}"
+  cd "${pkgname}-desktop-v${pkgver}"
 
   export CARGO_HOME="${srcdir}/cargo-home"
   export CARGO_REGISTRIES_CRATES_IO_PROTOCOL=sparse
@@ -47,7 +47,7 @@ prepare() {
 }
 
 build() {
-  cd "${pkgname}-${pkgver}"
+  cd "${pkgname}-desktop-v${pkgver}"
 
   export CARGO_HOME="${srcdir}/cargo-home"
   export CARGO_REGISTRIES_CRATES_IO_PROTOCOL=sparse
@@ -59,14 +59,14 @@ build() {
 }
 
 check() {
-  cd "${pkgname}-${pkgver}"
+  cd "${pkgname}-desktop-v${pkgver}"
 
   desktop-file-validate flatpak/com.azazel.collab.desktop
   appstreamcli validate --no-net flatpak/com.azazel.collab.metainfo.xml
 }
 
 package() {
-  cd "${pkgname}-${pkgver}"
+  cd "${pkgname}-desktop-v${pkgver}"
 
   install -Dm755 "target/release/collab" "${pkgdir}/usr/bin/collab"
   install -Dm644 "flatpak/com.azazel.collab.desktop" \

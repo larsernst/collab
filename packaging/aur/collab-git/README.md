@@ -39,7 +39,7 @@ until the items below are resolved.
 ## VCS-specific rules
 
 - The version is computed by `pkgver()`, not hand-set. It derives from
-  `git describe` against `v*` tags and renders as
+  `git describe` against `desktop-v*` tags, falling back to legacy `v*` tags, and renders as
   `<lasttag>.r<commits-since-tag>.g<shorthash>` (for example
   `0.5.6.r12.gabc1234`). The literal `pkgver=` line in the `PKGBUILD` is only a
   placeholder that `makepkg` overwrites during build.

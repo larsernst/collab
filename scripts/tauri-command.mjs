@@ -55,6 +55,17 @@ export function createTauriBuildArgs(args, signingKey = process.env.TAURI_SIGNIN
 }
 
 function main(args) {
+  const syncVersions = spawnSync(process.execPath, [join(rootDir, 'scripts', 'sync-versions.mjs')], {
+    cwd: rootDir,
+    env: process.env,
+    shell: false,
+    stdio: 'inherit',
+  });
+  if (syncVersions.status !== 0 || syncVersions.error) {
+    if (syncVersions.error) console.error(syncVersions.error.message);
+    process.exit(syncVersions.status ?? 1);
+  }
+
   if (args[0] === 'build') {
     const prepareOcr = spawnSync(process.execPath, [join(rootDir, 'scripts', 'prepare-ocr-assets.mjs')], {
       cwd: rootDir,

@@ -409,6 +409,18 @@ p {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+.server-group-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--muted-foreground);
+  font-size: 0.76rem;
+  font-weight: 600;
+  white-space: nowrap;
+}
+.server-group-status svg {
+  color: oklch(0.72 0.18 50);
+}
 
 .vault-icon,
 .file-icon {

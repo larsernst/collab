@@ -3,7 +3,7 @@ name: Server Container Build
 on:
   push:
     tags:
-      - 'v[0-9]+.[0-9]+.[0-9]+*'
+      - 'server-v[0-9]+.[0-9]+.[0-9]+*'
   workflow_dispatch:
 
 jobs:
@@ -62,13 +62,24 @@ jobs:
       contents: read
     outputs:
       image: ${{ steps.registry.outputs.image }}
+      version: ${{ steps.version.outputs.version }}
+      major_minor: ${{ steps.version.outputs.major_minor }}
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
       - name: Verify release version
-        run: node scripts/check-release-version.mjs "${{ github.ref_name }}"
+        run: node scripts/check-release-version.mjs --target server "${{ github.ref_name }}"
+
+      - name: Parse server version
+        id: version
+        shell: bash
+        run: |
+          version="${GITHUB_REF_NAME#server-v}"
+          major_minor="$(cut -d. -f1,2 <<< "$version")"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "major_minor=$major_minor" >> "$GITHUB_OUTPUT"
 
       - name: Set registry image name
         id: registry
@@ -120,7 +131,7 @@ jobs:
             org.opencontainers.image.description=Self-hosted collaboration server for Collab
             org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
             org.opencontainers.image.revision=${{ github.sha }}
-            org.opencontainers.image.version=${{ github.ref_name }}
+            org.opencontainers.image.version=${{ needs.release.outputs.version }}
           outputs: type=image,name=${{ needs.release.outputs.image }},push-by-digest=true,name-canonical=true,push=true
           cache-from: type=gha,scope=server-${{ matrix.architecture }}
           cache-to: type=gha,mode=max,scope=server-${{ matrix.architecture }}
@@ -191,9 +202,9 @@ jobs:
         with:
           images: ${{ needs.release.outputs.image }}
           tags: |
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
-            type=raw,value=latest,enable=${{ !contains(github.ref_name, '-') }}
+            type=raw,value=${{ needs.release.outputs.version }}
+            type=raw,value=${{ needs.release.outputs.major_minor }}
+            type=raw,value=latest,enable=${{ !contains(needs.release.outputs.version, '-') }}
 
       - name: Create multi-platform manifest
         working-directory: /tmp/digests
@@ -205,7 +216,7 @@ jobs:
           docker buildx imagetools create $tags $sources
 
       - name: Inspect published image
-        run: docker buildx imagetools inspect "${{ needs.release.outputs.image }}:${{ steps.metadata.outputs.version }}"
+        run: docker buildx imagetools inspect "${{ needs.release.outputs.image }}:${{ needs.release.outputs.version }}"
 
       - name: Publish summary
         shell: bash

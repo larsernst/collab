@@ -41,9 +41,12 @@ sha256sums=('SKIP')
 pkgver() {
   cd "${pkgname}"
 
-  # Prefer the most recent v* tag; fall back to a 0.0.0 base if none exist.
-  git describe --long --tags --abbrev=7 --match 'v[0-9]*' 2>/dev/null \
-    | sed 's/^v//;s/\([^-]*-g\)/r\1/;s/-/./g' \
+  # Prefer the most recent desktop release tag; fall back to legacy v* tags, then
+  # to a 0.0.0 base if none exist.
+  git describe --long --tags --abbrev=7 --match 'desktop-v[0-9]*' 2>/dev/null \
+    | sed 's/^desktop-v//;s/\([^-]*-g\)/r\1/;s/-/./g' \
+    || git describe --long --tags --abbrev=7 --match 'v[0-9]*' 2>/dev/null \
+      | sed 's/^v//;s/\([^-]*-g\)/r\1/;s/-/./g' \
     || printf '0.0.0.r%s.g%s' \
         "$(git rev-list --count HEAD)" "$(git rev-parse --short=7 HEAD)"
 }

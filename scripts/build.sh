@@ -10,7 +10,7 @@
 #
 # Windows and macOS targets cannot be compiled from Linux without a licensed
 # macOS SDK / Windows SDK.  Use GitHub Actions for those:
-#   git tag v1.0.0 && git push origin v1.0.0
+#   git tag desktop-v1.0.0 && git push origin desktop-v1.0.0
 # ─────────────────────────────────────────────────────────────────────────────
 set -euo pipefail
 
@@ -190,7 +190,7 @@ case "$REQUESTED" in
     build_target "aarch64-apple-darwin" "mac-apple-silicon" ;;
 
   windows-x86_64)
-    die "Windows builds require a Windows runner.\nPush a version tag to trigger GitHub Actions:\n  git tag v1.0.0 && git push origin v1.0.0" ;;
+    die "Windows builds require a Windows runner.\nPush a desktop version tag to trigger GitHub Actions:\n  git tag desktop-v1.0.0 && git push origin desktop-v1.0.0" ;;
 
   all)
     # Build everything possible on this host

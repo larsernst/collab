@@ -57,7 +57,7 @@ parallel, avoiding the much slower and occasionally quiet QEMU compilation path.
 
 ## Published Releases
 
-Pushing a semantic-version tag such as `v0.4.8` publishes a multi-platform image
+Pushing a server version tag such as `server-v0.4.8` publishes a multi-platform image
 to GitHub Container Registry:
 
 ```text
@@ -71,11 +71,11 @@ operator conveniences and can move to a newer compatible release. Production
 deployments should pin the exact version, or an image digest when immutable
 identity is required.
 
-Before publishing, the workflow verifies that the Git tag matches the root
-package, admin package, Cargo workspace, and Tauri package versions. Native
-AMD64 and ARM64 jobs each build once and push an untagged image by digest, then
-scan that digest for high/critical known vulnerabilities. Only after both jobs
-pass does a small final job assign the release tags to a combined manifest.
+Before publishing, the workflow verifies that the Git tag matches the server
+version in `versions.json` and the Cargo workspace version synced from it.
+Native AMD64 and ARM64 jobs each build once and push an untagged image by digest,
+then scan that digest for high/critical known vulnerabilities. Only after both
+jobs pass does a small final job assign the release tags to a combined manifest.
 Failed scans therefore leave no deployable release tag. Each platform image
 includes OCI source/version metadata, a BuildKit provenance attestation, and an
 SBOM.
@@ -83,7 +83,7 @@ SBOM.
 Run the version gate locally before creating a release tag:
 
 ```bash
-pnpm server:release:check v0.4.8
+pnpm server:release:check server-v0.4.8
 ```
 
 Deploy a published image with the normal Compose stack:

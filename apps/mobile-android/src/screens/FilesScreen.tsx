@@ -2,7 +2,13 @@ import { CloudOff, ChevronRight, FolderOpen, Home, Info, RefreshCw, X } from 'lu
 import { useEffect, useMemo, useRef, useState } from 'react';
 
 import { Banner, CacheBadge, EmptyState, GlyphIcon, ReadOnlyBadge, Spinner } from '../components/ui';
-import { childrenOf, fileGlyph, formatBytes, formatRelativeTime, isReadOnlyRole } from '../lib/format';
+import {
+  childrenIndex,
+  fileGlyph,
+  formatBytes,
+  formatRelativeTime,
+  isReadOnlyRole,
+} from '../lib/format';
 import type { FileCacheState } from '../lib/replica';
 import type { HostedFileEntry } from '../mobileTauri';
 import { useMobileStore } from '../state/store';
@@ -26,7 +32,8 @@ export function FilesScreen() {
   const closeSheet = useMobileStore((s) => s.closeSheet);
 
   const currentParent = trail[trail.length - 1]?.id ?? null;
-  const entries = useMemo(() => childrenOf(files, currentParent), [files, currentParent]);
+  const indexedChildren = useMemo(() => childrenIndex(files), [files]);
+  const entries = indexedChildren.get(currentParent) ?? [];
   const readOnly = selected ? isReadOnlyRole(selected.vault.role) : false;
 
   // Reveal the folder in pages so a large directory never renders (or cache-checks)

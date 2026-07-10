@@ -30,7 +30,13 @@ android {
     namespace = "com.azazel.collab.companion"
     defaultConfig {
         manifestPlaceholders["usesCleartextTraffic"] = "false"
-        applicationId = "com.azazel.collab.companion"
+        // Public Google Play identity (permanent once published). Intentionally
+        // differs from `namespace` below: the internal code package stays
+        // `com.azazel.collab.companion` (that is what Tauri/wry and our JNI class
+        // lookups resolve against at compile time), while the app ships to users
+        // and the Play Store as `com.collab.companion`. Android fully supports an
+        // applicationId that differs from the code namespace.
+        applicationId = "com.collab.companion"
         minSdk = 24
         targetSdk = 36
         versionCode = tauriProperties.getProperty("tauri.android.versionCode", "1").toInt()

@@ -59,11 +59,29 @@ export function fileGlyph(entry: HostedFileEntry): FileGlyph {
 /** Children of a folder (or the vault root when `parentId` is null), sorted
  * folders-first then alphabetically. */
 export function childrenOf(files: HostedFileEntry[], parentId: string | null): HostedFileEntry[] {
-  return files
-    .filter((file) => file.parentId === parentId)
-    .sort((a, b) => {
+  return childrenIndex(files).get(parentId) ?? [];
+}
+
+/** Builds the folder children lookup once per manifest. Folder navigation can
+ * then read the current folder directly instead of filtering and sorting the
+ * whole vault every time the user opens a folder. */
+export function childrenIndex(files: HostedFileEntry[]): Map<string | null, HostedFileEntry[]> {
+  const index = new Map<string | null, HostedFileEntry[]>();
+  for (const file of files) {
+    const bucket = index.get(file.parentId);
+    if (bucket) {
+      bucket.push(file);
+    } else {
+      index.set(file.parentId, [file]);
+    }
+  }
+  const collator = new Intl.Collator(undefined, { sensitivity: 'base' });
+  for (const children of index.values()) {
+    children.sort((a, b) => {
       if (a.kind === 'folder' && b.kind !== 'folder') return -1;
       if (a.kind !== 'folder' && b.kind === 'folder') return 1;
-      return a.name.localeCompare(b.name, undefined, { sensitivity: 'base' });
+      return collator.compare(a.name, b.name);
     });
+  }
+  return index;
 }

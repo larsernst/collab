@@ -29,6 +29,15 @@ describe('MobileApp shell', () => {
       files: [],
       filesBusy: false,
       filesError: null,
+      filesOffline: false,
+      fileCache: {},
+      replicas: {},
+      offlineBusy: {},
+      offlineProgress: {},
+      offlineError: null,
+      tab: 'servers',
+      folderTrail: [{ id: null, name: 'Root' }],
+      activeSheet: null,
     });
   });
 
@@ -102,5 +111,34 @@ describe('MobileApp shell', () => {
     await waitFor(() => expect(screen.getByText('Research')).toBeTruthy());
     expect(screen.getAllByText('Read only').length).toBeGreaterThan(0);
     expect(screen.getByText('Viewer')).toBeTruthy();
+  });
+
+  it('shows offline replicas on the Vaults tab when no server is connected', async () => {
+    mockInvoke({
+      server_connection_statuses: () => [],
+      replica_list: () => [
+        {
+          serverUrl: 'https://collab.example.com',
+          vaultId: 'v1',
+          vaultName: 'Research',
+          manifestSequence: 8,
+          lastSyncedAt: '2026-07-10T10:00:00.000Z',
+          status: 'idle',
+          pendingCount: 0,
+          updatedAt: '2026-07-10T10:00:00.000Z',
+          role: 'editor',
+          capabilities: ['vault.offlineCopy'],
+        },
+      ],
+    });
+
+    render(<MobileApp />);
+    await waitFor(() => expect(useMobileStore.getState().restored).toBe(true));
+
+    screen.getByRole('button', { name: /Vaults/ }).click();
+
+    expect(await screen.findByText('Research')).toBeTruthy();
+    expect(screen.getByText('Offline copies')).toBeTruthy();
+    expect(screen.getByText(/Offline copy/)).toBeTruthy();
   });
 });

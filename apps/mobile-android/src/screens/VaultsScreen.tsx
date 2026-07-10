@@ -1,4 +1,4 @@
-import { Check, ChevronRight, Cloud, CloudDownload, Library, RefreshCw } from 'lucide-react';
+import { Check, ChevronRight, Cloud, CloudDownload, CloudOff, Library, RefreshCw } from 'lucide-react';
 import { useMemo, useState } from 'react';
 
 import {
@@ -12,11 +12,47 @@ import {
 } from '../components/ui';
 import { formatBytes, isReadOnlyRole } from '../lib/format';
 import { replicaKey } from '../lib/replica';
-import type { HostedVault } from '../mobileTauri';
+import type { HostedVault, MemberRole, ReplicaSummary } from '../mobileTauri';
 import { useMobileStore } from '../state/store';
 
 function canOffline(vault: HostedVault): boolean {
   return vault.capabilities.includes('vault.offlineCopy');
+}
+
+interface VaultListItem {
+  serverUrl: string;
+  vault: HostedVault;
+  replica: ReplicaSummary | null;
+  offlineOnly: boolean;
+}
+
+interface VaultGroup {
+  serverUrl: string;
+  connected: boolean;
+  busy: boolean;
+  items: VaultListItem[];
+}
+
+function roleFromReplica(role: string | null): MemberRole {
+  return role === 'admin' || role === 'editor' || role === 'viewer' ? role : 'viewer';
+}
+
+function vaultFromReplica(replica: ReplicaSummary): HostedVault {
+  return {
+    id: replica.vaultId,
+    name: replica.vaultName,
+    role: roleFromReplica(replica.role),
+    status: 'offline',
+    members: 0,
+    storageBytes: 0,
+    manifestSequence: replica.manifestSequence,
+    updatedAt: replica.updatedAt,
+    capabilities: replica.capabilities,
+  };
+}
+
+function serverLabel(serverUrl: string): string {
+  return serverUrl.replace(/^https?:\/\//, '');
 }
 
 export function VaultsScreen() {
@@ -42,6 +78,62 @@ export function VaultsScreen() {
     () => Object.values(statuses).filter((status) => status.connected && status.serverUrl),
     [statuses],
   );
+  const vaultGroups = useMemo<VaultGroup[]>(() => {
+    const groups: VaultGroup[] = [];
+    const usedReplicaKeys = new Set<string>();
+    const replicaSummaries = Object.values(replicas);
+
+    for (const status of connectedServers) {
+      const serverUrl = status.serverUrl as string;
+      const list = vaults[serverUrl] ?? [];
+      const items: VaultListItem[] = list.map((vault) => {
+        const key = replicaKey(serverUrl, vault.id);
+        const replica = replicas[key] ?? null;
+        if (replica) usedReplicaKeys.add(key);
+        return { serverUrl, vault, replica, offlineOnly: false };
+      });
+
+      for (const replica of replicaSummaries) {
+        const key = replicaKey(replica.serverUrl, replica.vaultId);
+        if (replica.serverUrl !== serverUrl || usedReplicaKeys.has(key)) continue;
+        usedReplicaKeys.add(key);
+        items.push({
+          serverUrl,
+          vault: vaultFromReplica(replica),
+          replica,
+          offlineOnly: true,
+        });
+      }
+
+      groups.push({
+        serverUrl,
+        connected: true,
+        busy: !!vaultsBusy[serverUrl],
+        items,
+      });
+    }
+
+    const offlineGroups = new Map<string, VaultListItem[]>();
+    for (const replica of replicaSummaries) {
+      const key = replicaKey(replica.serverUrl, replica.vaultId);
+      if (usedReplicaKeys.has(key)) continue;
+      const serverUrl = replica.serverUrl;
+      const items = offlineGroups.get(serverUrl) ?? [];
+      items.push({
+        serverUrl,
+        vault: vaultFromReplica(replica),
+        replica,
+        offlineOnly: true,
+      });
+      offlineGroups.set(serverUrl, items);
+    }
+
+    for (const [serverUrl, items] of offlineGroups) {
+      groups.push({ serverUrl, connected: false, busy: false, items });
+    }
+
+    return groups;
+  }, [connectedServers, replicas, vaults, vaultsBusy]);
 
   const confirmRemove = activeSheet?.kind === 'removeOffline' ? activeSheet : null;
 
@@ -61,13 +153,13 @@ export function VaultsScreen() {
       <header className="screen-header">
         <div>
           <h1>Vaults</h1>
-          <p>{connectedServers.length > 0 ? 'Choose a vault to browse' : 'No connected servers'}</p>
+          <p>{vaultGroups.length > 0 ? 'Choose a vault to browse' : 'No connected servers'}</p>
         </div>
       </header>
 
       {offlineError ? <Banner tone="error">{offlineError}</Banner> : null}
 
-      {connectedServers.length === 0 ? (
+      {vaultGroups.length === 0 ? (
         <EmptyState
           icon={<Cloud size={28} aria-hidden />}
           title="Nothing to show"
@@ -75,33 +167,37 @@ export function VaultsScreen() {
         />
       ) : null}
 
-      {connectedServers.map((status) => {
-        const serverUrl = status.serverUrl as string;
-        const list = vaults[serverUrl] ?? [];
-        const busy = vaultsBusy[serverUrl];
+      {vaultGroups.map((group) => {
+        const { serverUrl, items, busy } = group;
         return (
           <section className="server-group" key={serverUrl}>
             <div className="server-group-header">
-              <span className="server-group-name">{serverUrl.replace(/^https?:\/\//, '')}</span>
-              <button
-                type="button"
-                className="text-button"
-                onClick={() => loadVaults(serverUrl)}
-                disabled={busy}
-              >
-                {busy ? <Spinner size={14} /> : <RefreshCw size={14} aria-hidden />}
-                Refresh
-              </button>
+              <span className="server-group-name">{serverLabel(serverUrl)}</span>
+              {group.connected ? (
+                <button
+                  type="button"
+                  className="text-button"
+                  onClick={() => loadVaults(serverUrl)}
+                  disabled={busy}
+                >
+                  {busy ? <Spinner size={14} /> : <RefreshCw size={14} aria-hidden />}
+                  Refresh
+                </button>
+              ) : (
+                <span className="server-group-status">
+                  <CloudOff size={14} aria-hidden />
+                  Offline copies
+                </span>
+              )}
             </div>
 
-            {list.length === 0 && !busy ? (
+            {items.length === 0 && !busy ? (
               <Banner tone="info">No vaults are available to you on this server.</Banner>
             ) : null}
 
             <ul className="list">
-              {list.map((vault) => {
+              {items.map(({ vault, replica, offlineOnly }) => {
                 const key = replicaKey(serverUrl, vault.id);
-                const replica = replicas[key];
                 const isOffline = !!replica;
                 const isActive =
                   selected?.vault.id === vault.id && selected?.serverUrl === serverUrl;
@@ -121,9 +217,17 @@ export function VaultsScreen() {
                         <div className="row-text">
                           <strong>{vault.name}</strong>
                           <span>
-                            {formatBytes(vault.storageBytes)} · {vault.members} member
-                            {vault.members === 1 ? '' : 's'}
-                            {isOffline ? ' · offline copy' : ''}
+                            {offlineOnly
+                              ? [
+                                  'Offline copy',
+                                  replica ? `${replica.pendingCount} pending` : null,
+                                  replica ? `seq ${replica.manifestSequence}` : null,
+                                ]
+                                  .filter(Boolean)
+                                  .join(' · ')
+                              : `${formatBytes(vault.storageBytes)} · ${vault.members} member${
+                                  vault.members === 1 ? '' : 's'
+                                }${isOffline ? ' · offline copy' : ''}`}
                           </span>
                         </div>
                         <div className="vault-badges">
@@ -152,7 +256,7 @@ export function VaultsScreen() {
                             <Check size={14} aria-hidden />
                             Offline
                           </button>
-                        ) : canOffline(vault) ? (
+                        ) : !offlineOnly && canOffline(vault) ? (
                           <button
                             type="button"
                             className="offline-chip"
