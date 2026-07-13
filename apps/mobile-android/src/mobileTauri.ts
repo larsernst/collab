@@ -157,6 +157,10 @@ export function serverHasSavedSession(serverUrl: string): Promise<boolean> {
   return invoke('server_has_saved_session', { serverUrl });
 }
 
+export function mobileExitApp(): Promise<void> {
+  return invoke('mobile_exit_app');
+}
+
 function asRecord(value: unknown, message: string): Record<string, unknown> {
   if (!value || typeof value !== 'object') throw new Error(message);
   return value as Record<string, unknown>;

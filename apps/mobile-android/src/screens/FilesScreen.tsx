@@ -3,7 +3,6 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 
 import { Banner, CacheBadge, EmptyState, GlyphIcon, ReadOnlyBadge, Spinner } from '../components/ui';
 import {
-  childrenIndex,
   fileGlyph,
   formatBytes,
   formatRelativeTime,
@@ -19,6 +18,16 @@ import { NoteScreen } from './NoteScreen';
 import { useMobileStore } from '../state/store';
 
 const PAGE_SIZE = 60;
+const FOLDER_SCAN_BUDGET_MS = 7;
+const fileCollator = new Intl.Collator(undefined, { sensitivity: 'base' });
+
+function sortFolderEntries(entries: HostedFileEntry[]): HostedFileEntry[] {
+  return [...entries].sort((a, b) => {
+    if (a.kind === 'folder' && b.kind !== 'folder') return -1;
+    if (a.kind !== 'folder' && b.kind === 'folder') return 1;
+    return fileCollator.compare(a.name, b.name);
+  });
+}
 
 export function FilesScreen({ prefs }: { prefs: ThemePrefs }) {
   const selected = useMobileStore((s) => s.selected);
@@ -37,8 +46,8 @@ export function FilesScreen({ prefs }: { prefs: ThemePrefs }) {
   const closeSheet = useMobileStore((s) => s.closeSheet);
 
   const currentParent = trail[trail.length - 1]?.id ?? null;
-  const indexedChildren = useMemo(() => childrenIndex(files), [files]);
-  const entries = indexedChildren.get(currentParent) ?? [];
+  const [entries, setEntries] = useState<HostedFileEntry[]>([]);
+  const [folderBusy, setFolderBusy] = useState(false);
   const readOnly = selected ? isReadOnlyRole(selected.vault.role) : false;
 
   // Reveal the folder in pages so a large directory never renders (or cache-checks)
@@ -50,6 +59,37 @@ export function FilesScreen({ prefs }: { prefs: ThemePrefs }) {
   useEffect(() => {
     setVisibleCount(PAGE_SIZE);
   }, [currentParent, selected?.vault.id, selected?.serverUrl]);
+
+  useEffect(() => {
+    let cancelled = false;
+    let timer: number | null = null;
+    const collected: HostedFileEntry[] = [];
+    let cursor = 0;
+
+    setFolderBusy(files.length > 0);
+    setEntries([]);
+
+    const scan = () => {
+      const deadline = performance.now() + FOLDER_SCAN_BUDGET_MS;
+      while (cursor < files.length && performance.now() < deadline) {
+        const entry = files[cursor++];
+        if (entry.parentId === currentParent) collected.push(entry);
+      }
+      if (cancelled) return;
+      if (cursor < files.length) {
+        timer = window.setTimeout(scan, 0);
+        return;
+      }
+      setEntries(sortFolderEntries(collected));
+      setFolderBusy(false);
+    };
+
+    timer = window.setTimeout(scan, 0);
+    return () => {
+      cancelled = true;
+      if (timer !== null) window.clearTimeout(timer);
+    };
+  }, [currentParent, files]);
 
   const visibleEntries = useMemo(() => entries.slice(0, visibleCount), [entries, visibleCount]);
 
@@ -71,18 +111,13 @@ export function FilesScreen({ prefs }: { prefs: ThemePrefs }) {
     if (visibleEntries.length > 0) void refreshCacheStatus(visibleEntries);
   }, [visibleEntries, refreshCacheStatus]);
 
-  const detailFile = useMemo(() => {
-    if (activeSheet?.kind !== 'fileDetail') return null;
+  const activeFile = useMemo(() => {
+    if (!activeSheet || activeSheet.kind === 'removeOffline') return null;
     return files.find((file) => file.id === activeSheet.fileId) ?? null;
   }, [activeSheet, files]);
-  const noteFile = useMemo(() => {
-    if (activeSheet?.kind !== 'note') return null;
-    return files.find((file) => file.id === activeSheet.fileId) ?? null;
-  }, [activeSheet, files]);
-  const kanbanFile = useMemo(() => {
-    if (activeSheet?.kind !== 'kanban') return null;
-    return files.find((file) => file.id === activeSheet.fileId) ?? null;
-  }, [activeSheet, files]);
+  const detailFile = activeSheet?.kind === 'fileDetail' ? activeFile : null;
+  const noteFile = activeSheet?.kind === 'note' ? activeFile : null;
+  const kanbanFile = activeSheet?.kind === 'kanban' ? activeFile : null;
 
   if (!selected) {
     return (
@@ -157,14 +192,14 @@ export function FilesScreen({ prefs }: { prefs: ThemePrefs }) {
 
       {filesError ? <Banner tone="error">{filesError}</Banner> : null}
 
-      {filesBusy && files.length === 0 ? (
+      {(filesBusy && files.length === 0) || folderBusy ? (
         <div className="loading-block">
           <Spinner size={22} />
-          <span>Loading files…</span>
+          <span>{folderBusy ? 'Loading folder...' : 'Loading files...'}</span>
         </div>
       ) : null}
 
-      {!filesBusy && entries.length === 0 && !filesError ? (
+      {!filesBusy && !folderBusy && entries.length === 0 && !filesError ? (
         <EmptyState
           icon={<FolderOpen size={28} aria-hidden />}
           title="Empty folder"
@@ -172,49 +207,51 @@ export function FilesScreen({ prefs }: { prefs: ThemePrefs }) {
         />
       ) : null}
 
-      <ul className="list">
-        {visibleEntries.map((entry) => {
-          const glyph = fileGlyph(entry);
-          const isFolder = entry.kind === 'folder';
-          return (
-            <li className="list-row" key={entry.id}>
-              <button
-                type="button"
-                className="row-main file-row"
-                onClick={() =>
-                  isFolder
-                    ? enterFolder({ id: entry.id, name: entry.name })
-                    : isNoteFile(entry)
-                      ? openSheet({ kind: 'note', fileId: entry.id })
-                      : isKanbanFile(entry)
-                        ? openSheet({ kind: 'kanban', fileId: entry.id })
-                        : openSheet({ kind: 'fileDetail', fileId: entry.id })
-                }
-              >
-                <div className={`file-icon glyph-${glyph}`}>
-                  <GlyphIcon glyph={glyph} />
-                </div>
-                <div className="row-text">
-                  <strong className="truncate">{entry.name}</strong>
-                  <span>
-                    {isFolder
-                      ? 'Folder'
-                      : [
-                          entry.documentType ?? glyph,
-                          formatBytes(entry.sizeBytes),
-                          formatRelativeTime(entry.updatedAt),
-                        ]
-                          .filter(Boolean)
-                          .join(' · ')}
-                  </span>
-                </div>
-                {!isFolder && fileCache[entry.id] ? <CacheBadge state={fileCache[entry.id]} /> : null}
-                <ChevronRight size={18} aria-hidden className="row-chevron" />
-              </button>
-            </li>
-          );
-        })}
-      </ul>
+      {!folderBusy ? (
+        <ul className="list">
+          {visibleEntries.map((entry) => {
+            const glyph = fileGlyph(entry);
+            const isFolder = entry.kind === 'folder';
+            return (
+              <li className="list-row" key={entry.id}>
+                <button
+                  type="button"
+                  className="row-main file-row"
+                  onClick={() =>
+                    isFolder
+                      ? enterFolder({ id: entry.id, name: entry.name })
+                      : isNoteFile(entry)
+                        ? openSheet({ kind: 'note', fileId: entry.id })
+                        : isKanbanFile(entry)
+                          ? openSheet({ kind: 'kanban', fileId: entry.id })
+                          : openSheet({ kind: 'fileDetail', fileId: entry.id })
+                  }
+                >
+                  <div className={`file-icon glyph-${glyph}`}>
+                    <GlyphIcon glyph={glyph} />
+                  </div>
+                  <div className="row-text">
+                    <strong className="truncate">{entry.name}</strong>
+                    <span>
+                      {isFolder
+                        ? 'Folder'
+                        : [
+                            entry.documentType ?? glyph,
+                            formatBytes(entry.sizeBytes),
+                            formatRelativeTime(entry.updatedAt),
+                          ]
+                            .filter(Boolean)
+                            .join(' · ')}
+                    </span>
+                  </div>
+                  {!isFolder && fileCache[entry.id] ? <CacheBadge state={fileCache[entry.id]} /> : null}
+                  <ChevronRight size={18} aria-hidden className="row-chevron" />
+                </button>
+              </li>
+            );
+          })}
+        </ul>
+      ) : null}
 
       {visibleCount < entries.length ? (
         <div ref={sentinelRef} className="load-more">

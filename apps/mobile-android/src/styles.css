@@ -108,6 +108,49 @@ p {
   padding-top: var(--safe-top);
   padding-bottom: calc(72px + var(--safe-bottom));
   overflow-y: auto;
+  overflow-x: hidden;
+}
+
+.main-view {
+  min-height: 100%;
+  will-change: transform, opacity;
+}
+
+.main-view.from-right {
+  animation: main-view-slide-right 240ms cubic-bezier(0.22, 0.61, 0.36, 1);
+}
+
+.main-view.from-left {
+  animation: main-view-slide-left 240ms cubic-bezier(0.22, 0.61, 0.36, 1);
+}
+
+@keyframes main-view-slide-right {
+  from {
+    transform: translateX(42px);
+    opacity: 0.32;
+  }
+  to {
+    transform: none;
+    opacity: 1;
+  }
+}
+
+@keyframes main-view-slide-left {
+  from {
+    transform: translateX(-42px);
+    opacity: 0.32;
+  }
+  to {
+    transform: none;
+    opacity: 1;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .main-view.from-right,
+  .main-view.from-left {
+    animation: none;
+  }
 }
 
 .screen {

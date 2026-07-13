@@ -11,6 +11,7 @@ import {
   renderMarkdownDocument,
   resolveVaultLink,
   saveNoteDocument,
+  type RenderedMarkdownDocument,
 } from '../lib/notes';
 import {
   describePendingFailure,
@@ -116,11 +117,29 @@ export function NoteScreen({ file, prefs }: { file: HostedFileEntry; prefs: Them
         : dirty
           ? 'Unsaved changes'
           : 'Saved';
-  const rendered = useMemo(() => renderMarkdownDocument(content, prefs), [content, prefs]);
+  const [rendered, setRendered] = useState<RenderedMarkdownDocument>({ html: '', plotBlocks: [] });
+  const [renderingPreview, setRenderingPreview] = useState(false);
   const collabExtension = useMemo(
     () => (liveSession ? yCollab(liveSession.text, liveSession.awareness) : null),
     [liveSession],
   );
+
+  useEffect(() => {
+    if (busy || mode !== 'preview') return;
+    let cancelled = false;
+    setRenderingPreview(true);
+    const timer = window.setTimeout(() => {
+      const next = renderMarkdownDocument(content, prefs);
+      if (!cancelled) {
+        setRendered(next);
+        setRenderingPreview(false);
+      }
+    }, 0);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [busy, content, mode, prefs]);
 
   useEffect(() => {
     let cancelled = false;
@@ -489,10 +508,10 @@ export function NoteScreen({ file, prefs }: { file: HostedFileEntry; prefs: Them
         <Banner tone="info">Showing cached content. Changes you make will sync when you reconnect.</Banner>
       ) : null}
 
-      {busy ? (
+      {busy || (mode === 'preview' && renderingPreview) ? (
         <div className="loading-block">
           <Spinner size={22} />
-          <span>Loading note...</span>
+          <span>{busy ? 'Loading note...' : 'Rendering preview...'}</span>
         </div>
       ) : mode === 'edit' && !readOnly ? (
           <MobileMarkdownEditor

@@ -1,14 +1,15 @@
 import { Cloud, FolderOpen, Library, Settings as SettingsIcon } from 'lucide-react';
-import type { ReactNode } from 'react';
+import type { ReactNode, TouchEvent as ReactTouchEvent } from 'react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
-import { Banner } from './components/ui';
+import { Banner, ConfirmSheet } from './components/ui';
+import { mobileExitApp } from './mobileTauri';
 import { applyTheme, loadPrefs, savePrefs, type ThemePrefs } from './lib/theme';
 import { FilesScreen } from './screens/FilesScreen';
 import { ServersScreen } from './screens/ServersScreen';
 import { SettingsScreen } from './screens/SettingsScreen';
 import { VaultsScreen } from './screens/VaultsScreen';
-import { type Tab, useMobileStore } from './state/store';
+import { TAB_ORDER, type Tab, useMobileStore } from './state/store';
 
 const TABS: { id: Tab; label: string; icon: ReactNode }[] = [
   { id: 'servers', label: 'Servers', icon: <Cloud size={20} aria-hidden /> },
@@ -17,7 +18,18 @@ const TABS: { id: Tab; label: string; icon: ReactNode }[] = [
   { id: 'settings', label: 'Settings', icon: <SettingsIcon size={20} aria-hidden /> },
 ];
 
-const BACK_SENTINEL = { collabBack: true };
+const VIEW_SWIPE_THRESHOLD = 56;
+
+function tabIndex(tab: Tab): number {
+  return TAB_ORDER.indexOf(tab);
+}
+
+function isInteractiveSwipeTarget(target: EventTarget | null): boolean {
+  if (!(target instanceof Element)) return false;
+  return !!target.closest(
+    'input, textarea, select, [contenteditable="true"], .cm-editor',
+  );
+}
 
 export function MobileApp() {
   const [prefs, setPrefs] = useState<ThemePrefs>(() => {
@@ -26,19 +38,17 @@ export function MobileApp() {
     return initial;
   });
   const [restoreError, setRestoreError] = useState<string | null>(null);
+  const [viewDir, setViewDir] = useState<1 | -1>(1);
+  const [showExitConfirm, setShowExitConfirm] = useState(false);
 
   const restore = useMobileStore((s) => s.restore);
   const refreshStatuses = useMobileStore((s) => s.refreshStatuses);
   const syncServer = useMobileStore((s) => s.syncServer);
   const tab = useMobileStore((s) => s.tab);
   const setTab = useMobileStore((s) => s.setTab);
+  const swipeTab = useMobileStore((s) => s.swipeTab);
   const selected = useMobileStore((s) => s.selected);
   const statuses = useMobileStore((s) => s.statuses);
-
-  // Whether the Android back button has somewhere to go inside the app.
-  const canGoBack = useMobileStore(
-    (s) => !!s.activeSheet || (s.tab === 'files' && s.folderTrail.length > 1) || s.tab !== 'servers',
-  );
 
   const connectedCount = useMemo(
     () => Object.values(statuses).filter((status) => status.connected).length,
@@ -74,52 +84,30 @@ export function MobileApp() {
     };
   }, [refreshStatuses, syncServer]);
 
-  // Android hardware back / back-gesture handling.
-  //
-  // The webview absorbs the system back through a history entry: we keep exactly
-  // one "sentinel" entry armed whenever there is somewhere to go back to inside
-  // the app (an open sheet, a subfolder, or a non-home tab). A back press pops the
-  // sentinel (`popstate`), we navigate one level in-app, and re-arm if more remains.
-  // When nothing remains we leave no sentinel, so the next back exits the app.
-  const armedRef = useRef(false);
-  const programmaticRef = useRef(false);
+  // Android hardware back / back-gesture handling. Native Android dispatches a
+  // DOM event for every back press so the WebView history stack can never
+  // accidentally finish the activity before app navigation has a say.
+  const showExitConfirmRef = useRef(false);
+  const swipeStartRef = useRef<{ x: number; y: number } | null>(null);
 
   useEffect(() => {
-    const onPop = () => {
-      // Ignore the popstate caused by our own sentinel removal below.
-      if (programmaticRef.current) {
-        programmaticRef.current = false;
+    showExitConfirmRef.current = showExitConfirm;
+  }, [showExitConfirm]);
+
+  useEffect(() => {
+    const onBack = () => {
+      if (showExitConfirmRef.current) {
+        setShowExitConfirm(false);
         return;
       }
-      armedRef.current = false;
-      useMobileStore.getState().goBack();
-      // Re-arm if the new location still has an in-app back target.
-      const state = useMobileStore.getState();
-      const stillBack =
-        !!state.activeSheet ||
-        (state.tab === 'files' && state.folderTrail.length > 1) ||
-        state.tab !== 'servers';
-      if (stillBack) {
-        window.history.pushState(BACK_SENTINEL, '');
-        armedRef.current = true;
+      if (useMobileStore.getState().goBack()) {
+        return;
       }
+      setShowExitConfirm(true);
     };
-    window.addEventListener('popstate', onPop);
-    return () => window.removeEventListener('popstate', onPop);
+    window.addEventListener('collab-android-back', onBack);
+    return () => window.removeEventListener('collab-android-back', onBack);
   }, []);
-
-  // Arm the sentinel when back becomes available; remove it (without navigating)
-  // when in-app navigation clears the last back target through the UI.
-  useEffect(() => {
-    if (canGoBack && !armedRef.current) {
-      window.history.pushState(BACK_SENTINEL, '');
-      armedRef.current = true;
-    } else if (!canGoBack && armedRef.current) {
-      armedRef.current = false;
-      programmaticRef.current = true;
-      window.history.back();
-    }
-  }, [canGoBack]);
 
   const updatePrefs = useCallback((next: ThemePrefs) => {
     setPrefs(next);
@@ -127,19 +115,56 @@ export function MobileApp() {
     savePrefs(next);
   }, []);
 
+  const navigateToTab = useCallback(
+    (next: Tab) => {
+      if (next === tab) return;
+      setViewDir(tabIndex(next) > tabIndex(tab) ? 1 : -1);
+      setTab(next);
+    },
+    [setTab, tab],
+  );
+
+  const handleMainTouchStart = useCallback((event: ReactTouchEvent<HTMLElement>) => {
+    if (event.touches.length !== 1) return;
+    if (useMobileStore.getState().activeSheet) return;
+    if (isInteractiveSwipeTarget(event.target)) return;
+    const touch = event.touches[0];
+    swipeStartRef.current = { x: touch.clientX, y: touch.clientY };
+  }, []);
+
+  const handleMainTouchEnd = useCallback(
+    (event: ReactTouchEvent<HTMLElement>) => {
+      const start = swipeStartRef.current;
+      swipeStartRef.current = null;
+      if (!start || event.changedTouches.length === 0) return;
+      if (useMobileStore.getState().activeSheet) return;
+      const touch = event.changedTouches[0];
+      const dx = touch.clientX - start.x;
+      const dy = touch.clientY - start.y;
+      if (Math.abs(dx) < VIEW_SWIPE_THRESHOLD || Math.abs(dx) < Math.abs(dy) * 1.5) return;
+      event.preventDefault();
+      event.stopPropagation();
+      setViewDir(dx < 0 ? 1 : -1);
+      swipeTab(dx < 0 ? 1 : -1);
+    },
+    [swipeTab],
+  );
+
   return (
     <div className="app-root">
-      <main className="app-main">
+      <main className="app-main" onTouchStart={handleMainTouchStart} onTouchEnd={handleMainTouchEnd}>
         {restoreError ? (
           <div className="screen-top-banner">
             <Banner tone="error">{restoreError}</Banner>
           </div>
         ) : null}
 
-        {tab === 'servers' ? <ServersScreen onOpenServer={() => setTab('vaults')} /> : null}
-        {tab === 'vaults' ? <VaultsScreen /> : null}
-        {tab === 'files' ? <FilesScreen prefs={prefs} /> : null}
-        {tab === 'settings' ? <SettingsScreen prefs={prefs} onChange={updatePrefs} /> : null}
+        <div key={tab} className={`main-view ${viewDir === 1 ? 'from-right' : 'from-left'}`}>
+          {tab === 'servers' ? <ServersScreen onOpenServer={() => navigateToTab('vaults')} /> : null}
+          {tab === 'vaults' ? <VaultsScreen /> : null}
+          {tab === 'files' ? <FilesScreen prefs={prefs} /> : null}
+          {tab === 'settings' ? <SettingsScreen prefs={prefs} onChange={updatePrefs} /> : null}
+        </div>
       </main>
 
       <nav className="tab-bar" aria-label="Primary">
@@ -155,7 +180,7 @@ export function MobileApp() {
               key={item.id}
               type="button"
               className={`tab ${tab === item.id ? 'active' : ''}`}
-              onClick={() => setTab(item.id)}
+              onClick={() => navigateToTab(item.id)}
             >
               <span className="tab-icon">
                 {item.icon}
@@ -166,6 +191,16 @@ export function MobileApp() {
           );
         })}
       </nav>
+
+      {showExitConfirm ? (
+        <ConfirmSheet
+          title="Quit Collab?"
+          message="Close the mobile companion app."
+          confirmLabel="Quit"
+          onCancel={() => setShowExitConfirm(false)}
+          onConfirm={() => void mobileExitApp().catch(() => window.close())}
+        />
+      ) : null}
     </div>
   );
 }

@@ -24,6 +24,7 @@ const CONNECT_TIMEOUT_MS = 8000;
 const RECONNECT_BASE_MS = 1000;
 const RECONNECT_MAX_MS = 15000;
 const PERSIST_DEBOUNCE_MS = 800;
+const RELEASE_GRACE_MS = 30000;
 
 const REMOTE_ORIGIN = Symbol('mobile-live-remote');
 const SEED_ORIGIN = Symbol('mobile-live-seed');
@@ -280,6 +281,7 @@ class MobileLiveProvider implements MobileLiveNoteSession {
   private subscribedCallback: ((ok: boolean) => void) | null = null;
   private initialSyncPending = false;
   private persistTimer: ReturnType<typeof setTimeout> | null = null;
+  private replicaSeeded = false;
 
   constructor(
     private readonly serverUrl: string,
@@ -295,10 +297,17 @@ class MobileLiveProvider implements MobileLiveNoteSession {
   async hydrateFromReplica(): Promise<void> {
     try {
       const base64 = await replicaReadCrdtState(this.serverUrl, this.vaultId, this.fileId);
-      if (base64 && !this.destroyed) Y.applyUpdate(this.doc, base64ToBytes(base64), SEED_ORIGIN);
+      if (base64 && !this.destroyed) {
+        this.replicaSeeded = true;
+        Y.applyUpdate(this.doc, base64ToBytes(base64), SEED_ORIGIN);
+      }
     } catch {
       // Best effort. The server handshake will seed the missing state.
     }
+  }
+
+  hasReplicaSeed(): boolean {
+    return this.replicaSeeded;
   }
 
   connectOnce(): Promise<boolean> {
@@ -309,7 +318,11 @@ class MobileLiveProvider implements MobileLiveNoteSession {
         settled = true;
         resolve(ok);
       };
-      const timeout = setTimeout(() => finish(false), CONNECT_TIMEOUT_MS);
+      const timeout = setTimeout(() => {
+        this.setStatus('disconnected');
+        this.scheduleReconnect();
+        finish(false);
+      }, CONNECT_TIMEOUT_MS);
       void this.openSocket((ok) => {
         clearTimeout(timeout);
         finish(ok);
@@ -343,6 +356,7 @@ class MobileLiveProvider implements MobileLiveNoteSession {
       ticket = await hostedWsTicket(this.serverUrl, this.vaultId);
     } catch {
       onSubscribed?.(false);
+      this.setStatus('disconnected');
       this.scheduleReconnect();
       return;
     }
@@ -428,6 +442,14 @@ class MobileLiveProvider implements MobileLiveNoteSession {
 
   private handlePersistUpdate = (_update: Uint8Array, origin: unknown) => {
     if (origin === SEED_ORIGIN) return;
+    if (this.socket?.readyState !== 1) {
+      if (this.persistTimer) {
+        clearTimeout(this.persistTimer);
+        this.persistTimer = null;
+      }
+      void this.persistNow();
+      return;
+    }
     this.schedulePersist();
   };
 
@@ -497,20 +519,96 @@ class MobileLiveProvider implements MobileLiveNoteSession {
   }
 }
 
+interface CachedProvider {
+  provider: MobileLiveProvider;
+  refs: number;
+  releaseTimer: ReturnType<typeof setTimeout> | null;
+}
+
+const providerCache = new Map<string, CachedProvider>();
+
+function providerKey(
+  kind: MobileLiveDocumentKind,
+  serverUrl: string,
+  vaultId: string,
+  fileId: string,
+): string {
+  return `${kind}:${serverUrl}:${vaultId}:${fileId}`;
+}
+
+function retainCachedProvider(key: string, provider: MobileLiveProvider): CachedProvider {
+  const existing = providerCache.get(key);
+  if (existing) {
+    if (existing.releaseTimer) {
+      clearTimeout(existing.releaseTimer);
+      existing.releaseTimer = null;
+    }
+    existing.refs += 1;
+    return existing;
+  }
+  const entry: CachedProvider = { provider, refs: 1, releaseTimer: null };
+  providerCache.set(key, entry);
+  return entry;
+}
+
+function releaseCachedProvider(key: string) {
+  const entry = providerCache.get(key);
+  if (!entry) return;
+  entry.refs = Math.max(0, entry.refs - 1);
+  if (entry.refs > 0 || entry.releaseTimer) return;
+  entry.releaseTimer = setTimeout(() => {
+    const current = providerCache.get(key);
+    if (!current || current.refs > 0) return;
+    providerCache.delete(key);
+    current.provider.destroy();
+  }, RELEASE_GRACE_MS);
+}
+
+async function openCachedProvider(
+  kind: MobileLiveDocumentKind,
+  serverUrl: string,
+  vaultId: string,
+  fileId: string,
+): Promise<{ key: string; provider: MobileLiveProvider } | null> {
+  const key = providerKey(kind, serverUrl, vaultId, fileId);
+  const cached = providerCache.get(key);
+  if (cached) {
+    retainCachedProvider(key, cached.provider);
+    return { key, provider: cached.provider };
+  }
+
+  const provider = new MobileLiveProvider(serverUrl, vaultId, fileId);
+  await provider.hydrateFromReplica();
+  const ok = await provider.connectOnce();
+  provider.awareness.setLocalStateField('document', { kind });
+  if (!ok) {
+    if (!provider.hasReplicaSeed()) {
+      provider.destroy();
+      return null;
+    }
+    retainCachedProvider(key, provider);
+    return { key, provider };
+  }
+  retainCachedProvider(key, provider);
+  return { key, provider };
+}
+
 export async function openMobileLiveNoteSession(
   serverUrl: string,
   vaultId: string,
   fileId: string,
 ): Promise<MobileLiveNoteSession | null> {
-  const provider = new MobileLiveProvider(serverUrl, vaultId, fileId);
-  await provider.hydrateFromReplica();
-  const ok = await provider.connectOnce();
-  if (!ok) {
-    provider.destroy();
-    return null;
-  }
-  provider.awareness.setLocalStateField('document', { kind: 'note' });
-  return provider;
+  const opened = await openCachedProvider('note', serverUrl, vaultId, fileId);
+  if (!opened) return null;
+  const { key, provider } = opened;
+  return {
+    doc: provider.doc,
+    text: provider.text,
+    awareness: provider.awareness,
+    getStatus: () => provider.getStatus(),
+    onStatus: (cb) => provider.onStatus(cb),
+    destroy: () => releaseCachedProvider(key),
+  };
 }
 
 export async function openMobileLiveJsonSession(
@@ -519,14 +617,9 @@ export async function openMobileLiveJsonSession(
   fileId: string,
   kind: Exclude<MobileLiveDocumentKind, 'note'>,
 ): Promise<MobileLiveJsonSession | null> {
-  const provider = new MobileLiveProvider(serverUrl, vaultId, fileId);
-  await provider.hydrateFromReplica();
-  const ok = await provider.connectOnce();
-  if (!ok) {
-    provider.destroy();
-    return null;
-  }
-  provider.awareness.setLocalStateField('document', { kind });
+  const opened = await openCachedProvider(kind, serverUrl, vaultId, fileId);
+  if (!opened) return null;
+  const { key, provider } = opened;
   const root = provider.doc.getMap<unknown>(ROOT_MAP_NAME);
 
   return {
@@ -546,7 +639,7 @@ export async function openMobileLiveJsonSession(
     },
     getStatus: () => provider.getStatus(),
     onStatus: (cb) => provider.onStatus(cb),
-    destroy: () => provider.destroy(),
+    destroy: () => releaseCachedProvider(key),
   };
 }
 

@@ -603,6 +603,7 @@ Acceptance criteria:
 
 - Android release build can be produced reproducibly.
 - Manual QA checklist covers login, offline open, offline edit, sync recovery,
+
   viewer files, and permission boundaries.
 - Known limitations are documented.
 - The app is safe to distribute to a small internal/beta group.

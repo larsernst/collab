@@ -35,3 +35,8 @@ pub async fn mobile_app_data_probe(
         file_path: path.display().to_string(),
     })
 }
+
+#[tauri::command]
+pub fn mobile_exit_app(app: tauri::AppHandle) {
+    app.exit(0);
+}

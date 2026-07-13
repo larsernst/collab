@@ -38,6 +38,7 @@ export interface SelectedVault {
 }
 
 export type Tab = 'servers' | 'vaults' | 'files' | 'settings';
+export const TAB_ORDER: Tab[] = ['servers', 'vaults', 'files', 'settings'];
 
 export interface Crumb {
   id: string | null;
@@ -70,6 +71,8 @@ interface MobileState {
   closeSheet: () => void;
   /** Handle an Android back press. Returns true if it navigated internally. */
   goBack: () => boolean;
+  /** Move between top-level tabs by relative offset. Returns true when changed. */
+  swipeTab: (delta: -1 | 1) => boolean;
 
   /** One entry per currently connected server, keyed by normalized URL. */
   statuses: Record<string, ServerConnectionStatus>;
@@ -155,11 +158,21 @@ export const useMobileStore = create<MobileState>((set, get) => ({
       set({ folderTrail: folderTrail.slice(0, -1) });
       return true;
     }
-    if (tab !== 'servers') {
-      set({ tab: 'servers' });
+    if (tab === 'files') {
+      set({ tab: 'vaults' });
       return true;
     }
     return false;
+  },
+
+  swipeTab: (delta) => {
+    const { activeSheet, tab } = get();
+    if (activeSheet) return false;
+    const current = TAB_ORDER.indexOf(tab);
+    const next = current + delta;
+    if (current < 0 || next < 0 || next >= TAB_ORDER.length) return false;
+    set({ tab: TAB_ORDER[next] });
+    return true;
   },
 
   refreshStatuses: async () => {

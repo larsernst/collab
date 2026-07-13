@@ -175,6 +175,7 @@ pub fn run() {
             commands::live_ws::live_ws_send,
             commands::live_ws::live_ws_close,
             commands::mobile::mobile_app_data_probe,
+            commands::mobile::mobile_exit_app,
             // templates
             commands::templates::list_kanban_templates,
             commands::templates::save_kanban_template,

@@ -176,7 +176,7 @@ describe('offline replica store actions', () => {
     expect(invoke).not.toHaveBeenCalledWith('hosted_vault_request', expect.anything());
   });
 
-  it('goBack closes a sheet, then walks up folders, then returns to Servers', () => {
+  it('goBack closes a sheet, walks up folders, then returns from Files to Vaults', () => {
     const store = useMobileStore.getState;
 
     // 1. An open sheet is dismissed first.
@@ -194,12 +194,30 @@ describe('offline replica store actions', () => {
     expect(store().goBack()).toBe(true);
     expect(store().folderTrail).toHaveLength(1);
 
-    // 3. At a folder root on a non-Servers tab, back returns to Servers.
+    // 3. At the selected vault root, back returns to the Vaults overview.
     expect(store().goBack()).toBe(true);
-    expect(store().tab).toBe('servers');
+    expect(store().tab).toBe('vaults');
 
-    // 4. On the Servers tab with nothing open, back is not handled (app exits).
+    // 4. Vaults is a root tab, so the shell should ask before quitting.
     expect(store().goBack()).toBe(false);
+  });
+
+  it('swipeTab moves through primary tabs only when no overlay is open', () => {
+    const store = useMobileStore.getState;
+    useMobileStore.setState({ tab: 'vaults', activeSheet: null });
+
+    expect(store().swipeTab(1)).toBe(true);
+    expect(store().tab).toBe('files');
+    expect(store().swipeTab(-1)).toBe(true);
+    expect(store().tab).toBe('vaults');
+
+    useMobileStore.setState({ activeSheet: { kind: 'fileDetail', fileId: 'doc-1' } });
+    expect(store().swipeTab(1)).toBe(false);
+    expect(store().tab).toBe('vaults');
+
+    useMobileStore.setState({ tab: 'servers', activeSheet: null });
+    expect(store().swipeTab(-1)).toBe(false);
+    expect(store().tab).toBe('servers');
   });
 
   it('selectVault opens the vault at its root on the Files tab', async () => {
