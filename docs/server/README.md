@@ -1,6 +1,7 @@
 # Collaboration Server Architecture
 
-This directory contains the approved Phase 0 architecture for the self-hosted collaboration server.
+This directory is the entry point for the implemented self-hosted collaboration
+server: architecture, operations, security, release, and recovery guidance.
 
 The collaboration server is a separate Rust service that becomes authoritative for hosted vaults. Existing local vaults remain owned by the Tauri application and continue to use the current filesystem-backed behavior.
 
@@ -34,6 +35,13 @@ Hosted vault synchronization has two independent authorities:
 
 Binary assets are immutable blobs referenced by file revisions. Presence and rich awareness are ephemeral and never become canonical vault content.
 
-## Implementation Order
+## Current Implementation Boundary
 
-The server must first support authenticated, online-only hosted vault CRUD. Live CRDT collaboration and full offline synchronization are later phases built on the same stable file IDs, manifest sequence, and authorization rules.
+The server is authoritative for hosted vault identity, membership, file
+manifests, revisions, binary blobs, audit/activity, live CRDT rooms, and
+offline-replica synchronization state. Local filesystem vaults remain owned by
+the Tauri client and keep their filesystem-backed behavior.
+
+Live CRDT collaboration is implemented for supported structured documents.
+Vault structure remains outside document CRDTs and is synchronized through the
+ordered server manifest plus idempotent structural operations.

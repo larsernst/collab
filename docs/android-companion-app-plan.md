@@ -43,9 +43,10 @@ should not block iOS later, but the first production target is Android.
 - PDF annotations/highlights/comments editing.
 - Image additive or permanent editing.
 - Native file drag/drop, external file import, and OS file-manager integration.
-- Full live multi-user editing polish. The first mobile editing path can use the
-  existing hosted REST/offline-queue document session semantics before adding
-  live CRDT editing.
+- Desktop-equivalent live editing polish for every document type. Notes and
+  Kanban now use the hosted WebSocket/CRDT path on mobile, but rich-file viewers
+  and all desktop-only authoring integrations remain outside the initial mobile
+  product.
 
 ## Technology Direction
 
@@ -85,13 +86,16 @@ src/
 crates/
   collab-core
   collab-protocol
-  collab-client-auth       planned shared native session/token helpers
-  collab-client-api        planned hosted request/client helpers
-  collab-replica           planned shared offline replica implementation
+  collab-replica           shared offline replica implementation
+
+src-tauri/src/
+  hosted_client.rs         shared hosted request/client helpers
+  hosted_session.rs        shared native session orchestration
+  server_token_store.rs    platform-specific refresh-token persistence boundary
 ```
 
-The mobile app should not import the desktop `AppShell`. It should use a mobile
-shell built around drill-in navigation:
+The mobile app does not import the desktop `AppShell`. It uses a mobile shell
+built around drill-in navigation:
 
 - Server/vault switcher.
 - Vault file browser.
@@ -131,8 +135,8 @@ Do not reuse directly:
 | 4. Notes MVP | Complete | View, edit, save, queue offline, and sync markdown notes. |
 | 5. Kanban MVP | Complete | View and edit boards/cards through a mobile-first Kanban workflow. |
 | 6. Viewer-only rich files | Planned | Add PDF, image, canvas, and logic diagram viewers without edit affordances. |
-| 7. Android hardening and release prep | Planned | Device QA, lifecycle handling, signing, release packaging, and operational docs. |
-| 8. Later expansion | Deferred | Decide whether to add live editing, push/background sync, iOS, or richer viewers. |
+| 7. Android hardening and release prep | In progress | Device QA, lifecycle handling, signing, release packaging, and operational docs. |
+| 8. Later expansion | Deferred | Decide whether to add push/background sync, iOS, richer viewers, or mobile capture flows. |
 
 ## Phase Details
 
@@ -385,12 +389,12 @@ removed after confirmation.
 Post-Phase-3 shell polish:
 
 - Android hardware back / back-gesture now navigates in-app instead of closing
-  the app: it dismisses an open sheet, then walks up one folder level, then
-  returns to the Servers tab, and only exits at the home tab. Navigation state
-  (tab, folder trail, active sheet) was centralized in the store so a single
-  `popstate`-based back interceptor in `MobileApp.tsx` can drive it — it keeps one
-  history "sentinel" armed whenever there is an in-app back target and re-arms per
-  level, so a back press is never wasted and the root still exits on one press.
+  the app: it dismisses an open sheet or document, walks up one folder level,
+  returns from a vault root to the Vaults overview, and only then shows the
+  app-styled quit confirmation. Navigation state (tab, folder trail, active
+  sheet) is centralized in the store. Native `MainActivity.kt` intercepts
+  Android back and dispatches a `collab-android-back` DOM event into the React
+  shell, avoiding fragile WebView-history behavior.
 - Large folders load dynamically instead of hanging: the file list renders in
   pages of 60 with an `IntersectionObserver` "load more" sentinel, and per-file
   offline cache-status checks run only for the revealed rows with bounded
@@ -557,7 +561,7 @@ Current implementation notes:
   `readOnly`, and `commitBoard`/save are guarded so a viewer never attempts a
   write.
 - Verification: `pnpm mobile:build` (tsc + Vite) is clean and `pnpm mobile:test`
-  grew to 36 tests, adding `lib/kanban.test.ts` (document recognition,
+  grew to 37 tests, adding `lib/kanban.test.ts` (document recognition,
   parse/serialize round-trip with normalization and invalid-content fallback,
   add/move/remove cards, tags/checklist/done/comment mutations, board-tag
   collection plus non-mutating view filter/sort, online read with replica
@@ -593,7 +597,8 @@ Goals:
 
 - Test app lifecycle: foreground, background, kill, restart, network loss,
   airplane mode, and device sleep.
-- Add Android signing/release build documentation.
+- Maintain Android build and signing/release documentation
+  (`android-companion-build.md`, `android-play-release.md`).
 - Add basic crash/error logging strategy.
 - Validate hosted TLS/session behavior against public reverse proxies.
 - Add device matrix testing for small/large phones and tablets.
@@ -603,7 +608,6 @@ Acceptance criteria:
 
 - Android release build can be produced reproducibly.
 - Manual QA checklist covers login, offline open, offline edit, sync recovery,
-
   viewer files, and permission boundaries.
 - Known limitations are documented.
 - The app is safe to distribute to a small internal/beta group.
@@ -614,7 +618,8 @@ Deferred until the Android MVP proves useful.
 
 Candidates:
 
-- Live CRDT editing for notes and Kanban.
+- Broader live editing for rich file types if mobile authoring demand justifies
+  it.
 - Push notifications for mentions/activity.
 - Android background sync with OS constraints respected.
 - iOS feasibility and build pipeline.

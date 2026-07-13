@@ -90,11 +90,8 @@ Implementation notes:
 
 - Add an export action that renders the current diagram to SVG first.
 - Save exported graphics into `Pictures/` using existing generated-asset conventions where possible.
-- Insert markdown image syntax into the active note, preferring the SVG export:
-
-  ```md
-  ![Diagram title](Pictures/example.svg)
-  ```
+- Insert markdown image syntax into the active note, preferring the SVG export
+  saved under `Pictures/`.
 
 - Preserve the `.logic` source document separately from the exported graphic.
 - Include source metadata in the exported SVG, such as the source `.logic` relative path and a diagram export marker.

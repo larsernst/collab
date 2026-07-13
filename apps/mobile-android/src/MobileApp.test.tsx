@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from '@testing-library/react';
+import { act, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const invoke = vi.fn();
@@ -140,5 +140,32 @@ describe('MobileApp shell', () => {
     expect(await screen.findByText('Research')).toBeTruthy();
     expect(screen.getByText('Offline copies')).toBeTruthy();
     expect(screen.getByText(/Offline copy/)).toBeTruthy();
+  });
+
+  it('handles native Android back events through app navigation before showing quit confirmation', async () => {
+    mockInvoke({ server_connection_statuses: () => [] });
+    render(<MobileApp />);
+    await waitFor(() => expect(useMobileStore.getState().restored).toBe(true));
+
+    act(() => {
+      useMobileStore.setState({
+        tab: 'files',
+        folderTrail: [{ id: null, name: 'Root' }, { id: 'folder-1', name: 'Folder' }],
+        activeSheet: null,
+      });
+    });
+
+    act(() => window.dispatchEvent(new Event('collab-android-back')));
+    expect(useMobileStore.getState().folderTrail).toHaveLength(1);
+    expect(useMobileStore.getState().tab).toBe('files');
+
+    act(() => window.dispatchEvent(new Event('collab-android-back')));
+    expect(useMobileStore.getState().tab).toBe('vaults');
+
+    act(() => window.dispatchEvent(new Event('collab-android-back')));
+    expect(screen.getByRole('dialog', { name: 'Quit Collab?' })).toBeTruthy();
+
+    act(() => window.dispatchEvent(new Event('collab-android-back')));
+    expect(screen.queryByRole('dialog', { name: 'Quit Collab?' })).toBeNull();
   });
 });

@@ -38,7 +38,7 @@ sudo zypper install ./collab-<version>.x86_64.rpm
 ### Arch Linux
 
 An AUR source package is planned. Draft packaging lives in
-[packaging/aur/collab](/home/azazel/Code Projects/collab/packaging/aur/collab)
+[packaging/aur/collab](../packaging/aur/collab)
 until the AUR account and package repository are ready.
 
 Until then, use the Flatpak bundle or the portable tarball. Arch systems need the
@@ -83,7 +83,7 @@ flatpak install --user ./collab-flatpak-x86_64.flatpak
 
 If `collab` is later distributed through Flathub or a custom Flatpak repository, normal `flatpak update com.azazel.collab` updates will work through that configured remote.
 
-Flatpak development/build notes are in [docs/flatpak.md](/home/azazel/Code Projects/collab/docs/flatpak.md).
+Flatpak development/build notes are in [docs/flatpak.md](./flatpak.md).
 
 ## AppImage
 

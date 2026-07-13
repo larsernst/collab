@@ -171,8 +171,8 @@ Container Registry and run with a single production Compose file.
   Server Settings; installing the private CA on the device remains the safer
   production approach.
 
-Remaining server work is tracked in
-[COLLAB_SERVER_PLAN.md](./COLLAB_SERVER_PLAN.md).
+Server architecture, operations, and release guidance are tracked in
+[docs/server/README.md](./docs/server/README.md).
 
 ### Vault Management And Security
 
@@ -464,14 +464,10 @@ deliberately kept out of the ignore list. Keep the tracking doc in sync whenever
 
 ### Project And Contribution Guides
 
-- [CODEBASE.md](./CODEBASE.md) - detailed architecture, component, IPC, and feature map
-- [UI_GUIDE.md](./UI_GUIDE.md) - visual language and interaction patterns
-- [REMAINING_STABILIZATION_STEPS.md](./REMAINING_STABILIZATION_STEPS.md) - outstanding stabilization work
 - [Security advisory tracking](./docs/security-advisories.md) - accepted/ignored dependency advisories and why they are unresolved
 
 ### Collaboration Server
 
-- [COLLAB_SERVER_PLAN.md](./COLLAB_SERVER_PLAN.md) - phased server implementation tracker
 - [Server architecture index](./docs/server/README.md) - entry point for server architecture documents
 - [Server development and Compose](./docs/server/development.md) - local operation, configuration, and verification
 - [Deployment topology and upgrade compatibility](./docs/server/deployment-topology.md) - supported topology, sizing, and upgrade rules
@@ -490,10 +486,11 @@ deliberately kept out of the ignore list. Keep the tracking doc in sync whenever
 
 ### Packaging And Installation
 
+- [Versioning and releases](./docs/versioning-and-releases.md)
+- [Mobile companion docs](./docs/mobile.md)
 - [Linux installation](./docs/linux-install.md)
 - [macOS installation](./docs/macos-install.md) - unsigned Apple Silicon build and the Gatekeeper workaround
 - [Flatpak guide](./docs/flatpak.md)
-- [Flatpak distribution plan](./docs/flatpak-distribution-plan.md)
 
 ## Notes For Contributors
 
