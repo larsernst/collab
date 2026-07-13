@@ -10,11 +10,13 @@ import {
 } from '../lib/format';
 import { isKanbanFile } from '../lib/kanban';
 import { isNoteFile } from '../lib/notes';
+import { isRichViewableFile } from '../lib/assets';
 import type { FileCacheState } from '../lib/replica';
 import type { ThemePrefs } from '../lib/theme';
 import type { HostedFileEntry } from '../mobileTauri';
 import { KanbanScreen } from './KanbanScreen';
 import { NoteScreen } from './NoteScreen';
+import { RichFileViewerScreen } from './RichFileViewerScreen';
 import { useMobileStore } from '../state/store';
 
 const PAGE_SIZE = 60;
@@ -118,6 +120,7 @@ export function FilesScreen({ prefs }: { prefs: ThemePrefs }) {
   const detailFile = activeSheet?.kind === 'fileDetail' ? activeFile : null;
   const noteFile = activeSheet?.kind === 'note' ? activeFile : null;
   const kanbanFile = activeSheet?.kind === 'kanban' ? activeFile : null;
+  const viewerFile = activeSheet?.kind === 'viewer' ? activeFile : null;
 
   if (!selected) {
     return (
@@ -143,6 +146,10 @@ export function FilesScreen({ prefs }: { prefs: ThemePrefs }) {
 
   if (kanbanFile) {
     return <KanbanScreen file={kanbanFile} />;
+  }
+
+  if (viewerFile) {
+    return <RichFileViewerScreen file={viewerFile} />;
   }
 
   return (
@@ -224,7 +231,9 @@ export function FilesScreen({ prefs }: { prefs: ThemePrefs }) {
                         ? openSheet({ kind: 'note', fileId: entry.id })
                         : isKanbanFile(entry)
                           ? openSheet({ kind: 'kanban', fileId: entry.id })
-                          : openSheet({ kind: 'fileDetail', fileId: entry.id })
+                          : isRichViewableFile(entry)
+                            ? openSheet({ kind: 'viewer', fileId: entry.id })
+                            : openSheet({ kind: 'fileDetail', fileId: entry.id })
                   }
                 >
                   <div className={`file-icon glyph-${glyph}`}>

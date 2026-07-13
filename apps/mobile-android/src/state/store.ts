@@ -51,10 +51,12 @@ export type ActiveSheet =
   | { kind: 'fileDetail'; fileId: string }
   | { kind: 'note'; fileId: string }
   | { kind: 'kanban'; fileId: string }
+  | { kind: 'viewer'; fileId: string }
   | { kind: 'removeOffline'; serverUrl: string; vault: HostedVault }
   | null;
 
 const ROOT_CRUMB: Crumb = { id: null, name: 'Root' };
+const EAGER_ASSET_CACHE_STATUS_LIMIT = 2 * 1024 * 1024;
 
 interface MobileState {
   restored: boolean;
@@ -382,7 +384,10 @@ export const useMobileStore = create<MobileState>((set, get) => ({
     // blocks the UI thread with a burst of IPC calls.
     const known = get().fileCache;
     const targets = files.filter(
-      (file) => (file.kind === 'document' || file.kind === 'asset') && !(file.id in known),
+      (file) =>
+        (file.kind === 'document' ||
+          (file.kind === 'asset' && (file.sizeBytes ?? 0) <= EAGER_ASSET_CACHE_STATUS_LIMIT)) &&
+        !(file.id in known),
     );
     if (targets.length === 0) return;
 

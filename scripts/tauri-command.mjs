@@ -27,10 +27,19 @@ export function resolveNodeTool(name, projectRoot = rootDir) {
   };
 }
 
-function run(tool, commandArgs) {
+function withAndroidNodeHeap(env = process.env) {
+  const nodeOptions = env.NODE_OPTIONS ?? '';
+  const heapOption = '--max-old-space-size=8192';
+  return {
+    ...env,
+    NODE_OPTIONS: nodeOptions.includes('--max-old-space-size') ? nodeOptions : `${nodeOptions} ${heapOption}`.trim(),
+  };
+}
+
+function run(tool, commandArgs, env = process.env) {
   const result = spawnSync(tool.command, [...tool.prefixArgs, ...commandArgs], {
     cwd: rootDir,
-    env: process.env,
+    env,
     shell: tool.shell,
     stdio: 'inherit',
   });
@@ -55,9 +64,10 @@ export function createTauriBuildArgs(args, signingKey = process.env.TAURI_SIGNIN
 }
 
 function main(args) {
+  const childEnv = args[0] === 'android' ? withAndroidNodeHeap() : process.env;
   const syncVersions = spawnSync(process.execPath, [join(rootDir, 'scripts', 'sync-versions.mjs')], {
     cwd: rootDir,
-    env: process.env,
+    env: childEnv,
     shell: false,
     stdio: 'inherit',
   });
@@ -69,7 +79,7 @@ function main(args) {
   if (args[0] === 'build') {
     const prepareOcr = spawnSync(process.execPath, [join(rootDir, 'scripts', 'prepare-ocr-assets.mjs')], {
       cwd: rootDir,
-      env: process.env,
+      env: childEnv,
       shell: false,
       stdio: 'inherit',
     });
@@ -78,17 +88,17 @@ function main(args) {
       process.exit(prepareOcr.status ?? 1);
     }
 
-    if (!run(resolveNodeTool('tsc'), [])) {
+    if (!run(resolveNodeTool('tsc'), [], childEnv)) {
       process.exit(process.exitCode ?? 1);
     }
 
-    if (!run(resolveNodeTool('vite'), ['build'])) {
+    if (!run(resolveNodeTool('vite'), ['build'], childEnv)) {
       process.exit(process.exitCode ?? 1);
     }
 
-    run(resolveNodeTool('tauri'), createTauriBuildArgs(args));
+    run(resolveNodeTool('tauri'), createTauriBuildArgs(args), childEnv);
   } else {
-    run(resolveNodeTool('tauri'), args);
+    run(resolveNodeTool('tauri'), args, childEnv);
   }
 }
 

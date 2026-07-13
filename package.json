@@ -11,7 +11,7 @@
     "build": "node scripts/prepare-ocr-assets.mjs && tsc && vite build",
     "prepare:ocr": "node scripts/prepare-ocr-assets.mjs",
     "mobile:dev": "vite --config apps/mobile-android/vite.config.ts",
-    "mobile:build": "tsc --noEmit -p apps/mobile-android/tsconfig.json && vite build --config apps/mobile-android/vite.config.ts",
+    "mobile:build": "node scripts/mobile-build-frontend.mjs",
     "mobile:test": "vitest run --config apps/mobile-android/vitest.config.ts",
     "android:init": "node scripts/tauri-command.mjs android init --config src-tauri/tauri.android.conf.json",
     "android:dev": "node scripts/tauri-command.mjs android dev --config src-tauri/tauri.android.conf.json",

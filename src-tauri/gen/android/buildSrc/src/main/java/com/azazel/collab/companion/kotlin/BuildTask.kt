@@ -16,7 +16,7 @@ open class BuildTask : DefaultTask() {
 
     @TaskAction
     fun assemble() {
-        val executable = """pnpm""";
+        val executable = """node""";
         try {
             runTauriCli(executable)
         } catch (e: Exception) {
@@ -48,12 +48,17 @@ open class BuildTask : DefaultTask() {
         val rootDirRel = rootDirRel ?: throw GradleException("rootDirRel cannot be null")
         val target = target ?: throw GradleException("target cannot be null")
         val release = release ?: throw GradleException("release cannot be null")
-        val args = listOf("tauri", "android", "android-studio-script");
 
         project.exec {
             workingDir(File(project.projectDir, rootDirRel))
             executable(executable)
-            args(args)
+            val nodeOptions = System.getenv("NODE_OPTIONS").orEmpty()
+            val heapOption = "--max-old-space-size=8192"
+            environment(
+                "NODE_OPTIONS",
+                if (nodeOptions.contains("--max-old-space-size")) nodeOptions else "$nodeOptions $heapOption".trim()
+            )
+            args(listOf("../scripts/tauri-command.mjs", "android", "android-studio-script"))
             if (project.logger.isEnabled(LogLevel.DEBUG)) {
                 args("-vv")
             } else if (project.logger.isEnabled(LogLevel.INFO)) {

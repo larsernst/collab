@@ -5,7 +5,7 @@
   "build": {
     "beforeDevCommand": "node scripts/mobile-dev-frontend.mjs",
     "devUrl": "http://localhost:1422",
-    "beforeBuildCommand": "pnpm mobile:build",
+    "beforeBuildCommand": "node scripts/mobile-build-frontend.mjs",
     "frontendDist": "../dist-mobile"
   },
   "app": {

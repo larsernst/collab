@@ -134,7 +134,7 @@ Do not reuse directly:
 | 3. Offline replica read path | Complete | Seed, cache, open, and browse hosted vault offline copies on Android. |
 | 4. Notes MVP | Complete | View, edit, save, queue offline, and sync markdown notes. |
 | 5. Kanban MVP | Complete | View and edit boards/cards through a mobile-first Kanban workflow. |
-| 6. Viewer-only rich files | Planned | Add PDF, image, canvas, and logic diagram viewers without edit affordances. |
+| 6. Viewer-only rich files | In progress | Add PDF, image, canvas, and logic diagram viewers without edit affordances. |
 | 7. Android hardening and release prep | In progress | Device QA, lifecycle handling, signing, release packaging, and operational docs. |
 | 8. Later expansion | Deferred | Decide whether to add push/background sync, iOS, richer viewers, or mobile capture flows. |
 
@@ -588,6 +588,39 @@ Acceptance criteria:
 - Viewers work with cached content where available.
 - Unsupported or uncached files fail clearly rather than pretending to be synced.
 - No viewer exposes edit/save actions in the MVP.
+
+Current implementation notes:
+
+- Started Phase 6 with a shared mobile asset-loading path
+  (`apps/mobile-android/src/lib/assets.ts`) used by both markdown previews and
+  standalone rich-file viewers. Asset-backed files load through the native hosted
+  asset command when connected, warm the replica asset cache, and fall back to
+  cached replica bytes when offline. Document-backed SVGs load through hosted
+  document reads and fall back to the cached document body, matching how note
+  images resolve SVGs.
+- Added a read-only rich-file viewer route from the mobile file browser and from
+  note vault links. Images open in a full-screen viewer with zoom controls and
+  two-finger pinch zoom. PDFs open in a pdf.js-backed canvas viewer with shared
+  zoom controls. Both surfaces show clear loading, cached-copy, and error states;
+  they expose no edit/save actions.
+- Added the first landscape pass for the mobile shell: wide screens use the full
+  display width and move primary navigation to a left rail so document viewers
+  have usable horizontal space. PDF pages now fit to the viewer stage by default
+  and zoom from that fitted size instead of rendering at raw PDF units.
+- Refined the mobile PDF viewer toward the desktop interaction model: the PDF
+  layout can switch between `Single` and `Scroll`, fit-width is the default page
+  scale, previous/next buttons were removed, and single-page mode changes pages
+  with horizontal swipe gestures.
+- Reduced rich-file blocking in large folders: eager offline cache-status checks
+  skip large assets so folders full of multi-megabyte PDFs do not decrypt/hash
+  every visible PDF just to draw badges. Large assets are still checked/loaded on
+  open, and explicit offline availability still caches them. PDF base64 decode
+  now yields between chunks to avoid one long UI-thread loop when opening larger
+  files.
+- The current Phase 6 slice intentionally covers real visual viewers only:
+  raster/SVG images and PDFs. Canvas and logic diagram viewers remain the next
+  Phase 6 slices because they need actual read-only node/wire rendering with
+  pan/zoom rather than a misleading JSON fallback.
 
 ### Phase 7: Android Hardening And Release Prep
 

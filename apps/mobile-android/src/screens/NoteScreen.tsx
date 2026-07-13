@@ -4,6 +4,7 @@ import { yCollab } from 'y-codemirror.next';
 
 import { Banner, ReadOnlyBadge, Spinner } from '../components/ui';
 import { MobileMarkdownEditor } from '../components/MobileMarkdownEditor';
+import { readMobileAssetDataUrl, isRichViewableFile } from '../lib/assets';
 import { isReadOnlyRole } from '../lib/format';
 import {
   isExternalHref,
@@ -22,12 +23,7 @@ import {
   retryPendingOperation,
 } from '../lib/sync';
 import {
-  hostedAssetDataUrl,
-  replicaCacheAsset,
   replicaCacheDocument,
-  replicaReadCachedAsset,
-  replicaReadCachedDocument,
-  readHostedDocument,
   type HostedFileEntry,
   type PendingOperation,
 } from '../mobileTauri';
@@ -36,39 +32,6 @@ import { openMobileLiveNoteSession, type LiveStatus, type MobileLiveNoteSession 
 import { useMobileStore } from '../state/store';
 import { MathPlot2D } from '../../../../src/components/editor/MathPlot2D';
 import { MathPlot3D } from '../../../../src/components/editor/MathPlot3D';
-
-function mediaTypeForPath(path: string): string {
-  const ext = path.split('.').pop()?.toLowerCase();
-  switch (ext) {
-    case 'apng':
-      return 'image/apng';
-    case 'avif':
-      return 'image/avif';
-    case 'gif':
-      return 'image/gif';
-    case 'jpg':
-    case 'jpeg':
-      return 'image/jpeg';
-    case 'png':
-      return 'image/png';
-    case 'svg':
-      return 'image/svg+xml';
-    case 'webp':
-      return 'image/webp';
-    default:
-      return 'application/octet-stream';
-  }
-}
-
-function dataUrlToBase64(value: string): string | null {
-  const marker = ';base64,';
-  const index = value.indexOf(marker);
-  return index === -1 ? null : value.slice(index + marker.length);
-}
-
-function svgDataUrl(content: string): string {
-  return `data:image/svg+xml;charset=utf-8,${encodeURIComponent(content)}`;
-}
 
 export function NoteScreen({ file, prefs }: { file: HostedFileEntry; prefs: ThemePrefs }) {
   const selected = useMobileStore((s) => s.selected);
@@ -228,33 +191,9 @@ export function NoteScreen({ file, prefs }: { file: HostedFileEntry; prefs: Them
     async (target: HostedFileEntry): Promise<string | null> => {
       if (!selected) return null;
       const { serverUrl, vault } = selected;
-      if (target.kind === 'document' && /\.svg$/i.test(target.name)) {
-        if (connected) {
-          try {
-            const document = await readHostedDocument(serverUrl, vault.id, target.id);
-            void replicaCacheDocument(serverUrl, vault.id, target.id, document.content).catch(() => {});
-            return svgDataUrl(document.content);
-          } catch {
-            // Fall back to the replica below.
-          }
-        }
-        const cachedSvg = await replicaReadCachedDocument(serverUrl, vault.id, target.id).catch(() => null);
-        return cachedSvg ? svgDataUrl(cachedSvg) : null;
-      }
-
-      if (target.kind !== 'asset') return null;
-      if (connected) {
-        try {
-          const dataUrl = await hostedAssetDataUrl(serverUrl, vault.id, target.id);
-          const base64 = dataUrlToBase64(dataUrl);
-          if (base64) void replicaCacheAsset(serverUrl, vault.id, target.id, base64).catch(() => {});
-          return dataUrl;
-        } catch {
-          // Fall back to the replica below.
-        }
-      }
-      const cached = await replicaReadCachedAsset(serverUrl, vault.id, target.id).catch(() => null);
-      return cached ? `data:${mediaTypeForPath(target.relativePath)};base64,${cached}` : null;
+      return readMobileAssetDataUrl({ serverUrl, vaultId: vault.id, file: target, connected })
+        .then((result) => result.dataUrl)
+        .catch(() => null);
     },
     [connected, selected],
   );
@@ -310,6 +249,8 @@ export function NoteScreen({ file, prefs }: { file: HostedFileEntry; prefs: Them
       closeSheet();
     } else if (linkedFile.kind === 'document' && /\.(md|markdown)$/i.test(linkedFile.name)) {
       openSheet({ kind: 'note', fileId: linkedFile.id });
+    } else if (isRichViewableFile(linkedFile)) {
+      openSheet({ kind: 'viewer', fileId: linkedFile.id });
     } else {
       openSheet({ kind: 'fileDetail', fileId: linkedFile.id });
     }

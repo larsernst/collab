@@ -47,7 +47,8 @@ FROM postgres:17-bookworm AS runtime
 
 RUN rm -f /usr/local/bin/gosu /usr/local/bin/docker-entrypoint.sh \
     && apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates curl \
+    && apt-get upgrade -y \
+    && apt-get install -y --no-install-recommends ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
 RUN useradd --create-home --uid 10001 collab \

@@ -52,7 +52,9 @@ export function fileGlyph(entry: HostedFileEntry): FileGlyph {
   if (ext === 'kanban') return 'kanban';
   if (ext === 'canvas') return 'canvas';
   if (ext === 'pdf') return 'pdf';
-  if (['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg', 'bmp'].includes(ext)) return 'image';
+  if (['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg', 'bmp', 'apng', 'avif', 'ico'].includes(ext)) {
+    return 'image';
+  }
   return 'file';
 }
 
