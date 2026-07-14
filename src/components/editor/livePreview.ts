@@ -595,6 +595,35 @@ function codeRanges(text: string, start: number, end: number): Array<{ from: num
   return ranges;
 }
 
+function inlineMathRanges(
+  text: string,
+  start: number,
+  end: number,
+  protectedRanges: Array<{ from: number; to: number }> = [],
+): Array<{ from: number; to: number }> {
+  const ranges: Array<{ from: number; to: number }> = [];
+  let i = start;
+  while (i < end) {
+    if (text[i] !== '$' || text[i - 1] === '$' || text[i + 1] === '$' || insideAnyRange(i, protectedRanges)) {
+      i += 1;
+      continue;
+    }
+
+    let close = i + 1;
+    while (close < end) {
+      if (text[close] === '\n') break;
+      if (text[close] === '$' && text[close - 1] !== '$' && text[close + 1] !== '$' && !insideAnyRange(close, protectedRanges)) {
+        ranges.push({ from: i, to: close + 1 });
+        i = close + 1;
+        break;
+      }
+      close += 1;
+    }
+    if (close >= end || text[close] === '\n') i += 1;
+  }
+  return ranges;
+}
+
 function insideAnyRange(index: number, ranges: Array<{ from: number; to: number }>) {
   return ranges.some((range) => index >= range.from && index < range.to);
 }
@@ -626,9 +655,17 @@ function findClosingMarker(
   return -1;
 }
 
-function findFormattedSpans(text: string, start = 0, end = text.length): FormatSpan[] {
+function findFormattedSpans(
+  text: string,
+  start = 0,
+  end = text.length,
+  extraProtectedRanges: Array<{ from: number; to: number }> = [],
+): FormatSpan[] {
   const spans: FormatSpan[] = [];
-  const protectedRanges = codeRanges(text, start, end);
+  const protectedRanges = [
+    ...codeRanges(text, start, end),
+    ...extraProtectedRanges.filter((range) => rangesOverlap(start, end, range.from, range.to)),
+  ];
 
   for (let i = start; i < end; i += 1) {
     if (insideAnyRange(i, protectedRanges)) continue;
@@ -695,6 +732,8 @@ function processInline(
 ) {
   const len = text.length;
   const used = new Uint8Array(len); // 1 = consumed
+  const inlineCodeRanges = codeRanges(text, 0, len);
+  const inlineMathProtectedRanges = inlineMathRanges(text, 0, len, inlineCodeRanges);
 
   const occupy = (s: number, e: number) => { for (let i = s; i < e; i++) used[i] = 1; };
   const free   = (s: number, e: number) => { for (let i = s; i < e; i++) { if (used[i]) return false; } return true; };
@@ -725,7 +764,7 @@ function processInline(
   }
 
   function processInlineWithin(start: number, end: number) {
-    const spans = resolveSpanOverlaps(findFormattedSpans(text, start, end));
+    const spans = resolveSpanOverlaps(findFormattedSpans(text, start, end, inlineMathProtectedRanges));
     for (const span of spans) {
       const docS = base + span.from;
       const docE = base + span.to;

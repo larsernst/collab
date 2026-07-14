@@ -12,6 +12,7 @@ import { createLivePreviewPlugin } from './livePreview';
 import 'katex/dist/katex.min.css';
 import { parseFenceInfoLanguage, type ParsedCodeBlockAtCursor } from './codeBlockUtils';
 import { dispatchEditorToolbarAction } from '../../lib/editorToolbarActions';
+import type { EditorToolbarAction } from '../../lib/editorToolbarActions';
 import { WebLinkPreviewPopover } from '../previews/WebLinkPreviewPopover';
 import { PdfLinkPreviewPopover } from '../previews/PdfLinkPreviewPopover';
 import { createColorPreviewExtension } from './colorPreview';
@@ -40,10 +41,12 @@ import { openNonVaultMarkdownPreviewLink } from './markdownLinkOpen';
 import { getMarkdownImageTarget } from '../../lib/noteAssets';
 import {
   MATH_SOLVER_ACTION_EVENT,
+  handleMathBlockShortcutKeydown,
   type MathSolverActionDetail,
 } from './mathBlockCommands';
 import { solveMathInput } from './mathSolver';
 import type { MathSolveMode } from './mathSolver';
+import { handleEditorToolbarShortcutKeydown } from './editorToolbarShortcuts';
 
 export interface MarkdownEditorHandle {
   /** Wrap selection with `before`/`after`; if no selection, insert `before + placeholder + after` and select placeholder. */
@@ -247,7 +250,7 @@ function getCodeBlockRangeAtCursor(view: EditorView): ParsedCodeBlockAtCursor | 
   return null;
 }
 
-function openToolbarAction(action: 'icon' | 'table' | 'link' | 'image' | 'taskList' | 'math' | 'code' | 'snippets') {
+function openToolbarAction(action: EditorToolbarAction) {
   return () => {
     dispatchEditorToolbarAction(action);
     return true;
@@ -455,7 +458,11 @@ export const MarkdownEditor = forwardRef<MarkdownEditorHandle, MarkdownEditorPro
         const active = document.activeElement;
         if (!(active instanceof Node) || !container.contains(active)) return;
 
-        if (handleFormattingShortcutKeydown(event, view)) {
+        if (
+          handleEditorToolbarShortcutKeydown(event)
+          || handleMathBlockShortcutKeydown(event, view)
+          || handleFormattingShortcutKeydown(event, view)
+        ) {
           event.stopPropagation();
         }
       };
@@ -529,7 +536,9 @@ export const MarkdownEditor = forwardRef<MarkdownEditorHandle, MarkdownEditorPro
           return false;
         },
         keydown(event: KeyboardEvent, view: EditorView) {
-          return handleFormattingShortcutKeydown(event, view);
+          return handleEditorToolbarShortcutKeydown(event)
+            || handleMathBlockShortcutKeydown(event, view)
+            || handleFormattingShortcutKeydown(event, view);
         },
       });
 

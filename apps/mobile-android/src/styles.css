@@ -1045,6 +1045,467 @@ p {
 .compact-loading {
   padding: 12px 0;
 }
+.canvas-stage {
+  position: relative;
+  overflow: hidden;
+  touch-action: none;
+  background:
+    linear-gradient(color-mix(in oklch, var(--border) 52%, transparent) 1px, transparent 1px),
+    linear-gradient(90deg, color-mix(in oklch, var(--border) 52%, transparent) 1px, transparent 1px),
+    radial-gradient(circle at 24px 24px, color-mix(in oklch, var(--primary) 18%, transparent) 1px, transparent 1.5px),
+    var(--background);
+  background-size:
+    48px 48px,
+    48px 48px,
+    24px 24px;
+}
+.mobile-canvas-world {
+  position: relative;
+  flex: 0 0 auto;
+  transform-origin: center center;
+  will-change: transform;
+}
+.mobile-canvas-edges {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+  pointer-events: none;
+}
+.mobile-canvas-edge {
+  fill: none;
+  stroke: color-mix(in oklch, var(--primary) 54%, var(--muted-foreground));
+  stroke-width: 3;
+  stroke-linecap: round;
+  opacity: 0.72;
+}
+.mobile-canvas-edge.edge-animated {
+  stroke-dasharray: 14 10;
+}
+.mobile-canvas-edge.dashed {
+  stroke-dasharray: 12 10;
+}
+.mobile-canvas-edge.dotted {
+  stroke-dasharray: 2 9;
+}
+.mobile-canvas-world.animate-edges .mobile-canvas-edge {
+  animation: mobile-canvas-edge-flow 1.25s linear infinite;
+}
+@keyframes mobile-canvas-edge-flow {
+  to {
+    stroke-dashoffset: -48;
+  }
+}
+.canvas-viewer-options {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  z-index: 5;
+  display: inline-flex;
+  padding: 3px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: color-mix(in oklch, var(--card) 88%, transparent);
+  box-shadow: 0 10px 28px rgb(0 0 0 / 24%);
+}
+.canvas-viewer-options button {
+  min-height: 28px;
+  padding: 0 10px;
+  border-radius: 999px;
+  color: var(--muted-foreground);
+  font-size: 0.72rem;
+  font-weight: 800;
+}
+.canvas-viewer-options button.selected {
+  background: color-mix(in oklch, var(--primary) 18%, transparent);
+  color: var(--primary);
+}
+.mobile-canvas-node {
+  position: absolute;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 0;
+  padding: 0;
+  overflow: hidden;
+  border: 1px solid color-mix(in oklch, var(--border) 88%, transparent);
+  border-radius: 16px;
+  background: color-mix(in oklch, var(--card) 96%, transparent);
+  color: var(--foreground);
+  text-align: left;
+  box-shadow: 0 12px 28px rgb(0 0 0 / 20%);
+  contain: layout paint;
+}
+.mobile-canvas-node.selected {
+  border-color: color-mix(in oklch, var(--primary) 60%, white 10%);
+  box-shadow: 0 0 0 3px var(--glow), 0 16px 36px rgb(0 0 0 / 28%);
+}
+.desktop-node-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 44px;
+  padding: 8px 12px;
+  border-bottom: 1px solid color-mix(in oklch, var(--border) 60%, transparent);
+}
+.desktop-node-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  width: 28px;
+  height: 28px;
+  border-radius: 12px;
+  background: color-mix(in oklch, var(--primary) 12%, transparent);
+  color: var(--primary);
+}
+.desktop-node-icon.round {
+  border-radius: 999px;
+}
+.desktop-node-title-stack {
+  display: grid;
+  min-width: 0;
+  flex: 1;
+  gap: 2px;
+}
+.desktop-node-title-stack strong,
+.desktop-canvas-node > strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 0.9rem;
+  font-weight: 750;
+}
+.desktop-node-title-stack small,
+.desktop-canvas-node > small {
+  overflow: hidden;
+  color: var(--muted-foreground);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 0.7rem;
+}
+.desktop-node-body {
+  display: flex;
+  min-height: 0;
+  flex: 1;
+  flex-direction: column;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 12px;
+}
+.desktop-node-text,
+.desktop-canvas-node p {
+  display: -webkit-box;
+  max-width: 100%;
+  overflow: hidden;
+  color: var(--muted-foreground);
+  font-size: 0.82rem;
+  line-height: 1.45;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 5;
+  white-space: pre-wrap;
+}
+.desktop-node-note .desktop-node-text {
+  padding: 8px 10px;
+  border: 1px solid color-mix(in oklch, var(--border) 50%, transparent);
+  border-radius: 12px;
+  background: color-mix(in oklch, var(--background) 55%, transparent);
+  color: color-mix(in oklch, var(--foreground) 85%, transparent);
+  font-size: 0.76rem;
+  -webkit-line-clamp: 3;
+}
+.desktop-node-file .desktop-node-body {
+  justify-content: space-between;
+}
+.desktop-node-image-wrap {
+  display: flex;
+  min-height: 0;
+  flex: 1;
+  align-items: center;
+  justify-content: center;
+  border-radius: 12px;
+  background: color-mix(in oklch, var(--background) 50%, transparent);
+}
+.desktop-node-image-wrap img {
+  max-width: 100%;
+  max-height: 100%;
+  border-radius: 10px;
+  object-fit: contain;
+}
+.desktop-node-web-preview {
+  display: flex;
+  min-height: 84px;
+  align-items: center;
+  justify-content: center;
+  border-bottom: 1px solid color-mix(in oklch, var(--border) 50%, transparent);
+  border-radius: 12px;
+  background: color-mix(in oklch, var(--background) 38%, transparent);
+  color: var(--primary);
+}
+.desktop-node-badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.desktop-node-badges span,
+.desktop-node-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-height: 20px;
+  padding: 2px 7px;
+  border: 1px solid color-mix(in oklch, var(--border) 65%, transparent);
+  border-radius: 999px;
+  color: var(--muted-foreground);
+  font-size: 0.62rem;
+  font-weight: 750;
+  text-transform: uppercase;
+}
+.desktop-node-badges .tone-critical,
+.desktop-node-badges .tone-high {
+  border-color: oklch(0.68 0.22 28 / 35%);
+  background: oklch(0.68 0.22 28 / 14%);
+  color: oklch(0.75 0.18 28);
+}
+.desktop-node-badges .tone-medium {
+  border-color: oklch(0.78 0.17 86 / 35%);
+  background: oklch(0.78 0.17 86 / 14%);
+  color: oklch(0.82 0.15 86);
+}
+.desktop-node-badges .tone-low {
+  border-color: oklch(0.72 0.17 150 / 35%);
+  background: oklch(0.72 0.17 150 / 14%);
+  color: oklch(0.78 0.14 150);
+}
+.desktop-node-text,
+.desktop-node-card {
+  cursor: pointer;
+}
+.desktop-node-group {
+  border-style: dashed;
+  background: color-mix(in oklch, var(--card) 55%, transparent);
+  box-shadow: none;
+}
+.desktop-node-swimlane {
+  border-color: color-mix(in oklch, var(--primary) 20%, transparent);
+  background: color-mix(in oklch, var(--primary) 5%, var(--card));
+}
+.desktop-node-document::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  right: 0;
+  width: 40px;
+  height: 40px;
+  border-left: 1px solid color-mix(in oklch, var(--border) 50%, transparent);
+  border-bottom: 1px solid color-mix(in oklch, var(--border) 50%, transparent);
+  background: color-mix(in oklch, var(--background) 35%, transparent);
+}
+.desktop-node-milestone {
+  clip-path: polygon(12% 0%, 88% 0%, 100% 50%, 88% 100%, 12% 100%, 0% 50%);
+  background: linear-gradient(135deg, color-mix(in oklch, var(--primary) 10%, var(--card)), var(--card));
+}
+.desktop-node-actor {
+  background: linear-gradient(135deg, color-mix(in oklch, var(--primary) 8%, var(--card)), var(--card));
+}
+.desktop-node-symbol {
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  padding: 9px;
+  text-align: center;
+  background: linear-gradient(135deg, color-mix(in oklch, var(--primary) 10%, var(--card)), var(--card));
+}
+.desktop-node-symbol-glyph {
+  display: flex;
+  min-height: 0;
+  max-width: 100%;
+  align-items: center;
+  justify-content: center;
+  color: var(--primary);
+  font-family: 'Pure Nerd Font', PureNerdFont, monospace;
+  font-size: 2.35rem;
+  line-height: 1;
+}
+.desktop-node-milestone .desktop-node-header {
+  padding-inline: 22px;
+  padding-top: 10px;
+}
+.desktop-node-milestone .desktop-node-body {
+  padding-inline: 22px;
+  padding-top: 4px;
+}
+.desktop-node-decision {
+  align-items: center;
+  justify-content: center;
+  padding: 10% 18%;
+  clip-path: polygon(50% 0%, 100% 50%, 50% 100%, 0% 50%);
+  text-align: center;
+  background: color-mix(in oklch, var(--card) 96%, var(--primary) 4%);
+  box-shadow: 0 8px 18px rgb(0 0 0 / 16%);
+}
+.desktop-node-decision .desktop-node-icon,
+.desktop-node-terminator .desktop-node-icon {
+  width: 18px;
+  height: 18px;
+  margin-bottom: 3px;
+}
+.desktop-node-decision .desktop-node-icon svg,
+.desktop-node-terminator .desktop-node-icon svg {
+  width: 11px;
+  height: 11px;
+}
+.desktop-node-decision > strong,
+.desktop-node-terminator > strong {
+  max-width: 72%;
+  font-size: 0.62rem;
+  line-height: 1.05;
+  white-space: normal;
+}
+.desktop-node-decision p,
+.desktop-node-terminator p {
+  max-width: 72%;
+  font-size: 0.54rem;
+  line-height: 1.15;
+}
+.desktop-node-decision p {
+  margin-top: 3px;
+  -webkit-line-clamp: 2;
+}
+.desktop-node-terminator {
+  align-items: center;
+  justify-content: center;
+  padding: 7% 10%;
+  border-radius: 999px;
+  text-align: center;
+  background: color-mix(in oklch, var(--card) 96%, var(--primary) 4%);
+  box-shadow: 0 8px 18px rgb(0 0 0 / 16%);
+}
+.desktop-node-junction {
+  align-items: center;
+  justify-content: center;
+  border-radius: 999px;
+}
+.desktop-node-junction-dot {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border: 1px solid color-mix(in oklch, var(--primary) 35%, transparent);
+  border-radius: 999px;
+  background: color-mix(in oklch, var(--primary) 14%, transparent);
+  color: var(--primary);
+  box-shadow: 0 0 0 4px color-mix(in oklch, var(--primary) 10%, transparent);
+}
+.desktop-node-crossing {
+  align-items: center;
+  justify-content: center;
+  border-radius: 999px;
+}
+.desktop-node-crossing-h,
+.desktop-node-crossing-v {
+  position: absolute;
+  background: color-mix(in oklch, var(--primary) 65%, transparent);
+}
+.desktop-node-crossing-h {
+  left: 20px;
+  right: 20px;
+  height: 2px;
+}
+.desktop-node-crossing-v {
+  top: 20px;
+  bottom: 20px;
+  width: 2px;
+  opacity: 0.65;
+}
+.desktop-node-crossing-label {
+  position: relative;
+  padding: 4px 10px;
+  border: 1px solid color-mix(in oklch, var(--primary) 35%, transparent);
+  border-radius: 999px;
+  background: color-mix(in oklch, var(--background) 95%, transparent);
+  color: var(--primary);
+  font-size: 0.72rem;
+  font-weight: 700;
+}
+.canvas-node-detail {
+  position: absolute;
+  right: 10px;
+  bottom: 10px;
+  left: 10px;
+  z-index: 4;
+  display: grid;
+  gap: 10px;
+  max-height: min(46%, 320px);
+  padding: 12px;
+  overflow: auto;
+  border: 1px solid color-mix(in oklch, var(--border) 80%, transparent);
+  border-radius: var(--radius-sm);
+  background: var(--card);
+  box-shadow: 0 18px 48px rgb(0 0 0 / 34%);
+}
+.canvas-node-detail-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+}
+.canvas-node-detail-head div {
+  display: grid;
+  gap: 2px;
+}
+.canvas-node-detail-head span {
+  color: var(--primary);
+  font-size: 0.68rem;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+.canvas-node-detail-head strong {
+  font-size: 0.96rem;
+}
+.canvas-node-detail p {
+  color: var(--foreground);
+  font-size: 0.82rem;
+  line-height: 1.45;
+  white-space: pre-wrap;
+}
+.canvas-node-detail dl {
+  display: grid;
+  gap: 7px;
+  margin: 0;
+}
+.canvas-node-detail dl div {
+  display: grid;
+  grid-template-columns: 72px minmax(0, 1fr);
+  gap: 10px;
+}
+.canvas-node-detail dt {
+  color: var(--muted-foreground);
+  font-size: 0.72rem;
+  font-weight: 700;
+}
+.canvas-node-detail dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+  font-size: 0.78rem;
+}
+.canvas-node-tags,
+.canvas-node-detail-link {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.canvas-node-tags span,
+.canvas-node-detail-link {
+  align-items: center;
+  padding: 5px 8px;
+  border-radius: 999px;
+  background: color-mix(in oklch, var(--surface) 76%, transparent);
+  color: var(--muted-foreground);
+  font-size: 0.72rem;
+}
 
 @media (orientation: landscape) and (min-width: 700px) {
   .rich-viewer-screen {

@@ -4,6 +4,7 @@ import { EditorView, keymap } from '@codemirror/view';
 import { insertSnippetTemplate } from './snippetEngine';
 import { analyzeMathInput, solveMathInput, type MathSolveMode } from './mathSolver';
 import { buildDefaultPlotDirective, type MathPlotKind } from './mathPlotSpec';
+import { getEditorShortcutKey, hasPrimaryModifier, type EditorShortcutEventLike } from './editorShortcutKeys';
 
 export type MathBlockRange = {
   from: number;
@@ -285,6 +286,62 @@ export function solveActiveMathInput(view: EditorView, mode: MathSolveMode = 'ex
     scrollIntoView: true,
   });
   view.focus();
+  return true;
+}
+
+export function handleMathBlockShortcutKeydown(
+  event: EditorShortcutEventLike,
+  view: EditorView,
+) {
+  if (!hasPrimaryModifier(event)) return false;
+
+  const key = getEditorShortcutKey(event);
+  let handled = false;
+
+  if (!event.altKey && !event.shiftKey && key === 'enter') {
+    handled = solveActiveMathInput(view);
+  } else if (event.altKey && !event.shiftKey) {
+    switch (key) {
+      case 'enter':
+        handled = solveActiveMathInput(view, 'approximate');
+        break;
+      case 'f':
+        handled = insertMathFraction(view);
+        break;
+      case 'r':
+        handled = insertMathRoot(view);
+        break;
+      case 'p':
+        handled = insertMathSuperscript(view);
+        break;
+      case 'u':
+        handled = insertMathSubscript(view);
+        break;
+      case 'g':
+        handled = insertMathSum(view);
+        break;
+      case 'e':
+        handled = insertMathIntegral(view);
+        break;
+      case 'x':
+        handled = insertMathMatrix(view);
+        break;
+      case 'a':
+        handled = selectMathBlockContents(view);
+        break;
+      case '2':
+        handled = insertMathPlot2D(view);
+        break;
+      case '3':
+        handled = insertMathPlot3D(view);
+        break;
+      default:
+        break;
+    }
+  }
+
+  if (!handled) return false;
+  event.preventDefault();
   return true;
 }
 

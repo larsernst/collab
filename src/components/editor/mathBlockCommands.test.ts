@@ -1,6 +1,6 @@
 import { EditorState } from '@codemirror/state';
 import { EditorView } from '@codemirror/view';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
   getActiveMathBlock,
@@ -13,6 +13,7 @@ import {
   insertMathSubscript,
   insertMathSum,
   insertMathSuperscript,
+  handleMathBlockShortcutKeydown,
   MATH_SOLVER_ACTION_EVENT,
   selectMathBlockContents,
   solveActiveMathInput,
@@ -132,6 +133,25 @@ describe('mathBlockCommands', () => {
     const view = createView('$$\ny=\\sin(x)\n$$', 6);
 
     expect(insertMathPlot2D(view)).toBe(true);
+    expect(view.state.doc.toString()).toBe('$$\n%plot2d x=-10..10, samples=600\ny=\\sin(x)\n$$');
+  });
+
+  it('handles Ctrl+Alt math shortcuts from normalized physical key codes', () => {
+    const view = createView('$$\ny=\\sin(x)\n$$', 6);
+    const preventDefault = vi.fn();
+
+    const handled = handleMathBlockShortcutKeydown({
+      key: '²',
+      code: 'Digit2',
+      ctrlKey: true,
+      metaKey: false,
+      altKey: true,
+      shiftKey: false,
+      preventDefault,
+    }, view);
+
+    expect(handled).toBe(true);
+    expect(preventDefault).toHaveBeenCalledTimes(1);
     expect(view.state.doc.toString()).toBe('$$\n%plot2d x=-10..10, samples=600\ny=\\sin(x)\n$$');
   });
 

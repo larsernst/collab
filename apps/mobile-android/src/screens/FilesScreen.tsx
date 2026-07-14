@@ -8,6 +8,7 @@ import {
   formatRelativeTime,
   isReadOnlyRole,
 } from '../lib/format';
+import { isCanvasFile } from '../lib/canvas';
 import { isKanbanFile } from '../lib/kanban';
 import { isNoteFile } from '../lib/notes';
 import { isRichViewableFile } from '../lib/assets';
@@ -231,7 +232,7 @@ export function FilesScreen({ prefs }: { prefs: ThemePrefs }) {
                         ? openSheet({ kind: 'note', fileId: entry.id })
                         : isKanbanFile(entry)
                           ? openSheet({ kind: 'kanban', fileId: entry.id })
-                          : isRichViewableFile(entry)
+                          : isRichViewableFile(entry) || isCanvasFile(entry)
                             ? openSheet({ kind: 'viewer', fileId: entry.id })
                             : openSheet({ kind: 'fileDetail', fileId: entry.id })
                   }

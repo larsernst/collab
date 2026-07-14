@@ -11,19 +11,11 @@ import {
 import {
   insertAroundSelection,
 } from './useMarkdownEditorHandle';
+import { getEditorShortcutKey, hasPrimaryModifier, type EditorShortcutEventLike } from './editorShortcutKeys';
 
 type ClipboardLike = {
   writeText: (text: string) => Promise<void> | void;
   readText: () => Promise<string>;
-};
-
-type FormattingShortcutEventLike = {
-  key: string;
-  ctrlKey: boolean;
-  metaKey: boolean;
-  altKey: boolean;
-  shiftKey: boolean;
-  preventDefault: () => void;
 };
 
 export function cutEditorSelection(view: EditorView, clipboard: ClipboardLike = navigator.clipboard) {
@@ -82,12 +74,12 @@ export function wrapStrikethroughSelection(view: EditorView) {
 }
 
 export function handleFormattingShortcutKeydown(
-  event: FormattingShortcutEventLike,
+  event: EditorShortcutEventLike,
   view: EditorView,
 ) {
-  if ((!(event.ctrlKey || event.metaKey)) || event.altKey) return false;
+  if (!hasPrimaryModifier(event) || event.altKey) return false;
 
-  const key = event.key.toLowerCase();
+  const key = getEditorShortcutKey(event);
   if (key === 'b') {
     event.preventDefault();
     wrapBoldSelection(view);

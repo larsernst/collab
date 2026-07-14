@@ -67,6 +67,40 @@ describe('livePreview task checkbox toggles', () => {
     }));
   });
 
+  it('does not recursively parse markdown formatting inside inline math', () => {
+    const items = collectInlinePreviewDebugItems('before $x_i + **y**$ after');
+
+    expect(items).toContainEqual(expect.objectContaining({
+      from: 7,
+      to: 20,
+      kind: 'widget',
+      widget: 'MathWidget',
+    }));
+    expect(items).not.toContainEqual(expect.objectContaining({
+      className: 'cm-lp-em',
+    }));
+    expect(items).not.toContainEqual(expect.objectContaining({
+      className: 'cm-lp-strong',
+    }));
+  });
+
+  it('keeps outer formatting while excluding nested parsing inside inline math', () => {
+    const items = collectInlinePreviewDebugItems('**value $x_i + **y**$ now**');
+
+    expect(items).toContainEqual(expect.objectContaining({
+      from: 2,
+      to: 25,
+      kind: 'mark',
+      className: 'cm-lp-strong',
+    }));
+    expect(items).toContainEqual(expect.objectContaining({
+      from: 8,
+      to: 21,
+      kind: 'widget',
+      widget: 'MathWidget',
+    }));
+  });
+
   it('keeps emphasis markers inside inline code raw', () => {
     const marks = collectInlinePreviewDebugItems('`*not italic*` and *italic*')
       .filter((item) => item.kind === 'mark')
