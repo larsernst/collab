@@ -16,6 +16,9 @@ const tauriMocks = vi.hoisted(() => ({
   createNote: vi.fn(),
   createFolder: vi.fn(),
   hostedVaultRequest: vi.fn(),
+  listLogicComponents: vi.fn(),
+  saveLogicComponent: vi.fn(),
+  deleteLogicComponent: vi.fn(),
 }));
 
 const liveJsonMocks = vi.hoisted(() => ({
@@ -39,6 +42,9 @@ vi.mock('../lib/tauri', () => ({
     createNote: tauriMocks.createNote,
     createFolder: tauriMocks.createFolder,
     hostedVaultRequest: tauriMocks.hostedVaultRequest,
+    listLogicComponents: tauriMocks.listLogicComponents,
+    saveLogicComponent: tauriMocks.saveLogicComponent,
+    deleteLogicComponent: tauriMocks.deleteLogicComponent,
   },
 }));
 
@@ -135,6 +141,9 @@ describe('LogicDiagramView safe reload policy', () => {
     tauriMocks.createNote.mockResolvedValue({ relativePath: 'Pictures/test.svg', name: 'test.svg', isFolder: false, extension: 'svg' });
     tauriMocks.createFolder.mockResolvedValue(undefined);
     tauriMocks.hostedVaultRequest.mockReset();
+    tauriMocks.listLogicComponents.mockResolvedValue([]);
+    tauriMocks.saveLogicComponent.mockImplementation(async (_vaultPath, component) => component);
+    tauriMocks.deleteLogicComponent.mockResolvedValue(undefined);
   });
 
   afterEach(() => {
@@ -298,6 +307,169 @@ describe('LogicDiagramView safe reload policy', () => {
     ));
   });
 
+  it('keeps templates as node-collection insertion', async () => {
+    tauriMocks.readNote.mockResolvedValueOnce({ content: logicDoc([]), hash: 'logic-v1', modifiedAt: 1 });
+
+    render(<LogicDiagramView relativePath={PATH} />);
+    expect(await screen.findByText(/0 gates/)).toBeTruthy();
+
+    fireEvent.click(screen.getByRole('button', { name: /templates/i }));
+    fireEvent.click(await screen.findByRole('button', { name: /Half-Adder/i }));
+
+    await waitFor(() => expect(screen.getByText(/6 gates/)).toBeTruthy());
+    expect(screen.getByText(/0 components/)).toBeTruthy();
+  });
+
+  it('saves the whole logic file as a component when no nodes are selected', async () => {
+    tauriMocks.readNote.mockResolvedValueOnce({
+      content: JSON.stringify({
+        schemaVersion: 1,
+        kind: 'logic-diagram',
+        title: 'Adder',
+        nodes: [
+          { id: 'a', kind: 'input', label: 'A', position: { x: 0, y: 0 } },
+          { id: 'sum', kind: 'output', label: 'Sum', position: { x: 220, y: 0 } },
+        ],
+        wires: [{ id: 'a-sum', source: 'a', target: 'sum', sourceHandle: 'out', targetHandle: 'in' }],
+        viewport: { x: 0, y: 0, zoom: 1 },
+      }),
+      hash: 'logic-v1',
+      modifiedAt: 1,
+    });
+
+    render(<LogicDiagramView relativePath={PATH} />);
+    expect(await screen.findByText(/2 gates/)).toBeTruthy();
+
+    fireEvent.click(screen.getByRole('button', { name: /^save component$/i }));
+    const saveComponentButtons = screen.getAllByRole('button', { name: /^save component$/i });
+    fireEvent.click(saveComponentButtons[saveComponentButtons.length - 1]);
+
+    await waitFor(() => expect(tauriMocks.saveLogicComponent).toHaveBeenCalledWith(
+      '/vault',
+      expect.objectContaining({
+        name: 'test',
+        ports: expect.arrayContaining([
+          expect.objectContaining({ direction: 'input', label: 'A' }),
+          expect.objectContaining({ direction: 'output', label: 'Sum' }),
+        ]),
+      }),
+    ));
+  });
+
+  it('inserts saved components as component nodes', async () => {
+    tauriMocks.readNote.mockResolvedValueOnce({ content: logicDoc([]), hash: 'logic-v1', modifiedAt: 1 });
+    tauriMocks.listLogicComponents.mockResolvedValue([{
+      id: 'component-1',
+      name: 'Reusable Inverter',
+      version: 1,
+      createdAt: 1,
+      updatedAt: 1,
+      ports: [
+        { id: 'in', direction: 'input', label: 'In', sourceNodeId: 'in' },
+        { id: 'out', direction: 'output', label: 'Out', sourceNodeId: 'out' },
+      ],
+      nodes: [
+        { id: 'in', kind: 'input', position: { x: 0, y: 0 } },
+        { id: 'not', kind: 'not', position: { x: 120, y: 0 } },
+        { id: 'out', kind: 'output', position: { x: 240, y: 0 } },
+      ],
+      wires: [
+        { id: 'in-not', source: 'in', target: 'not', sourceHandle: 'out', targetHandle: 'in' },
+        { id: 'not-out', source: 'not', target: 'out', sourceHandle: 'out', targetHandle: 'in' },
+      ],
+    }]);
+
+    render(<LogicDiagramView relativePath={PATH} />);
+    expect(await screen.findByText(/0 gates/)).toBeTruthy();
+
+    fireEvent.click(screen.getByRole('button', { name: /components/i }));
+    fireEvent.click(await screen.findByRole('button', { name: /Reusable Inverter/i }));
+
+    await waitFor(() => expect(screen.getByText(/1 components/)).toBeTruthy());
+  });
+
+  it('loads and inserts hosted vault components through the server library', async () => {
+    const hostedFile = {
+      id: 'file-logic',
+      parentId: null,
+      name: 'test.logic',
+      relativePath: PATH,
+      kind: 'document',
+      documentType: 'logic',
+      state: 'active',
+      currentRevision: {
+        id: 'revision-1',
+        sequence: 1,
+        contentHash: 'hash-1',
+        sizeBytes: 0,
+        createdByDisplayName: 'Test User',
+        createdAt: '2026-07-14T08:00:00Z',
+      },
+      createdAt: '2026-07-14T08:00:00Z',
+      updatedAt: '2026-07-14T08:00:00Z',
+    };
+    const component = {
+      id: 'component-1',
+      name: 'Hosted Inverter',
+      version: 1,
+      createdAt: 1,
+      updatedAt: 1,
+      ports: [
+        { id: 'in', direction: 'input', label: 'In', sourceNodeId: 'in' },
+        { id: 'out', direction: 'output', label: 'Out', sourceNodeId: 'out' },
+      ],
+      nodes: [
+        { id: 'in', kind: 'input', position: { x: 0, y: 0 } },
+        { id: 'not', kind: 'not', position: { x: 120, y: 0 } },
+        { id: 'out', kind: 'output', position: { x: 240, y: 0 } },
+      ],
+      wires: [
+        { id: 'in-not', source: 'in', target: 'not', sourceHandle: 'out', targetHandle: 'in' },
+        { id: 'not-out', source: 'not', target: 'out', sourceHandle: 'out', targetHandle: 'in' },
+      ],
+    };
+    useVaultStore.setState({
+      vault: {
+        kind: 'hosted',
+        id: 'hosted-vault',
+        hostedVaultId: 'hosted-vault',
+        serverUrl: 'https://collab.example.test',
+        role: 'editor',
+        name: 'Hosted Vault',
+        path: 'hosted://hosted-vault',
+        lastOpened: Date.now(),
+        isEncrypted: false,
+        capabilities: ['vault.read', 'file.write'],
+      },
+    } as never);
+    tauriMocks.hostedVaultRequest.mockImplementation(async (_serverUrl, method, path) => {
+      if (method === 'GET' && path.endsWith('/manifest')) {
+        return { vaultId: 'hosted-vault', sequence: 1, files: [hostedFile] };
+      }
+      if (method === 'GET' && path.endsWith('/files/file-logic')) {
+        return { file: hostedFile, content: logicDoc([]) };
+      }
+      if (method === 'GET' && path.endsWith('/logic-components')) {
+        return [component];
+      }
+      throw new Error(`unexpected hosted request: ${method} ${path}`);
+    });
+
+    render(<LogicDiagramView relativePath={PATH} />);
+    expect(await screen.findByText(/0 gates/)).toBeTruthy();
+
+    fireEvent.click(screen.getByRole('button', { name: /components/i }));
+    fireEvent.click(await screen.findByRole('button', { name: /Hosted Inverter/i }));
+
+    await waitFor(() => expect(screen.getByText(/1 components/)).toBeTruthy());
+    expect(tauriMocks.hostedVaultRequest).toHaveBeenCalledWith(
+      'https://collab.example.test',
+      'GET',
+      '/api/v1/vaults/hosted-vault/logic-components',
+      undefined,
+    );
+  });
+
   it('disables authoring controls and shortcuts for hosted viewers', async () => {
     const hostedFile = {
       id: 'file-logic',
@@ -338,6 +510,9 @@ describe('LogicDiagramView safe reload policy', () => {
       }
       if (method === 'GET' && path.endsWith('/files/file-logic')) {
         return { file: hostedFile, content: logicDoc([]) };
+      }
+      if (method === 'GET' && path.endsWith('/logic-components')) {
+        return [];
       }
       throw new Error(`unexpected hosted request: ${method} ${path}`);
     });

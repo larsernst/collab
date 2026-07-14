@@ -7,13 +7,14 @@ import {
 } from './logicDiagram';
 
 describe('logic diagram document helpers', () => {
-  it('creates an empty v1 logic diagram document', () => {
+  it('creates an empty v2 logic diagram document', () => {
     expect(createEmptyLogicDiagram('Adder')).toEqual({
-      schemaVersion: 1,
+      schemaVersion: 2,
       kind: 'logic-diagram',
       title: 'Adder',
       nodes: [],
       wires: [],
+      components: [],
       viewport: { x: 0, y: 0, zoom: 1 },
     });
   });
@@ -36,8 +37,9 @@ describe('logic diagram document helpers', () => {
     });
 
     expect(normalized).toMatchObject({
-      schemaVersion: 1,
+      schemaVersion: 2,
       kind: 'logic-diagram',
+      components: [],
       nodes: [
         { id: 'a', kind: 'input', position: { x: 10, y: 20 }, value: true },
         { id: 'cluster', kind: 'group', position: { x: 0, y: 0 }, width: 240, height: 160 },

@@ -1,9 +1,16 @@
-import type { LogicDiagramNode, LogicDiagramWire, LogicGateKind } from '../../types/logicDiagram';
+import type {
+  LogicComponentDefinition,
+  LogicComponentInstance,
+  LogicDiagramNode,
+  LogicDiagramWire,
+  LogicGateKind,
+} from '../../types/logicDiagram';
+import { isLogicGateKind } from '../../types/logicDiagram';
 
 export type LogicSignal = boolean | undefined;
 
 export interface LogicEvaluationWarning {
-  code: 'missing-input' | 'cycle' | 'duplicate-input';
+  code: 'missing-input' | 'cycle' | 'duplicate-input' | 'missing-component';
   nodeId: string;
   message: string;
 }
@@ -14,26 +21,55 @@ export interface LogicEvaluationResult {
   warnings: LogicEvaluationWarning[];
 }
 
-export function getLogicInputHandles(kind: LogicGateKind) {
-  if (kind === 'input' || kind === 'group') return [];
+export interface LogicEvaluationOptions {
+  components?: LogicComponentDefinition[];
+}
+
+export function componentInputHandle(portId: string) {
+  return `in:${portId}`;
+}
+
+export function componentOutputHandle(portId: string) {
+  return `out:${portId}`;
+}
+
+export function getLogicInputHandles(kind: LogicDiagramNode['kind'], component?: LogicComponentInstance) {
+  if (kind === 'component') {
+    return component?.definition.ports
+      .filter((port) => port.direction === 'input')
+      .map((port) => componentInputHandle(port.id)) ?? [];
+  }
+  if (!isLogicGateKind(kind) || kind === 'input' || kind === 'group') return [];
   if (kind === 'not' || kind === 'output') return ['in'];
   return ['in-a', 'in-b'];
 }
 
-export function getLogicOutputHandles(kind: LogicGateKind) {
-  if (kind === 'output' || kind === 'group') return [];
+export function getLogicOutputHandles(kind: LogicDiagramNode['kind'], component?: LogicComponentInstance) {
+  if (kind === 'component') {
+    return component?.definition.ports
+      .filter((port) => port.direction === 'output')
+      .map((port) => componentOutputHandle(port.id)) ?? [];
+  }
+  if (!isLogicGateKind(kind) || kind === 'output' || kind === 'group') return [];
   return ['out'];
 }
 
-function fallbackInputHandle(kind: LogicGateKind) {
-  return getLogicInputHandles(kind)[0];
+function fallbackInputHandle(kind: LogicDiagramNode['kind'], component?: LogicComponentInstance) {
+  return getLogicInputHandles(kind, component)[0];
 }
 
-function normalizeTargetHandle(wire: LogicDiagramWire, targetKind: LogicGateKind) {
-  const handles = getLogicInputHandles(targetKind);
+function normalizeTargetHandle(wire: LogicDiagramWire, target: LogicDiagramNode) {
+  const handles = getLogicInputHandles(target.kind, target.component);
   return wire.targetHandle && handles.includes(wire.targetHandle)
     ? wire.targetHandle
-    : fallbackInputHandle(targetKind);
+    : fallbackInputHandle(target.kind, target.component);
+}
+
+function normalizeSourceHandle(wire: LogicDiagramWire, source: LogicDiagramNode) {
+  const handles = getLogicOutputHandles(source.kind, source.component);
+  return wire.sourceHandle && handles.includes(wire.sourceHandle)
+    ? wire.sourceHandle
+    : handles[0];
 }
 
 function evaluateGate(kind: LogicGateKind, inputs: LogicSignal[]) {
@@ -64,7 +100,9 @@ function evaluateGate(kind: LogicGateKind, inputs: LogicSignal[]) {
 export function evaluateLogicDiagram(
   nodes: LogicDiagramNode[],
   wires: LogicDiagramWire[],
+  options: LogicEvaluationOptions = {},
 ): LogicEvaluationResult {
+  const libraryById = new Map((options.components ?? []).map((component) => [component.id, component]));
   const nodeById = new Map(nodes.map((node) => [node.id, node]));
   const incomingByNode = new Map<string, LogicDiagramWire[]>();
   for (const wire of wires) {
@@ -74,6 +112,7 @@ export function evaluateLogicDiagram(
   }
 
   const nodeValues: Record<string, LogicSignal> = {};
+  const nodeOutputs: Record<string, Record<string, LogicSignal>> = {};
   const wireValues: Record<string, LogicSignal> = {};
   const warnings: LogicEvaluationWarning[] = [];
   const visiting = new Set<string>();
@@ -88,10 +127,10 @@ export function evaluateLogicDiagram(
     warnings.push(warning);
   };
 
-  const evaluateNode = (nodeId: string): LogicSignal => {
-    if (visited.has(nodeId)) return nodeValues[nodeId];
+  const evaluateNodeOutputs = (nodeId: string): Record<string, LogicSignal> => {
+    if (visited.has(nodeId)) return nodeOutputs[nodeId] ?? {};
     const node = nodeById.get(nodeId);
-    if (!node || node.kind === 'group') return undefined;
+    if (!node || node.kind === 'group') return {};
 
     if (visiting.has(nodeId)) {
       cycleNodes.add(nodeId);
@@ -101,18 +140,25 @@ export function evaluateLogicDiagram(
         message: `Cycle detected at ${node.label ?? node.id}.`,
       });
       nodeValues[nodeId] = undefined;
-      return undefined;
+      nodeOutputs[nodeId] = {};
+      return {};
     }
 
     visiting.add(nodeId);
 
     if (node.kind === 'input') {
-      nodeValues[node.id] = typeof node.value === 'boolean' ? node.value : undefined;
-    } else {
+      const value = typeof node.value === 'boolean' ? node.value : undefined;
+      nodeValues[node.id] = value;
+      nodeOutputs[node.id] = { out: value };
+    } else if (node.kind === 'component') {
+      nodeOutputs[node.id] = evaluateComponentNode(node);
+      const firstOutput = getLogicOutputHandles(node.kind, node.component)[0];
+      nodeValues[node.id] = firstOutput ? nodeOutputs[node.id][firstOutput] : undefined;
+    } else if (isLogicGateKind(node.kind)) {
       const handles = getLogicInputHandles(node.kind);
       const incoming = incomingByNode.get(node.id) ?? [];
       const inputValues = handles.map((handleId) => {
-        const matching = incoming.filter((wire) => normalizeTargetHandle(wire, node.kind) === handleId);
+        const matching = incoming.filter((wire) => normalizeTargetHandle(wire, node) === handleId);
         if (matching.length === 0) {
           warnOnce({
             code: 'missing-input',
@@ -130,23 +176,104 @@ export function evaluateLogicDiagram(
         }
 
         const wire = matching[0];
-        const value = evaluateNode(wire.source);
+        const source = nodeById.get(wire.source);
+        if (!source) return undefined;
+        const sourceHandle = normalizeSourceHandle(wire, source);
+        const value = evaluateNodeOutput(wire.source, sourceHandle);
         wireValues[wire.id] = value;
         return value;
       });
-      nodeValues[node.id] = evaluateGate(node.kind, inputValues);
+      const value = evaluateGate(node.kind, inputValues);
+      nodeValues[node.id] = value;
+      nodeOutputs[node.id] = { out: value };
     }
 
     visiting.delete(nodeId);
     visited.add(nodeId);
+    return nodeOutputs[nodeId] ?? {};
+  };
+
+  const evaluateNodeOutput = (nodeId: string, sourceHandle?: string): LogicSignal => {
+    const outputs = evaluateNodeOutputs(nodeId);
+    if (sourceHandle && sourceHandle in outputs) return outputs[sourceHandle];
     return nodeValues[nodeId];
   };
 
-  for (const node of nodes) evaluateNode(node.id);
+  const evaluateComponentNode = (node: LogicDiagramNode): Record<string, LogicSignal> => {
+    const instance = node.component;
+    if (!instance) return {};
+    const linkedDefinition = instance.mode === 'linked' && instance.componentId
+      ? libraryById.get(instance.componentId)
+      : null;
+    const definition = linkedDefinition ?? instance.definition;
+    if (instance.mode === 'linked' && instance.componentId && !linkedDefinition) {
+      warnOnce({
+        code: 'missing-component',
+        nodeId: node.id,
+        message: `${node.label ?? definition.name} uses a cached component because the linked definition is unavailable.`,
+      });
+    }
+
+    const externalInputs: Record<string, LogicSignal> = {};
+    for (const port of definition.ports.filter((candidate) => candidate.direction === 'input')) {
+      const handleId = componentInputHandle(port.id);
+      const incoming = (incomingByNode.get(node.id) ?? []).filter((wire) => normalizeTargetHandle(wire, node) === handleId);
+      if (incoming.length === 0) {
+        warnOnce({
+          code: 'missing-input',
+          nodeId: node.id,
+          message: `${node.label ?? definition.name} is missing ${port.label}.`,
+        });
+        externalInputs[port.sourceNodeId] = undefined;
+        continue;
+      }
+      if (incoming.length > 1) {
+        warnOnce({
+          code: 'duplicate-input',
+          nodeId: node.id,
+          message: `${node.label ?? definition.name} has multiple wires on ${port.label}.`,
+        });
+      }
+      const wire = incoming[0];
+      const source = nodeById.get(wire.source);
+      if (!source) {
+        externalInputs[port.sourceNodeId] = undefined;
+        continue;
+      }
+      const sourceHandle = normalizeSourceHandle(wire, source);
+      const value = evaluateNodeOutput(wire.source, sourceHandle);
+      wireValues[wire.id] = value;
+      externalInputs[port.sourceNodeId] = value;
+    }
+
+    const internalNodes = definition.nodes.map((internalNode) => (
+      internalNode.kind === 'input'
+        ? { ...internalNode, value: externalInputs[internalNode.id] }
+        : internalNode
+    ));
+    const internal = evaluateLogicDiagram(internalNodes, definition.wires, options);
+    for (const warning of internal.warnings) {
+      warnOnce({
+        ...warning,
+        nodeId: node.id,
+        message: `${node.label ?? definition.name}: ${warning.message}`,
+      });
+    }
+
+    const outputs: Record<string, LogicSignal> = {};
+    for (const port of definition.ports.filter((candidate) => candidate.direction === 'output')) {
+      outputs[componentOutputHandle(port.id)] = internal.nodeValues[port.sourceNodeId];
+    }
+    return outputs;
+  };
+
+  for (const node of nodes) evaluateNodeOutputs(node.id);
 
   for (const wire of wires) {
     if (!(wire.id in wireValues)) {
-      wireValues[wire.id] = cycleNodes.has(wire.source) ? undefined : evaluateNode(wire.source);
+      const source = nodeById.get(wire.source);
+      const sourceHandle = source ? normalizeSourceHandle(wire, source) : undefined;
+      wireValues[wire.id] = cycleNodes.has(wire.source) ? undefined : evaluateNodeOutput(wire.source, sourceHandle);
     }
   }
 

@@ -120,7 +120,7 @@ Implementation notes:
 - Add starter templates: basic gates, half-adder, full-adder, multiplexer, flip-flop overview.
 - Add keyboard shortcuts using layout-independent keys only.
 - Add gate labels, wire labels, and compact truth-value badges.
-- Add import/export of reusable diagram snippets if there is clear demand.
+- Add reusable logic components as a separate abstraction from templates.
 - Add command-bar and slash-command entry points after the core workflow is stable.
 
 Acceptance criteria:
@@ -138,7 +138,7 @@ Implementation notes:
 - Keyboard shortcuts added: `Ctrl/Cmd+D` duplicates the selection (gates + internal wires), `r` = OR, `d` = NAND, `e` = NOR (completing the set alongside existing `i`/`o`/`a`/`n`/`x`). All use `event.key.toLowerCase()` for layout independence.
 - A "Logic Diagram" slash command is added to `slashCommands.ts` for discoverability. The command-bar `new-logic` entry already existed.
 - Truth-value display kept as-is (color wash, wire color, `0`/`1`/`unset` text) — no new badge component.
-- Import/export of reusable diagram snippets is deferred pending clear demand.
+- Reusable logic components are stored in local vaults under `.collab/templates/logic-components/`. Existing templates still append node collections; components are placed as executable single nodes with snapshot or linked behavior.
 
 ### Phase 5: Electronic Component Diagrams
 

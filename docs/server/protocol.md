@@ -152,6 +152,8 @@ Vault management:
 - `GET|POST /api/v1/vaults/{vaultId}/members`
 - `PATCH|DELETE /api/v1/vaults/{vaultId}/members/{userId}`
 - `GET /api/v1/vaults/{vaultId}/templates`
+- `GET|POST /api/v1/vaults/{vaultId}/logic-components`
+- `PUT|DELETE /api/v1/vaults/{vaultId}/logic-components/{componentId}`
 - `GET /api/v1/vaults/{vaultId}/storage`
 - `POST /api/v1/vaults/{vaultId}/import`
 - `GET|POST /api/v1/vaults/{vaultId}/chat`
@@ -191,6 +193,12 @@ remove their own `vault.manageMembers`/`vault.managePermissions` capabilities
 `vault.managePermissions` so vault administrators can assign templates from the
 native client; template CRUD and group grants remain server-admin-only under
 `/api/v1/admin`.
+
+Reusable logic components are vault-scoped JSON payloads under
+`/api/v1/vaults/{vaultId}/logic-components`. Listing requires `vault.read`;
+create, update, and delete require `file.write` on an active vault. `POST`
+upserts by component name and increments the stored version for existing names,
+while `PUT` updates a specific component id and rejects duplicate names.
 
 Files and history:
 

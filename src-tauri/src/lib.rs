@@ -196,6 +196,9 @@ pub fn run() {
             commands::templates::list_note_snippets,
             commands::templates::save_note_snippet,
             commands::templates::delete_note_snippet,
+            commands::templates::list_logic_components,
+            commands::templates::save_logic_component,
+            commands::templates::delete_logic_component,
             // index
             commands::index::build_note_index,
             commands::index::get_backlinks,

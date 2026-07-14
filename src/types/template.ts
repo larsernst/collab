@@ -1,4 +1,5 @@
 import type { KanbanAutomationRule, KanbanBoard, KanbanFilterSpec } from './kanban';
+import type { LogicComponentDefinition } from './logicDiagram';
 
 export type TemplateSource = 'builtin' | 'vault' | 'app';
 
@@ -26,3 +27,5 @@ export interface KanbanAutomationPreset {
   updatedAt: number;
   rule: KanbanAutomationRule;
 }
+
+export type LogicComponentTemplate = LogicComponentDefinition;

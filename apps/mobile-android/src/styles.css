@@ -1049,27 +1049,36 @@ p {
   position: relative;
   overflow: hidden;
   touch-action: none;
+  background: var(--background);
+}
+.mobile-canvas-camera {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 1px;
+  height: 1px;
+  transform:
+    translate3d(var(--canvas-origin-x, 0px), var(--canvas-origin-y, 0px), 0)
+    scale(var(--canvas-zoom, 1))
+    translate3d(calc(var(--canvas-center-x, 0px) * -1), calc(var(--canvas-center-y, 0px) * -1), 0);
+  backface-visibility: hidden;
+  transform-origin: 0 0;
+  will-change: transform;
+}
+.mobile-canvas-grid {
+  position: absolute;
   background:
-    linear-gradient(color-mix(in oklch, var(--border) 52%, transparent) 1px, transparent 1px),
-    linear-gradient(90deg, color-mix(in oklch, var(--border) 52%, transparent) 1px, transparent 1px),
-    radial-gradient(circle at 24px 24px, color-mix(in oklch, var(--primary) 18%, transparent) 1px, transparent 1.5px),
-    var(--background);
+    linear-gradient(color-mix(in oklch, var(--border) 42%, transparent) 1px, transparent 1px),
+    linear-gradient(90deg, color-mix(in oklch, var(--border) 42%, transparent) 1px, transparent 1px),
+    radial-gradient(circle at 24px 24px, color-mix(in oklch, var(--primary) 18%, transparent) 1px, transparent 1.5px);
   background-size:
     48px 48px,
     48px 48px,
     24px 24px;
-}
-.mobile-canvas-world {
-  position: relative;
-  flex: 0 0 auto;
-  transform-origin: center center;
-  will-change: transform;
+  pointer-events: none;
 }
 .mobile-canvas-edges {
   position: absolute;
-  inset: 0;
-  width: 100%;
-  height: 100%;
   overflow: visible;
   pointer-events: none;
 }
@@ -1089,8 +1098,45 @@ p {
 .mobile-canvas-edge.dotted {
   stroke-dasharray: 2 9;
 }
-.mobile-canvas-world.animate-edges .mobile-canvas-edge {
+.mobile-canvas-edge-animation {
+  fill: none;
+  stroke: color-mix(in oklch, white 84%, var(--primary) 16%);
+  stroke-width: 3;
+  stroke-linecap: round;
+  opacity: 0;
+  pointer-events: none;
+}
+.mobile-canvas-edge-animation.solid {
+  stroke-dasharray: 28 240;
+}
+.mobile-canvas-edge-animation.dashed {
+  stroke-dasharray: 10 8;
+}
+.mobile-canvas-edge-animation.dotted {
+  stroke-dasharray: 2 7;
+}
+.mobile-canvas-camera.animate-edges .mobile-canvas-edge-animation {
+  opacity: 0.82;
   animation: mobile-canvas-edge-flow 1.25s linear infinite;
+}
+.mobile-canvas-edge-label {
+  position: absolute;
+  z-index: 2;
+  max-width: 160px;
+  padding: 3px 7px;
+  border: 1px solid color-mix(in oklch, var(--border) 72%, transparent);
+  border-radius: 999px;
+  background: color-mix(in oklch, var(--background) 94%, transparent);
+  color: color-mix(in oklch, var(--foreground) 82%, transparent);
+  font-size: 0.68rem;
+  font-weight: 750;
+  line-height: 1.1;
+  overflow: hidden;
+  pointer-events: none;
+  text-overflow: ellipsis;
+  transform: translate(-50%, -50%);
+  white-space: nowrap;
+  box-shadow: 0 8px 18px rgb(0 0 0 / 18%);
 }
 @keyframes mobile-canvas-edge-flow {
   to {
@@ -1135,7 +1181,6 @@ p {
   color: var(--foreground);
   text-align: left;
   box-shadow: 0 12px 28px rgb(0 0 0 / 20%);
-  contain: layout paint;
 }
 .mobile-canvas-node.selected {
   border-color: color-mix(in oklch, var(--primary) 60%, white 10%);

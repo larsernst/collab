@@ -19,7 +19,7 @@ import type {
 import type { NoteMetadata, SearchResult } from '../types/note';
 import type { PresenceEntry, ChatMessage, SnapshotMeta } from '../types/collab';
 import type { KanbanBoard } from '../types/kanban';
-import type { KanbanAutomationPreset, KanbanFilterPreset, KanbanTemplate, TemplateSource } from '../types/template';
+import type { KanbanAutomationPreset, KanbanFilterPreset, KanbanTemplate, LogicComponentTemplate, TemplateSource } from '../types/template';
 import type { NoteSnippet, NoteSnippetDraft, NoteSnippetScope } from '../types/noteSnippet';
 import type { PdfSidecarState } from '../types/pdf';
 import type { UpdateInfo } from '../store/updateStore';
@@ -326,6 +326,12 @@ export const tauriCommands = {
     scope: NoteSnippetScope,
     snippetId: string,
   ) => invoke<void>('delete_note_snippet', { vaultPath: vaultPath ?? null, scope, snippetId }),
+  listLogicComponents: (vaultPath: string) =>
+    invoke<LogicComponentTemplate[]>('list_logic_components', { vaultPath }),
+  saveLogicComponent: (vaultPath: string, component: LogicComponentTemplate) =>
+    invoke<LogicComponentTemplate>('save_logic_component', { vaultPath, component }),
+  deleteLogicComponent: (vaultPath: string, componentId: string) =>
+    invoke<void>('delete_logic_component', { vaultPath, componentId }),
   showOpenTemplateFileDialog: async () => {
     const result = await open({
       multiple: false,

@@ -42,6 +42,7 @@ function nodeSize(node: LogicDiagramNode) {
       height: Math.max(GROUP_MIN_HEIGHT, node.height ?? GROUP_MIN_HEIGHT),
     };
   }
+  if (node.kind === 'component') return { width: 144, height: Math.max(76, (node.component?.definition.ports.length ?? 1) * 24 + 28) };
   return { width: DEFAULT_NODE_WIDTH, height: DEFAULT_NODE_HEIGHT };
 }
 
@@ -54,12 +55,16 @@ function nodeBounds(node: LogicDiagramNode) {
   };
 }
 
-function handlePoint(node: LogicDiagramNode | undefined, side: 'source' | 'target') {
+function handlePoint(node: LogicDiagramNode | undefined, side: 'source' | 'target', handleId?: string) {
   if (!node) return { x: 0, y: 0 };
   const bounds = nodeBounds(node);
+  const handles = side === 'source'
+    ? getLogicOutputHandles(node.kind, node.component)
+    : getLogicInputHandles(node.kind, node.component);
+  const index = Math.max(0, handles.indexOf(handleId ?? handles[0]));
   return {
     x: side === 'source' ? bounds.x + bounds.width : bounds.x,
-    y: bounds.y + bounds.height / 2,
+    y: bounds.y + (handles.length <= 1 ? bounds.height / 2 : bounds.height * ((index + 1) / (handles.length + 1))),
   };
 }
 
@@ -71,6 +76,7 @@ function wirePath(source: { x: number; y: number }, target: { x: number; y: numb
 function nodeFill(node: LogicDiagramNode) {
   if (node.kind === 'input' && node.value === true) return '#dbeafe';
   if (node.kind === 'group') return '#f8fafc';
+  if (node.kind === 'component') return '#f5f3ff';
   if (node.kind === 'output') return '#ecfeff';
   return '#ffffff';
 }
@@ -96,8 +102,8 @@ function renderNode(node: LogicDiagramNode, outputValue: boolean | null | undefi
   const value = (node.kind === 'input' || node.kind === 'output') && typeof outputValue === 'boolean'
     ? (outputValue ? '1' : '0')
     : '';
-  const inputHandles = getLogicInputHandles(node.kind);
-  const outputHandles = getLogicOutputHandles(node.kind);
+  const inputHandles = getLogicInputHandles(node.kind, node.component);
+  const outputHandles = getLogicOutputHandles(node.kind, node.component);
   const activeWash = outputValue === true
     ? `<rect x="${bounds.x + 2}" y="${bounds.y + 2}" width="${bounds.width - 4}" height="${bounds.height - 4}" rx="${Math.max(0, rx - 2)}" fill="#dbeafe" opacity="0.72"/>`
     : '';
@@ -106,7 +112,7 @@ function renderNode(node: LogicDiagramNode, outputValue: boolean | null | undefi
     : '';
   const handles = [
     ...inputHandles.map((handle, index) => renderHandle(bounds, 'input', index, inputHandles.length, inputValues[handle])),
-    ...outputHandles.map((_, index) => renderHandle(bounds, 'output', index, outputHandles.length, outputValue)),
+    ...outputHandles.map((handle, index) => renderHandle(bounds, 'output', index, outputHandles.length, inputValues[handle] ?? outputValue)),
   ].join('');
 
   return [
@@ -122,8 +128,8 @@ function renderNode(node: LogicDiagramNode, outputValue: boolean | null | undefi
 }
 
 function renderWire(wire: LogicDiagramWire, nodesById: Map<string, LogicDiagramNode>, value: boolean | null | undefined) {
-  const source = handlePoint(nodesById.get(wire.source), 'source');
-  const target = handlePoint(nodesById.get(wire.target), 'target');
+  const source = handlePoint(nodesById.get(wire.source), 'source', wire.sourceHandle);
+  const target = handlePoint(nodesById.get(wire.target), 'target', wire.targetHandle);
   const labelX = (source.x + target.x) / 2;
   const labelY = (source.y + target.y) / 2 - 8;
   const color = signalColor(value);
@@ -171,7 +177,7 @@ export function buildLogicDiagramSvg(document: LogicDiagramDocument, sourceRelat
     source: sourceRelativePath,
     title: document.title,
   };
-  const evaluation = evaluateLogicDiagram(document.nodes, document.wires);
+  const evaluation = evaluateLogicDiagram(document.nodes, document.wires, { components: document.components });
   const nodeInputValues = inputValuesByNode(document.wires, evaluation.wireValues);
   const nodesById = new Map(nodes.map((node) => [node.id, node]));
   const wires = document.wires.map((wire) => renderWire(wire, nodesById, evaluation.wireValues[wire.id])).join('');

@@ -1,6 +1,11 @@
 import type { Edge, Node } from '@xyflow/react';
 
-import type { LogicDiagramDocument, LogicDiagramNode, LogicDiagramWire } from '../../types/logicDiagram';
+import type {
+  LogicComponentInstance,
+  LogicDiagramDocument,
+  LogicDiagramNode,
+  LogicDiagramWire,
+} from '../../types/logicDiagram';
 
 export interface LogicFlowNodeData extends Record<string, unknown> {
   kind: LogicDiagramNode['kind'];
@@ -8,6 +13,7 @@ export interface LogicFlowNodeData extends Record<string, unknown> {
   value?: boolean;
   evaluatedValue?: boolean;
   inputSignals?: Record<string, boolean | undefined>;
+  component?: LogicComponentInstance;
 }
 
 export interface LogicFlowEdgeData extends Record<string, unknown> {
@@ -30,6 +36,7 @@ export function logicNodeLabel(node: Pick<LogicDiagramNode, 'kind' | 'label'>) {
     case 'nand': return 'NAND';
     case 'nor': return 'NOR';
     case 'xnor': return 'XNOR';
+    case 'component': return 'Component';
   }
 }
 
@@ -55,6 +62,7 @@ function toFlowNode(node: LogicDiagramNode, parent?: LogicDiagramNode): LogicFlo
       kind: node.kind,
       label: node.label,
       value: node.value,
+      component: node.component,
     },
     parentId: node.parentId,
     extent: node.parentId ? 'parent' : undefined,
@@ -86,6 +94,7 @@ function fromFlowNode(node: LogicFlowNode, parent?: LogicFlowNode): LogicDiagram
     // document churn on every open once React Flow measures them.
     width: node.data.kind === 'group' ? getNodeWidth(node) : undefined,
     height: node.data.kind === 'group' ? getNodeHeight(node) : undefined,
+    component: node.data.kind === 'component' ? node.data.component : undefined,
   };
 }
 

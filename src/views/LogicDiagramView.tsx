@@ -46,6 +46,7 @@ import { Button } from '../components/ui/button';
 import {
   Dialog,
   DialogContent,
+  DialogDescription,
   DialogFooter,
   DialogHeader,
   DialogTitle,
@@ -78,6 +79,10 @@ import {
   getLogicInputHandles,
   getLogicOutputHandles,
 } from '../components/logic/logicDiagramEvaluator';
+import {
+  captureLogicComponent,
+  instantiateLogicComponentNode,
+} from '../components/logic/logicDiagramComponents';
 import {
   getLogicDiagramTemplates,
   instantiateLogicDiagramTemplate,
@@ -112,7 +117,10 @@ import {
   createEmptyLogicDiagram,
   normalizeLogicDiagramDocument,
   type LogicDiagramDocument,
+  type LogicComponentDefinition,
+  type LogicComponentInstanceMode,
   type LogicGateKind,
+  type LogicNodeKind,
 } from '../types/logicDiagram';
 import type { NoteFile } from '../types/vault';
 import { cn } from '../lib/utils';
@@ -258,7 +266,7 @@ function liveLogicStatePreservesCanonicalEntities(
     && canonical.wires.every((wire) => liveWireIds.has(wire.id));
 }
 
-function logicNodeActiveOverlay(kind: LogicGateKind, data: LogicFlowNode['data']): CSSProperties | undefined {
+function logicNodeActiveOverlay(kind: LogicNodeKind, data: LogicFlowNode['data']): CSSProperties | undefined {
   if (kind === 'group') return undefined;
   if (data.evaluatedValue === true || (kind === 'input' && data.value === true)) {
     return {
@@ -266,7 +274,7 @@ function logicNodeActiveOverlay(kind: LogicGateKind, data: LogicFlowNode['data']
     };
   }
 
-  const inputHandles = getLogicInputHandles(kind);
+  const inputHandles = getLogicInputHandles(kind, data.component);
   const firstInputOn = data.inputSignals?.['in-a'] === true || data.inputSignals?.in === true;
   const secondInputOn = data.inputSignals?.['in-b'] === true;
   if ((firstInputOn && secondInputOn) || (inputHandles.length === 1 && firstInputOn)) {
@@ -302,16 +310,20 @@ function LogicGateNode({ data, selected }: NodeProps<LogicFlowNode>) {
     );
   }
 
-  const inputHandles = getLogicInputHandles(kind);
-  const outputHandles = getLogicOutputHandles(kind);
+  const inputHandles = getLogicInputHandles(kind, data.component);
+  const outputHandles = getLogicOutputHandles(kind, data.component);
   const isInversion = kind === 'not' || kind === 'nand' || kind === 'nor' || kind === 'xnor';
   const displayValue = kind === 'output' ? data.evaluatedValue : data.value;
   const activeOverlay = logicNodeActiveOverlay(kind, data);
+  const componentPorts = data.component?.definition.ports ?? [];
+  const componentInputs = componentPorts.filter((port) => port.direction === 'input');
+  const componentOutputs = componentPorts.filter((port) => port.direction === 'output');
 
   return (
     <div
       className={cn(
-        'relative flex h-16 w-28 items-center justify-center overflow-hidden rounded border bg-card px-3 py-2 text-center shadow-sm transition-colors',
+        'relative flex min-h-16 w-28 items-center justify-center overflow-hidden rounded border bg-card px-3 py-2 text-center shadow-sm transition-colors',
+        kind === 'component' && 'h-auto min-h-20 w-36 bg-violet-500/5 px-4',
         selected ? 'border-primary ring-2 ring-primary/25' : 'border-border/70',
       )}
     >
@@ -336,6 +348,12 @@ function LogicGateNode({ data, selected }: NodeProps<LogicFlowNode>) {
         <div className="text-[11px] font-semibold uppercase tracking-normal text-foreground">
           {logicNodeLabel({ kind, label: data.label })}
         </div>
+        {kind === 'component' && (
+          <div className="mt-1 grid grid-cols-2 gap-x-3 text-[9px] text-muted-foreground">
+            <span className="truncate text-left">{componentInputs.map((port) => port.label).join(', ')}</span>
+            <span className="truncate text-right">{componentOutputs.map((port) => port.label).join(', ')}</span>
+          </div>
+        )}
         {(kind === 'input' || kind === 'output') && (
           <div className="mt-1 text-[10px] text-muted-foreground">
             {typeof displayValue === 'boolean' ? (displayValue ? '1' : '0') : 'unset'}
@@ -345,13 +363,14 @@ function LogicGateNode({ data, selected }: NodeProps<LogicFlowNode>) {
       {isInversion && (
         <span className="absolute right-[-7px] top-1/2 z-20 size-3 -translate-y-1/2 rounded-full border border-border bg-background" />
       )}
-      {outputHandles.map((handleId) => (
+      {outputHandles.map((handleId, index) => (
         <Handle
           key={handleId}
           id={handleId}
           type="source"
           position={Position.Right}
           className="z-20 size-2.5 border-border bg-background"
+          style={{ top: outputHandles.length === 1 ? '50%' : `${34 + index * 32}%` }}
         />
       ))}
     </div>
@@ -525,6 +544,13 @@ function LogicDiagramEditor({ relativePath }: Props) {
   const [renameTarget, setRenameTarget] = useState<{ kind: 'node' | 'edge'; id: string } | null>(null);
   const [renameValue, setRenameValue] = useState('');
   const [templatePickerOpen, setTemplatePickerOpen] = useState(false);
+  const [componentPickerOpen, setComponentPickerOpen] = useState(false);
+  const [componentSaveOpen, setComponentSaveOpen] = useState(false);
+  const [componentName, setComponentName] = useState('');
+  const [componentDescription, setComponentDescription] = useState('');
+  const [componentInsertMode, setComponentInsertMode] = useState<LogicComponentInstanceMode>('snapshot');
+  const [logicComponents, setLogicComponents] = useState<LogicComponentDefinition[]>([]);
+  const [loadingComponents, setLoadingComponents] = useState(false);
   const [viewport, setViewportState] = useState<Viewport>(DEFAULT_VIEWPORT);
   const [contextMenu, setContextMenu] = useState<LogicContextMenu | null>(null);
   const idCounterRef = useRef(1);
@@ -548,6 +574,7 @@ function LogicDiagramEditor({ relativePath }: Props) {
         kind: node.data.kind,
         label: node.data.label ?? null,
         value: node.data.value ?? null,
+        component: node.data.component ?? null,
         parentId: node.parentId ?? null,
         x: node.position.x,
         y: node.position.y,
@@ -568,14 +595,15 @@ function LogicDiagramEditor({ relativePath }: Props) {
     () => nodes.filter((node) => node.selected).map((node) => node.id),
     [nodes],
   );
+  const logicComponentsCapability = client?.runtime.logicComponents ?? null;
   const selectedEdgeIds = useMemo(
     () => edges.filter((edge) => edge.selected).map((edge) => edge.id),
     [edges],
   );
   const evaluation = useMemo(() => {
     const graph = fromFlowGraph(diagram, nodes, edges, viewport);
-    return evaluateLogicDiagram(graph.nodes, graph.wires);
-  }, [diagram, edges, nodes, viewport]);
+    return evaluateLogicDiagram(graph.nodes, graph.wires, { components: [...(diagram.components ?? []), ...logicComponents] });
+  }, [diagram, edges, logicComponents, nodes, viewport]);
   const renderedNodes = useMemo(() => nodes.map((node) => ({
     ...node,
     data: {
@@ -583,7 +611,7 @@ function LogicDiagramEditor({ relativePath }: Props) {
       evaluatedValue: evaluation.nodeValues[node.id],
       inputSignals: edges.reduce<Record<string, boolean | undefined>>((signals, edge) => {
         if (edge.target !== node.id) return signals;
-        const targetHandles = getLogicInputHandles(node.data.kind);
+        const targetHandles = getLogicInputHandles(node.data.kind, node.data.component);
         const targetHandle = edge.targetHandle && targetHandles.includes(edge.targetHandle)
           ? edge.targetHandle
           : targetHandles[0];
@@ -723,6 +751,55 @@ function LogicDiagramEditor({ relativePath }: Props) {
 
   const livePeers = useLivePeers(liveSession);
 
+  const markChanged = useCallback(() => {
+    if (liveSessionRef.current) return;
+    markDirty(relativePath);
+  }, [markDirty, relativePath]);
+
+  const reloadLogicComponents = useCallback(async () => {
+    if (!logicComponentsCapability) {
+      setLogicComponents([]);
+      return;
+    }
+    setLoadingComponents(true);
+    try {
+      setLogicComponents(await logicComponentsCapability.list());
+    } catch (error) {
+      toast.error(`Failed to load logic components: ${error}`);
+    } finally {
+      setLoadingComponents(false);
+    }
+  }, [logicComponentsCapability]);
+
+  useEffect(() => {
+    void reloadLogicComponents();
+  }, [reloadLogicComponents]);
+
+  useEffect(() => {
+    if (logicComponents.length === 0) return;
+    const byId = new Map(logicComponents.map((component) => [component.id, component]));
+    let changed = false;
+    setNodes((current) => current.map((node) => {
+      if (node.data.kind !== 'component' || node.data.component?.mode !== 'linked') return node;
+      const componentId = node.data.component.componentId;
+      const latest = componentId ? byId.get(componentId) : undefined;
+      if (!latest || latest.version === node.data.component.definition.version) return node;
+      changed = true;
+      return {
+        ...node,
+        data: {
+          ...node.data,
+          label: latest.name,
+          component: {
+            ...node.data.component,
+            definition: latest,
+          },
+        },
+      };
+    }));
+    if (changed) markChanged();
+  }, [logicComponents, markChanged, setNodes]);
+
   // Debounced autosave via the shared controller: only marks a local change when
   // the structural signature actually changes, so selection, node measurement,
   // fit-view, and pan do not trigger writes. The controller serializes
@@ -861,11 +938,6 @@ function LogicDiagramEditor({ relativePath }: Props) {
     }
   }, [client, controller, diagram, edges, fileTree, getViewport, markSaved, nodes, noteTarget, openTab, readOnly, refreshFileTree, relativePath, setActiveView, setForceReloadPath, title, vault]);
 
-  const markChanged = useCallback(() => {
-    if (liveSessionRef.current) return;
-    markDirty(relativePath);
-  }, [markDirty, relativePath]);
-
   const getMenuPosition = useCallback((clientX: number, clientY: number) => {
     const rect = viewportRef.current?.getBoundingClientRect();
     if (!rect) return { x: clientX, y: clientY };
@@ -910,8 +982,8 @@ function LogicDiagramEditor({ relativePath }: Props) {
     const targetNode = nodes.find((node) => node.id === connection.target);
     if (!sourceNode || !targetNode) return;
 
-    const sourceHandles = getLogicOutputHandles(sourceNode.data.kind);
-    const targetHandles = getLogicInputHandles(targetNode.data.kind);
+    const sourceHandles = getLogicOutputHandles(sourceNode.data.kind, sourceNode.data.component);
+    const targetHandles = getLogicInputHandles(targetNode.data.kind, targetNode.data.component);
     const sourceHandle = connection.sourceHandle && sourceHandles.includes(connection.sourceHandle)
       ? connection.sourceHandle
       : sourceHandles[0];
@@ -1158,6 +1230,49 @@ function LogicDiagramEditor({ relativePath }: Props) {
     setTimeout(() => fitView({ padding: 0.25, duration: 180 }), 60);
   }, [fitView, getViewportCenterClientPoint, markChanged, readOnly, screenToFlowPosition, setEdges, setNodes]);
 
+  const openSaveComponentDialog = useCallback(() => {
+    if (readOnly) return;
+    if (!logicComponentsCapability) {
+      toast.error('Logic component libraries are not available for this vault.');
+      return;
+    }
+    const selected = nodes.filter((node) => node.selected);
+    setComponentName(selected.length > 0 ? 'Selected Component' : title);
+    setComponentDescription('');
+    setComponentSaveOpen(true);
+  }, [logicComponentsCapability, nodes, readOnly, title]);
+
+  const saveLogicComponent = useCallback(async () => {
+    if (!logicComponentsCapability) return;
+    const name = componentName.trim();
+    if (!name) {
+      toast.error('Name the component before saving.');
+      return;
+    }
+    try {
+      const current = fromFlowGraph(diagram, nodes, edges, getViewport() as Viewport);
+      const capture = captureLogicComponent(current, selectedNodeIds, name, componentDescription);
+      const saved = await logicComponentsCapability.save(capture.component);
+      setLogicComponents((currentComponents) => [
+        ...currentComponents.filter((component) => component.id !== saved.id && component.name.toLowerCase() !== saved.name.toLowerCase()),
+        saved,
+      ].sort((a, b) => a.name.localeCompare(b.name)));
+      setComponentSaveOpen(false);
+      toast.success(`Saved component "${saved.name}".`);
+    } catch (error) {
+      toast.error(`Failed to save component: ${error}`);
+    }
+  }, [componentDescription, componentName, diagram, edges, getViewport, logicComponentsCapability, nodes, selectedNodeIds]);
+
+  const insertLogicComponent = useCallback((component: LogicComponentDefinition) => {
+    if (readOnly) return;
+    const position = snapPosition(screenToFlowPosition(getViewportCenterClientPoint()));
+    const node = instantiateLogicComponentNode(component, componentInsertMode, position);
+    setNodes((current) => [...current, { ...toFlowGraph({ ...createEmptyLogicDiagram(), nodes: [node], wires: [] }).nodes[0], selected: false }]);
+    markChanged();
+    setComponentPickerOpen(false);
+  }, [componentInsertMode, getViewportCenterClientPoint, markChanged, readOnly, screenToFlowPosition, setNodes]);
+
   const duplicateSelection = useCallback(() => {
     if (readOnly) return;
     const selectedNodes = nodes.filter((node) => node.selected && node.data.kind !== 'group' && !node.parentId);
@@ -1268,11 +1383,11 @@ function LogicDiagramEditor({ relativePath }: Props) {
     if (selectedIds.size === 0) return;
     const nextKindById = new Map(
       nodes
-        .filter((node) => selectedIds.has(node.id) && node.data.kind !== 'group')
+        .filter((node) => selectedIds.has(node.id) && node.data.kind !== 'group' && node.data.kind !== 'component')
         .map((node) => [node.id, kind]),
     );
     setNodes((current) => current.map((node) => (
-      selectedIds.has(node.id) && node.data.kind !== 'group'
+      selectedIds.has(node.id) && node.data.kind !== 'group' && node.data.kind !== 'component'
         ? {
             ...node,
             data: {
@@ -1292,8 +1407,10 @@ function LogicDiagramEditor({ relativePath }: Props) {
         const targetKind = kindForNode(edge.target);
         if (!sourceKind || !targetKind) return [];
 
-        const sourceHandles = getLogicOutputHandles(sourceKind);
-        const targetHandles = getLogicInputHandles(targetKind);
+        const sourceNode = nodes.find((node) => node.id === edge.source);
+        const targetNode = nodes.find((node) => node.id === edge.target);
+        const sourceHandles = getLogicOutputHandles(sourceKind, sourceNode?.data.component);
+        const targetHandles = getLogicInputHandles(targetKind, targetNode?.data.component);
         if (sourceHandles.length === 0 || targetHandles.length === 0) return [];
 
         const sourceHandle = edge.sourceHandle && sourceHandles.includes(edge.sourceHandle)
@@ -1488,7 +1605,8 @@ function LogicDiagramEditor({ relativePath }: Props) {
   }, [addGate, adjustZoom, deleteSelection, duplicateSelection, fitLogicView, groupSelection, nodes, readOnly, renameSelectedNode, resetZoom, selectedEdgeIds.length, selectedNodeIds.length, setEdges, setNodes, toggleInputNodes, ungroupSelection]);
 
   const zoomLabel = `${Math.round(viewport.zoom * 100)}%`;
-  const selectedGateNodes = nodes.filter((node) => node.selected && node.data.kind !== 'group');
+  const selectedGateNodes = nodes.filter((node) => node.selected && node.data.kind !== 'group' && node.data.kind !== 'component');
+  const selectedComponentNodes = nodes.filter((node) => node.selected && node.data.kind === 'component');
   const selectedUngroupedGateNodes = selectedGateNodes.filter((node) => !node.parentId);
   const selectedInputNodes = selectedGateNodes.filter((node) => node.data.kind === 'input');
   const selectedGroupCount = selectedGroups.length;
@@ -1530,6 +1648,22 @@ function LogicDiagramEditor({ relativePath }: Props) {
           <Shapes size={14} />
           Templates
         </DocumentTopBarButton>
+        <DocumentTopBarButton
+          onClick={() => setComponentPickerOpen(true)}
+          disabled={readOnly || !logicComponentsCapability}
+          title="Insert a reusable logic component"
+        >
+          <CircuitBoard size={14} />
+          Components
+        </DocumentTopBarButton>
+        <DocumentTopBarButton
+          onClick={openSaveComponentDialog}
+          disabled={readOnly || !logicComponentsCapability || nodes.length === 0}
+          title="Save the selection, or the whole diagram if nothing is selected, as a component"
+        >
+          <Save size={14} />
+          Save component
+        </DocumentTopBarButton>
       </div>
       <div className={documentTopBarGroupClass}>
         <DocumentTopBarIconButton
@@ -1556,7 +1690,7 @@ function LogicDiagramEditor({ relativePath }: Props) {
         <DocumentTopBarIconButton
           title="Rename selected gate or group (F2)"
           onClick={renameSelectedNode}
-          disabled={readOnly || (selectedGroups.length !== 1 && selectedGateNodes.length !== 1)}
+          disabled={readOnly || (selectedGroups.length !== 1 && selectedGateNodes.length !== 1 && selectedComponentNodes.length !== 1)}
         >
           <Pencil size={14} />
         </DocumentTopBarIconButton>
@@ -1618,9 +1752,10 @@ function LogicDiagramEditor({ relativePath }: Props) {
   useDocumentStatusRegistration(relativePath, documentStatus);
 
   const counts = useMemo(() => {
-    const gateCount = nodes.filter((node) => node.data.kind !== 'group').length;
-    const groupCount = nodes.length - gateCount;
-    return { gateCount, groupCount };
+    const componentCount = nodes.filter((node) => node.data.kind === 'component').length;
+    const gateCount = nodes.filter((node) => node.data.kind !== 'group' && node.data.kind !== 'component').length;
+    const groupCount = nodes.length - gateCount - componentCount;
+    return { gateCount, groupCount, componentCount };
   }, [nodes]);
 
   const meta = (
@@ -1628,7 +1763,7 @@ function LogicDiagramEditor({ relativePath }: Props) {
       <DocumentStatusPill status={snapshot.status} compact />
       <LivePeers peers={livePeers} />
       <div className="rounded-full border border-border/60 px-2 py-1 text-[11px] text-muted-foreground">
-        {counts.gateCount} gates · {counts.groupCount} groups · {edges.length} wires
+        {counts.gateCount} gates · {counts.componentCount} components · {counts.groupCount} groups · {edges.length} wires
       </div>
     </div>
   );
@@ -1668,6 +1803,8 @@ function LogicDiagramEditor({ relativePath }: Props) {
                   ? 'Wire'
                   : contextTargetNode?.data.kind === 'group'
                   ? logicNodeLabel({ kind: 'group', label: contextTargetNode.data.label })
+                  : contextTargetNode?.data.kind === 'component'
+                  ? 'Component'
                   : 'Gate'}
               </div>
 
@@ -1736,11 +1873,11 @@ function LogicDiagramEditor({ relativePath }: Props) {
                   onClick={() => runContextAction(() => openRenameNode(contextTargetNode.id))}
                 >
                   <Pencil size={14} />
-                  Label {contextTargetNode.data.kind === 'output' ? 'output' : 'gate'}
+                  Label {contextTargetNode.data.kind === 'output' ? 'output' : contextTargetNode.data.kind === 'component' ? 'component' : 'gate'}
                 </button>
               )}
 
-              {contextMenu.kind === 'node' && contextTargetNode?.data.kind !== 'group' && selectedGateNodes.length > 0 && (
+              {contextMenu.kind === 'node' && contextTargetNode?.data.kind !== 'group' && contextTargetNode?.data.kind !== 'component' && selectedGateNodes.length > 0 && (
                 <>
                   {selectedInputNodes.length > 0 && (
                     <>
@@ -1879,6 +2016,8 @@ function LogicDiagramEditor({ relativePath }: Props) {
                 ? 'Rename group'
                 : renameTarget && nodes.find((n) => n.id === renameTarget.id)?.data.kind === 'output'
                 ? 'Label output'
+                : renameTarget && nodes.find((n) => n.id === renameTarget.id)?.data.kind === 'component'
+                ? 'Label component'
                 : 'Label gate'}
             </DialogTitle>
           </DialogHeader>
@@ -1927,6 +2066,107 @@ function LogicDiagramEditor({ relativePath }: Props) {
           <p className="text-[11px] text-muted-foreground">
             Templates are appended to the current diagram at the viewport center.
           </p>
+        </DialogContent>
+      </Dialog>
+      <Dialog open={componentPickerOpen} onOpenChange={setComponentPickerOpen}>
+        <DialogContent className="sm:max-w-lg">
+          <DialogHeader>
+            <DialogTitle>Insert component</DialogTitle>
+            <DialogDescription>
+              Components are placed as single reusable nodes. Snapshot is the safe default; linked follows future library updates.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="flex items-center gap-2 rounded-md border border-border/60 p-2">
+            <span className="text-xs text-muted-foreground">Mode</span>
+            <Select value={componentInsertMode} onValueChange={(value) => setComponentInsertMode(value as LogicComponentInstanceMode)}>
+              <SelectTrigger size="sm" className="h-8 w-32">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="snapshot">Snapshot</SelectItem>
+                <SelectItem value="linked">Linked</SelectItem>
+              </SelectContent>
+            </Select>
+            <Button type="button" variant="ghost" size="sm" onClick={() => void reloadLogicComponents()} disabled={loadingComponents}>
+              {loadingComponents ? <Loader2 size={14} className="animate-spin" /> : <RotateCcw size={14} />}
+              Refresh
+            </Button>
+          </div>
+          <div className="max-h-[58vh] space-y-1.5 overflow-y-auto">
+            {loadingComponents ? (
+              <div className="flex items-center justify-center py-8 text-sm text-muted-foreground">
+                <Loader2 size={15} className="mr-2 animate-spin" />
+                Loading components...
+              </div>
+            ) : logicComponents.length === 0 ? (
+              <div className="rounded-lg border border-dashed border-border/70 px-3 py-8 text-center text-sm text-muted-foreground">
+                No saved logic components in this vault yet.
+              </div>
+            ) : logicComponents.map((component) => {
+              const inputs = component.ports.filter((port) => port.direction === 'input').map((port) => port.label).join(', ');
+              const outputs = component.ports.filter((port) => port.direction === 'output').map((port) => port.label).join(', ');
+              return (
+                <button
+                  key={component.id}
+                  type="button"
+                  className="flex w-full flex-col items-start gap-1 rounded-lg border border-border/60 px-3 py-2.5 text-left outline-none transition-colors hover:bg-accent hover:text-accent-foreground focus-visible:bg-accent"
+                  onClick={() => insertLogicComponent(component)}
+                >
+                  <span className="text-sm font-medium">{component.name}</span>
+                  {component.description && <span className="text-xs text-muted-foreground">{component.description}</span>}
+                  <span className="text-[11px] text-muted-foreground">
+                    In: {inputs || 'none'} · Out: {outputs || 'none'} · v{component.version}
+                  </span>
+                </button>
+              );
+            })}
+          </div>
+        </DialogContent>
+      </Dialog>
+      <Dialog open={componentSaveOpen} onOpenChange={setComponentSaveOpen}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>Save component</DialogTitle>
+            <DialogDescription>
+              Saves selected nodes as a component. If nothing is selected, the whole logic file is captured.
+            </DialogDescription>
+          </DialogHeader>
+          <form
+            className="space-y-4"
+            onSubmit={(event) => {
+              event.preventDefault();
+              void saveLogicComponent();
+            }}
+          >
+            <div className="space-y-2">
+              <label className="text-xs font-medium text-muted-foreground" htmlFor="logic-component-name">Name</label>
+              <Input
+                id="logic-component-name"
+                autoFocus
+                value={componentName}
+                onChange={(event) => setComponentName(event.target.value)}
+                placeholder="Half adder"
+              />
+            </div>
+            <div className="space-y-2">
+              <label className="text-xs font-medium text-muted-foreground" htmlFor="logic-component-description">Description</label>
+              <Input
+                id="logic-component-description"
+                value={componentDescription}
+                onChange={(event) => setComponentDescription(event.target.value)}
+                placeholder="Optional"
+              />
+            </div>
+            <div className="rounded-md border border-border/60 px-3 py-2 text-xs text-muted-foreground">
+              Ports are derived from captured input and output nodes. Labels must be unique for each direction.
+            </div>
+            <DialogFooter className="border-none bg-transparent -mx-0 -mb-0 px-0 pb-0">
+              <Button type="button" variant="outline" onClick={() => setComponentSaveOpen(false)}>
+                Cancel
+              </Button>
+              <Button type="submit">Save component</Button>
+            </DialogFooter>
+          </form>
         </DialogContent>
       </Dialog>
     </div>

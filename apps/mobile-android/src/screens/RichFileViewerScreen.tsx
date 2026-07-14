@@ -37,7 +37,7 @@ import {
 import { getDocument, GlobalWorkerOptions, type PDFDocumentProxy, type RenderTask } from 'pdfjs-dist/legacy/build/pdf.mjs';
 
 import { Banner, EmptyState, Spinner } from '../components/ui';
-import { isCanvasFile, readCanvasDocument, type CanvasData, type CanvasNode } from '../lib/canvas';
+import { isCanvasFile, readCanvasDocument, type CanvasData, type CanvasEdge, type CanvasNode } from '../lib/canvas';
 import {
   isImageFile,
   isPdfFile,
@@ -56,6 +56,16 @@ type LoadState =
   | { status: 'error'; message: string };
 type PdfLayoutMode = 'single' | 'scroll';
 type TouchPoint = { x: number; y: number };
+type CanvasWorldBounds = {
+  minX: number;
+  minY: number;
+  maxX: number;
+  maxY: number;
+  width: number;
+  height: number;
+  centerX: number;
+  centerY: number;
+};
 
 function clamp(value: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, value));
@@ -332,14 +342,6 @@ function ImageMobileViewer({
   );
 }
 
-type CanvasBounds = {
-  minX: number;
-  minY: number;
-  width: number;
-  height: number;
-  padding: number;
-};
-
 function canvasNodeTitle(node: CanvasNode): string {
   const record = node as unknown as Record<string, unknown>;
   if (typeof record.title === 'string' && record.title.trim()) return record.title;
@@ -464,9 +466,63 @@ function planningBadges(node: CanvasNode): Array<{ key: string; label: string; t
   ].filter((badge): badge is { key: string; label: string; tone?: string } => !!badge);
 }
 
-function computeCanvasBounds(nodes: CanvasNode[]): CanvasBounds {
-  const padding = 120;
-  if (nodes.length === 0) return { minX: 0, minY: 0, width: 640, height: 420, padding };
+function minimumCanvasNodeSize(type: CanvasNode['type']): { width: number; height: number } {
+  switch (type) {
+    case 'text':
+      return { width: 200, height: 120 };
+    case 'web':
+      return { width: 260, height: 180 };
+    case 'symbol':
+      return { width: 140, height: 140 };
+    case 'process':
+      return { width: 220, height: 130 };
+    case 'decision':
+      return { width: 240, height: 150 };
+    case 'terminator':
+      return { width: 210, height: 110 };
+    case 'document':
+      return { width: 220, height: 140 };
+    case 'milestone':
+    case 'actor':
+      return { width: 220, height: 130 };
+    case 'group':
+      return { width: 320, height: 220 };
+    case 'swimlane':
+      return { width: 420, height: 180 };
+    case 'junction':
+      return { width: 56, height: 56 };
+    case 'crossing':
+      return { width: 96, height: 64 };
+    case 'note':
+    case 'file':
+    default:
+      return { width: 220, height: 140 };
+  }
+}
+
+function canvasNodeWidth(node: CanvasNode): number {
+  return Math.max(node.width, minimumCanvasNodeSize(node.type).width);
+}
+
+function canvasNodeHeight(node: CanvasNode): number {
+  return Math.max(node.height, minimumCanvasNodeSize(node.type).height);
+}
+
+function computeCanvasBounds(nodes: CanvasNode[]): CanvasWorldBounds {
+  const emptyWidth = 640;
+  const emptyHeight = 420;
+  if (nodes.length === 0) {
+    return {
+      minX: -emptyWidth / 2,
+      minY: -emptyHeight / 2,
+      maxX: emptyWidth / 2,
+      maxY: emptyHeight / 2,
+      width: emptyWidth,
+      height: emptyHeight,
+      centerX: 0,
+      centerY: 0,
+    };
+  }
   let minX = Number.POSITIVE_INFINITY;
   let minY = Number.POSITIVE_INFINITY;
   let maxX = Number.NEGATIVE_INFINITY;
@@ -474,25 +530,336 @@ function computeCanvasBounds(nodes: CanvasNode[]): CanvasBounds {
   for (const node of nodes) {
     minX = Math.min(minX, node.position.x);
     minY = Math.min(minY, node.position.y);
-    maxX = Math.max(maxX, node.position.x + node.width);
-    maxY = Math.max(maxY, node.position.y + node.height);
+    maxX = Math.max(maxX, node.position.x + canvasNodeWidth(node));
+    maxY = Math.max(maxY, node.position.y + canvasNodeHeight(node));
   }
+  const width = Math.max(1, maxX - minX);
+  const height = Math.max(1, maxY - minY);
   return {
     minX,
     minY,
-    width: Math.max(320, maxX - minX + padding * 2),
-    height: Math.max(240, maxY - minY + padding * 2),
-    padding,
+    maxX,
+    maxY,
+    width,
+    height,
+    centerX: minX + width / 2,
+    centerY: minY + height / 2,
   };
 }
 
-function mobileCanvasNodeStyle(node: CanvasNode, bounds: CanvasBounds): CSSProperties {
+function mobileCanvasNodeStyle(node: CanvasNode): CSSProperties {
   return {
-    left: `${node.position.x - bounds.minX + bounds.padding}px`,
-    top: `${node.position.y - bounds.minY + bounds.padding}px`,
-    width: `${node.width}px`,
-    height: `${node.height}px`,
+    left: `${node.position.x}px`,
+    top: `${node.position.y}px`,
+    width: `${canvasNodeWidth(node)}px`,
+    height: `${canvasNodeHeight(node)}px`,
   };
+}
+
+type MobileCanvasEdgeRender = {
+  id: string;
+  path: string;
+  label: string;
+  labelX: number;
+  labelY: number;
+  lineStyle: CanvasEdge['lineStyle'];
+  animated: boolean;
+  animationReverse: boolean;
+  markerStart: boolean;
+  markerEnd: boolean;
+};
+
+type CanvasEdgePosition = 'left' | 'right' | 'top' | 'bottom';
+type MobileCanvasNodeGeometry = { centerX: number; centerY: number; width: number; height: number };
+type MobileCanvasEdgeGeometry = {
+  sourceX: number;
+  sourceY: number;
+  controlSourceX: number;
+  controlSourceY: number;
+  controlTargetX: number;
+  controlTargetY: number;
+  targetX: number;
+  targetY: number;
+  labelX: number;
+  labelY: number;
+};
+
+const MOBILE_CANVAS_EDGE_LANE = 30;
+const MOBILE_CANVAS_EDGE_SLOT_SPACING = 18;
+const MOBILE_CANVAS_EDGE_SLOT_PADDING = 26;
+
+function mobileCanvasEdgePositionFromHandle(handleId?: string | null): CanvasEdgePosition | null {
+  if (!handleId) return null;
+  if (handleId.startsWith('left')) return 'left';
+  if (handleId.startsWith('right')) return 'right';
+  if (handleId.startsWith('top')) return 'top';
+  if (handleId.startsWith('bottom')) return 'bottom';
+  return null;
+}
+
+function isHorizontalCanvasEdgePosition(position: CanvasEdgePosition): boolean {
+  return position === 'left' || position === 'right';
+}
+
+function mobileCanvasEdgePositionForNodes(
+  nodeId: string,
+  oppositeId: string,
+  nodeGeometry: Map<string, MobileCanvasNodeGeometry>,
+  fallback: CanvasEdgePosition,
+): CanvasEdgePosition {
+  const node = nodeGeometry.get(nodeId);
+  const opposite = nodeGeometry.get(oppositeId);
+  if (!node || !opposite) return fallback;
+  const deltaX = opposite.centerX - node.centerX;
+  const deltaY = opposite.centerY - node.centerY;
+  if (Math.abs(deltaX) >= Math.abs(deltaY)) return deltaX >= 0 ? 'right' : 'left';
+  return deltaY >= 0 ? 'bottom' : 'top';
+}
+
+function mobileCanvasEndpointPosition(
+  edge: CanvasEdge,
+  endpoint: 'source' | 'target',
+  nodeGeometry: Map<string, MobileCanvasNodeGeometry>,
+): CanvasEdgePosition {
+  if (endpoint === 'source') {
+    return mobileCanvasEdgePositionFromHandle(edge.sourceHandle)
+      ?? mobileCanvasEdgePositionForNodes(edge.source, edge.target, nodeGeometry, 'right');
+  }
+  return mobileCanvasEdgePositionFromHandle(edge.targetHandle)
+    ?? mobileCanvasEdgePositionForNodes(edge.target, edge.source, nodeGeometry, 'left');
+}
+
+function mobileCanvasAnchorCoordinates(
+  geometry: MobileCanvasNodeGeometry | undefined,
+  position: CanvasEdgePosition,
+  fallback: TouchPoint,
+): TouchPoint {
+  if (!geometry) return fallback;
+  if (position === 'left') return { x: geometry.centerX - geometry.width / 2, y: geometry.centerY };
+  if (position === 'right') return { x: geometry.centerX + geometry.width / 2, y: geometry.centerY };
+  if (position === 'top') return { x: geometry.centerX, y: geometry.centerY - geometry.height / 2 };
+  return { x: geometry.centerX, y: geometry.centerY + geometry.height / 2 };
+}
+
+function mobileCanvasSlotOffset(index: number, count: number, axisSize: number): number {
+  if (count <= 1) return 0;
+  const availableSpread = Math.max(axisSize - MOBILE_CANVAS_EDGE_SLOT_PADDING * 2, MOBILE_CANVAS_EDGE_SLOT_SPACING);
+  const spacing = Math.min(MOBILE_CANVAS_EDGE_SLOT_SPACING, availableSpread / (count - 1));
+  return (index - (count - 1) / 2) * spacing;
+}
+
+function mobileCanvasEndpointSiblingKey(edge: CanvasEdge, endpoint: 'source' | 'target'): string {
+  return `${edge.id}:${endpoint}`;
+}
+
+function mobileCanvasEndpointSiblings(
+  edges: CanvasEdge[],
+  nodeId: string,
+  position: CanvasEdgePosition,
+  nodeGeometry: Map<string, MobileCanvasNodeGeometry>,
+): Array<{ key: string; oppositeId: string }> {
+  const siblings: Array<{ key: string; oppositeId: string }> = [];
+  for (const edge of edges) {
+    if (edge.source === nodeId && mobileCanvasEndpointPosition(edge, 'source', nodeGeometry) === position) {
+      siblings.push({ key: mobileCanvasEndpointSiblingKey(edge, 'source'), oppositeId: edge.target });
+    }
+    if (edge.target === nodeId && mobileCanvasEndpointPosition(edge, 'target', nodeGeometry) === position) {
+      siblings.push({ key: mobileCanvasEndpointSiblingKey(edge, 'target'), oppositeId: edge.source });
+    }
+  }
+  const anchorNode = nodeGeometry.get(nodeId);
+  return siblings.sort((left, right) => {
+    const leftNode = nodeGeometry.get(left.oppositeId);
+    const rightNode = nodeGeometry.get(right.oppositeId);
+    const metrics = (node?: MobileCanvasNodeGeometry) => {
+      if (!anchorNode || !node) return { angle: 0, distance: Number.POSITIVE_INFINITY };
+      const deltaX = node.centerX - anchorNode.centerX;
+      const deltaY = node.centerY - anchorNode.centerY;
+      let outward = deltaX;
+      let tangent = deltaY;
+      if (position === 'left') outward = -deltaX;
+      if (position === 'top') {
+        outward = -deltaY;
+        tangent = deltaX;
+      }
+      if (position === 'bottom') {
+        outward = deltaY;
+        tangent = deltaX;
+      }
+      return { angle: Math.atan2(tangent, outward), distance: Math.hypot(deltaX, deltaY) };
+    };
+    const leftMetrics = metrics(leftNode);
+    const rightMetrics = metrics(rightNode);
+    if (leftMetrics.angle !== rightMetrics.angle) return leftMetrics.angle - rightMetrics.angle;
+    if (leftMetrics.distance !== rightMetrics.distance) return leftMetrics.distance - rightMetrics.distance;
+    if (left.oppositeId !== right.oppositeId) return left.oppositeId.localeCompare(right.oppositeId);
+    return left.key.localeCompare(right.key);
+  });
+}
+
+function mobileCanvasFacingLaneLimit(
+  source: TouchPoint,
+  target: TouchPoint,
+  sourcePosition: CanvasEdgePosition,
+  targetPosition: CanvasEdgePosition,
+): number | null {
+  if (sourcePosition === 'right' && targetPosition === 'left' && target.x >= source.x) return (target.x - source.x) / 2;
+  if (sourcePosition === 'left' && targetPosition === 'right' && source.x >= target.x) return (source.x - target.x) / 2;
+  if (sourcePosition === 'bottom' && targetPosition === 'top' && target.y >= source.y) return (target.y - source.y) / 2;
+  if (sourcePosition === 'top' && targetPosition === 'bottom' && source.y >= target.y) return (source.y - target.y) / 2;
+  return null;
+}
+
+function mobileCanvasEdgeGeometry(
+  edge: CanvasEdge,
+  edges: CanvasEdge[],
+  nodeGeometry: Map<string, MobileCanvasNodeGeometry>,
+): MobileCanvasEdgeGeometry | null {
+  const sourceNode = nodeGeometry.get(edge.source);
+  const targetNode = nodeGeometry.get(edge.target);
+  if (!sourceNode || !targetNode) return null;
+  const sourcePosition = mobileCanvasEndpointPosition(edge, 'source', nodeGeometry);
+  const targetPosition = mobileCanvasEndpointPosition(edge, 'target', nodeGeometry);
+  const sourceAnchor = mobileCanvasAnchorCoordinates(sourceNode, sourcePosition, { x: sourceNode.centerX, y: sourceNode.centerY });
+  const targetAnchor = mobileCanvasAnchorCoordinates(targetNode, targetPosition, { x: targetNode.centerX, y: targetNode.centerY });
+  const sourceSiblings = mobileCanvasEndpointSiblings(edges, edge.source, sourcePosition, nodeGeometry);
+  const targetSiblings = mobileCanvasEndpointSiblings(edges, edge.target, targetPosition, nodeGeometry);
+  const sourceIndex = Math.max(0, sourceSiblings.findIndex((candidate) => candidate.key === mobileCanvasEndpointSiblingKey(edge, 'source')));
+  const targetIndex = Math.max(0, targetSiblings.findIndex((candidate) => candidate.key === mobileCanvasEndpointSiblingKey(edge, 'target')));
+  const sourceAxisSize = isHorizontalCanvasEdgePosition(sourcePosition) ? sourceNode.height : sourceNode.width;
+  const targetAxisSize = isHorizontalCanvasEdgePosition(targetPosition) ? targetNode.height : targetNode.width;
+  const sourceOffset = mobileCanvasSlotOffset(sourceIndex, sourceSiblings.length, sourceAxisSize);
+  const targetOffset = mobileCanvasSlotOffset(targetIndex, targetSiblings.length, targetAxisSize);
+  const anchoredSource = {
+    x: isHorizontalCanvasEdgePosition(sourcePosition) ? sourceAnchor.x : sourceAnchor.x + sourceOffset,
+    y: isHorizontalCanvasEdgePosition(sourcePosition) ? sourceAnchor.y + sourceOffset : sourceAnchor.y,
+  };
+  const anchoredTarget = {
+    x: isHorizontalCanvasEdgePosition(targetPosition) ? targetAnchor.x : targetAnchor.x + targetOffset,
+    y: isHorizontalCanvasEdgePosition(targetPosition) ? targetAnchor.y + targetOffset : targetAnchor.y,
+  };
+  const sourceDirection = {
+    x: sourcePosition === 'left' ? -1 : sourcePosition === 'right' ? 1 : 0,
+    y: sourcePosition === 'top' ? -1 : sourcePosition === 'bottom' ? 1 : 0,
+  };
+  const targetDirection = {
+    x: targetPosition === 'left' ? -1 : targetPosition === 'right' ? 1 : 0,
+    y: targetPosition === 'top' ? -1 : targetPosition === 'bottom' ? 1 : 0,
+  };
+  const baseLaneDistance = Math.max(
+    MOBILE_CANVAS_EDGE_LANE,
+    Math.min(Math.max(Math.abs(anchoredTarget.x - anchoredSource.x), Math.abs(anchoredTarget.y - anchoredSource.y)) * 0.32, 96),
+  );
+  const facingLaneLimit = mobileCanvasFacingLaneLimit(anchoredSource, anchoredTarget, sourcePosition, targetPosition);
+  const laneDistance = facingLaneLimit == null ? baseLaneDistance : Math.max(0, Math.min(baseLaneDistance, facingLaneLimit));
+  return {
+    sourceX: anchoredSource.x,
+    sourceY: anchoredSource.y,
+    controlSourceX: anchoredSource.x + sourceDirection.x * laneDistance,
+    controlSourceY: anchoredSource.y + sourceDirection.y * laneDistance,
+    controlTargetX: anchoredTarget.x + targetDirection.x * laneDistance,
+    controlTargetY: anchoredTarget.y + targetDirection.y * laneDistance,
+    targetX: anchoredTarget.x,
+    targetY: anchoredTarget.y,
+    labelX: (anchoredSource.x + anchoredTarget.x) / 2,
+    labelY: (anchoredSource.y + anchoredTarget.y) / 2,
+  };
+}
+
+function buildCurvedCanvasEdgePath(geometry: MobileCanvasEdgeGeometry): string {
+  return `M ${geometry.sourceX} ${geometry.sourceY} C ${geometry.controlSourceX} ${geometry.controlSourceY}, ${geometry.controlTargetX} ${geometry.controlTargetY}, ${geometry.targetX} ${geometry.targetY}`;
+}
+
+function orthogonalCanvasEdgePoints(geometry: MobileCanvasEdgeGeometry): TouchPoint[] {
+  const sourceHorizontal = geometry.controlSourceX !== geometry.sourceX;
+  const targetHorizontal = geometry.controlTargetX !== geometry.targetX;
+  if (sourceHorizontal && targetHorizontal) {
+    const midX = (geometry.controlSourceX + geometry.controlTargetX) / 2;
+    return [
+      { x: geometry.sourceX, y: geometry.sourceY },
+      { x: geometry.controlSourceX, y: geometry.controlSourceY },
+      { x: midX, y: geometry.controlSourceY },
+      { x: midX, y: geometry.controlTargetY },
+      { x: geometry.controlTargetX, y: geometry.controlTargetY },
+      { x: geometry.targetX, y: geometry.targetY },
+    ];
+  }
+  if (!sourceHorizontal && !targetHorizontal) {
+    const midY = (geometry.controlSourceY + geometry.controlTargetY) / 2;
+    return [
+      { x: geometry.sourceX, y: geometry.sourceY },
+      { x: geometry.controlSourceX, y: geometry.controlSourceY },
+      { x: geometry.controlSourceX, y: midY },
+      { x: geometry.controlTargetX, y: midY },
+      { x: geometry.controlTargetX, y: geometry.controlTargetY },
+      { x: geometry.targetX, y: geometry.targetY },
+    ];
+  }
+  if (!sourceHorizontal && targetHorizontal) {
+    return [
+      { x: geometry.sourceX, y: geometry.sourceY },
+      { x: geometry.sourceX, y: geometry.targetY },
+      { x: geometry.targetX, y: geometry.targetY },
+    ];
+  }
+  return [
+    { x: geometry.sourceX, y: geometry.sourceY },
+    { x: geometry.targetX, y: geometry.sourceY },
+    { x: geometry.targetX, y: geometry.targetY },
+  ];
+}
+
+function buildOrthogonalCanvasEdgePath(geometry: MobileCanvasEdgeGeometry): string {
+  return orthogonalCanvasEdgePoints(geometry)
+    .map((point, index) => `${index === 0 ? 'M' : 'L'} ${point.x} ${point.y}`)
+    .join(' ');
+}
+
+function orthogonalCanvasEdgeLabelPosition(geometry: MobileCanvasEdgeGeometry): TouchPoint {
+  const points = orthogonalCanvasEdgePoints(geometry);
+  let best = { start: { x: geometry.sourceX, y: geometry.sourceY }, end: { x: geometry.targetX, y: geometry.targetY }, length: 0 };
+  for (let index = 1; index < points.length; index += 1) {
+    const start = points[index - 1];
+    const end = points[index];
+    const length = Math.hypot(end.x - start.x, end.y - start.y);
+    if (length > best.length) {
+      best = { start, end, length };
+    }
+  }
+  return { x: (best.start.x + best.end.x) / 2, y: (best.start.y + best.end.y) / 2 };
+}
+
+function buildMobileCanvasEdges(edges: CanvasEdge[], nodes: Map<string, CanvasNode>): MobileCanvasEdgeRender[] {
+  const nodeGeometry = new Map(Array.from(nodes.entries()).map(([id, node]) => [
+    id,
+    {
+      centerX: node.position.x + canvasNodeWidth(node) / 2,
+      centerY: node.position.y + canvasNodeHeight(node) / 2,
+      width: canvasNodeWidth(node),
+      height: canvasNodeHeight(node),
+    } satisfies MobileCanvasNodeGeometry,
+  ]));
+  return edges.flatMap((edge) => {
+    const geometry = mobileCanvasEdgeGeometry(edge, edges, nodeGeometry);
+    if (!geometry) return [];
+    const labelPosition = edge.routingStyle === 'orthogonal'
+      ? orthogonalCanvasEdgeLabelPosition(geometry)
+      : { x: geometry.labelX, y: geometry.labelY };
+    return [{
+      id: edge.id,
+      path: edge.routingStyle === 'orthogonal'
+        ? buildOrthogonalCanvasEdgePath(geometry)
+        : buildCurvedCanvasEdgePath(geometry),
+      label: edge.label?.trim() ?? '',
+      labelX: labelPosition.x,
+      labelY: labelPosition.y,
+      lineStyle: edge.lineStyle ?? 'solid',
+      animated: edge.animated ?? false,
+      animationReverse: edge.animationReverse ?? false,
+      markerStart: edge.markerStart ?? false,
+      markerEnd: edge.markerEnd ?? false,
+    }];
+  });
 }
 
 function CanvasMobileViewer({
@@ -510,7 +877,7 @@ function CanvasMobileViewer({
 }) {
   const stageRef = useRef<HTMLElement | null>(null);
   const dragRef = useRef<TouchPoint | null>(null);
-  const pinchRef = useRef<{ distance: number; center: TouchPoint } | null>(null);
+  const pinchRef = useRef<{ distance: number; center: TouchPoint; zoom: number; pan: TouchPoint } | null>(null);
   const [pan, setPan] = useState<TouchPoint>({ x: 0, y: 0 });
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
   const [animateEdges, setAnimateEdges] = useState(false);
@@ -518,6 +885,7 @@ function CanvasMobileViewer({
   const lastFitKeyRef = useRef<string | null>(null);
   const bounds = useMemo(() => computeCanvasBounds(canvas.nodes), [canvas.nodes]);
   const nodeById = useMemo(() => new Map(canvas.nodes.map((node) => [node.id, node])), [canvas.nodes]);
+  const renderedEdges = useMemo(() => buildMobileCanvasEdges(canvas.edges, nodeById), [canvas.edges, nodeById]);
   const selectedNode = selectedNodeId ? nodeById.get(selectedNodeId) ?? null : null;
 
   function fitToStage() {
@@ -526,9 +894,13 @@ function CanvasMobileViewer({
     const fitKey = `${bounds.width}:${bounds.height}:${resetToken}:${stage.clientWidth}:${stage.clientHeight}`;
     if (lastFitKeyRef.current === fitKey) return;
     lastFitKeyRef.current = fitKey;
+    const margin = Math.max(48, Math.min(stage.clientWidth, stage.clientHeight) * 0.12);
     const fitZoom = clamp(
-      Math.min((stage.clientWidth - 28) / bounds.width, (stage.clientHeight - 28) / bounds.height),
-      0.08,
+      Math.min(
+        Math.max(1, stage.clientWidth - margin * 2) / bounds.width,
+        Math.max(1, stage.clientHeight - margin * 2) / bounds.height,
+      ),
+      0.03,
       1.25,
     );
     setZoom(Number(fitZoom.toFixed(3)));
@@ -544,11 +916,12 @@ function CanvasMobileViewer({
   function clampCanvasPan(next: TouchPoint, nextZoom = zoom): TouchPoint {
     const stage = stageRef.current;
     if (!stage) return next;
-    const overflowX = Math.max(0, bounds.width * nextZoom - stage.clientWidth);
-    const overflowY = Math.max(0, bounds.height * nextZoom - stage.clientHeight);
+    const margin = Math.max(40, Math.min(stage.clientWidth, stage.clientHeight) * 0.16);
+    const overflowX = Math.max(0, bounds.width * nextZoom - (stage.clientWidth - margin * 2));
+    const overflowY = Math.max(0, bounds.height * nextZoom - (stage.clientHeight - margin * 2));
     return {
-      x: clamp(next.x, -overflowX / 2 - 80, overflowX / 2 + 80),
-      y: clamp(next.y, -overflowY / 2 - 80, overflowY / 2 + 80),
+      x: clamp(next.x, -overflowX / 2 - margin, overflowX / 2 + margin),
+      y: clamp(next.y, -overflowY / 2 - margin, overflowY / 2 + margin),
     };
   }
 
@@ -556,7 +929,7 @@ function CanvasMobileViewer({
     if (event.touches.length === 2) {
       const first = touchPoint(event.touches[0]);
       const second = touchPoint(event.touches[1]);
-      pinchRef.current = { distance: distanceBetween(first, second), center: midpoint(first, second) };
+      pinchRef.current = { distance: distanceBetween(first, second), center: midpoint(first, second), zoom, pan };
       dragRef.current = null;
       return;
     }
@@ -575,20 +948,20 @@ function CanvasMobileViewer({
       const distance = distanceBetween(first, second);
       const previous = pinchRef.current;
       const ratio = distance / Math.max(1, previous.distance);
-      pinchRef.current = { distance, center };
-      setZoom((value) => {
-        const nextZoom = clamp(Number((value * ratio).toFixed(3)), 0.25, 3);
-        setPan((current) =>
-          clampCanvasPan(
-            {
-              x: current.x + center.x - previous.center.x,
-              y: current.y + center.y - previous.center.y,
-            },
-            nextZoom,
-          ),
-        );
-        return nextZoom;
-      });
+      const nextZoom = clamp(Number((previous.zoom * ratio).toFixed(3)), 0.03, 3);
+      const stage = stageRef.current;
+      const stageCenter = stage ? { x: stage.clientWidth / 2, y: stage.clientHeight / 2 } : { x: 0, y: 0 };
+      const zoomRatio = nextZoom / Math.max(0.001, previous.zoom);
+      setZoom(nextZoom);
+      setPan(
+        clampCanvasPan(
+          {
+            x: center.x - stageCenter.x - zoomRatio * (previous.center.x - stageCenter.x - previous.pan.x),
+            y: center.y - stageCenter.y - zoomRatio * (previous.center.y - stageCenter.y - previous.pan.y),
+          },
+          nextZoom,
+        ),
+      );
       return;
     }
     if (event.touches.length === 1 && dragRef.current) {
@@ -610,10 +983,21 @@ function CanvasMobileViewer({
     pinchRef.current = null;
   }
 
-  const worldStyle = {
-    width: `${bounds.width}px`,
-    height: `${bounds.height}px`,
-    transform: `translate3d(${pan.x}px, ${pan.y}px, 0) scale(${zoom})`,
+  const cameraStyle = {
+    '--canvas-origin-x': `${(stageWidth || 0) / 2 + pan.x}px`,
+    '--canvas-origin-y': `${(stageHeight || 0) / 2 + pan.y}px`,
+    '--canvas-pan-x': `${pan.x}px`,
+    '--canvas-pan-y': `${pan.y}px`,
+    '--canvas-zoom': zoom,
+    '--canvas-center-x': `${bounds.centerX}px`,
+    '--canvas-center-y': `${bounds.centerY}px`,
+  } as CSSProperties;
+  const gridPadding = 960;
+  const gridStyle = {
+    left: `${bounds.minX - gridPadding}px`,
+    top: `${bounds.minY - gridPadding}px`,
+    width: `${bounds.width + gridPadding * 2}px`,
+    height: `${bounds.height + gridPadding * 2}px`,
   } as CSSProperties;
 
   return (
@@ -644,32 +1028,110 @@ function CanvasMobileViewer({
           message="This canvas does not contain any nodes yet."
         />
       ) : (
-        <div className={`mobile-canvas-world ${animateEdges ? 'animate-edges' : ''}`} style={worldStyle}>
-          <svg className="mobile-canvas-edges" viewBox={`0 0 ${bounds.width} ${bounds.height}`} aria-hidden>
-            {canvas.edges.map((edge) => {
-              const source = nodeById.get(edge.source);
-              const target = nodeById.get(edge.target);
-              if (!source || !target) return null;
-              const sourceX = source.position.x - bounds.minX + bounds.padding + source.width / 2;
-              const sourceY = source.position.y - bounds.minY + bounds.padding + source.height / 2;
-              const targetX = target.position.x - bounds.minX + bounds.padding + target.width / 2;
-              const targetY = target.position.y - bounds.minY + bounds.padding + target.height / 2;
-              const curve = Math.max(40, Math.abs(targetX - sourceX) * 0.45);
-              return (
+        <div className={`mobile-canvas-camera ${animateEdges ? 'animate-edges' : ''}`} style={cameraStyle}>
+          <div className="mobile-canvas-grid" style={gridStyle} aria-hidden />
+          <svg
+            className="mobile-canvas-edges"
+            style={{
+              left: `${bounds.minX}px`,
+              top: `${bounds.minY}px`,
+              width: `${bounds.width}px`,
+              height: `${bounds.height}px`,
+            }}
+            viewBox={`${bounds.minX} ${bounds.minY} ${bounds.width} ${bounds.height}`}
+            aria-hidden
+          >
+            <defs>
+              <marker
+                id="mobile-canvas-edge-arrow-end"
+                viewBox="0 0 12 10"
+                refX="5.6"
+                refY="5"
+                markerWidth="10"
+                markerHeight="10"
+                markerUnits="strokeWidth"
+                orient="auto"
+              >
                 <path
-                  key={edge.id}
-                  className={`mobile-canvas-edge ${edge.lineStyle ?? 'solid'} ${edge.animated ? 'edge-animated' : ''}`}
-                  d={`M ${sourceX} ${sourceY} C ${sourceX + curve} ${sourceY}, ${targetX - curve} ${targetY}, ${targetX} ${targetY}`}
+                  d="M10.6 5L5.2 1.6C3.6 0.6 1.6 1.75 1.6 3.62V6.38C1.6 8.25 3.6 9.4 5.2 8.4L10.6 5Z"
+                  fill="color-mix(in oklch, var(--primary) 82%, white 18%)"
+                  stroke="color-mix(in oklch, var(--background) 88%, transparent)"
+                  strokeWidth="0.8"
+                  strokeLinejoin="round"
                 />
-              );
-            })}
+              </marker>
+              <marker
+                id="mobile-canvas-edge-arrow-start"
+                viewBox="0 0 12 10"
+                refX="5.6"
+                refY="5"
+                markerWidth="10"
+                markerHeight="10"
+                markerUnits="strokeWidth"
+                orient="auto-start-reverse"
+              >
+                <path
+                  d="M10.6 5L5.2 1.6C3.6 0.6 1.6 1.75 1.6 3.62V6.38C1.6 8.25 3.6 9.4 5.2 8.4L10.6 5Z"
+                  fill="color-mix(in oklch, var(--primary) 82%, white 18%)"
+                  stroke="color-mix(in oklch, var(--background) 88%, transparent)"
+                  strokeWidth="0.8"
+                  strokeLinejoin="round"
+                />
+              </marker>
+            </defs>
+            {renderedEdges.map((edge) => (
+              <g key={edge.id}>
+                <path
+                  className={`mobile-canvas-edge ${edge.lineStyle ?? 'solid'}`}
+                  d={edge.path}
+                  markerStart={edge.markerStart ? 'url(#mobile-canvas-edge-arrow-start)' : undefined}
+                  markerEnd={edge.markerEnd ? 'url(#mobile-canvas-edge-arrow-end)' : undefined}
+                >
+                  {edge.animated && animateEdges && edge.lineStyle !== 'solid' ? (
+                    <animate
+                      attributeName="stroke-dashoffset"
+                      from={edge.animationReverse ? '-18' : '18'}
+                      to="0"
+                      dur="700ms"
+                      repeatCount="indefinite"
+                    />
+                  ) : null}
+                </path>
+                {edge.animated && animateEdges && edge.lineStyle === 'solid' ? (
+                  <path
+                    className={`mobile-canvas-edge-animation ${edge.lineStyle ?? 'solid'}`}
+                    d={edge.path}
+                  >
+                    <animate
+                      attributeName="stroke-dashoffset"
+                      from={edge.animationReverse ? '-268' : '268'}
+                      to="0"
+                      dur="1200ms"
+                      repeatCount="indefinite"
+                    />
+                  </path>
+                ) : null}
+              </g>
+            ))}
           </svg>
+          {renderedEdges.map((edge) => {
+            if (!edge.label) return null;
+            return (
+              <div
+                key={`${edge.id}-label`}
+                className="mobile-canvas-edge-label"
+                style={{ left: `${edge.labelX}px`, top: `${edge.labelY}px` }}
+              >
+                {edge.label}
+              </div>
+            );
+          })}
           {canvas.nodes.map((node) => (
             <MobileCanvasNodeView
               key={node.id}
               node={node}
               selected={selectedNodeId === node.id}
-              style={mobileCanvasNodeStyle(node, bounds)}
+              style={mobileCanvasNodeStyle(node)}
               onSelect={() => setSelectedNodeId(node.id)}
             />
           ))}

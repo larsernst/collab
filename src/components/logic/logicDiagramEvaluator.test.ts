@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
-import type { LogicDiagramNode, LogicDiagramWire } from '../../types/logicDiagram';
-import { evaluateLogicDiagram } from './logicDiagramEvaluator';
+import type { LogicComponentDefinition, LogicDiagramNode, LogicDiagramWire } from '../../types/logicDiagram';
+import { evaluateLogicDiagram, componentInputHandle, componentOutputHandle } from './logicDiagramEvaluator';
 
 function input(id: string, value: boolean): LogicDiagramNode {
   return { id, kind: 'input', position: { x: 0, y: 0 }, value };
@@ -9,6 +9,38 @@ function input(id: string, value: boolean): LogicDiagramNode {
 
 function wire(id: string, source: string, target: string, targetHandle = 'in'): LogicDiagramWire {
   return { id, source, target, sourceHandle: 'out', targetHandle };
+}
+
+function halfAdderComponent(version = 1): LogicComponentDefinition {
+  return {
+    id: 'half-adder',
+    name: 'Half Adder',
+    version,
+    createdAt: 1,
+    updatedAt: version,
+    ports: [
+      { id: 'a', label: 'A', direction: 'input', sourceNodeId: 'a' },
+      { id: 'b', label: 'B', direction: 'input', sourceNodeId: 'b' },
+      { id: 'sum', label: 'Sum', direction: 'output', sourceNodeId: 'sum-out' },
+      { id: 'carry', label: 'Carry', direction: 'output', sourceNodeId: 'carry-out' },
+    ],
+    nodes: [
+      { id: 'a', kind: 'input', position: { x: 0, y: 0 } },
+      { id: 'b', kind: 'input', position: { x: 0, y: 0 } },
+      { id: 'xor', kind: 'xor', position: { x: 0, y: 0 } },
+      { id: 'and', kind: 'and', position: { x: 0, y: 0 } },
+      { id: 'sum-out', kind: 'output', position: { x: 0, y: 0 } },
+      { id: 'carry-out', kind: 'output', position: { x: 0, y: 0 } },
+    ],
+    wires: [
+      wire('a-xor', 'a', 'xor', 'in-a'),
+      wire('b-xor', 'b', 'xor', 'in-b'),
+      wire('a-and', 'a', 'and', 'in-a'),
+      wire('b-and', 'b', 'and', 'in-b'),
+      wire('xor-sum', 'xor', 'sum-out'),
+      wire('and-carry', 'and', 'carry-out'),
+    ],
+  };
 }
 
 describe('logic diagram evaluator', () => {
@@ -144,5 +176,88 @@ describe('logic diagram evaluator', () => {
     expect(result.nodeValues['not-a']).toBeUndefined();
     expect(result.nodeValues['not-b']).toBeUndefined();
     expect(result.warnings.some((warning) => warning.code === 'cycle')).toBe(true);
+  });
+
+  it('evaluates a snapshot component as a single multi-output node', () => {
+    const component = halfAdderComponent();
+    const nodes: LogicDiagramNode[] = [
+      input('a', true),
+      input('b', true),
+      {
+        id: 'ha',
+        kind: 'component',
+        position: { x: 0, y: 0 },
+        component: { mode: 'snapshot', componentId: component.id, definition: component },
+      },
+      { id: 'sum', kind: 'output', position: { x: 0, y: 0 } },
+      { id: 'carry', kind: 'output', position: { x: 0, y: 0 } },
+    ];
+    const wires: LogicDiagramWire[] = [
+      { id: 'a-ha', source: 'a', target: 'ha', sourceHandle: 'out', targetHandle: componentInputHandle('a') },
+      { id: 'b-ha', source: 'b', target: 'ha', sourceHandle: 'out', targetHandle: componentInputHandle('b') },
+      { id: 'ha-sum', source: 'ha', target: 'sum', sourceHandle: componentOutputHandle('sum'), targetHandle: 'in' },
+      { id: 'ha-carry', source: 'ha', target: 'carry', sourceHandle: componentOutputHandle('carry'), targetHandle: 'in' },
+    ];
+
+    const result = evaluateLogicDiagram(nodes, wires);
+
+    expect(result.nodeValues.sum).toBe(false);
+    expect(result.nodeValues.carry).toBe(true);
+    expect(result.wireValues['ha-sum']).toBe(false);
+    expect(result.wireValues['ha-carry']).toBe(true);
+  });
+
+  it('uses the latest library definition for linked components', () => {
+    const snapshot = halfAdderComponent(1);
+    const latest = {
+      ...halfAdderComponent(2),
+      ports: snapshot.ports,
+      nodes: snapshot.nodes.map((node) => node.id === 'and' ? { ...node, kind: 'or' as const } : node),
+    };
+    const nodes: LogicDiagramNode[] = [
+      input('a', true),
+      input('b', false),
+      {
+        id: 'ha',
+        kind: 'component',
+        position: { x: 0, y: 0 },
+        component: { mode: 'linked', componentId: snapshot.id, definition: snapshot },
+      },
+      { id: 'carry', kind: 'output', position: { x: 0, y: 0 } },
+    ];
+    const wires: LogicDiagramWire[] = [
+      { id: 'a-ha', source: 'a', target: 'ha', sourceHandle: 'out', targetHandle: componentInputHandle('a') },
+      { id: 'b-ha', source: 'b', target: 'ha', sourceHandle: 'out', targetHandle: componentInputHandle('b') },
+      { id: 'ha-carry', source: 'ha', target: 'carry', sourceHandle: componentOutputHandle('carry'), targetHandle: 'in' },
+    ];
+
+    expect(evaluateLogicDiagram(nodes, wires).nodeValues.carry).toBe(false);
+    expect(evaluateLogicDiagram(nodes, wires, { components: [latest] }).nodeValues.carry).toBe(true);
+  });
+
+  it('falls back to cached linked component definitions when the library entry is missing', () => {
+    const component = halfAdderComponent();
+    const nodes: LogicDiagramNode[] = [
+      input('a', true),
+      input('b', false),
+      {
+        id: 'ha',
+        kind: 'component',
+        label: 'HA',
+        position: { x: 0, y: 0 },
+        component: { mode: 'linked', componentId: component.id, definition: component },
+      },
+      { id: 'sum', kind: 'output', position: { x: 0, y: 0 } },
+    ];
+    const wires: LogicDiagramWire[] = [
+      { id: 'a-ha', source: 'a', target: 'ha', sourceHandle: 'out', targetHandle: componentInputHandle('a') },
+      { id: 'b-ha', source: 'b', target: 'ha', sourceHandle: 'out', targetHandle: componentInputHandle('b') },
+      { id: 'ha-sum', source: 'ha', target: 'sum', sourceHandle: componentOutputHandle('sum'), targetHandle: 'in' },
+    ];
+
+    const result = evaluateLogicDiagram(nodes, wires);
+
+    expect(result.nodeValues.sum).toBe(true);
+    expect(result.warnings.some((warning) => warning.code === 'missing-component')).toBe(true);
   });
 });

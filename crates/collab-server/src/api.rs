@@ -1360,6 +1360,256 @@ pub async fn list_vault_templates(
     )))
 }
 
+fn logic_component_now_ms() -> i64 {
+    chrono::Utc::now().timestamp_millis()
+}
+
+fn logic_component_string_field(
+    component: &Value,
+    field: &str,
+    request_id: &str,
+) -> Result<String, ApiFailure> {
+    component
+        .get(field)
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
+        .ok_or_else(|| {
+            ApiFailure::path_invalid(
+                format!("Logic component must include a non-empty {field}."),
+                request_id.to_owned(),
+            )
+        })
+}
+
+fn logic_component_i64_field(component: &Value, field: &str, fallback: i64) -> i64 {
+    component
+        .get(field)
+        .and_then(Value::as_i64)
+        .unwrap_or(fallback)
+}
+
+fn logic_component_with_metadata(
+    mut component: Value,
+    id: String,
+    name: String,
+    version: i64,
+    created_at: i64,
+    updated_at: i64,
+) -> Value {
+    component["id"] = Value::String(id);
+    component["name"] = Value::String(name);
+    component["version"] = Value::from(version.max(1));
+    component["createdAt"] = Value::from(created_at);
+    component["updatedAt"] = Value::from(updated_at);
+    component
+}
+
+pub async fn list_logic_components(
+    State(state): State<AppState>,
+    Extension(request_id): Extension<String>,
+    headers: HeaderMap,
+    Path(vault_id): Path<Uuid>,
+) -> Result<Json<DataResponse<Vec<Value>>>, ApiFailure> {
+    let actor = require_authenticated_user(&state, &headers, &request_id).await?;
+    require_capability(
+        &state.database,
+        vault_id,
+        user_uuid(&actor.user),
+        Capability::VaultRead,
+        &request_id,
+    )
+    .await?;
+    let components = sqlx::query(
+        r#"
+        SELECT payload
+        FROM hosted_logic_components
+        WHERE vault_id = $1
+        ORDER BY lower(name), updated_at DESC
+        "#,
+    )
+    .bind(vault_id)
+    .fetch_all(&state.database)
+    .await
+    .map_err(|_| ApiFailure::server(request_id.clone()))?
+    .into_iter()
+    .map(|row| row.get::<Value, _>("payload"))
+    .collect();
+    Ok(Json(DataResponse::new(components)))
+}
+
+pub async fn save_logic_component(
+    State(state): State<AppState>,
+    Extension(request_id): Extension<String>,
+    headers: HeaderMap,
+    Path(vault_id): Path<Uuid>,
+    Json(component): Json<Value>,
+) -> Result<Json<DataResponse<Value>>, ApiFailure> {
+    let actor = require_authenticated_user(&state, &headers, &request_id).await?;
+    require_active_capability(
+        &state.database,
+        vault_id,
+        &actor.user,
+        Capability::FileWrite,
+        &request_id,
+    )
+    .await?;
+    let requested_id = logic_component_string_field(&component, "id", &request_id)?;
+    let name = logic_component_string_field(&component, "name", &request_id)?;
+    let (_, normalized_name) = collab_core::normalize_hosted_name(&name)
+        .map_err(|error| ApiFailure::path_invalid(error.to_string(), request_id.clone()))?;
+    let now = logic_component_now_ms();
+    let actor_id = user_uuid(&actor.user);
+    let existing = sqlx::query(
+        "SELECT id, version, payload FROM hosted_logic_components WHERE vault_id = $1 AND normalized_name = $2",
+    )
+    .bind(vault_id)
+    .bind(&normalized_name)
+    .fetch_optional(&state.database)
+    .await
+    .map_err(|_| ApiFailure::server(request_id.clone()))?;
+
+    let (id, version, created_at) = if let Some(existing) = existing {
+        let existing_payload = existing.get::<Value, _>("payload");
+        (
+            existing.get::<String, _>("id"),
+            existing.get::<i32, _>("version") as i64 + 1,
+            logic_component_i64_field(&existing_payload, "createdAt", now),
+        )
+    } else {
+        (
+            requested_id,
+            logic_component_i64_field(&component, "version", 1).max(1),
+            logic_component_i64_field(&component, "createdAt", now),
+        )
+    };
+    let payload = logic_component_with_metadata(
+        component,
+        id.clone(),
+        name.clone(),
+        version,
+        created_at,
+        now,
+    );
+
+    sqlx::query(
+        r#"
+        INSERT INTO hosted_logic_components
+          (id, vault_id, name, normalized_name, version, payload, created_by)
+        VALUES ($1, $2, $3, $4, $5, $6, $7)
+        ON CONFLICT (vault_id, normalized_name) DO UPDATE SET
+          name = EXCLUDED.name,
+          version = EXCLUDED.version,
+          payload = EXCLUDED.payload,
+          updated_at = NOW()
+        "#,
+    )
+    .bind(id)
+    .bind(vault_id)
+    .bind(name)
+    .bind(normalized_name)
+    .bind(version as i32)
+    .bind(&payload)
+    .bind(actor_id)
+    .execute(&state.database)
+    .await
+    .map_err(|_| ApiFailure::server(request_id.clone()))?;
+    Ok(Json(DataResponse::new(payload)))
+}
+
+pub async fn update_logic_component(
+    State(state): State<AppState>,
+    Extension(request_id): Extension<String>,
+    headers: HeaderMap,
+    Path((vault_id, component_id)): Path<(Uuid, String)>,
+    Json(component): Json<Value>,
+) -> Result<Json<DataResponse<Value>>, ApiFailure> {
+    let actor = require_authenticated_user(&state, &headers, &request_id).await?;
+    require_active_capability(
+        &state.database,
+        vault_id,
+        &actor.user,
+        Capability::FileWrite,
+        &request_id,
+    )
+    .await?;
+    let name = logic_component_string_field(&component, "name", &request_id)?;
+    let (_, normalized_name) = collab_core::normalize_hosted_name(&name)
+        .map_err(|error| ApiFailure::path_invalid(error.to_string(), request_id.clone()))?;
+    let existing = sqlx::query(
+        "SELECT version, payload FROM hosted_logic_components WHERE vault_id = $1 AND id = $2",
+    )
+    .bind(vault_id)
+    .bind(&component_id)
+    .fetch_optional(&state.database)
+    .await
+    .map_err(|_| ApiFailure::server(request_id.clone()))?
+    .ok_or_else(|| ApiFailure::not_found(request_id.clone()))?;
+    let existing_payload = existing.get::<Value, _>("payload");
+    let now = logic_component_now_ms();
+    let version = existing.get::<i32, _>("version") as i64 + 1;
+    let created_at = logic_component_i64_field(&existing_payload, "createdAt", now);
+    let payload = logic_component_with_metadata(
+        component,
+        component_id.clone(),
+        name.clone(),
+        version,
+        created_at,
+        now,
+    );
+    let updated = sqlx::query(
+        r#"
+        UPDATE hosted_logic_components
+        SET name = $1, normalized_name = $2, version = $3, payload = $4, updated_at = NOW()
+        WHERE vault_id = $5 AND id = $6
+        "#,
+    )
+    .bind(name)
+    .bind(normalized_name)
+    .bind(version as i32)
+    .bind(&payload)
+    .bind(vault_id)
+    .bind(&component_id)
+    .execute(&state.database)
+    .await
+    .map_err(|error| {
+        if matches!(error, sqlx::Error::Database(ref database_error) if database_error.is_unique_violation()) {
+            ApiFailure::path_invalid("A logic component with that name already exists.", request_id.clone())
+        } else {
+            ApiFailure::server(request_id.clone())
+        }
+    })?;
+    if updated.rows_affected() == 0 {
+        return Err(ApiFailure::not_found(request_id));
+    }
+    Ok(Json(DataResponse::new(payload)))
+}
+
+pub async fn delete_logic_component(
+    State(state): State<AppState>,
+    Extension(request_id): Extension<String>,
+    headers: HeaderMap,
+    Path((vault_id, component_id)): Path<(Uuid, String)>,
+) -> Result<StatusCode, ApiFailure> {
+    let actor = require_authenticated_user(&state, &headers, &request_id).await?;
+    require_active_capability(
+        &state.database,
+        vault_id,
+        &actor.user,
+        Capability::FileWrite,
+        &request_id,
+    )
+    .await?;
+    sqlx::query("DELETE FROM hosted_logic_components WHERE vault_id = $1 AND id = $2")
+        .bind(vault_id)
+        .bind(component_id)
+        .execute(&state.database)
+        .await
+        .map_err(|_| ApiFailure::server(request_id.clone()))?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
 pub async fn list_chat_messages(
     State(state): State<AppState>,
     Extension(request_id): Extension<String>,

@@ -63,6 +63,9 @@ vi.mock('./tauri', () => ({
     changeVaultPassword: vi.fn(),
     importAssetIntoVault: vi.fn(),
     exportVault: vi.fn(),
+    listLogicComponents: vi.fn(),
+    saveLogicComponent: vi.fn(),
+    deleteLogicComponent: vi.fn(),
     replicaReadCachedDocument: vi.fn(),
   },
 }));
@@ -160,6 +163,7 @@ describe('LocalVaultClient', () => {
       encryption: expect.any(Object),
       externalAssetImport: expect.any(Object),
       archiveExport: expect.any(Object),
+      logicComponents: expect.any(Object),
     });
   });
 
@@ -174,6 +178,31 @@ describe('LocalVaultClient', () => {
     expect(tauriCommands.unlockVault).toHaveBeenCalledWith('/vault', 'password');
     expect(tauriCommands.importAssetIntoVault).toHaveBeenCalledWith('/vault', '/tmp/image.png', 'Pictures');
     expect(tauriCommands.exportVault).toHaveBeenCalledWith('/vault', '/tmp/vault.zip');
+  });
+
+  it('routes local logic component library operations through Tauri wrappers', async () => {
+    const component = {
+      id: 'component-1',
+      name: 'Half adder',
+      version: 1,
+      createdAt: 1,
+      updatedAt: 1,
+      ports: [],
+      nodes: [],
+      wires: [],
+    };
+    vi.mocked(tauriCommands.listLogicComponents).mockResolvedValue([component]);
+    vi.mocked(tauriCommands.saveLogicComponent).mockResolvedValue({ ...component, version: 2 });
+    vi.mocked(tauriCommands.deleteLogicComponent).mockResolvedValue(undefined);
+
+    const logicComponents = new LocalVaultClient(vault).runtime.logicComponents!;
+    await expect(logicComponents.list()).resolves.toEqual([component]);
+    await expect(logicComponents.save(component)).resolves.toEqual({ ...component, version: 2 });
+    await expect(logicComponents.delete('component-1')).resolves.toBeUndefined();
+
+    expect(tauriCommands.listLogicComponents).toHaveBeenCalledWith('/vault');
+    expect(tauriCommands.saveLogicComponent).toHaveBeenCalledWith('/vault', component);
+    expect(tauriCommands.deleteLogicComponent).toHaveBeenCalledWith('/vault', 'component-1');
   });
 
   it('maps local document hashes to opaque client versions', async () => {
@@ -277,6 +306,7 @@ describe('HostedVaultClient', () => {
     expect(client.capabilities).toEqual(HOSTED_VAULT_CAPABILITIES);
     expect(client.runtime).toEqual({
       externalAssetImport: expect.any(Object),
+      logicComponents: expect.any(Object),
       members: expect.any(Object),
     });
     await expect(client.listFiles()).resolves.toEqual(expect.arrayContaining([
@@ -345,6 +375,50 @@ describe('HostedVaultClient', () => {
       'POST',
       '/api/v1/vaults/hosted-vault/files/file-1/revisions',
       { expectedRevisionSequence: 3, content: '# Next' },
+    );
+  });
+
+  it('routes hosted logic component library operations through vault endpoints', async () => {
+    const component = {
+      id: 'component-1',
+      name: 'Half adder',
+      version: 1,
+      createdAt: 1,
+      updatedAt: 1,
+      ports: [],
+      nodes: [],
+      wires: [],
+    };
+    vi.mocked(tauriCommands.hostedVaultRequest)
+      .mockResolvedValueOnce([component])
+      .mockResolvedValueOnce({ ...component, version: 2 })
+      .mockResolvedValueOnce(undefined);
+
+    const logicComponents = new HostedVaultClient(hostedVault).runtime.logicComponents!;
+    await expect(logicComponents.list()).resolves.toEqual([component]);
+    await expect(logicComponents.save(component)).resolves.toEqual({ ...component, version: 2 });
+    await expect(logicComponents.delete('component 1')).resolves.toBeUndefined();
+
+    expect(tauriCommands.hostedVaultRequest).toHaveBeenNthCalledWith(
+      1,
+      'https://collab.example.test',
+      'GET',
+      '/api/v1/vaults/hosted-vault/logic-components',
+      undefined,
+    );
+    expect(tauriCommands.hostedVaultRequest).toHaveBeenNthCalledWith(
+      2,
+      'https://collab.example.test',
+      'POST',
+      '/api/v1/vaults/hosted-vault/logic-components',
+      component,
+    );
+    expect(tauriCommands.hostedVaultRequest).toHaveBeenNthCalledWith(
+      3,
+      'https://collab.example.test',
+      'DELETE',
+      '/api/v1/vaults/hosted-vault/logic-components/component%201',
+      undefined,
     );
   });
 
@@ -1392,10 +1466,12 @@ describe('VaultClient adapter contract parity', () => {
     expect(local.runtime.encryption).toBeDefined();
     expect(local.runtime.archiveExport).toBeDefined();
     expect(local.runtime.members).toBeUndefined();
+    expect(local.runtime.logicComponents).toBeDefined();
 
     expect(hosted.runtime.watch).toBeUndefined();
     expect(hosted.runtime.encryption).toBeUndefined();
     expect(hosted.runtime.members).toBeDefined();
+    expect(hosted.runtime.logicComponents).toBeDefined();
 
     // External asset import is available in both modes.
     expect(local.runtime.externalAssetImport).toBeDefined();

@@ -111,6 +111,15 @@ fn scope_note_snippets_dir(
     Ok(dir)
 }
 
+fn scope_logic_components_dir(vault_path: &str) -> Result<PathBuf, String> {
+    let dir = Path::new(vault_path)
+        .join(".collab")
+        .join("templates")
+        .join("logic-components");
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    Ok(dir)
+}
+
 fn note_snippet_scopes(include_vault_scope: bool) -> Vec<NoteSnippetScope> {
     if include_vault_scope {
         vec![NoteSnippetScope::Vault, NoteSnippetScope::App]
@@ -186,6 +195,14 @@ fn snippet_file_name(id: &str) -> String {
         safe
     };
     format!("{stem}.json")
+}
+
+fn logic_component_file_name(id: &str) -> String {
+    snippet_file_name(id)
+}
+
+fn logic_component_path(vault_path: &str, id: &str) -> Result<PathBuf, String> {
+    Ok(scope_logic_components_dir(vault_path)?.join(logic_component_file_name(id)))
 }
 
 fn snippet_path(
@@ -1051,6 +1068,109 @@ pub fn delete_note_snippet(
     snippet_id: String,
 ) -> Result<(), String> {
     let path = snippet_path(vault_path.as_deref(), &scope, &snippet_id)?;
+    if !path.exists() {
+        return Ok(());
+    }
+    std::fs::remove_file(path).map_err(|e| e.to_string())
+}
+
+fn load_logic_component_from_path(path: &Path, state: &State<AppState>) -> Result<Value, String> {
+    let raw = std::fs::read(path).map_err(|e| e.to_string())?;
+    let bytes = maybe_decrypt_vault_bytes(raw, state)?;
+    serde_json::from_slice(&bytes).map_err(|e| e.to_string())
+}
+
+fn logic_component_string_field<'a>(component: &'a Value, field: &str) -> Result<&'a str, String> {
+    component
+        .get(field)
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| format!("Logic component must include a non-empty {field}"))
+}
+
+fn logic_component_number_field(component: &Value, field: &str, fallback: u64) -> u64 {
+    component
+        .get(field)
+        .and_then(Value::as_u64)
+        .unwrap_or(fallback)
+}
+
+#[tauri::command]
+pub fn list_logic_components(
+    vault_path: String,
+    state: State<AppState>,
+) -> Result<Vec<Value>, String> {
+    let dir = scope_logic_components_dir(&vault_path)?;
+    let mut out = Vec::new();
+    for entry in std::fs::read_dir(dir).map_err(|e| e.to_string())? {
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(_) => continue,
+        };
+        let path = entry.path();
+        if path.extension().and_then(|ext| ext.to_str()) != Some("json") {
+            continue;
+        }
+        if let Ok(component) = load_logic_component_from_path(&path, &state) {
+            out.push(component);
+        }
+    }
+    out.sort_by(|a, b| {
+        let a_name = a.get("name").and_then(Value::as_str).unwrap_or_default();
+        let b_name = b.get("name").and_then(Value::as_str).unwrap_or_default();
+        a_name.to_lowercase().cmp(&b_name.to_lowercase())
+    });
+    Ok(out)
+}
+
+#[tauri::command]
+pub fn save_logic_component(
+    vault_path: String,
+    component: Value,
+    state: State<AppState>,
+) -> Result<Value, String> {
+    let id = logic_component_string_field(&component, "id")?.to_string();
+    let name = logic_component_string_field(&component, "name")?.to_string();
+    let now = now_ms();
+    let mut next = component;
+    let mut existing_same_name: Option<Value> = None;
+
+    for existing in list_logic_components(vault_path.clone(), state.clone())? {
+        let existing_name = existing
+            .get("name")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        if existing_name.eq_ignore_ascii_case(&name) {
+            existing_same_name = Some(existing);
+            break;
+        }
+    }
+
+    if let Some(existing) = existing_same_name {
+        let existing_id = logic_component_string_field(&existing, "id")?.to_string();
+        let version = logic_component_number_field(&existing, "version", 1).saturating_add(1);
+        next["id"] = Value::String(existing_id);
+        next["version"] = Value::from(version);
+        next["createdAt"] = Value::from(logic_component_number_field(&existing, "createdAt", now));
+    } else {
+        next["id"] = Value::String(id);
+        next["version"] = Value::from(logic_component_number_field(&next, "version", 1).max(1));
+        next["createdAt"] = Value::from(logic_component_number_field(&next, "createdAt", now));
+    }
+    next["updatedAt"] = Value::from(now);
+
+    let next_id = logic_component_string_field(&next, "id")?.to_string();
+    let path = logic_component_path(&vault_path, &next_id)?;
+    let bytes = serde_json::to_vec_pretty(&next).map_err(|e| e.to_string())?;
+    let bytes = maybe_encrypt_vault_bytes(&bytes, &state)?;
+    std::fs::write(path, bytes).map_err(|e| e.to_string())?;
+    Ok(next)
+}
+
+#[tauri::command]
+pub fn delete_logic_component(vault_path: String, component_id: String) -> Result<(), String> {
+    let path = logic_component_path(&vault_path, &component_id)?;
     if !path.exists() {
         return Ok(());
     }

@@ -110,6 +110,14 @@ pub fn build_router(state: AppState) -> Router {
             get(api::list_vault_templates),
         )
         .route(
+            "/api/v1/vaults/{vault_id}/logic-components",
+            get(api::list_logic_components).post(api::save_logic_component),
+        )
+        .route(
+            "/api/v1/vaults/{vault_id}/logic-components/{component_id}",
+            put(api::update_logic_component).delete(api::delete_logic_component),
+        )
+        .route(
             "/api/v1/vaults/{vault_id}/activity",
             get(api::vault_activity),
         )

@@ -15,6 +15,7 @@ import type {
   UserDirectoryEntry,
   VaultMeta,
 } from '../types/vault';
+import type { LogicComponentDefinition } from '../types/logicDiagram';
 import { vaultCan, vaultKind } from '../types/vault';
 import { tauriCommands } from './tauri';
 import {
@@ -63,6 +64,12 @@ export interface VaultArchiveExportCapability {
   exportTo(destinationPath: string): Promise<void>;
 }
 
+export interface LogicComponentsCapability {
+  list(): Promise<LogicComponentDefinition[]>;
+  save(component: LogicComponentDefinition): Promise<LogicComponentDefinition>;
+  delete(componentId: string): Promise<void>;
+}
+
 /**
  * Server-authoritative membership management for hosted vaults. Not available for
  * local vaults, which no longer use role authorization.
@@ -89,6 +96,7 @@ export interface VaultRuntimeCapabilities {
   externalAssetImport?: ExternalAssetImportCapability;
   archiveExport?: VaultArchiveExportCapability;
   members?: VaultMembersCapability;
+  logicComponents?: LogicComponentsCapability;
 }
 
 export interface VaultDocument {
@@ -460,6 +468,12 @@ export class HostedVaultClient implements VaultClient {
         import: (sourcePath, targetFolder) => this.uploadExternalAsset(sourcePath, targetFolder),
         importData: (dataUrl, suggestedName, targetFolder) =>
           this.uploadDataUrl(dataUrl, suggestedName, targetFolder),
+      },
+      logicComponents: {
+        list: () => this.request<LogicComponentDefinition[]>('GET', '/logic-components'),
+        save: (component) => this.request<LogicComponentDefinition>('POST', '/logic-components', component),
+        delete: (componentId) =>
+          this.request<void>('DELETE', `/logic-components/${encodeURIComponent(componentId)}`).then(() => {}),
       },
       members: {
         list: () => this.request<HostedVaultMember[]>('GET', '/members'),
@@ -1549,6 +1563,11 @@ export class LocalVaultClient implements VaultClient {
       },
       archiveExport: {
         exportTo: (destinationPath) => tauriCommands.exportVault(this.vault.path, destinationPath),
+      },
+      logicComponents: {
+        list: () => tauriCommands.listLogicComponents(this.vault.path),
+        save: (component) => tauriCommands.saveLogicComponent(this.vault.path, component),
+        delete: (componentId) => tauriCommands.deleteLogicComponent(this.vault.path, componentId),
       },
     };
   }
