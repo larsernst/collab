@@ -64,7 +64,8 @@ COPY --from=admin-builder /app/apps/admin-web/dist /app/admin-web
 COPY scripts/server-backup-container.sh /usr/local/bin/collab-backup
 COPY scripts/server-restore-container.sh /usr/local/bin/collab-restore
 COPY scripts/server-admin-restore-container.sh /usr/local/bin/collab-admin-restore
-RUN chmod 0755 /usr/local/bin/collab-backup /usr/local/bin/collab-restore /usr/local/bin/collab-admin-restore
+COPY scripts/server-healthcheck.sh /usr/local/bin/collab-healthcheck
+RUN chmod 0755 /usr/local/bin/collab-backup /usr/local/bin/collab-restore /usr/local/bin/collab-admin-restore /usr/local/bin/collab-healthcheck
 
 USER collab
 EXPOSE 8787
