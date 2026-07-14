@@ -15,6 +15,7 @@ const tauriMocks = vi.hoisted(() => ({
   writeNote: vi.fn(),
   createNote: vi.fn(),
   createFolder: vi.fn(),
+  hostedVaultRequest: vi.fn(),
 }));
 
 const liveJsonMocks = vi.hoisted(() => ({
@@ -37,12 +38,19 @@ vi.mock('../lib/tauri', () => ({
     writeNote: tauriMocks.writeNote,
     createNote: tauriMocks.createNote,
     createFolder: tauriMocks.createFolder,
+    hostedVaultRequest: tauriMocks.hostedVaultRequest,
   },
 }));
 
 vi.mock('../lib/vaultReplica', () => ({
+  emitReplicaMutated: vi.fn(),
+  enqueuePendingOperation: vi.fn(),
+  isLikelyConnectivityError: vi.fn(() => false),
   onReplicaMutated: vi.fn(() => () => {}),
   replicaMutationAffectsPath: vi.fn(() => true),
+  readCachedReplicaManifest: vi.fn(async () => null),
+  syncReplicaManifestDelta: vi.fn(async () => null),
+  writeOptimisticReplicaManifest: vi.fn(),
 }));
 
 vi.mock('../lib/liveJsonDocument', () => ({
@@ -126,6 +134,7 @@ describe('LogicDiagramView safe reload policy', () => {
     tauriMocks.writeNote.mockResolvedValue({ hash: 'v-write' });
     tauriMocks.createNote.mockResolvedValue({ relativePath: 'Pictures/test.svg', name: 'test.svg', isFolder: false, extension: 'svg' });
     tauriMocks.createFolder.mockResolvedValue(undefined);
+    tauriMocks.hostedVaultRequest.mockReset();
   });
 
   afterEach(() => {
@@ -287,5 +296,62 @@ describe('LogicDiagramView safe reload policy', () => {
       undefined,
       undefined,
     ));
+  });
+
+  it('disables authoring controls and shortcuts for hosted viewers', async () => {
+    const hostedFile = {
+      id: 'file-logic',
+      parentId: null,
+      name: 'test.logic',
+      relativePath: PATH,
+      kind: 'document',
+      documentType: 'logic',
+      state: 'active',
+      currentRevision: {
+        id: 'revision-1',
+        sequence: 1,
+        contentHash: 'hash-1',
+        sizeBytes: 0,
+        createdByDisplayName: 'Test User',
+        createdAt: '2026-07-14T08:00:00Z',
+      },
+      createdAt: '2026-07-14T08:00:00Z',
+      updatedAt: '2026-07-14T08:00:00Z',
+    };
+    useVaultStore.setState({
+      vault: {
+        kind: 'hosted',
+        id: 'hosted-vault',
+        hostedVaultId: 'hosted-vault',
+        serverUrl: 'https://collab.example.test',
+        role: 'viewer',
+        name: 'Hosted Vault',
+        path: 'hosted://hosted-vault',
+        lastOpened: Date.now(),
+        isEncrypted: false,
+        capabilities: ['vault.read'],
+      },
+    } as never);
+    tauriMocks.hostedVaultRequest.mockImplementation(async (_serverUrl, method, path) => {
+      if (method === 'GET' && path.endsWith('/manifest')) {
+        return { vaultId: 'hosted-vault', sequence: 1, files: [hostedFile] };
+      }
+      if (method === 'GET' && path.endsWith('/files/file-logic')) {
+        return { file: hostedFile, content: logicDoc([]) };
+      }
+      throw new Error(`unexpected hosted request: ${method} ${path}`);
+    });
+
+    render(<LogicDiagramView relativePath={PATH} />);
+    expect(await screen.findByText(/0 gates/)).toBeTruthy();
+
+    const addButton = screen.getByRole('button', { name: /^add$/i });
+    expect((addButton as HTMLButtonElement).disabled).toBe(true);
+
+    fireEvent.click(addButton);
+    fireEvent.keyDown(document, { key: 'a' });
+
+    expect(screen.getByText(/0 gates/)).toBeTruthy();
+    expect(tauriMocks.writeNote).not.toHaveBeenCalled();
   });
 });

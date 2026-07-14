@@ -43,6 +43,7 @@ function createBaseCommands(): SlashCommandItem[] {
     { label: 'Callout: Info', detail: 'Styled info callout', type: 'text', keywords: ['admonition info'], apply: (view) => insertSnippetTemplate(view, buildCalloutSnippet('info')) },
     { label: 'Footnote', detail: 'Insert or jump to a footnote', type: 'text', keywords: ['citation note reference'], apply: (view) => { void insertOrNavigateFootnote(view); } },
     { label: 'References Section', detail: 'Simple references scaffold', type: 'text', keywords: ['citation bibliography sources'], apply: (view) => insertSnippetTemplate(view, buildReferencesSectionSnippet()) },
+    { label: 'Logic Diagram', detail: 'Link to a .logic diagram export', type: 'text', keywords: ['circuit gate logic diagram'], apply: (view) => insertSnippetTemplate(view, '![<placeholder:Diagram>](<placeholder:Pictures/diagram.svg>)<cursor>') },
   ];
 }
 

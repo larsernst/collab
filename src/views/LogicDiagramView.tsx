@@ -6,6 +6,7 @@ import {
   BackgroundVariant,
   BaseEdge,
   ConnectionMode,
+  EdgeLabelRenderer,
   Handle,
   Position,
   ReactFlow,
@@ -35,6 +36,7 @@ import {
   Power,
   RotateCcw,
   Save,
+  Shapes,
   Trash2,
   Ungroup,
 } from 'lucide-react';
@@ -76,6 +78,11 @@ import {
   getLogicInputHandles,
   getLogicOutputHandles,
 } from '../components/logic/logicDiagramEvaluator';
+import {
+  getLogicDiagramTemplates,
+  instantiateLogicDiagramTemplate,
+  type LogicDiagramTemplate,
+} from '../components/logic/logicDiagramTemplates';
 import { listen } from '@tauri-apps/api/event';
 
 import { useEditorStore } from '../store/editorStore';
@@ -469,6 +476,20 @@ function LogicWireEdge(props: EdgeProps<LogicFlowEdge>) {
           opacity: 0,
         }}
       />
+      {props.label ? (
+        <EdgeLabelRenderer>
+          <div
+            style={{
+              position: 'absolute',
+              transform: `translate(-50%, -50%) translate(${labelX}px, ${labelY}px)`,
+              pointerEvents: 'all',
+            }}
+            className="nodrag nopan rounded border border-border/60 bg-background/90 px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground shadow-sm"
+          >
+            {props.label}
+          </div>
+        </EdgeLabelRenderer>
+      ) : null}
     </>
   );
 }
@@ -500,8 +521,10 @@ function LogicDiagramEditor({ relativePath }: Props) {
   const [saving, setSaving] = useState(false);
   const [exporting, setExporting] = useState(false);
   const [selectedGate, setSelectedGate] = useState<LogicGateKind>('and');
-  const [renameGroupId, setRenameGroupId] = useState<string | null>(null);
-  const [renameGroupLabel, setRenameGroupLabel] = useState('');
+  // Rename state — supports gates, groups, and wires via a discriminated target.
+  const [renameTarget, setRenameTarget] = useState<{ kind: 'node' | 'edge'; id: string } | null>(null);
+  const [renameValue, setRenameValue] = useState('');
+  const [templatePickerOpen, setTemplatePickerOpen] = useState(false);
   const [viewport, setViewportState] = useState<Viewport>(DEFAULT_VIEWPORT);
   const [contextMenu, setContextMenu] = useState<LogicContextMenu | null>(null);
   const idCounterRef = useRef(1);
@@ -918,6 +941,7 @@ function LogicDiagramEditor({ relativePath }: Props) {
   ), [resolveLogicConnection]);
 
   const onConnect = useCallback((connection: Connection) => {
+    if (readOnly) return;
     const resolved = resolveLogicConnection(connection);
     if (!resolved) return;
     setEdges((current) => addEdge({
@@ -928,9 +952,10 @@ function LogicDiagramEditor({ relativePath }: Props) {
       type: 'logicWire',
     }, current));
     markChanged();
-  }, [markChanged, resolveLogicConnection, setEdges]);
+  }, [markChanged, readOnly, resolveLogicConnection, setEdges]);
 
   const snapDraggedNodesToGrid = useCallback((nodeId: string) => {
+    if (readOnly) return;
     setNodes((current) => {
       const draggedNode = current.find((candidate) => candidate.id === nodeId);
       return current.map((node) => {
@@ -940,39 +965,64 @@ function LogicDiagramEditor({ relativePath }: Props) {
       });
     });
     markChanged();
-  }, [markChanged, setNodes]);
+  }, [markChanged, readOnly, setNodes]);
 
   const selectedGroups = useMemo(
     () => nodes.filter((node) => node.selected && node.data.kind === 'group'),
     [nodes],
   );
 
-  const openRenameGroup = useCallback((groupId: string) => {
-    const groupNode = nodes.find((node) => node.id === groupId && node.data.kind === 'group');
-    if (!groupNode) return;
-    setRenameGroupId(groupId);
-    setRenameGroupLabel(logicNodeLabel({ kind: groupNode.data.kind, label: groupNode.data.label }));
-  }, [nodes]);
+  const openRenameNode = useCallback((nodeId: string) => {
+    if (readOnly) return;
+    const target = nodes.find((node) => node.id === nodeId);
+    if (!target) return;
+    setRenameTarget({ kind: 'node', id: nodeId });
+    setRenameValue(logicNodeLabel({ kind: target.data.kind, label: target.data.label }));
+  }, [nodes, readOnly]);
 
-  const renameSelectedGroup = useCallback(() => {
-    if (selectedGroups.length !== 1) return;
-    openRenameGroup(selectedGroups[0].id);
-  }, [openRenameGroup, selectedGroups]);
+  const openRenameEdge = useCallback((edgeId: string) => {
+    if (readOnly) return;
+    const target = edges.find((edge) => edge.id === edgeId);
+    if (!target) return;
+    setRenameTarget({ kind: 'edge', id: edgeId });
+    setRenameValue(typeof target.label === 'string' ? target.label : '');
+  }, [edges, readOnly]);
 
-  const applyGroupRename = useCallback(() => {
-    if (!renameGroupId) return;
-    const nextLabel = renameGroupLabel.trim() || 'Group';
-    setNodes((current) => current.map((node) => (
-      node.id === renameGroupId && node.data.kind === 'group'
-        ? { ...node, data: { ...node.data, label: nextLabel } }
-        : node
-    )));
-    setRenameGroupId(null);
-    setRenameGroupLabel('');
+  const renameSelectedNode = useCallback(() => {
+    // Prefer a single selected group, then fall back to a single selected gate.
+    if (selectedGroups.length === 1) {
+      openRenameNode(selectedGroups[0].id);
+      return;
+    }
+    const selectedNonGroup = nodes.filter((n) => n.selected && n.data.kind !== 'group');
+    if (selectedNonGroup.length === 1) openRenameNode(selectedNonGroup[0].id);
+  }, [nodes, openRenameNode, selectedGroups]);
+
+  const applyRename = useCallback(() => {
+    if (readOnly) return;
+    if (!renameTarget) return;
+    if (renameTarget.kind === 'node') {
+      const nextLabel = renameValue.trim();
+      setNodes((current) => current.map((node) => (
+        node.id === renameTarget.id
+          ? { ...node, data: { ...node.data, label: nextLabel || undefined } }
+          : node
+      )));
+    } else {
+      const nextLabel = renameValue.trim();
+      setEdges((current) => current.map((edge) => (
+        edge.id === renameTarget.id
+          ? { ...edge, label: nextLabel || undefined }
+          : edge
+      )));
+    }
+    setRenameTarget(null);
+    setRenameValue('');
     markChanged();
-  }, [markChanged, renameGroupId, renameGroupLabel, setNodes]);
+  }, [markChanged, readOnly, renameTarget, renameValue, setEdges, setNodes]);
 
   const groupSelection = useCallback(() => {
+    if (readOnly) return;
     const selected = nodes.filter((node) => node.selected && node.data.kind !== 'group' && !node.parentId);
     if (selected.length < 2) {
       toast.error('Select at least two ungrouped gates to group them.');
@@ -1018,9 +1068,10 @@ function LogicDiagramEditor({ relativePath }: Props) {
       }),
     ]);
     markChanged();
-  }, [markChanged, nodes, setNodes]);
+  }, [markChanged, nodes, readOnly, setNodes]);
 
   const ungroupSelection = useCallback(() => {
+    if (readOnly) return;
     const selectedGroupIds = nodes
       .filter((node) => node.selected && node.data.kind === 'group')
       .map((node) => node.id);
@@ -1050,9 +1101,10 @@ function LogicDiagramEditor({ relativePath }: Props) {
         };
       }));
     markChanged();
-  }, [markChanged, nodes, setNodes]);
+  }, [markChanged, nodes, readOnly, setNodes]);
 
   const addGateAt = useCallback((kind: LogicGateKind, position: { x: number; y: number }) => {
+    if (readOnly) return;
     const index = idCounterRef.current++;
     const id = `${kind}-${Date.now()}-${index}`;
     setNodes((current) => [
@@ -1066,16 +1118,88 @@ function LogicDiagramEditor({ relativePath }: Props) {
       },
     ]);
     markChanged();
-  }, [markChanged, setNodes]);
+  }, [markChanged, readOnly, setNodes]);
+
+  const getViewportCenterClientPoint = useCallback(() => {
+    const rect = viewportRef.current?.getBoundingClientRect();
+    if (!rect) {
+      return { x: window.innerWidth / 2, y: window.innerHeight / 2 };
+    }
+    return {
+      x: rect.left + rect.width / 2,
+      y: rect.top + rect.height / 2,
+    };
+  }, []);
 
   const addGate = useCallback((kind: LogicGateKind) => {
-    addGateAt(kind, screenToFlowPosition({
-      x: window.innerWidth / 2,
-      y: window.innerHeight / 2,
+    addGateAt(kind, screenToFlowPosition(getViewportCenterClientPoint()));
+  }, [addGateAt, getViewportCenterClientPoint, screenToFlowPosition]);
+
+  const insertTemplate = useCallback((template: LogicDiagramTemplate) => {
+    if (readOnly) return;
+    const doc = instantiateLogicDiagramTemplate(template);
+    const flowGraph = toFlowGraph(doc);
+    // Offset so appended templates don't overlap existing content.
+    const offset = screenToFlowPosition(getViewportCenterClientPoint());
+    setNodes((current) => [
+      ...current,
+      ...flowGraph.nodes.map((node) => ({
+        ...node,
+        position: { x: node.position.x + offset.x, y: node.position.y + offset.y },
+        selected: false,
+      })),
+    ]);
+    setEdges((current) => [
+      ...current,
+      ...flowGraph.edges.map((edge) => ({ ...edge, selected: false })),
+    ]);
+    markChanged();
+    setTemplatePickerOpen(false);
+    setTimeout(() => fitView({ padding: 0.25, duration: 180 }), 60);
+  }, [fitView, getViewportCenterClientPoint, markChanged, readOnly, screenToFlowPosition, setEdges, setNodes]);
+
+  const duplicateSelection = useCallback(() => {
+    if (readOnly) return;
+    const selectedNodes = nodes.filter((node) => node.selected && node.data.kind !== 'group' && !node.parentId);
+    if (selectedNodes.length === 0) return;
+    const selectedNodeIds = new Set(selectedNodes.map((node) => node.id));
+    const idMap = new Map<string, string>();
+    selectedNodes.forEach((node) => {
+      const index = idCounterRef.current++;
+      idMap.set(node.id, `dup-${Date.now()}-${index}`);
+    });
+    const duplicatedNodes: LogicFlowNode[] = selectedNodes.map((node) => ({
+      ...node,
+      id: idMap.get(node.id)!,
+      position: snapPosition({ x: node.position.x + 40, y: node.position.y + 40 }),
+      selected: true,
+      data: { ...node.data },
     }));
-  }, [addGateAt, screenToFlowPosition]);
+    const duplicatedEdges = edges
+      .filter((edge) => selectedNodeIds.has(edge.source) && selectedNodeIds.has(edge.target))
+      .map((edge) => {
+        const index = idCounterRef.current++;
+        return {
+          ...edge,
+          id: `dup-wire-${Date.now()}-${index}`,
+          source: idMap.get(edge.source)!,
+          target: idMap.get(edge.target)!,
+          selected: true,
+        };
+      });
+    setNodes((current) => [
+      ...current.map((node) => ({ ...node, selected: false })),
+      ...duplicatedNodes,
+    ]);
+    setEdges((current) => [
+      ...current.map((edge) => ({ ...edge, selected: false })),
+      ...duplicatedEdges,
+    ]);
+    markChanged();
+  }, [edges, markChanged, nodes, readOnly, setEdges, setNodes]);
 
   const toggleInputNodes = useCallback((nodeIds: string[]) => {
+    if (readOnly) return;
     const targetIds = new Set(nodeIds);
     if (targetIds.size === 0) return;
     let changed = false;
@@ -1091,7 +1215,7 @@ function LogicDiagramEditor({ relativePath }: Props) {
       };
     }));
     if (changed) markChanged();
-  }, [markChanged, setNodes]);
+  }, [markChanged, readOnly, setNodes]);
 
   const handleNodeDoubleClick = useCallback<NodeMouseHandler<LogicFlowNode>>((event, node) => {
     if (readOnly) return;
@@ -1100,10 +1224,16 @@ function LogicDiagramEditor({ relativePath }: Props) {
       toggleInputNodes([node.id]);
       return;
     }
-    if (node.data.kind === 'group') openRenameGroup(node.id);
-  }, [openRenameGroup, readOnly, toggleInputNodes]);
+    if (node.data.kind === 'group' || node.data.kind === 'output') {
+      openRenameNode(node.id);
+      return;
+    }
+    // Logic gates (and/or/not/xor/...) — open label editor
+    openRenameNode(node.id);
+  }, [openRenameNode, readOnly, toggleInputNodes]);
 
   const deleteSelection = useCallback(() => {
+    if (readOnly) return;
     const selectedNodeIdSet = new Set([
       ...selectedNodeIds,
       ...nodes.filter((node) => node.selected).map((node) => node.id),
@@ -1123,14 +1253,16 @@ function LogicDiagramEditor({ relativePath }: Props) {
       !selectedEdgeIdSet.has(edge.id) && !nodeIds.has(edge.source) && !nodeIds.has(edge.target)
     )));
     markChanged();
-  }, [edges, markChanged, nodes, selectedEdgeIds, selectedNodeIds, setEdges, setNodes]);
+  }, [edges, markChanged, nodes, readOnly, selectedEdgeIds, selectedNodeIds, setEdges, setNodes]);
 
   const deleteEdge = useCallback((edgeId: string) => {
+    if (readOnly) return;
     setEdges((current) => current.filter((edge) => edge.id !== edgeId));
     markChanged();
-  }, [markChanged, setEdges]);
+  }, [markChanged, readOnly, setEdges]);
 
   const changeSelectedGateKind = useCallback((kind: LogicGateKind) => {
+    if (readOnly) return;
     if (kind === 'group') return;
     const selectedIds = new Set(selectedNodeIds);
     if (selectedIds.size === 0) return;
@@ -1182,7 +1314,7 @@ function LogicDiagramEditor({ relativePath }: Props) {
       });
     });
     markChanged();
-  }, [markChanged, nodes, selectedNodeIds, setEdges, setNodes]);
+  }, [markChanged, nodes, readOnly, selectedNodeIds, setEdges, setNodes]);
 
   const handlePaneContextMenu = useCallback((event: MouseEvent | ReactMouseEvent) => {
     if (readOnly) return;
@@ -1236,6 +1368,31 @@ function LogicDiagramEditor({ relativePath }: Props) {
       if (isEditableTarget(event.target) || event.altKey) return;
       const modifier = event.ctrlKey || event.metaKey;
 
+      if (!modifier && event.shiftKey && event.key.toLowerCase() === 'f') {
+        event.preventDefault();
+        fitLogicView();
+        return;
+      }
+
+      if ((modifier || !event.shiftKey) && event.key === '0') {
+        event.preventDefault();
+        resetZoom();
+        return;
+      }
+
+      if (modifier && event.key === 'ArrowUp') {
+        event.preventDefault();
+        adjustZoom(1);
+        return;
+      }
+      if (modifier && event.key === 'ArrowDown') {
+        event.preventDefault();
+        adjustZoom(-1);
+        return;
+      }
+
+      if (readOnly) return;
+
       if (modifier && event.key.toLowerCase() === 'g') {
         event.preventDefault();
         if (event.shiftKey) ungroupSelection();
@@ -1243,21 +1400,16 @@ function LogicDiagramEditor({ relativePath }: Props) {
         return;
       }
 
-      if (!modifier && event.shiftKey && event.key.toLowerCase() === 'f') {
-        event.preventDefault();
-        fitLogicView();
-        return;
-      }
-
       if (!modifier && event.key === 'F2') {
         event.preventDefault();
-        renameSelectedGroup();
+        renameSelectedNode();
         return;
       }
 
-      if ((modifier || !event.shiftKey) && event.key === '0') {
+      // Duplicate selection
+      if (modifier && event.key.toLowerCase() === 'd') {
         event.preventDefault();
-        resetZoom();
+        duplicateSelection();
         return;
       }
 
@@ -1304,15 +1456,19 @@ function LogicDiagramEditor({ relativePath }: Props) {
         addGate('xor');
         return;
       }
-
-      if (modifier && event.key === 'ArrowUp') {
+      if (!modifier && event.key.toLowerCase() === 'r') {
         event.preventDefault();
-        adjustZoom(1);
+        addGate('or');
         return;
       }
-      if (modifier && event.key === 'ArrowDown') {
+      if (!modifier && event.key.toLowerCase() === 'd') {
         event.preventDefault();
-        adjustZoom(-1);
+        addGate('nand');
+        return;
+      }
+      if (!modifier && event.key.toLowerCase() === 'e') {
+        event.preventDefault();
+        addGate('nor');
         return;
       }
 
@@ -1329,7 +1485,7 @@ function LogicDiagramEditor({ relativePath }: Props) {
 
     document.addEventListener('keydown', handleKeyDown, { capture: true });
     return () => document.removeEventListener('keydown', handleKeyDown, { capture: true } as EventListenerOptions);
-  }, [addGate, adjustZoom, deleteSelection, fitLogicView, groupSelection, nodes, renameSelectedGroup, resetZoom, selectedEdgeIds.length, selectedNodeIds.length, setEdges, setNodes, toggleInputNodes, ungroupSelection]);
+  }, [addGate, adjustZoom, deleteSelection, duplicateSelection, fitLogicView, groupSelection, nodes, readOnly, renameSelectedNode, resetZoom, selectedEdgeIds.length, selectedNodeIds.length, setEdges, setNodes, toggleInputNodes, ungroupSelection]);
 
   const zoomLabel = `${Math.round(viewport.zoom * 100)}%`;
   const selectedGateNodes = nodes.filter((node) => node.selected && node.data.kind !== 'group');
@@ -1362,22 +1518,30 @@ function LogicDiagramEditor({ relativePath }: Props) {
             ))}
           </SelectContent>
         </Select>
-        <DocumentTopBarButton onClick={() => addGate(selectedGate)}>
+        <DocumentTopBarButton onClick={() => addGate(selectedGate)} disabled={readOnly}>
           <Plus size={14} />
           Add
+        </DocumentTopBarButton>
+        <DocumentTopBarButton
+          onClick={() => setTemplatePickerOpen(true)}
+          disabled={readOnly}
+          title="Insert a starter template (half-adder, full-adder, multiplexer, etc.)"
+        >
+          <Shapes size={14} />
+          Templates
         </DocumentTopBarButton>
       </div>
       <div className={documentTopBarGroupClass}>
         <DocumentTopBarIconButton
           title="Delete selected gates or wires"
           onClick={deleteSelection}
-          disabled={selectedNodeIds.length === 0 && selectedEdgeIds.length === 0}
+          disabled={readOnly || (selectedNodeIds.length === 0 && selectedEdgeIds.length === 0)}
         >
           <Trash2 size={14} />
         </DocumentTopBarIconButton>
         <DocumentTopBarButton
           onClick={groupSelection}
-          disabled={nodes.filter((node) => node.selected && node.data.kind !== 'group' && !node.parentId).length < 2}
+          disabled={readOnly || nodes.filter((node) => node.selected && node.data.kind !== 'group' && !node.parentId).length < 2}
         >
           <Group size={14} />
           Group
@@ -1385,14 +1549,14 @@ function LogicDiagramEditor({ relativePath }: Props) {
         <DocumentTopBarIconButton
           title="Ungroup selected groups"
           onClick={ungroupSelection}
-          disabled={!nodes.some((node) => node.selected && node.data.kind === 'group')}
+          disabled={readOnly || !nodes.some((node) => node.selected && node.data.kind === 'group')}
         >
           <Ungroup size={14} />
         </DocumentTopBarIconButton>
         <DocumentTopBarIconButton
-          title="Rename selected group"
-          onClick={renameSelectedGroup}
-          disabled={selectedGroups.length !== 1}
+          title="Rename selected gate or group (F2)"
+          onClick={renameSelectedNode}
+          disabled={readOnly || (selectedGroups.length !== 1 && selectedGateNodes.length !== 1)}
         >
           <Pencil size={14} />
         </DocumentTopBarIconButton>
@@ -1427,7 +1591,7 @@ function LogicDiagramEditor({ relativePath }: Props) {
           {exporting ? <Loader2 size={14} className="animate-spin" /> : <Image size={14} />}
           Insert in note
         </DocumentTopBarButton>
-        <DocumentTopBarButton onClick={handleSave} disabled={saving || loading}>
+        <DocumentTopBarButton onClick={handleSave} disabled={saving || loading || readOnly}>
           {saving ? <Loader2 size={14} className="animate-spin" /> : <Save size={14} />}
           Save
         </DocumentTopBarButton>
@@ -1524,14 +1688,24 @@ function LogicDiagramEditor({ relativePath }: Props) {
               )}
 
               {contextMenu.kind === 'edge' && contextTargetEdge && (
-                <button
-                  type="button"
-                  className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm text-destructive outline-none transition-colors hover:bg-destructive/10 focus-visible:bg-destructive/10"
-                  onClick={() => runContextAction(() => deleteEdge(contextTargetEdge.id))}
-                >
-                  <Trash2 size={14} />
-                  Delete wire
-                </button>
+                <div className="space-y-1">
+                  <button
+                    type="button"
+                    className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm outline-none transition-colors hover:bg-accent hover:text-accent-foreground focus-visible:bg-accent"
+                    onClick={() => runContextAction(() => openRenameEdge(contextTargetEdge.id))}
+                  >
+                    <Pencil size={14} />
+                    Label wire
+                  </button>
+                  <button
+                    type="button"
+                    className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm text-destructive outline-none transition-colors hover:bg-destructive/10 focus-visible:bg-destructive/10"
+                    onClick={() => runContextAction(() => deleteEdge(contextTargetEdge.id))}
+                  >
+                    <Trash2 size={14} />
+                    Delete wire
+                  </button>
+                </div>
               )}
 
               {contextMenu.kind === 'node' && contextTargetNode?.data.kind === 'group' && (
@@ -1539,7 +1713,7 @@ function LogicDiagramEditor({ relativePath }: Props) {
                   <button
                     type="button"
                     className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm outline-none transition-colors hover:bg-accent hover:text-accent-foreground focus-visible:bg-accent"
-                    onClick={() => runContextAction(() => openRenameGroup(contextTargetNode.id))}
+                    onClick={() => runContextAction(() => openRenameNode(contextTargetNode.id))}
                   >
                     <Pencil size={14} />
                     Rename group
@@ -1553,6 +1727,17 @@ function LogicDiagramEditor({ relativePath }: Props) {
                     Ungroup
                   </button>
                 </div>
+              )}
+
+              {contextMenu.kind === 'node' && contextTargetNode && contextTargetNode.data.kind !== 'group' && contextTargetNode.data.kind !== 'input' && (
+                <button
+                  type="button"
+                  className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm outline-none transition-colors hover:bg-accent hover:text-accent-foreground focus-visible:bg-accent"
+                  onClick={() => runContextAction(() => openRenameNode(contextTargetNode.id))}
+                >
+                  <Pencil size={14} />
+                  Label {contextTargetNode.data.kind === 'output' ? 'output' : 'gate'}
+                </button>
               )}
 
               {contextMenu.kind === 'node' && contextTargetNode?.data.kind !== 'group' && selectedGateNodes.length > 0 && (
@@ -1619,7 +1804,7 @@ function LogicDiagramEditor({ relativePath }: Props) {
                     <button
                       type="button"
                       className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm outline-none transition-colors hover:bg-accent hover:text-accent-foreground focus-visible:bg-accent"
-                      onClick={() => runContextAction(renameSelectedGroup)}
+                      onClick={() => runContextAction(renameSelectedNode)}
                     >
                       <Pencil size={14} />
                       Rename selected group
@@ -1667,9 +1852,9 @@ function LogicDiagramEditor({ relativePath }: Props) {
           panOnScroll
           zoomOnScroll={false}
           deleteKeyCode={null}
-          nodesDraggable
+          nodesDraggable={!readOnly}
           elementsSelectable
-          nodesConnectable
+          nodesConnectable={!readOnly}
           fitView
           minZoom={0.2}
           maxZoom={2.5}
@@ -1679,38 +1864,69 @@ function LogicDiagramEditor({ relativePath }: Props) {
           <Background variant={BackgroundVariant.Dots} gap={24} size={1} />
         </ReactFlow>
       </div>
-      <Dialog open={renameGroupId !== null} onOpenChange={(open) => {
+      <Dialog open={renameTarget !== null} onOpenChange={(open) => {
         if (!open) {
-          setRenameGroupId(null);
-          setRenameGroupLabel('');
+          setRenameTarget(null);
+          setRenameValue('');
         }
       }}>
         <DialogContent className="sm:max-w-sm">
           <DialogHeader>
-            <DialogTitle>Rename group</DialogTitle>
+            <DialogTitle>
+              {renameTarget?.kind === 'edge'
+                ? 'Label wire'
+                : renameTarget && nodes.find((n) => n.id === renameTarget.id)?.data.kind === 'group'
+                ? 'Rename group'
+                : renameTarget && nodes.find((n) => n.id === renameTarget.id)?.data.kind === 'output'
+                ? 'Label output'
+                : 'Label gate'}
+            </DialogTitle>
           </DialogHeader>
           <form
             className="space-y-4"
             onSubmit={(event) => {
               event.preventDefault();
-              applyGroupRename();
+              applyRename();
             }}
           >
             <Input
               autoFocus
-              value={renameGroupLabel}
-              onChange={(event) => setRenameGroupLabel(event.target.value)}
-              placeholder="Group name"
+              value={renameValue}
+              onChange={(event) => setRenameValue(event.target.value)}
+              placeholder={renameTarget?.kind === 'edge' ? 'Wire label' : 'Label (leave empty for default)'}
             />
             <DialogFooter className="border-none bg-transparent -mx-0 -mb-0 px-0 pb-0">
-              <Button type="button" variant="outline" onClick={() => setRenameGroupId(null)}>
+              <Button type="button" variant="outline" onClick={() => setRenameTarget(null)}>
                 Cancel
               </Button>
               <Button type="submit">
-                Rename
+                {renameTarget?.kind === 'edge' ? 'Set label' : 'Rename'}
               </Button>
             </DialogFooter>
           </form>
+        </DialogContent>
+      </Dialog>
+      <Dialog open={templatePickerOpen} onOpenChange={setTemplatePickerOpen}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>Insert template</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-1.5 max-h-[60vh] overflow-y-auto">
+            {getLogicDiagramTemplates().map((template) => (
+              <button
+                key={template.id}
+                type="button"
+                className="flex w-full flex-col items-start gap-0.5 rounded-lg border border-border/60 px-3 py-2.5 text-left outline-none transition-colors hover:bg-accent hover:text-accent-foreground focus-visible:bg-accent"
+                onClick={() => insertTemplate(template)}
+              >
+                <span className="text-sm font-medium">{template.name}</span>
+                <span className="text-xs text-muted-foreground">{template.description}</span>
+              </button>
+            ))}
+          </div>
+          <p className="text-[11px] text-muted-foreground">
+            Templates are appended to the current diagram at the viewport center.
+          </p>
         </DialogContent>
       </Dialog>
     </div>

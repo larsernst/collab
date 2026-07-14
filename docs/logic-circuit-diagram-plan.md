@@ -12,7 +12,7 @@ Add a phased diagramming feature for university-oriented logic-gate overviews fi
 | 1. Static logic diagram editor | Complete | Create editable logic-gate diagrams as vault documents. |
 | 2. Boolean interaction | Complete | Add toggleable inputs and live gate evaluation. |
 | 3. Note insertion/export | Complete | Export editable-source-linked graphics into notes. |
-| 4. Diagram polish and reuse | Planned | Add templates, library improvements, and better authoring flow. |
+| 4. Diagram polish and reuse | Complete | Add templates, library improvements, and better authoring flow. |
 | 5. Electronic component diagrams | Planned | Add static resistor/transistor/etc. schematic symbols. |
 | 6. Circuit simulation research | Deferred | Decide whether real electronics simulation is worth integrating. |
 
@@ -127,6 +127,18 @@ Acceptance criteria:
 
 - Common university examples can be created quickly without manual layout from scratch.
 - The editor feels consistent with existing canvas, kanban, image, and PDF document views.
+
+Implementation notes:
+
+- Four starter templates ship in `logicDiagramTemplates.ts`: Half-Adder, Full-Adder, 2:1 Multiplexer, and SR Flip-Flop Overview. (Basic Gates was dropped — individual gates are faster to add via the toolbar.)
+- `instantiateLogicDiagramTemplate()` regenerates fresh node/wire IDs on each call so multiple inserts into the same diagram never collide.
+- A "Templates" toolbar button (Shapes icon) opens a picker dialog that appends the chosen template at the viewport center and fits the view.
+- Gate labels are editable for all node kinds (not just groups) via double-click, `F2`, or context menu. The rename dialog title adapts ("Rename group" / "Label gate" / "Label output" / "Label wire").
+- Wire labels render live in the editor via `EdgeLabelRenderer` as a pill badge at the wire midpoint. Labels were already exported in SVG; "Label wire" is added to the edge context menu.
+- Keyboard shortcuts added: `Ctrl/Cmd+D` duplicates the selection (gates + internal wires), `r` = OR, `d` = NAND, `e` = NOR (completing the set alongside existing `i`/`o`/`a`/`n`/`x`). All use `event.key.toLowerCase()` for layout independence.
+- A "Logic Diagram" slash command is added to `slashCommands.ts` for discoverability. The command-bar `new-logic` entry already existed.
+- Truth-value display kept as-is (color wash, wire color, `0`/`1`/`unset` text) — no new badge component.
+- Import/export of reusable diagram snippets is deferred pending clear demand.
 
 ### Phase 5: Electronic Component Diagrams
 
