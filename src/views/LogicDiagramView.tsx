@@ -484,7 +484,7 @@ function LogicWireEdge(props: EdgeProps<LogicFlowEdge>) {
               transform: `translate(-50%, -50%) translate(${labelX}px, ${labelY}px)`,
               pointerEvents: 'all',
             }}
-            className="rounded border border-border/60 bg-background/90 px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground shadow-sm"
+            className="nodrag nopan rounded border border-border/60 bg-background/90 px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground shadow-sm"
           >
             {props.label}
           </div>
@@ -941,6 +941,7 @@ function LogicDiagramEditor({ relativePath }: Props) {
   ), [resolveLogicConnection]);
 
   const onConnect = useCallback((connection: Connection) => {
+    if (readOnly) return;
     const resolved = resolveLogicConnection(connection);
     if (!resolved) return;
     setEdges((current) => addEdge({
@@ -951,9 +952,10 @@ function LogicDiagramEditor({ relativePath }: Props) {
       type: 'logicWire',
     }, current));
     markChanged();
-  }, [markChanged, resolveLogicConnection, setEdges]);
+  }, [markChanged, readOnly, resolveLogicConnection, setEdges]);
 
   const snapDraggedNodesToGrid = useCallback((nodeId: string) => {
+    if (readOnly) return;
     setNodes((current) => {
       const draggedNode = current.find((candidate) => candidate.id === nodeId);
       return current.map((node) => {
@@ -963,7 +965,7 @@ function LogicDiagramEditor({ relativePath }: Props) {
       });
     });
     markChanged();
-  }, [markChanged, setNodes]);
+  }, [markChanged, readOnly, setNodes]);
 
   const selectedGroups = useMemo(
     () => nodes.filter((node) => node.selected && node.data.kind === 'group'),
@@ -971,18 +973,20 @@ function LogicDiagramEditor({ relativePath }: Props) {
   );
 
   const openRenameNode = useCallback((nodeId: string) => {
+    if (readOnly) return;
     const target = nodes.find((node) => node.id === nodeId);
     if (!target) return;
     setRenameTarget({ kind: 'node', id: nodeId });
     setRenameValue(logicNodeLabel({ kind: target.data.kind, label: target.data.label }));
-  }, [nodes]);
+  }, [nodes, readOnly]);
 
   const openRenameEdge = useCallback((edgeId: string) => {
+    if (readOnly) return;
     const target = edges.find((edge) => edge.id === edgeId);
     if (!target) return;
     setRenameTarget({ kind: 'edge', id: edgeId });
     setRenameValue(typeof target.label === 'string' ? target.label : '');
-  }, [edges]);
+  }, [edges, readOnly]);
 
   const renameSelectedNode = useCallback(() => {
     // Prefer a single selected group, then fall back to a single selected gate.
@@ -995,6 +999,7 @@ function LogicDiagramEditor({ relativePath }: Props) {
   }, [nodes, openRenameNode, selectedGroups]);
 
   const applyRename = useCallback(() => {
+    if (readOnly) return;
     if (!renameTarget) return;
     if (renameTarget.kind === 'node') {
       const nextLabel = renameValue.trim();
@@ -1014,9 +1019,10 @@ function LogicDiagramEditor({ relativePath }: Props) {
     setRenameTarget(null);
     setRenameValue('');
     markChanged();
-  }, [markChanged, renameTarget, renameValue, setEdges, setNodes]);
+  }, [markChanged, readOnly, renameTarget, renameValue, setEdges, setNodes]);
 
   const groupSelection = useCallback(() => {
+    if (readOnly) return;
     const selected = nodes.filter((node) => node.selected && node.data.kind !== 'group' && !node.parentId);
     if (selected.length < 2) {
       toast.error('Select at least two ungrouped gates to group them.');
@@ -1062,9 +1068,10 @@ function LogicDiagramEditor({ relativePath }: Props) {
       }),
     ]);
     markChanged();
-  }, [markChanged, nodes, setNodes]);
+  }, [markChanged, nodes, readOnly, setNodes]);
 
   const ungroupSelection = useCallback(() => {
+    if (readOnly) return;
     const selectedGroupIds = nodes
       .filter((node) => node.selected && node.data.kind === 'group')
       .map((node) => node.id);
@@ -1094,9 +1101,10 @@ function LogicDiagramEditor({ relativePath }: Props) {
         };
       }));
     markChanged();
-  }, [markChanged, nodes, setNodes]);
+  }, [markChanged, nodes, readOnly, setNodes]);
 
   const addGateAt = useCallback((kind: LogicGateKind, position: { x: number; y: number }) => {
+    if (readOnly) return;
     const index = idCounterRef.current++;
     const id = `${kind}-${Date.now()}-${index}`;
     setNodes((current) => [
@@ -1110,20 +1118,29 @@ function LogicDiagramEditor({ relativePath }: Props) {
       },
     ]);
     markChanged();
-  }, [markChanged, setNodes]);
+  }, [markChanged, readOnly, setNodes]);
+
+  const getViewportCenterClientPoint = useCallback(() => {
+    const rect = viewportRef.current?.getBoundingClientRect();
+    if (!rect) {
+      return { x: window.innerWidth / 2, y: window.innerHeight / 2 };
+    }
+    return {
+      x: rect.left + rect.width / 2,
+      y: rect.top + rect.height / 2,
+    };
+  }, []);
 
   const addGate = useCallback((kind: LogicGateKind) => {
-    addGateAt(kind, screenToFlowPosition({
-      x: window.innerWidth / 2,
-      y: window.innerHeight / 2,
-    }));
-  }, [addGateAt, screenToFlowPosition]);
+    addGateAt(kind, screenToFlowPosition(getViewportCenterClientPoint()));
+  }, [addGateAt, getViewportCenterClientPoint, screenToFlowPosition]);
 
   const insertTemplate = useCallback((template: LogicDiagramTemplate) => {
+    if (readOnly) return;
     const doc = instantiateLogicDiagramTemplate(template);
     const flowGraph = toFlowGraph(doc);
     // Offset so appended templates don't overlap existing content.
-    const offset = screenToFlowPosition({ x: window.innerWidth / 2, y: window.innerHeight / 2 });
+    const offset = screenToFlowPosition(getViewportCenterClientPoint());
     setNodes((current) => [
       ...current,
       ...flowGraph.nodes.map((node) => ({
@@ -1139,9 +1156,10 @@ function LogicDiagramEditor({ relativePath }: Props) {
     markChanged();
     setTemplatePickerOpen(false);
     setTimeout(() => fitView({ padding: 0.25, duration: 180 }), 60);
-  }, [fitView, markChanged, screenToFlowPosition, setEdges, setNodes]);
+  }, [fitView, getViewportCenterClientPoint, markChanged, readOnly, screenToFlowPosition, setEdges, setNodes]);
 
   const duplicateSelection = useCallback(() => {
+    if (readOnly) return;
     const selectedNodes = nodes.filter((node) => node.selected && node.data.kind !== 'group' && !node.parentId);
     if (selectedNodes.length === 0) return;
     const selectedNodeIds = new Set(selectedNodes.map((node) => node.id));
@@ -1178,9 +1196,10 @@ function LogicDiagramEditor({ relativePath }: Props) {
       ...duplicatedEdges,
     ]);
     markChanged();
-  }, [edges, markChanged, nodes, setEdges, setNodes]);
+  }, [edges, markChanged, nodes, readOnly, setEdges, setNodes]);
 
   const toggleInputNodes = useCallback((nodeIds: string[]) => {
+    if (readOnly) return;
     const targetIds = new Set(nodeIds);
     if (targetIds.size === 0) return;
     let changed = false;
@@ -1196,7 +1215,7 @@ function LogicDiagramEditor({ relativePath }: Props) {
       };
     }));
     if (changed) markChanged();
-  }, [markChanged, setNodes]);
+  }, [markChanged, readOnly, setNodes]);
 
   const handleNodeDoubleClick = useCallback<NodeMouseHandler<LogicFlowNode>>((event, node) => {
     if (readOnly) return;
@@ -1214,6 +1233,7 @@ function LogicDiagramEditor({ relativePath }: Props) {
   }, [openRenameNode, readOnly, toggleInputNodes]);
 
   const deleteSelection = useCallback(() => {
+    if (readOnly) return;
     const selectedNodeIdSet = new Set([
       ...selectedNodeIds,
       ...nodes.filter((node) => node.selected).map((node) => node.id),
@@ -1233,14 +1253,16 @@ function LogicDiagramEditor({ relativePath }: Props) {
       !selectedEdgeIdSet.has(edge.id) && !nodeIds.has(edge.source) && !nodeIds.has(edge.target)
     )));
     markChanged();
-  }, [edges, markChanged, nodes, selectedEdgeIds, selectedNodeIds, setEdges, setNodes]);
+  }, [edges, markChanged, nodes, readOnly, selectedEdgeIds, selectedNodeIds, setEdges, setNodes]);
 
   const deleteEdge = useCallback((edgeId: string) => {
+    if (readOnly) return;
     setEdges((current) => current.filter((edge) => edge.id !== edgeId));
     markChanged();
-  }, [markChanged, setEdges]);
+  }, [markChanged, readOnly, setEdges]);
 
   const changeSelectedGateKind = useCallback((kind: LogicGateKind) => {
+    if (readOnly) return;
     if (kind === 'group') return;
     const selectedIds = new Set(selectedNodeIds);
     if (selectedIds.size === 0) return;
@@ -1292,7 +1314,7 @@ function LogicDiagramEditor({ relativePath }: Props) {
       });
     });
     markChanged();
-  }, [markChanged, nodes, selectedNodeIds, setEdges, setNodes]);
+  }, [markChanged, nodes, readOnly, selectedNodeIds, setEdges, setNodes]);
 
   const handlePaneContextMenu = useCallback((event: MouseEvent | ReactMouseEvent) => {
     if (readOnly) return;
@@ -1346,16 +1368,35 @@ function LogicDiagramEditor({ relativePath }: Props) {
       if (isEditableTarget(event.target) || event.altKey) return;
       const modifier = event.ctrlKey || event.metaKey;
 
+      if (!modifier && event.shiftKey && event.key.toLowerCase() === 'f') {
+        event.preventDefault();
+        fitLogicView();
+        return;
+      }
+
+      if ((modifier || !event.shiftKey) && event.key === '0') {
+        event.preventDefault();
+        resetZoom();
+        return;
+      }
+
+      if (modifier && event.key === 'ArrowUp') {
+        event.preventDefault();
+        adjustZoom(1);
+        return;
+      }
+      if (modifier && event.key === 'ArrowDown') {
+        event.preventDefault();
+        adjustZoom(-1);
+        return;
+      }
+
+      if (readOnly) return;
+
       if (modifier && event.key.toLowerCase() === 'g') {
         event.preventDefault();
         if (event.shiftKey) ungroupSelection();
         else groupSelection();
-        return;
-      }
-
-      if (!modifier && event.shiftKey && event.key.toLowerCase() === 'f') {
-        event.preventDefault();
-        fitLogicView();
         return;
       }
 
@@ -1369,12 +1410,6 @@ function LogicDiagramEditor({ relativePath }: Props) {
       if (modifier && event.key.toLowerCase() === 'd') {
         event.preventDefault();
         duplicateSelection();
-        return;
-      }
-
-      if ((modifier || !event.shiftKey) && event.key === '0') {
-        event.preventDefault();
-        resetZoom();
         return;
       }
 
@@ -1437,17 +1472,6 @@ function LogicDiagramEditor({ relativePath }: Props) {
         return;
       }
 
-      if (modifier && event.key === 'ArrowUp') {
-        event.preventDefault();
-        adjustZoom(1);
-        return;
-      }
-      if (modifier && event.key === 'ArrowDown') {
-        event.preventDefault();
-        adjustZoom(-1);
-        return;
-      }
-
       if (event.key === 'Delete' || event.key === 'Backspace') {
         const hasLogicSelection = selectedNodeIds.length > 0 || selectedEdgeIds.length > 0;
         if (hasLogicSelection) {
@@ -1461,7 +1485,7 @@ function LogicDiagramEditor({ relativePath }: Props) {
 
     document.addEventListener('keydown', handleKeyDown, { capture: true });
     return () => document.removeEventListener('keydown', handleKeyDown, { capture: true } as EventListenerOptions);
-  }, [addGate, adjustZoom, deleteSelection, duplicateSelection, fitLogicView, groupSelection, nodes, renameSelectedNode, resetZoom, selectedEdgeIds.length, selectedNodeIds.length, setEdges, setNodes, toggleInputNodes, ungroupSelection]);
+  }, [addGate, adjustZoom, deleteSelection, duplicateSelection, fitLogicView, groupSelection, nodes, readOnly, renameSelectedNode, resetZoom, selectedEdgeIds.length, selectedNodeIds.length, setEdges, setNodes, toggleInputNodes, ungroupSelection]);
 
   const zoomLabel = `${Math.round(viewport.zoom * 100)}%`;
   const selectedGateNodes = nodes.filter((node) => node.selected && node.data.kind !== 'group');
@@ -1494,7 +1518,7 @@ function LogicDiagramEditor({ relativePath }: Props) {
             ))}
           </SelectContent>
         </Select>
-        <DocumentTopBarButton onClick={() => addGate(selectedGate)}>
+        <DocumentTopBarButton onClick={() => addGate(selectedGate)} disabled={readOnly}>
           <Plus size={14} />
           Add
         </DocumentTopBarButton>
@@ -1511,13 +1535,13 @@ function LogicDiagramEditor({ relativePath }: Props) {
         <DocumentTopBarIconButton
           title="Delete selected gates or wires"
           onClick={deleteSelection}
-          disabled={selectedNodeIds.length === 0 && selectedEdgeIds.length === 0}
+          disabled={readOnly || (selectedNodeIds.length === 0 && selectedEdgeIds.length === 0)}
         >
           <Trash2 size={14} />
         </DocumentTopBarIconButton>
         <DocumentTopBarButton
           onClick={groupSelection}
-          disabled={nodes.filter((node) => node.selected && node.data.kind !== 'group' && !node.parentId).length < 2}
+          disabled={readOnly || nodes.filter((node) => node.selected && node.data.kind !== 'group' && !node.parentId).length < 2}
         >
           <Group size={14} />
           Group
@@ -1525,14 +1549,14 @@ function LogicDiagramEditor({ relativePath }: Props) {
         <DocumentTopBarIconButton
           title="Ungroup selected groups"
           onClick={ungroupSelection}
-          disabled={!nodes.some((node) => node.selected && node.data.kind === 'group')}
+          disabled={readOnly || !nodes.some((node) => node.selected && node.data.kind === 'group')}
         >
           <Ungroup size={14} />
         </DocumentTopBarIconButton>
         <DocumentTopBarIconButton
           title="Rename selected gate or group (F2)"
           onClick={renameSelectedNode}
-          disabled={selectedGroups.length !== 1 && selectedGateNodes.length !== 1}
+          disabled={readOnly || (selectedGroups.length !== 1 && selectedGateNodes.length !== 1)}
         >
           <Pencil size={14} />
         </DocumentTopBarIconButton>
@@ -1567,7 +1591,7 @@ function LogicDiagramEditor({ relativePath }: Props) {
           {exporting ? <Loader2 size={14} className="animate-spin" /> : <Image size={14} />}
           Insert in note
         </DocumentTopBarButton>
-        <DocumentTopBarButton onClick={handleSave} disabled={saving || loading}>
+        <DocumentTopBarButton onClick={handleSave} disabled={saving || loading || readOnly}>
           {saving ? <Loader2 size={14} className="animate-spin" /> : <Save size={14} />}
           Save
         </DocumentTopBarButton>
@@ -1828,9 +1852,9 @@ function LogicDiagramEditor({ relativePath }: Props) {
           panOnScroll
           zoomOnScroll={false}
           deleteKeyCode={null}
-          nodesDraggable
+          nodesDraggable={!readOnly}
           elementsSelectable
-          nodesConnectable
+          nodesConnectable={!readOnly}
           fitView
           minZoom={0.2}
           maxZoom={2.5}
