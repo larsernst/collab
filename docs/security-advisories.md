@@ -49,26 +49,6 @@ explicit, documented risk acceptance.
   `sqlx` depends on it — or `sqlx` stops pulling `rsa` into the resolved graph
   for the PostgreSQL-only build.
 
-### RUSTSEC-2026-0194 and RUSTSEC-2026-0195 — `quick-xml` 0.38.4 (XML parsing DoS)
-
-- **Severity:** 7.5 (high) each. Two related denial-of-service advisories:
-  RUSTSEC-2026-0194 is quadratic run time when checking a start tag for duplicate
-  attribute names; RUSTSEC-2026-0195 is unbounded namespace-declaration
-  allocation in `NsReader` (memory exhaustion). Both require parsing
-  attacker-controlled XML.
-- **Dependency path:** `quick-xml` is pulled in only through `plist`, which Tauri
-  uses for macOS `Info.plist` parsing during bundling — and only on the macOS
-  build target (`cargo tree` shows it absent from Linux and Windows graphs).
-- **Why it is not reachable here:** the project never parses untrusted,
-  attacker-controlled XML through `plist`/`quick-xml`. The usage is build-time,
-  macOS-bundling tooling over first-party property lists.
-- **Why it is not fixed:** both are fixed in `quick-xml` >= 0.41.0, but `plist`
-  (including the latest `1.9.0`) constrains `quick-xml` to `^0.39`, so no
-  lockfile update can reach 0.41. Tauri requires `plist = "^1"`, so we cannot
-  bypass `plist`.
-- **Remove the ignores when:** `plist` releases a version that depends on
-  `quick-xml` >= 0.41.0 (and Tauri picks it up). Drop both IDs together.
-
 ## Informational warnings (non-failing)
 
 `cargo audit` also reports `unsound`, `unmaintained`, and `yanked` advisories as
@@ -88,6 +68,11 @@ track the rest here.
   residual 0.7.3 instance is tracked below).
 - **`unicode-segmentation` `yanked`.** Bumped from the yanked `1.13.1` to
   **1.13.3**.
+- **RUSTSEC-2026-0194 and RUSTSEC-2026-0195 — `quick-xml` (XML parsing DoS).**
+  Bumped Tauri's transitive `plist` from **1.8.0** to **1.10.0**, which moves
+  `quick-xml` from **0.38.4** to **0.41.0** (patched in `>= 0.41.0`). The
+  matching ignores were removed from `.cargo/audit.toml`.
+- **`spin` `yanked`.** Bumped from the yanked **0.9.8** to **0.9.9**.
 
 ### Remaining warnings with no upgrade path
 
@@ -147,4 +132,4 @@ shipped, and delete the corresponding entry here. Also re-scan the non-failing
 warnings for newly available upgrades (e.g. a maintained fork or a Tauri release
 that moves off GTK3 / old `phf`).
 
-_Last reviewed: 2026-07-02._
+_Last reviewed: 2026-07-14._
