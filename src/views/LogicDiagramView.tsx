@@ -1,28 +1,5 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type MouseEvent as ReactMouseEvent } from 'react';
-import '@xyflow/react/dist/style.css';
-import {
-  addEdge,
-  Background,
-  BackgroundVariant,
-  BaseEdge,
-  ConnectionMode,
-  EdgeLabelRenderer,
-  Handle,
-  Position,
-  ReactFlow,
-  ReactFlowProvider,
-  getSmoothStepPath,
-  useEdgesState,
-  useNodesState,
-  useReactFlow,
-  type Connection,
-  type Edge,
-  type EdgeProps,
-  type EdgeMouseHandler,
-  type NodeMouseHandler,
-  type NodeProps,
-  type Viewport,
-} from '@xyflow/react';
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent, type WheelEvent as ReactWheelEvent } from 'react';
+import { getSmoothStepPath, type Connection, type Viewport } from '@xyflow/react';
 import {
   CircuitBoard,
   Group,
@@ -148,13 +125,14 @@ const GROUP_PADDING = 48;
 const MIN_LOGIC_ZOOM = 0.2;
 const MAX_LOGIC_ZOOM = 2.5;
 const LOGIC_ZOOM_STEP = 1.15;
+const LOGIC_WHEEL_ZOOM_SENSITIVITY = 0.0008;
+const LOGIC_CONNECTION_SNAP_RADIUS = 28;
 const DEFAULT_VIEWPORT: Viewport = { x: 0, y: 0, zoom: 1 };
 const CONTEXT_MENU_WIDTH = 280;
 const CONTEXT_MENU_HEIGHT = 420;
 const LOGIC_SIGNAL_ON = 'color-mix(in oklch, var(--primary) 82%, white 18%)';
 const LOGIC_SIGNAL_OFF = 'color-mix(in oklch, var(--muted-foreground) 72%, transparent)';
 const LOGIC_SIGNAL_UNKNOWN = 'color-mix(in oklch, var(--border) 88%, white 12%)';
-const LOGIC_SIGNAL_ON_PULSE = 'color-mix(in oklch, white 84%, var(--primary) 16%)';
 const LOGIC_NODE_ACTIVE_WASH = 'color-mix(in oklch, var(--primary) 26%, transparent)';
 
 type LogicContextMenu =
@@ -186,6 +164,94 @@ function snapPosition(position: { x: number; y: number }, grid = LOGIC_GRID) {
     x: snapValue(position.x, grid),
     y: snapValue(position.y, grid),
   };
+}
+
+function nodeBaseWidth(node: LogicFlowNode) {
+  if (node.data.kind === 'group') return typeof node.style?.width === 'number' ? node.style.width : 240;
+  if (node.data.kind === 'component') return 144;
+  return DEFAULT_GATE_WIDTH;
+}
+
+function nodeBaseHeight(node: LogicFlowNode) {
+  if (node.data.kind === 'group') return typeof node.style?.height === 'number' ? node.style.height : 160;
+  if (node.data.kind === 'component') return 80;
+  return DEFAULT_GATE_HEIGHT;
+}
+
+function absoluteNodePosition(node: LogicFlowNode, nodesById: Map<string, LogicFlowNode>): { x: number; y: number } {
+  if (!node.parentId) return node.position;
+  const parent = nodesById.get(node.parentId);
+  if (!parent) return node.position;
+  const parentPosition = absoluteNodePosition(parent, nodesById);
+  return {
+    x: parentPosition.x + node.position.x,
+    y: parentPosition.y + node.position.y,
+  };
+}
+
+function flowToScreen(position: { x: number; y: number }, viewport: Viewport) {
+  return {
+    x: position.x * viewport.zoom + viewport.x,
+    y: position.y * viewport.zoom + viewport.y,
+  };
+}
+
+function screenToFlow(position: { x: number; y: number }, viewport: Viewport) {
+  return {
+    x: (position.x - viewport.x) / viewport.zoom,
+    y: (position.y - viewport.y) / viewport.zoom,
+  };
+}
+
+function getHandleAnchor(
+  node: LogicFlowNode,
+  handleId: string,
+  type: 'source' | 'target',
+  nodesById: Map<string, LogicFlowNode>,
+) {
+  const absolute = absoluteNodePosition(node, nodesById);
+  const handles = type === 'source'
+    ? getLogicOutputHandles(node.data.kind, node.data.component)
+    : getLogicInputHandles(node.data.kind, node.data.component);
+  const index = Math.max(0, handles.indexOf(handleId));
+  const width = nodeBaseWidth(node);
+  const height = nodeBaseHeight(node);
+  const yRatio = handles.length <= 1 ? 0.5 : (0.34 + index * 0.32);
+  return {
+    x: absolute.x + (type === 'source' ? width : 0),
+    y: absolute.y + height * yRatio,
+  };
+}
+
+function logicEdgePath(
+  edge: LogicFlowEdge,
+  nodesById: Map<string, LogicFlowNode>,
+  viewport: Viewport,
+) {
+  const sourceNode = nodesById.get(edge.source);
+  const targetNode = nodesById.get(edge.target);
+  if (!sourceNode || !targetNode) return null;
+  const sourceHandles = getLogicOutputHandles(sourceNode.data.kind, sourceNode.data.component);
+  const targetHandles = getLogicInputHandles(targetNode.data.kind, targetNode.data.component);
+  const sourceHandle = edge.sourceHandle && sourceHandles.includes(edge.sourceHandle)
+    ? edge.sourceHandle
+    : sourceHandles[0];
+  const targetHandle = edge.targetHandle && targetHandles.includes(edge.targetHandle)
+    ? edge.targetHandle
+    : targetHandles[0];
+  if (!sourceHandle || !targetHandle) return null;
+  const source = flowToScreen(getHandleAnchor(sourceNode, sourceHandle, 'source', nodesById), viewport);
+  const target = flowToScreen(getHandleAnchor(targetNode, targetHandle, 'target', nodesById), viewport);
+  const [path, labelX, labelY] = getSmoothStepPath({
+    sourceX: source.x,
+    sourceY: source.y,
+    sourcePosition: 'right' as never,
+    targetX: target.x,
+    targetY: target.y,
+    targetPosition: 'left' as never,
+    borderRadius: 12 * viewport.zoom,
+  });
+  return { path, labelX, labelY, source, target };
 }
 
 function canConnectLogicNodes(connection: Connection) {
@@ -295,15 +361,54 @@ function logicNodeActiveOverlay(kind: LogicNodeKind, data: LogicFlowNode['data']
   return undefined;
 }
 
-function LogicGateNode({ data, selected }: NodeProps<LogicFlowNode>) {
+function SharpLogicNode({
+  node,
+  viewport,
+  nodesById,
+  readOnly,
+  onPointerDown,
+  onDoubleClick,
+  onContextMenu,
+  onHandlePointerDown,
+  onHandlePointerUp,
+}: {
+  node: LogicFlowNode;
+  viewport: Viewport;
+  nodesById: Map<string, LogicFlowNode>;
+  readOnly: boolean;
+  onPointerDown: (event: ReactPointerEvent<HTMLDivElement>, node: LogicFlowNode) => void;
+  onDoubleClick: (node: LogicFlowNode) => void;
+  onContextMenu: (event: ReactMouseEvent<HTMLDivElement>, node: LogicFlowNode) => void;
+  onHandlePointerDown: (event: ReactPointerEvent<HTMLButtonElement>, node: LogicFlowNode, handleId: string) => void;
+  onHandlePointerUp: (event: ReactPointerEvent<HTMLButtonElement>, node: LogicFlowNode, handleId: string) => void;
+}) {
+  const { data, selected } = node;
   const kind = data.kind;
+  const absolute = absoluteNodePosition(node, nodesById);
+  const screen = flowToScreen(absolute, viewport);
+  const width = nodeBaseWidth(node) * viewport.zoom;
+  const height = nodeBaseHeight(node) * viewport.zoom;
+  const zoom = viewport.zoom;
   if (kind === 'group') {
     return (
       <div
+        onPointerDown={(event) => onPointerDown(event, node)}
+        onDoubleClick={() => onDoubleClick(node)}
+        onContextMenu={(event) => onContextMenu(event, node)}
         className={cn(
-          'flex h-full w-full items-start rounded border border-dashed bg-card/35 px-3 py-2 text-[11px] font-medium text-muted-foreground shadow-none',
+          'absolute flex items-start rounded border border-dashed bg-card/35 font-medium text-muted-foreground shadow-none',
           selected ? 'border-primary ring-2 ring-primary/20' : 'border-border/80',
         )}
+        style={{
+          left: screen.x,
+          top: screen.y,
+          width,
+          height,
+          padding: `${8 * zoom}px ${12 * zoom}px`,
+          fontSize: 11 * zoom,
+          lineHeight: 1.25,
+          borderRadius: 4 * zoom,
+        }}
       >
         {logicNodeLabel({ kind, label: data.label })}
       </div>
@@ -321,11 +426,22 @@ function LogicGateNode({ data, selected }: NodeProps<LogicFlowNode>) {
 
   return (
     <div
+      onPointerDown={(event) => onPointerDown(event, node)}
+      onDoubleClick={() => onDoubleClick(node)}
+      onContextMenu={(event) => onContextMenu(event, node)}
       className={cn(
-        'relative flex min-h-16 w-28 items-center justify-center overflow-hidden rounded border bg-card px-3 py-2 text-center shadow-sm transition-colors',
-        kind === 'component' && 'h-auto min-h-20 w-36 bg-violet-500/5 px-4',
+        'absolute flex items-center justify-center overflow-hidden rounded border bg-card text-center shadow-sm transition-colors',
+        kind === 'component' && 'bg-violet-500/5',
         selected ? 'border-primary ring-2 ring-primary/25' : 'border-border/70',
       )}
+      style={{
+        left: screen.x,
+        top: screen.y,
+        width,
+        height,
+        padding: `${8 * zoom}px ${kind === 'component' ? 16 * zoom : 12 * zoom}px`,
+        borderRadius: 4 * zoom,
+      }}
     >
       {activeOverlay ? (
         <span
@@ -335,66 +451,97 @@ function LogicGateNode({ data, selected }: NodeProps<LogicFlowNode>) {
         />
       ) : null}
       {inputHandles.map((handleId, index) => (
-        <Handle
+        <button
           key={handleId}
-          id={handleId}
-          type="target"
-          position={Position.Left}
-          className="z-20 size-2.5 border-border bg-background"
-          style={{ top: inputHandles.length === 1 ? '50%' : `${34 + index * 32}%` }}
+          type="button"
+          data-logic-handle
+          aria-label={`${logicNodeLabel({ kind, label: data.label })} input ${handleId}`}
+          disabled={readOnly}
+          onPointerDown={(event) => event.stopPropagation()}
+          onPointerUp={(event) => onHandlePointerUp(event, node, handleId)}
+          className="absolute z-20 cursor-crosshair rounded-full border border-border bg-background"
+          style={{
+            left: -5 * zoom,
+            top: (inputHandles.length === 1 ? 0.5 : 0.34 + index * 0.32) * height,
+            width: 10 * zoom,
+            height: 10 * zoom,
+            transform: 'translateY(-50%)',
+          }}
         />
       ))}
       <div className="relative z-10 min-w-0">
-        <div className="text-[11px] font-semibold uppercase tracking-normal text-foreground">
+        <div className="font-semibold uppercase tracking-normal text-foreground" style={{ fontSize: 11 * zoom, lineHeight: 1.2 }}>
           {logicNodeLabel({ kind, label: data.label })}
         </div>
         {kind === 'component' && (
-          <div className="mt-1 grid grid-cols-2 gap-x-3 text-[9px] text-muted-foreground">
+          <div
+            className="grid grid-cols-2 text-muted-foreground"
+            style={{ marginTop: 4 * zoom, columnGap: 12 * zoom, fontSize: 9 * zoom, lineHeight: 1.2 }}
+          >
             <span className="truncate text-left">{componentInputs.map((port) => port.label).join(', ')}</span>
             <span className="truncate text-right">{componentOutputs.map((port) => port.label).join(', ')}</span>
           </div>
         )}
         {(kind === 'input' || kind === 'output') && (
-          <div className="mt-1 text-[10px] text-muted-foreground">
+          <div className="text-muted-foreground" style={{ marginTop: 4 * zoom, fontSize: 10 * zoom, lineHeight: 1.2 }}>
             {typeof displayValue === 'boolean' ? (displayValue ? '1' : '0') : 'unset'}
           </div>
         )}
       </div>
       {isInversion && (
-        <span className="absolute right-[-7px] top-1/2 z-20 size-3 -translate-y-1/2 rounded-full border border-border bg-background" />
+        <span
+          className="absolute top-1/2 z-20 -translate-y-1/2 rounded-full border border-border bg-background"
+          style={{ right: -7 * zoom, width: 12 * zoom, height: 12 * zoom }}
+        />
       )}
       {outputHandles.map((handleId, index) => (
-        <Handle
+        <button
           key={handleId}
-          id={handleId}
-          type="source"
-          position={Position.Right}
-          className="z-20 size-2.5 border-border bg-background"
-          style={{ top: outputHandles.length === 1 ? '50%' : `${34 + index * 32}%` }}
+          type="button"
+          data-logic-handle
+          aria-label={`${logicNodeLabel({ kind, label: data.label })} output ${handleId}`}
+          disabled={readOnly}
+          onPointerDown={(event) => onHandlePointerDown(event, node, handleId)}
+          className="absolute z-20 cursor-crosshair rounded-full border border-border bg-background"
+          style={{
+            right: -5 * zoom,
+            top: (outputHandles.length === 1 ? 0.5 : 0.34 + index * 0.32) * height,
+            width: 10 * zoom,
+            height: 10 * zoom,
+            transform: 'translateY(-50%)',
+          }}
         />
       ))}
     </div>
   );
 }
 
-function LogicWireEdge(props: EdgeProps<LogicFlowEdge>) {
-  const signal = props.data?.signal;
+function SharpLogicEdge({
+  edge,
+  geometry,
+  selected,
+  zoom,
+  onPointerDown,
+  onContextMenu,
+  onDoubleClick,
+}: {
+  edge: LogicFlowEdge;
+  geometry: NonNullable<ReturnType<typeof logicEdgePath>>;
+  selected: boolean;
+  zoom: number;
+  onPointerDown: (event: ReactPointerEvent<SVGPathElement>, edge: LogicFlowEdge) => void;
+  onContextMenu: (event: ReactMouseEvent<SVGPathElement>, edge: LogicFlowEdge) => void;
+  onDoubleClick: (edge: LogicFlowEdge) => void;
+}) {
+  const signal = edge.data?.signal;
   const stroke = signal === true
     ? LOGIC_SIGNAL_ON
     : signal === false
     ? LOGIC_SIGNAL_OFF
     : LOGIC_SIGNAL_UNKNOWN;
-  const markerId = `logic-wire-arrow-${props.id}`;
-  const strokeWidth = signal === true ? 2.4 : 2;
-  const [path, labelX, labelY] = getSmoothStepPath({
-    sourceX: props.sourceX,
-    sourceY: props.sourceY,
-    sourcePosition: props.sourcePosition,
-    targetX: props.targetX,
-    targetY: props.targetY,
-    targetPosition: props.targetPosition,
-    borderRadius: 12,
-  });
+  const markerId = `logic-wire-arrow-${edge.id}`;
+  const strokeWidth = (signal === true ? 2.4 : 2) * zoom;
+  const path = geometry.path;
 
   return (
     <>
@@ -425,7 +572,7 @@ function LogicWireEdge(props: EdgeProps<LogicFlowEdge>) {
           />
         </marker>
       </defs>
-      {props.selected ? (
+      {selected ? (
         <path
           d={path}
           fill="none"
@@ -438,13 +585,18 @@ function LogicWireEdge(props: EdgeProps<LogicFlowEdge>) {
         />
       ) : null}
       <path
+        data-logic-edge
         d={path}
         fill="none"
         stroke="transparent"
-        strokeWidth={16}
+        strokeWidth={16 * zoom}
         strokeLinecap="round"
         strokeLinejoin="round"
         pointerEvents="stroke"
+        style={{ cursor: 'pointer' }}
+        onPointerDown={(event) => onPointerDown(event, edge)}
+        onContextMenu={(event) => onContextMenu(event, edge)}
+        onDoubleClick={() => onDoubleClick(edge)}
       />
       <path
         d={path}
@@ -455,66 +607,11 @@ function LogicWireEdge(props: EdgeProps<LogicFlowEdge>) {
         strokeLinejoin="round"
         strokeDasharray={signal === undefined ? '7 7' : undefined}
         markerEnd={`url(#${markerId})`}
-        style={{
-          filter: props.selected ? 'drop-shadow(0 0 10px color-mix(in oklch, var(--primary) 35%, transparent))' : undefined,
-        }}
+        pointerEvents="none"
       />
-      {signal === true ? (
-        <path
-          d={path}
-          fill="none"
-          stroke={LOGIC_SIGNAL_ON_PULSE}
-          strokeWidth={strokeWidth + 0.6}
-          strokeLinecap="round"
-          strokeLinejoin="round"
-          strokeDasharray="28 240"
-          opacity={1}
-          pointerEvents="none"
-          style={{
-            filter: 'drop-shadow(0 0 3px color-mix(in oklch, var(--primary) 32%, transparent))',
-          }}
-        >
-          <animate
-            attributeName="stroke-dashoffset"
-            from="268"
-            to="0"
-            dur="1200ms"
-            repeatCount="indefinite"
-          />
-        </path>
-      ) : null}
-      <BaseEdge
-        {...props}
-        path={path}
-        labelX={labelX}
-        labelY={labelY}
-        interactionWidth={16}
-        style={{
-          stroke: 'transparent',
-          strokeWidth: 0,
-          opacity: 0,
-        }}
-      />
-      {props.label ? (
-        <EdgeLabelRenderer>
-          <div
-            style={{
-              position: 'absolute',
-              transform: `translate(-50%, -50%) translate(${labelX}px, ${labelY}px)`,
-              pointerEvents: 'all',
-            }}
-            className="nodrag nopan rounded border border-border/60 bg-background/90 px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground shadow-sm"
-          >
-            {props.label}
-          </div>
-        </EdgeLabelRenderer>
-      ) : null}
     </>
   );
 }
-
-const nodeTypes = { logicGate: LogicGateNode };
-const edgeTypes = { logicWire: LogicWireEdge };
 
 function LogicDiagramEditor({ relativePath }: Props) {
   const vault = useVaultStore((state) => state.vault);
@@ -531,8 +628,8 @@ function LogicDiagramEditor({ relativePath }: Props) {
   const setActiveView = useUiStore((state) => state.setActiveView);
   const readOnly = vault ? isVaultReadOnly(vault) : false;
   const { userId: myUserId, userName: myUserName, userColor: myUserColor } = useCollabIdentity();
-  const [nodes, setNodes, onNodesChange] = useNodesState<LogicFlowNode>([]);
-  const [edges, setEdges, onEdgesChange] = useEdgesState<LogicFlowEdge>([]);
+  const [nodes, setNodes] = useState<LogicFlowNode[]>([]);
+  const [edges, setEdges] = useState<LogicFlowEdge[]>([]);
   const [diagram, setDiagram] = useState<LogicDiagramDocument>(() =>
     createEmptyLogicDiagram(getDocumentBaseName(relativePath, 'Logic Diagram').replace(/\.logic$/i, '')),
   );
@@ -565,7 +662,37 @@ function LogicDiagramEditor({ relativePath }: Props) {
   const liveSessionRef = useRef<LiveJsonSession | null>(null);
   const [refreshPulse, setRefreshPulse] = useState(false);
   const refreshPulseTimerRef = useRef<number | null>(null);
-  const { getViewport, screenToFlowPosition, fitView, setViewport } = useReactFlow<LogicFlowNode, LogicFlowEdge>();
+  const panSessionRef = useRef<{ pointerId: number; start: { x: number; y: number }; viewport: Viewport } | null>(null);
+  const dragSessionRef = useRef<{
+    pointerId: number;
+    nodeId: string;
+    start: { x: number; y: number };
+    positions: Map<string, { x: number; y: number }>;
+    moved: boolean;
+  } | null>(null);
+  const selectionSessionRef = useRef<{
+    pointerId: number;
+    start: { x: number; y: number };
+    current: { x: number; y: number };
+    additive: boolean;
+    baseNodeIds: Set<string>;
+    baseEdgeIds: Set<string>;
+    moved: boolean;
+  } | null>(null);
+  const [selectionBox, setSelectionBox] = useState<{ left: number; top: number; width: number; height: number } | null>(null);
+  const connectionSessionRef = useRef<{
+    sourceNodeId: string;
+    sourceHandle: string;
+    pointer: { x: number; y: number };
+    target: { nodeId: string; handleId: string } | null;
+  } | null>(null);
+  const [connectionPreview, setConnectionPreview] = useState<{
+    sourceNodeId: string;
+    sourceHandle: string;
+    pointer: { x: number; y: number };
+    target: { nodeId: string; handleId: string } | null;
+  } | null>(null);
+  const getViewport = useCallback(() => viewport, [viewport]);
 
   const structuralSignature = useCallback((flowNodes: LogicFlowNode[], flowEdges: LogicFlowEdge[]) =>
     JSON.stringify({
@@ -631,6 +758,11 @@ function LogicDiagramEditor({ relativePath }: Props) {
       },
     };
   }), [edges, evaluation.wireValues]);
+  const nodesById = useMemo(() => new Map(renderedNodes.map((node) => [node.id, node])), [renderedNodes]);
+  const edgeGeometries = useMemo(() => new Map(renderedEdges
+    .map((edge) => [edge.id, logicEdgePath(edge, nodesById, viewport)] as const)
+    .filter((entry): entry is readonly [string, NonNullable<ReturnType<typeof logicEdgePath>>] => entry[1] !== null)),
+  [nodesById, renderedEdges, viewport]);
 
   const title = getDocumentBaseName(relativePath, 'Logic Diagram').replace(/\.logic$/i, '');
   const noteTarget = useMemo(() => (
@@ -651,10 +783,7 @@ function LogicDiagramEditor({ relativePath }: Props) {
     setViewportState(loaded.viewport);
     savedStructuralRef.current = structuralSignature(graph.nodes, graph.edges);
     readyRef.current = true;
-    window.setTimeout(() => {
-      void setViewport(loaded.viewport, { duration: 0 });
-    }, 0);
-  }, [setEdges, setNodes, setViewport, structuralSignature]);
+  }, [setEdges, setNodes, structuralSignature]);
 
   const { controller, snapshot } = useDocumentSessionController<LogicDiagramDocument>({
     serialize: (doc) => JSON.stringify(doc, null, 2),
@@ -952,9 +1081,9 @@ function LogicDiagramEditor({ relativePath }: Props) {
   }, []);
 
   const syncViewport = useCallback((nextViewport: Viewport, duration = 180) => {
+    void duration;
     setViewportState(nextViewport);
-    void setViewport(nextViewport, { duration });
-  }, [setViewport]);
+  }, []);
 
   const adjustZoom = useCallback((direction: 1 | -1) => {
     const current = getViewport();
@@ -971,10 +1100,34 @@ function LogicDiagramEditor({ relativePath }: Props) {
   }, [getViewport, syncViewport]);
 
   const fitLogicView = useCallback(() => {
-    void fitView({ padding: 0.25, duration: 180 }).then(() => {
-      setViewportState(getViewport());
+    const rect = viewportRef.current?.getBoundingClientRect();
+    if (!rect || nodes.length === 0) return;
+    const absoluteNodes = nodes.map((node) => {
+      const position = absoluteNodePosition(node, new Map(nodes.map((candidate) => [candidate.id, candidate])));
+      return {
+        left: position.x,
+        top: position.y,
+        right: position.x + nodeBaseWidth(node),
+        bottom: position.y + nodeBaseHeight(node),
+      };
     });
-  }, [fitView, getViewport]);
+    const left = Math.min(...absoluteNodes.map((node) => node.left));
+    const top = Math.min(...absoluteNodes.map((node) => node.top));
+    const right = Math.max(...absoluteNodes.map((node) => node.right));
+    const bottom = Math.max(...absoluteNodes.map((node) => node.bottom));
+    const padding = 64;
+    const graphWidth = Math.max(1, right - left);
+    const graphHeight = Math.max(1, bottom - top);
+    const zoom = Math.min(
+      MAX_LOGIC_ZOOM,
+      Math.max(MIN_LOGIC_ZOOM, Math.min((rect.width - padding * 2) / graphWidth, (rect.height - padding * 2) / graphHeight)),
+    );
+    setViewportState({
+      zoom,
+      x: (rect.width - graphWidth * zoom) / 2 - left * zoom,
+      y: (rect.height - graphHeight * zoom) / 2 - top * zoom,
+    });
+  }, [nodes]);
 
   const resolveLogicConnection = useCallback((connection: Connection) => {
     if (!canConnectLogicNodes(connection)) return;
@@ -1003,41 +1156,51 @@ function LogicDiagramEditor({ relativePath }: Props) {
     return { sourceHandle, targetHandle: requestedTargetHandle };
   }, [edges, nodes]);
 
-  const isValidLogicConnection = useCallback((connection: Connection | Edge) => (
-    Boolean(resolveLogicConnection({
-      source: connection.source,
-      target: connection.target,
-      sourceHandle: connection.sourceHandle ?? null,
-      targetHandle: connection.targetHandle ?? null,
-    }))
-  ), [resolveLogicConnection]);
-
   const onConnect = useCallback((connection: Connection) => {
     if (readOnly) return;
     const resolved = resolveLogicConnection(connection);
     if (!resolved) return;
-    setEdges((current) => addEdge({
-      ...connection,
-      id: `wire-${Date.now()}-${current.length}`,
-      sourceHandle: resolved.sourceHandle,
-      targetHandle: resolved.targetHandle,
-      type: 'logicWire',
-    }, current));
+    setEdges((current) => [
+      ...current,
+      {
+        id: `wire-${Date.now()}-${current.length}`,
+        source: connection.source,
+        target: connection.target,
+        sourceHandle: resolved.sourceHandle,
+        targetHandle: resolved.targetHandle,
+        type: 'logicWire',
+      },
+    ]);
     markChanged();
   }, [markChanged, readOnly, resolveLogicConnection, setEdges]);
 
-  const snapDraggedNodesToGrid = useCallback((nodeId: string) => {
-    if (readOnly) return;
-    setNodes((current) => {
-      const draggedNode = current.find((candidate) => candidate.id === nodeId);
-      return current.map((node) => {
-        const shouldSnap = node.id === nodeId
-          || (draggedNode?.selected && node.selected && node.data.kind !== 'group');
-        return shouldSnap ? { ...node, position: snapPosition(node.position) } : node;
-      });
-    });
-    markChanged();
-  }, [markChanged, readOnly, setNodes]);
+  const getConnectionSnap = useCallback((
+    pointer: { x: number; y: number },
+    sourceNodeId: string,
+    sourceHandle: string,
+  ) => {
+    let nearest: { nodeId: string; handleId: string; point: { x: number; y: number }; distance: number } | null = null;
+    for (const node of renderedNodes) {
+      if (node.id === sourceNodeId) continue;
+      for (const handleId of getLogicInputHandles(node.data.kind, node.data.component)) {
+        const resolved = resolveLogicConnection({
+          source: sourceNodeId,
+          target: node.id,
+          sourceHandle,
+          targetHandle: handleId,
+        });
+        if (!resolved || resolved.targetHandle !== handleId) continue;
+        const point = flowToScreen(getHandleAnchor(node, handleId, 'target', nodesById), viewport);
+        const distance = Math.hypot(pointer.x - point.x, pointer.y - point.y);
+        if (distance <= LOGIC_CONNECTION_SNAP_RADIUS && (!nearest || distance < nearest.distance)) {
+          nearest = { nodeId: node.id, handleId, point, distance };
+        }
+      }
+    }
+    return nearest
+      ? { pointer: nearest.point, target: { nodeId: nearest.nodeId, handleId: nearest.handleId } }
+      : { pointer, target: null };
+  }, [nodesById, renderedNodes, resolveLogicConnection, viewport]);
 
   const selectedGroups = useMemo(
     () => nodes.filter((node) => node.selected && node.data.kind === 'group'),
@@ -1203,16 +1366,24 @@ function LogicDiagramEditor({ relativePath }: Props) {
     };
   }, []);
 
+  const clientPointToFlowPosition = useCallback((point: { x: number; y: number }) => {
+    const rect = viewportRef.current?.getBoundingClientRect();
+    const local = rect
+      ? { x: point.x - rect.left, y: point.y - rect.top }
+      : point;
+    return screenToFlow(local, viewport);
+  }, [viewport]);
+
   const addGate = useCallback((kind: LogicGateKind) => {
-    addGateAt(kind, screenToFlowPosition(getViewportCenterClientPoint()));
-  }, [addGateAt, getViewportCenterClientPoint, screenToFlowPosition]);
+    addGateAt(kind, clientPointToFlowPosition(getViewportCenterClientPoint()));
+  }, [addGateAt, clientPointToFlowPosition, getViewportCenterClientPoint]);
 
   const insertTemplate = useCallback((template: LogicDiagramTemplate) => {
     if (readOnly) return;
     const doc = instantiateLogicDiagramTemplate(template);
     const flowGraph = toFlowGraph(doc);
     // Offset so appended templates don't overlap existing content.
-    const offset = screenToFlowPosition(getViewportCenterClientPoint());
+    const offset = clientPointToFlowPosition(getViewportCenterClientPoint());
     setNodes((current) => [
       ...current,
       ...flowGraph.nodes.map((node) => ({
@@ -1227,8 +1398,8 @@ function LogicDiagramEditor({ relativePath }: Props) {
     ]);
     markChanged();
     setTemplatePickerOpen(false);
-    setTimeout(() => fitView({ padding: 0.25, duration: 180 }), 60);
-  }, [fitView, getViewportCenterClientPoint, markChanged, readOnly, screenToFlowPosition, setEdges, setNodes]);
+    window.setTimeout(fitLogicView, 60);
+  }, [clientPointToFlowPosition, fitLogicView, getViewportCenterClientPoint, markChanged, readOnly, setEdges, setNodes]);
 
   const openSaveComponentDialog = useCallback(() => {
     if (readOnly) return;
@@ -1266,12 +1437,12 @@ function LogicDiagramEditor({ relativePath }: Props) {
 
   const insertLogicComponent = useCallback((component: LogicComponentDefinition) => {
     if (readOnly) return;
-    const position = snapPosition(screenToFlowPosition(getViewportCenterClientPoint()));
+    const position = snapPosition(clientPointToFlowPosition(getViewportCenterClientPoint()));
     const node = instantiateLogicComponentNode(component, componentInsertMode, position);
     setNodes((current) => [...current, { ...toFlowGraph({ ...createEmptyLogicDiagram(), nodes: [node], wires: [] }).nodes[0], selected: false }]);
     markChanged();
     setComponentPickerOpen(false);
-  }, [componentInsertMode, getViewportCenterClientPoint, markChanged, readOnly, screenToFlowPosition, setNodes]);
+  }, [clientPointToFlowPosition, componentInsertMode, getViewportCenterClientPoint, markChanged, readOnly, setNodes]);
 
   const duplicateSelection = useCallback(() => {
     if (readOnly) return;
@@ -1332,10 +1503,9 @@ function LogicDiagramEditor({ relativePath }: Props) {
     if (changed) markChanged();
   }, [markChanged, readOnly, setNodes]);
 
-  const handleNodeDoubleClick = useCallback<NodeMouseHandler<LogicFlowNode>>((event, node) => {
+  const handleNodeDoubleClick = useCallback((node: LogicFlowNode) => {
     if (readOnly) return;
     if (node.data.kind === 'input') {
-      event.preventDefault();
       toggleInputNodes([node.id]);
       return;
     }
@@ -1440,13 +1610,14 @@ function LogicDiagramEditor({ relativePath }: Props) {
     setContextMenu({
       kind: 'pane',
       ...position,
-      flowPosition: screenToFlowPosition({ x: event.clientX, y: event.clientY }),
+      flowPosition: clientPointToFlowPosition({ x: event.clientX, y: event.clientY }),
     });
-  }, [getMenuPosition, readOnly, screenToFlowPosition]);
+  }, [clientPointToFlowPosition, getMenuPosition, readOnly]);
 
-  const handleNodeContextMenu = useCallback<NodeMouseHandler<LogicFlowNode>>((event, node) => {
+  const handleNodeContextMenu = useCallback((event: ReactMouseEvent<HTMLDivElement>, node: LogicFlowNode) => {
     if (readOnly) return;
     event.preventDefault();
+    event.stopPropagation();
     const position = getMenuPosition(event.clientX, event.clientY);
     if (!node.selected) {
       setNodes((current) => current.map((candidate) => ({
@@ -1462,9 +1633,10 @@ function LogicDiagramEditor({ relativePath }: Props) {
     });
   }, [getMenuPosition, readOnly, setEdges, setNodes]);
 
-  const handleEdgeContextMenu = useCallback<EdgeMouseHandler<LogicFlowEdge>>((event, edge) => {
+  const handleEdgeContextMenu = useCallback((event: ReactMouseEvent<SVGPathElement>, edge: LogicFlowEdge) => {
     if (readOnly) return;
     event.preventDefault();
+    event.stopPropagation();
     const position = getMenuPosition(event.clientX, event.clientY);
     if (!edge.selected) {
       setNodes((current) => current.map((node) => ({ ...node, selected: false })));
@@ -1479,6 +1651,268 @@ function LogicDiagramEditor({ relativePath }: Props) {
       edgeId: edge.id,
     });
   }, [getMenuPosition, readOnly, setEdges, setNodes]);
+
+  const handlePanePointerDown = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
+    if (event.button !== 0 && event.button !== 1) return;
+    closeContextMenu();
+    const target = event.target as HTMLElement;
+    if (target.closest('[data-logic-node], [data-logic-handle], [data-logic-edge]')) return;
+    const rect = event.currentTarget.getBoundingClientRect();
+    const pointer = { x: event.clientX - rect.left, y: event.clientY - rect.top };
+    if (event.button === 1) {
+      panSessionRef.current = {
+        pointerId: event.pointerId,
+        start: { x: event.clientX, y: event.clientY },
+        viewport,
+      };
+      event.currentTarget.setPointerCapture(event.pointerId);
+      return;
+    }
+    const additive = event.shiftKey || event.ctrlKey || event.metaKey;
+    selectionSessionRef.current = {
+      pointerId: event.pointerId,
+      start: pointer,
+      current: pointer,
+      additive,
+      baseNodeIds: new Set(nodes.filter((node) => node.selected).map((node) => node.id)),
+      baseEdgeIds: new Set(edges.filter((edge) => edge.selected).map((edge) => edge.id)),
+      moved: false,
+    };
+    event.currentTarget.setPointerCapture(event.pointerId);
+    if (!additive) {
+      setNodes((current) => current.map((node) => ({ ...node, selected: false })));
+      setEdges((current) => current.map((edge) => ({ ...edge, selected: false })));
+    }
+  }, [closeContextMenu, edges, nodes, setEdges, setNodes, viewport]);
+
+  const handlePaneWheel = useCallback((event: ReactWheelEvent<HTMLDivElement>) => {
+    event.preventDefault();
+    if (event.ctrlKey) {
+      const rect = event.currentTarget.getBoundingClientRect();
+      const pointer = {
+        x: event.clientX - rect.left,
+        y: event.clientY - rect.top,
+      };
+      setViewportState((current) => {
+        const wheelDelta = Math.max(-240, Math.min(240, event.deltaY));
+        const nextZoom = Math.min(
+          MAX_LOGIC_ZOOM,
+          Math.max(MIN_LOGIC_ZOOM, current.zoom * Math.exp(-wheelDelta * LOGIC_WHEEL_ZOOM_SENSITIVITY)),
+        );
+        const flowPoint = screenToFlow(pointer, current);
+        return {
+          x: pointer.x - flowPoint.x * nextZoom,
+          y: pointer.y - flowPoint.y * nextZoom,
+          zoom: nextZoom,
+        };
+      });
+      return;
+    }
+    setViewportState((current) => ({
+      ...current,
+      x: current.x - event.deltaX,
+      y: current.y - event.deltaY,
+    }));
+  }, []);
+
+  const handlePanePointerMove = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
+    if (panSessionRef.current?.pointerId === event.pointerId) {
+      const session = panSessionRef.current;
+      setViewportState({
+        ...session.viewport,
+        x: session.viewport.x + event.clientX - session.start.x,
+        y: session.viewport.y + event.clientY - session.start.y,
+      });
+      return;
+    }
+    if (dragSessionRef.current?.pointerId === event.pointerId) {
+      const session = dragSessionRef.current;
+      const moved = Math.abs(event.clientX - session.start.x) > 2 || Math.abs(event.clientY - session.start.y) > 2;
+      if (moved) {
+        dragSessionRef.current = { ...session, moved: true };
+      }
+      const delta = {
+        x: (event.clientX - session.start.x) / viewport.zoom,
+        y: (event.clientY - session.start.y) / viewport.zoom,
+      };
+      setNodes((current) => current.map((node) => {
+        const start = session.positions.get(node.id);
+        return start ? { ...node, position: snapPosition({ x: start.x + delta.x, y: start.y + delta.y }) } : node;
+      }));
+      return;
+    }
+    if (selectionSessionRef.current?.pointerId === event.pointerId) {
+      const rect = event.currentTarget.getBoundingClientRect();
+      const pointer = { x: event.clientX - rect.left, y: event.clientY - rect.top };
+      const session = selectionSessionRef.current;
+      const moved = Math.abs(pointer.x - session.start.x) > 2 || Math.abs(pointer.y - session.start.y) > 2;
+      const left = Math.min(session.start.x, pointer.x);
+      const top = Math.min(session.start.y, pointer.y);
+      const right = Math.max(session.start.x, pointer.x);
+      const bottom = Math.max(session.start.y, pointer.y);
+      const selectedIds = new Set<string>();
+      for (const node of renderedNodes) {
+        const position = flowToScreen(absoluteNodePosition(node, nodesById), viewport);
+        const nodeRight = position.x + nodeBaseWidth(node) * viewport.zoom;
+        const nodeBottom = position.y + nodeBaseHeight(node) * viewport.zoom;
+        if (position.x <= right && nodeRight >= left && position.y <= bottom && nodeBottom >= top) {
+          selectedIds.add(node.id);
+        }
+      }
+      const nextNodeIds = new Set(session.additive ? [...session.baseNodeIds, ...selectedIds] : selectedIds);
+      const nextEdgeIds = new Set(session.additive ? session.baseEdgeIds : []);
+      for (const edge of renderedEdges) {
+        if (nextNodeIds.has(edge.source) && nextNodeIds.has(edge.target)) {
+          nextEdgeIds.add(edge.id);
+        }
+      }
+      selectionSessionRef.current = { ...session, current: pointer, moved };
+      setSelectionBox(moved ? { left, top, width: right - left, height: bottom - top } : null);
+      setNodes((current) => current.map((node) => ({ ...node, selected: nextNodeIds.has(node.id) })));
+      setEdges((current) => current.map((edge) => ({ ...edge, selected: nextEdgeIds.has(edge.id) })));
+      return;
+    }
+    if (connectionSessionRef.current) {
+      const rect = viewportRef.current?.getBoundingClientRect();
+      const pointer = rect
+        ? { x: event.clientX - rect.left, y: event.clientY - rect.top }
+        : { x: event.clientX, y: event.clientY };
+      const snapped = getConnectionSnap(
+        pointer,
+        connectionSessionRef.current.sourceNodeId,
+        connectionSessionRef.current.sourceHandle,
+      );
+      connectionSessionRef.current = {
+        ...connectionSessionRef.current,
+        pointer: snapped.pointer,
+        target: snapped.target,
+      };
+      setConnectionPreview({ ...connectionSessionRef.current });
+    }
+  }, [getConnectionSnap, nodesById, renderedEdges, renderedNodes, setEdges, setNodes, viewport]);
+
+  const finishPointerSession = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
+    if (panSessionRef.current?.pointerId === event.pointerId) {
+      panSessionRef.current = null;
+      if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+        event.currentTarget.releasePointerCapture(event.pointerId);
+      }
+    }
+    if (dragSessionRef.current?.pointerId === event.pointerId) {
+      const { moved } = dragSessionRef.current;
+      dragSessionRef.current = null;
+      if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+        event.currentTarget.releasePointerCapture(event.pointerId);
+      }
+      if (moved) markChanged();
+    }
+    if (selectionSessionRef.current?.pointerId === event.pointerId) {
+      selectionSessionRef.current = null;
+      setSelectionBox(null);
+      if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+        event.currentTarget.releasePointerCapture(event.pointerId);
+      }
+    }
+    if (connectionSessionRef.current) {
+      const { sourceNodeId, sourceHandle, target } = connectionSessionRef.current;
+      connectionSessionRef.current = null;
+      setConnectionPreview(null);
+      if (target) {
+        onConnect({
+          source: sourceNodeId,
+          target: target.nodeId,
+          sourceHandle,
+          targetHandle: target.handleId,
+        });
+      }
+    }
+  }, [markChanged, onConnect]);
+
+  const handleNodePointerDown = useCallback((event: ReactPointerEvent<HTMLDivElement>, node: LogicFlowNode) => {
+    if (event.button !== 0) return;
+    event.stopPropagation();
+    closeContextMenu();
+    const shouldMultiSelect = event.shiftKey || event.ctrlKey || event.metaKey;
+    setEdges((current) => current.map((edge) => ({ ...edge, selected: false })));
+    setNodes((current) => {
+      const clickedNode = current.find((candidate) => candidate.id === node.id);
+      const shouldKeepExistingSelection = !shouldMultiSelect && clickedNode?.selected === true;
+      const next = current.map((candidate) => {
+        if (candidate.id === node.id) {
+          return {
+            ...candidate,
+            selected: shouldMultiSelect ? !candidate.selected : true,
+          };
+        }
+        if (shouldKeepExistingSelection || shouldMultiSelect) return candidate;
+        return { ...candidate, selected: false };
+      });
+      const dragNodeIds = new Set(
+        (shouldKeepExistingSelection ? current : next)
+          .filter((candidate) => candidate.selected && candidate.data.kind !== 'group')
+          .map((candidate) => candidate.id),
+      );
+      if (node.data.kind === 'group' || dragNodeIds.size === 0) {
+        dragNodeIds.add(node.id);
+      }
+      dragSessionRef.current = {
+        pointerId: event.pointerId,
+        nodeId: node.id,
+        start: { x: event.clientX, y: event.clientY },
+        positions: new Map(next
+          .filter((candidate) => dragNodeIds.has(candidate.id))
+          .map((candidate) => [candidate.id, candidate.position])),
+        moved: false,
+      };
+      return next;
+    });
+    const pane = viewportRef.current?.querySelector('[data-testid="logic-sharp-flow"]');
+    if (pane instanceof HTMLElement) pane.setPointerCapture(event.pointerId);
+  }, [closeContextMenu, markChanged, setEdges, setNodes]);
+
+  const handleEdgePointerDown = useCallback((event: ReactPointerEvent<SVGPathElement>, edge: LogicFlowEdge) => {
+    if (event.button !== 0) return;
+    event.stopPropagation();
+    closeContextMenu();
+    const shouldMultiSelect = event.shiftKey || event.ctrlKey || event.metaKey;
+    setNodes((current) => shouldMultiSelect ? current : current.map((node) => ({ ...node, selected: false })));
+    setEdges((current) => current.map((candidate) => {
+      if (candidate.id === edge.id) return { ...candidate, selected: shouldMultiSelect ? !candidate.selected : true };
+      return shouldMultiSelect ? candidate : { ...candidate, selected: false };
+    }));
+  }, [closeContextMenu, setEdges, setNodes]);
+
+  const handleOutputPointerDown = useCallback((event: ReactPointerEvent<HTMLButtonElement>, node: LogicFlowNode, handleId: string) => {
+    if (readOnly || event.button !== 0) return;
+    event.stopPropagation();
+    const rect = viewportRef.current?.getBoundingClientRect();
+    const pointer = rect
+      ? { x: event.clientX - rect.left, y: event.clientY - rect.top }
+      : { x: event.clientX, y: event.clientY };
+    const snapped = getConnectionSnap(pointer, node.id, handleId);
+    connectionSessionRef.current = {
+      sourceNodeId: node.id,
+      sourceHandle: handleId,
+      pointer: snapped.pointer,
+      target: snapped.target,
+    };
+    setConnectionPreview(connectionSessionRef.current);
+  }, [getConnectionSnap, readOnly]);
+
+  const handleInputPointerUp = useCallback((event: ReactPointerEvent<HTMLButtonElement>, node: LogicFlowNode, handleId: string) => {
+    if (readOnly) return;
+    event.stopPropagation();
+    const session = connectionSessionRef.current;
+    connectionSessionRef.current = null;
+    setConnectionPreview(null);
+    if (!session) return;
+    onConnect({
+      source: session.sourceNodeId,
+      target: node.id,
+      sourceHandle: session.sourceHandle,
+      targetHandle: handleId,
+    });
+  }, [onConnect, readOnly]);
 
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
@@ -1960,46 +2394,126 @@ function LogicDiagramEditor({ relativePath }: Props) {
             </div>
           </>
         )}
-        <ReactFlow<LogicFlowNode, LogicFlowEdge>
-          nodes={renderedNodes}
-          edges={renderedEdges}
-          nodeTypes={nodeTypes}
-          edgeTypes={edgeTypes}
-          onNodesChange={(changes) => {
-            onNodesChange(changes);
-            if (changes.some((change) => change.type !== 'select')) markChanged();
+        <div
+          data-testid="logic-sharp-flow"
+          className="absolute inset-0 overflow-hidden bg-background outline-none"
+          onPointerDown={handlePanePointerDown}
+          onPointerMove={handlePanePointerMove}
+          onPointerUp={finishPointerSession}
+          onPointerCancel={finishPointerSession}
+          onWheel={handlePaneWheel}
+          onContextMenu={handlePaneContextMenu}
+          style={{
+            cursor: panSessionRef.current ? 'grabbing' : selectionSessionRef.current ? 'crosshair' : 'default',
+            backgroundImage: 'radial-gradient(circle, color-mix(in oklch, var(--muted-foreground) 28%, transparent) 1px, transparent 1px)',
+            backgroundSize: `${LOGIC_GRID * viewport.zoom}px ${LOGIC_GRID * viewport.zoom}px`,
+            backgroundPosition: `${viewport.x}px ${viewport.y}px`,
           }}
-          onEdgesChange={(changes) => {
-            onEdgesChange(changes);
-            if (changes.some((change) => change.type !== 'select')) markChanged();
-          }}
-          onConnect={onConnect}
-          isValidConnection={isValidLogicConnection}
-          onNodeDoubleClick={handleNodeDoubleClick}
-          onNodeContextMenu={handleNodeContextMenu}
-          onEdgeContextMenu={handleEdgeContextMenu}
-          onPaneContextMenu={handlePaneContextMenu}
-          onNodeDragStop={(_event, node) => snapDraggedNodesToGrid(node.id)}
-          onMoveEnd={(_: MouseEvent | TouchEvent | null, nextViewport: Viewport) => {
-            setViewportState(nextViewport);
-          }}
-          connectionMode={ConnectionMode.Loose}
-          selectionOnDrag
-          panOnDrag={[1]}
-          panOnScroll
-          zoomOnScroll={false}
-          deleteKeyCode={null}
-          nodesDraggable={!readOnly}
-          elementsSelectable
-          nodesConnectable={!readOnly}
-          fitView
-          minZoom={0.2}
-          maxZoom={2.5}
-          proOptions={{ hideAttribution: true }}
-          className="bg-background"
         >
-          <Background variant={BackgroundVariant.Dots} gap={24} size={1} />
-        </ReactFlow>
+          {selectionBox ? (
+            <div
+              className="pointer-events-none absolute z-30 rounded-sm border border-primary/75 bg-primary/12"
+              style={{
+                left: selectionBox.left,
+                top: selectionBox.top,
+                width: selectionBox.width,
+                height: selectionBox.height,
+              }}
+            />
+          ) : null}
+          <svg className="absolute inset-0 size-full overflow-visible">
+            {renderedEdges.map((edge) => {
+              const geometry = edgeGeometries.get(edge.id);
+              if (!geometry) return null;
+              return (
+                <SharpLogicEdge
+                  key={edge.id}
+                  edge={edge}
+                  geometry={geometry}
+                  selected={edge.selected === true}
+                  zoom={viewport.zoom}
+                  onPointerDown={handleEdgePointerDown}
+                  onContextMenu={handleEdgeContextMenu}
+                  onDoubleClick={(target) => openRenameEdge(target.id)}
+                />
+              );
+            })}
+            {connectionPreview ? (() => {
+              const sourceNode = nodesById.get(connectionPreview.sourceNodeId);
+              if (!sourceNode) return null;
+              const source = flowToScreen(getHandleAnchor(sourceNode, connectionPreview.sourceHandle, 'source', nodesById), viewport);
+              const [path] = getSmoothStepPath({
+                sourceX: source.x,
+                sourceY: source.y,
+                sourcePosition: 'right' as never,
+                targetX: connectionPreview.pointer.x,
+                targetY: connectionPreview.pointer.y,
+                targetPosition: 'left' as never,
+                borderRadius: 12 * viewport.zoom,
+              });
+              return (
+                <path
+                  d={path}
+                  fill="none"
+                  stroke={LOGIC_SIGNAL_ON}
+                  strokeWidth={2 * viewport.zoom}
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  strokeDasharray={`${8 * viewport.zoom} ${8 * viewport.zoom}`}
+                  opacity={0.75}
+                />
+              );
+            })() : null}
+          </svg>
+          {renderedEdges.map((edge) => {
+            if (!edge.label) return null;
+            const geometry = edgeGeometries.get(edge.id);
+            if (!geometry) return null;
+            return (
+              <button
+                key={`${edge.id}-label`}
+                type="button"
+                className="absolute rounded border border-border/60 bg-background/90 font-medium text-muted-foreground shadow-sm"
+                style={{
+                  left: geometry.labelX,
+                  top: geometry.labelY,
+                  transform: 'translate(-50%, -50%)',
+                  padding: `${2 * viewport.zoom}px ${6 * viewport.zoom}px`,
+                  fontSize: 10 * viewport.zoom,
+                  lineHeight: 1.2,
+                }}
+                onDoubleClick={() => openRenameEdge(edge.id)}
+              >
+                {edge.label}
+              </button>
+            );
+          })}
+          {renderedNodes
+            .filter((node) => {
+              const position = flowToScreen(absoluteNodePosition(node, nodesById), viewport);
+              const width = nodeBaseWidth(node) * viewport.zoom;
+              const height = nodeBaseHeight(node) * viewport.zoom;
+              const rect = viewportRef.current?.getBoundingClientRect();
+              if (!rect) return true;
+              return position.x + width >= -200 && position.y + height >= -200 && position.x <= rect.width + 200 && position.y <= rect.height + 200;
+            })
+            .sort((a, b) => (a.zIndex ?? 0) - (b.zIndex ?? 0))
+            .map((node) => (
+              <div key={node.id} data-logic-node>
+                <SharpLogicNode
+                  node={node}
+                  viewport={viewport}
+                  nodesById={nodesById}
+                  readOnly={readOnly}
+                  onPointerDown={handleNodePointerDown}
+                  onDoubleClick={handleNodeDoubleClick}
+                  onContextMenu={handleNodeContextMenu}
+                  onHandlePointerDown={handleOutputPointerDown}
+                  onHandlePointerUp={handleInputPointerUp}
+                />
+              </div>
+            ))}
+        </div>
       </div>
       <Dialog open={renameTarget !== null} onOpenChange={(open) => {
         if (!open) {
@@ -2174,9 +2688,5 @@ function LogicDiagramEditor({ relativePath }: Props) {
 }
 
 export default function LogicDiagramView(props: Props) {
-  return (
-    <ReactFlowProvider>
-      <LogicDiagramEditor {...props} />
-    </ReactFlowProvider>
-  );
+  return <LogicDiagramEditor {...props} />;
 }

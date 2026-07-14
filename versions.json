@@ -1,6 +1,6 @@
 {
-  "server": "0.6.4",
-  "adminWeb": "0.6.4",
+  "server": "0.6.5",
+  "adminWeb": "0.6.5",
   "desktop": "0.6.5",
   "mobile": {
     "versionName": "0.6.6",
