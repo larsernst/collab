@@ -10,12 +10,36 @@ const tauriMocks = vi.hoisted(() => ({
   saveGeneratedImage: vi.fn(),
 }));
 
+const vaultClientMocks = vi.hoisted(() => ({
+  importData: vi.fn(),
+  listFiles: vi.fn(),
+}));
+
 const eventMocks = vi.hoisted(() => ({
   listen: vi.fn(),
 }));
 
 vi.mock('../../lib/tauri', () => ({
   tauriCommands: tauriMocks,
+}));
+
+vi.mock('../../lib/vaultClient', () => ({
+  createVaultClient: (vault: { kind?: string; path: string }) => ({
+    capabilities: {
+      nativeFilesystem: vault.kind !== 'hosted',
+      filesystemWatch: vault.kind !== 'hosted',
+      offlineAccess: true,
+      encryption: vault.kind !== 'hosted',
+      hostedMemberships: vault.kind === 'hosted',
+      authenticatedAssets: vault.kind === 'hosted',
+      destructiveSnapshotHistory: vault.kind !== 'hosted',
+    },
+    runtime: vault.kind === 'hosted'
+      ? { externalAssetImport: { importData: vaultClientMocks.importData } }
+      : {},
+    readAssetDataUrl: (relativePath: string) => tauriMocks.readNoteAssetDataUrl(vault.path, relativePath),
+    listFiles: vaultClientMocks.listFiles,
+  }),
 }));
 
 vi.mock('@tauri-apps/api/event', () => ({
@@ -31,10 +55,23 @@ vi.mock('sonner', () => ({
 
 import { useImageDocumentSession } from './useImageDocumentSession';
 import type { ImageOverlayDocument } from '../../types/image';
+import { toast } from 'sonner';
 
 type ImageSessionOptions = Parameters<typeof useImageDocumentSession>[0];
 
 const localVault = { id: 'vault-1', path: '/vault', name: 'Vault', isEncrypted: false, lastOpened: 1 };
+const hostedVault = {
+  id: 'hosted-vault',
+  kind: 'hosted' as const,
+  path: 'hosted://hosted-vault',
+  name: 'Hosted Vault',
+  isEncrypted: false,
+  lastOpened: 1,
+  serverUrl: 'https://collab.test',
+  hostedVaultId: 'hosted-vault',
+  role: 'editor' as const,
+  capabilities: ['vault.read', 'file.uploadAsset'],
+};
 
 function createSessionOptions(overrides: Partial<ImageSessionOptions> = {}): ImageSessionOptions {
   return {
@@ -99,6 +136,7 @@ describe('useImageDocumentSession', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     eventMocks.listen.mockResolvedValue(vi.fn());
+    vaultClientMocks.listFiles.mockResolvedValue([]);
   });
 
   afterEach(() => {
@@ -221,6 +259,102 @@ describe('useImageDocumentSession', () => {
 
     await waitFor(() => expect(result.current.session.overlayStatus).toBe('remote-pending'));
     expect(result.current.overlayDoc?.items[0]?.id).toBe('local');
+  });
+
+  it('saves hosted image edits as a new hosted asset', async () => {
+    tauriMocks.readNoteAssetDataUrl.mockResolvedValue('data:image/png;base64,abc');
+    vaultClientMocks.importData.mockResolvedValue('Pictures/demo-edited.png');
+    const outputCanvas = document.createElement('canvas');
+    vi.spyOn(outputCanvas, 'toDataURL').mockReturnValue('data:image/png;base64,edited');
+    const buildPermanentCanvas = vi.fn(() => ({
+      canvas: outputCanvas,
+      sourceSize: { width: 640, height: 480 },
+    }));
+    const refreshFileTree = vi.fn(async () => {});
+    const openTab = vi.fn();
+    const setSaveIntent = vi.fn();
+
+    const { result } = renderHook(() => useImageDocumentSession(createSessionOptions({
+      vault: hostedVault,
+      image: { naturalWidth: 640, naturalHeight: 480 } as HTMLImageElement,
+      saveIntent: 'permanent',
+      buildPermanentCanvas,
+      refreshFileTree,
+      openTab,
+      getOutputMime: vi.fn((): 'image/png' => 'image/png'),
+      getOutputFileName: vi.fn(() => 'demo-edited.png'),
+      getBaseName: vi.fn(() => 'demo-edited.png'),
+      setSaveIntent,
+    })));
+
+    await act(async () => {
+      await result.current.saveImageOutput(false);
+    });
+
+    expect(vaultClientMocks.importData).toHaveBeenCalledWith(
+      'data:image/png;base64,edited',
+      'demo-edited.png',
+      'Pictures',
+    );
+    expect(tauriMocks.saveGeneratedImage).not.toHaveBeenCalled();
+    expect(refreshFileTree).toHaveBeenCalled();
+    expect(openTab).toHaveBeenCalledWith('Pictures/demo-edited.png', 'demo-edited.png', 'image');
+    expect(setSaveIntent).toHaveBeenCalledWith(null);
+  });
+
+  it('picks a unique hosted save-as-new filename when the default output exists', async () => {
+    vaultClientMocks.listFiles.mockResolvedValue([{ relativePath: 'Pictures/demo-edited.png' }]);
+    vaultClientMocks.importData.mockResolvedValue('Pictures/demo-edited-2.png');
+    const outputCanvas = document.createElement('canvas');
+    vi.spyOn(outputCanvas, 'toDataURL').mockReturnValue('data:image/png;base64,edited');
+
+    const { result } = renderHook(() => useImageDocumentSession(createSessionOptions({
+      vault: hostedVault,
+      image: { naturalWidth: 640, naturalHeight: 480 } as HTMLImageElement,
+      saveIntent: 'permanent',
+      buildPermanentCanvas: vi.fn(() => ({
+        canvas: outputCanvas,
+        sourceSize: { width: 640, height: 480 },
+      })),
+      getOutputMime: vi.fn((): 'image/png' => 'image/png'),
+      getOutputFileName: vi.fn(() => 'demo-edited.png'),
+      getBaseName: vi.fn(() => 'demo-edited-2.png'),
+    })));
+
+    await act(async () => {
+      await result.current.saveImageOutput(false);
+    });
+
+    expect(vaultClientMocks.importData).toHaveBeenCalledWith(
+      'data:image/png;base64,edited',
+      'demo-edited-2.png',
+      'Pictures',
+    );
+  });
+
+  it('blocks hosted image overwrite while keeping save-as-new available', async () => {
+    const outputCanvas = document.createElement('canvas');
+    vi.spyOn(outputCanvas, 'toDataURL').mockReturnValue('data:image/png;base64,edited');
+
+    const { result } = renderHook(() => useImageDocumentSession(createSessionOptions({
+      vault: hostedVault,
+      image: { naturalWidth: 640, naturalHeight: 480 } as HTMLImageElement,
+      saveIntent: 'permanent',
+      buildPermanentCanvas: vi.fn(() => ({
+        canvas: outputCanvas,
+        sourceSize: { width: 640, height: 480 },
+      })),
+      getOutputMime: vi.fn((): 'image/png' => 'image/png'),
+      getOutputFileName: vi.fn(() => 'demo-edited.png'),
+    })));
+
+    await act(async () => {
+      await result.current.saveImageOutput(true);
+    });
+
+    expect(vaultClientMocks.importData).not.toHaveBeenCalled();
+    expect(tauriMocks.saveGeneratedImage).not.toHaveBeenCalled();
+    expect(toast.error).toHaveBeenCalledWith('Overwriting hosted images is not yet supported. Save as a new file instead.');
   });
 });
 

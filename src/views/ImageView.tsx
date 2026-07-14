@@ -380,7 +380,8 @@ export default function ImageView({ relativePath }: Props) {
   const [arrowInteraction, setArrowInteraction] = useState<ArrowInteraction | null>(null);
 
   const hasAdditiveItems = (overlayDoc?.items.length ?? 0) > 0;
-  const overwriteSupported = canOverwriteImageFormat(relativePath);
+  const hostedImage = vault?.kind === 'hosted';
+  const overwriteSupported = !hostedImage && canOverwriteImageFormat(relativePath);
   const currentDimensions = dimensions ?? EMPTY_SIZE;
   const rotatedDimensions = getRotatedDimensions(currentDimensions, permanentEdits.rotation);
   const additiveBaseFittedDimensions = fitWithin(overlayViewportSize, currentDimensions);
@@ -1067,7 +1068,9 @@ export default function ImageView({ relativePath }: Props) {
 
           {!overwriteSupported && (
             <div className="rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-100/90">
-              Overwrite is only available for PNG, JPEG, and WebP files. Other formats can still be saved as a new edited PNG.
+              {hostedImage
+                ? 'Hosted images can be saved as a new edited file. Overwriting the original hosted image is not available yet.'
+                : 'Overwrite is only available for PNG, JPEG, and WebP files. Other formats can still be saved as a new edited PNG.'}
             </div>
           )}
 

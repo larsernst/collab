@@ -21,6 +21,33 @@ import {
   type Dimensions,
 } from './ImageViewUtils';
 
+function getImageOutputFolder(relativePath: string | null) {
+  if (!relativePath) return 'Pictures';
+  const normalized = relativePath.replace(/\\/g, '/');
+  const slashIndex = normalized.lastIndexOf('/');
+  if (slashIndex < 0) return '';
+  return normalized.slice(0, slashIndex);
+}
+
+function getUniqueImageOutputFileName(
+  files: Array<{ relativePath: string }>,
+  targetFolder: string,
+  suggestedName: string,
+) {
+  const prefix = targetFolder ? `${targetFolder}/` : '';
+  const existingPaths = new Set(files.map((file) => file.relativePath));
+  if (!existingPaths.has(`${prefix}${suggestedName}`)) return suggestedName;
+
+  const dotIndex = suggestedName.lastIndexOf('.');
+  const stem = dotIndex > 0 ? suggestedName.slice(0, dotIndex) : suggestedName;
+  const extension = dotIndex > 0 ? suggestedName.slice(dotIndex) : '';
+  for (let index = 2; index < 1000; index += 1) {
+    const candidate = `${stem}-${index}${extension}`;
+    if (!existingPaths.has(`${prefix}${candidate}`)) return candidate;
+  }
+  return `${stem}-${Date.now()}${extension}`;
+}
+
 interface UseImageDocumentSessionOptions {
   vault: VaultMeta | null;
   relativePath: string | null;
@@ -127,13 +154,14 @@ export function useImageDocumentSession({
   setSaveIntent,
   setSaving,
 }: UseImageDocumentSessionOptions) {
-  // Additive overlays and edited-image saves are stored on the local filesystem
-  // (sidecars / overwritten files). Hosted vaults have no such endpoint, so image
-  // editing persistence is disabled for them; the image still opens read-only.
+  const vaultClient = useMemo(() => (vault ? createVaultClient(vault) : null), [vault]);
+  // Additive overlays are stored as local filesystem sidecars. Hosted vaults can
+  // still persist baked raster edits through their asset upload capability.
   const supportsImageEditing = useMemo(
-    () => (vault ? createVaultClient(vault).capabilities.nativeFilesystem : false),
-    [vault?.path],
+    () => vaultClient?.capabilities.nativeFilesystem ?? false,
+    [vaultClient],
   );
+  const hostedAssetImporter = vaultClient?.runtime.externalAssetImport ?? null;
   const vaultPath = vault?.path ?? null;
   const overlayFallbackDimensionsRef = useRef<Dimensions>(EMPTY_SIZE);
   overlayFallbackDimensionsRef.current = dimensions
@@ -198,7 +226,7 @@ export function useImageDocumentSession({
   }, [overlayController, overlaySnapshot.conflicted]);
 
   useEffect(() => {
-    if (!vault || !relativePath) {
+    if (!vault || !relativePath || !vaultClient) {
       setSrc(null);
       setImage(null);
       setOverlayDoc(null);
@@ -224,7 +252,7 @@ export function useImageDocumentSession({
     setTextInteraction(null);
     setArrowInteraction(null);
 
-    createVaultClient(vault).readAssetDataUrl(relativePath)
+    vaultClient.readAssetDataUrl(relativePath)
       .then(async (dataUrl) => {
         const decoded = await loadImage(dataUrl);
         if (cancelled) return;
@@ -299,6 +327,7 @@ export function useImageDocumentSession({
     setZoomPercent,
     supportsImageEditing,
     overlayController,
+    vaultClient,
     vault?.path,
   ]);
 
@@ -373,8 +402,12 @@ export function useImageDocumentSession({
 
   const saveImageOutput = useCallback(async (overwrite: boolean) => {
     if (!vault || !relativePath || !image || !saveIntent) return;
-    if (!supportsImageEditing) {
-      toast.error('Saving edited images is not yet supported for hosted vaults.');
+    if (!supportsImageEditing && !hostedAssetImporter) {
+      toast.error('Saving edited images is not supported for this vault.');
+      return;
+    }
+    if (!supportsImageEditing && overwrite) {
+      toast.error('Overwriting hosted images is not yet supported. Save as a new file instead.');
       return;
     }
 
@@ -402,13 +435,23 @@ export function useImageDocumentSession({
 
     try {
       setSaving(true);
-      const savedRelativePath = await tauriCommands.saveGeneratedImage(
-        vault.path,
-        relativePath,
-        dataUrl,
-        overwrite,
-        overwrite ? undefined : getOutputFileName(relativePath, targetMime),
-      );
+      const savedRelativePath = supportsImageEditing
+        ? await tauriCommands.saveGeneratedImage(
+            vault.path,
+            relativePath,
+            dataUrl,
+            overwrite,
+            overwrite ? undefined : getOutputFileName(relativePath, targetMime),
+          )
+        : await (async () => {
+            const targetFolder = getImageOutputFolder(relativePath);
+            const suggestedName = getUniqueImageOutputFileName(
+              await vaultClient!.listFiles(),
+              targetFolder,
+              getOutputFileName(relativePath, targetMime),
+            );
+            return hostedAssetImporter!.importData(dataUrl, suggestedName, targetFolder);
+          })();
 
       if (saveIntent === 'flatten' && overwrite) {
         await tauriCommands.deleteImageOverlay(vault.path, relativePath);
@@ -430,7 +473,7 @@ export function useImageDocumentSession({
       await refreshFileTree();
 
       if (overwrite) {
-        const refreshedDataUrl = await createVaultClient(vault).readAssetDataUrl(savedRelativePath);
+        const refreshedDataUrl = await vaultClient!.readAssetDataUrl(savedRelativePath);
         const refreshedImage = await loadImage(refreshedDataUrl);
         setSrc(refreshedDataUrl);
         setImage(refreshedImage);
@@ -453,6 +496,7 @@ export function useImageDocumentSession({
     getBaseName,
     getOutputFileName,
     getOutputMime,
+    hostedAssetImporter,
     image,
     loadImage,
     openTab,
@@ -474,6 +518,7 @@ export function useImageDocumentSession({
     setSrc,
     supportsImageEditing,
     vault,
+    vaultClient,
   ]);
 
   return {

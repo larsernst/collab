@@ -1312,8 +1312,8 @@ p {
 .desktop-node-symbol {
   align-items: center;
   justify-content: center;
-  gap: 5px;
-  padding: 9px;
+  gap: 10px;
+  padding: 16px;
   text-align: center;
   background: linear-gradient(135deg, color-mix(in oklch, var(--primary) 10%, var(--card)), var(--card));
 }
@@ -1325,7 +1325,7 @@ p {
   justify-content: center;
   color: var(--primary);
   font-family: 'Pure Nerd Font', PureNerdFont, monospace;
-  font-size: 2.35rem;
+  font-size: 4.25rem;
   line-height: 1;
 }
 .desktop-node-milestone .desktop-node-header {
@@ -1339,7 +1339,7 @@ p {
 .desktop-node-decision {
   align-items: center;
   justify-content: center;
-  padding: 10% 18%;
+  padding: 18%;
   clip-path: polygon(50% 0%, 100% 50%, 50% 100%, 0% 50%);
   text-align: center;
   background: color-mix(in oklch, var(--card) 96%, var(--primary) 4%);
@@ -1347,36 +1347,36 @@ p {
 }
 .desktop-node-decision .desktop-node-icon,
 .desktop-node-terminator .desktop-node-icon {
-  width: 18px;
-  height: 18px;
-  margin-bottom: 3px;
+  width: 32px;
+  height: 32px;
+  margin-bottom: 8px;
 }
 .desktop-node-decision .desktop-node-icon svg,
 .desktop-node-terminator .desktop-node-icon svg {
-  width: 11px;
-  height: 11px;
+  width: 16px;
+  height: 16px;
 }
 .desktop-node-decision > strong,
 .desktop-node-terminator > strong {
-  max-width: 72%;
-  font-size: 0.62rem;
-  line-height: 1.05;
+  max-width: 82%;
+  font-size: 0.9rem;
+  line-height: 1.12;
   white-space: normal;
 }
 .desktop-node-decision p,
 .desktop-node-terminator p {
-  max-width: 72%;
-  font-size: 0.54rem;
-  line-height: 1.15;
+  max-width: 82%;
+  font-size: 0.78rem;
+  line-height: 1.25;
 }
 .desktop-node-decision p {
-  margin-top: 3px;
-  -webkit-line-clamp: 2;
+  margin-top: 8px;
+  -webkit-line-clamp: 4;
 }
 .desktop-node-terminator {
   align-items: center;
   justify-content: center;
-  padding: 7% 10%;
+  padding: 18% 10%;
   border-radius: 999px;
   text-align: center;
   background: color-mix(in oklch, var(--card) 96%, var(--primary) 4%);
@@ -1391,13 +1391,13 @@ p {
   display: flex;
   align-items: center;
   justify-content: center;
-  width: 22px;
-  height: 22px;
+  width: 28px;
+  height: 28px;
   border: 1px solid color-mix(in oklch, var(--primary) 35%, transparent);
   border-radius: 999px;
   background: color-mix(in oklch, var(--primary) 14%, transparent);
   color: var(--primary);
-  box-shadow: 0 0 0 4px color-mix(in oklch, var(--primary) 10%, transparent);
+  box-shadow: 0 0 0 6px color-mix(in oklch, var(--primary) 10%, transparent);
 }
 .desktop-node-crossing {
   align-items: center;

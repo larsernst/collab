@@ -486,33 +486,12 @@ function computeCanvasBounds(nodes: CanvasNode[]): CanvasBounds {
   };
 }
 
-function mobileCanvasNodeScale(node: CanvasNode): number {
-  switch (node.type) {
-    case 'decision':
-      return 0.58;
-    case 'terminator':
-      return 0.6;
-    case 'symbol':
-      return 0.64;
-    case 'junction':
-    case 'crossing':
-      return 0.72;
-    case 'milestone':
-      return 0.82;
-    default:
-      return 1;
-  }
-}
-
 function mobileCanvasNodeStyle(node: CanvasNode, bounds: CanvasBounds): CSSProperties {
-  const scale = mobileCanvasNodeScale(node);
-  const width = node.width * scale;
-  const height = node.height * scale;
   return {
-    left: `${node.position.x - bounds.minX + bounds.padding + (node.width - width) / 2}px`,
-    top: `${node.position.y - bounds.minY + bounds.padding + (node.height - height) / 2}px`,
-    width: `${width}px`,
-    height: `${height}px`,
+    left: `${node.position.x - bounds.minX + bounds.padding}px`,
+    top: `${node.position.y - bounds.minY + bounds.padding}px`,
+    width: `${node.width}px`,
+    height: `${node.height}px`,
   };
 }
 
@@ -549,7 +528,7 @@ function CanvasMobileViewer({
     lastFitKeyRef.current = fitKey;
     const fitZoom = clamp(
       Math.min((stage.clientWidth - 28) / bounds.width, (stage.clientHeight - 28) / bounds.height),
-      0.75,
+      0.08,
       1.25,
     );
     setZoom(Number(fitZoom.toFixed(3)));
