@@ -29,6 +29,7 @@ import {
   readReplicaFiles,
   removeOfflineCopy,
   replicaKey,
+  refreshVaultOfflineContents,
 } from '../lib/replica';
 import { replayPendingOperations } from '../lib/sync';
 
@@ -57,6 +58,9 @@ export type ActiveSheet =
 
 const ROOT_CRUMB: Crumb = { id: null, name: 'Root' };
 const EAGER_ASSET_CACHE_STATUS_LIMIT = 2 * 1024 * 1024;
+const AUTO_OFFLINE_REFRESH_COOLDOWN_MS = 60_000;
+const offlineRefreshInFlight = new Set<string>();
+const offlineRefreshLastStartedAt = new Map<string, number>();
 
 interface MobileState {
   restored: boolean;
@@ -100,6 +104,8 @@ interface MobileState {
   loadReplicas: () => Promise<void>;
   /** Replay every offline-queued write for a connected server's replicas. */
   syncServer: (serverUrl: string) => Promise<void>;
+  /** Keep already-enabled offline copies current while their server is connected. */
+  refreshOfflineCopies: (serverUrl?: string) => Promise<void>;
   connect: (
     serverUrl: string,
     username: string,
@@ -257,6 +263,55 @@ export const useMobileStore = create<MobileState>((set, get) => ({
     }
   },
 
+  refreshOfflineCopies: async (serverUrl) => {
+    const normalizedFilter = serverUrl ? normalizeServerUrl(serverUrl) : null;
+    const servers = Object.keys(get().statuses).filter(
+      (entry) =>
+        isConnected(get().statuses[entry]) && (!normalizedFilter || entry === normalizedFilter),
+    );
+    if (servers.length === 0) return;
+
+    const refreshed = new Set<string>();
+    for (const normalized of servers) {
+      const vaultsById = new Map((get().vaults[normalized] ?? []).map((vault) => [vault.id, vault]));
+      const replicas = Object.values(get().replicas).filter(
+        (replica) => normalizeServerUrl(replica.serverUrl) === normalized,
+      );
+
+      for (const replica of replicas) {
+        const vault = vaultsById.get(replica.vaultId);
+        if (!vault || vault.status !== 'active') continue;
+        const key = replicaKey(normalized, vault.id);
+        if (get().offlineBusy[key]) continue;
+        if (offlineRefreshInFlight.has(key)) continue;
+        if (replica.manifestSequence >= vault.manifestSequence) continue;
+
+        const now = Date.now();
+        const lastStartedAt = offlineRefreshLastStartedAt.get(key) ?? 0;
+        if (now - lastStartedAt < AUTO_OFFLINE_REFRESH_COOLDOWN_MS) continue;
+
+        try {
+          offlineRefreshInFlight.add(key);
+          offlineRefreshLastStartedAt.set(key, now);
+          await refreshVaultOfflineContents(normalized, vault);
+          refreshed.add(key);
+        } catch {
+          // Auto-refresh is best-effort. The stale badge remains actionable.
+        } finally {
+          offlineRefreshInFlight.delete(key);
+        }
+      }
+    }
+
+    if (refreshed.size === 0) return;
+    await get().loadReplicas().catch(() => {});
+
+    const selected = get().selected;
+    if (!selected || !refreshed.has(replicaKey(selected.serverUrl, selected.vault.id))) return;
+    set({ fileCache: {} });
+    await get().refreshCacheStatus(get().files).catch(() => {});
+  },
+
   connect: async (serverUrl, username, password, opts) => {
     const normalized = normalizeServerUrl(serverUrl);
     await connectServer(normalized, username, password, opts);
@@ -268,6 +323,7 @@ export const useMobileStore = create<MobileState>((set, get) => ({
     });
     set({ servers: listKnownServers() });
     await get().refreshStatuses();
+    await get().loadReplicas().catch(() => {});
     await get().loadVaults(normalized);
     await get().syncServer(normalized).catch(() => {});
   },
@@ -280,6 +336,7 @@ export const useMobileStore = create<MobileState>((set, get) => ({
       persistAcrossReboots: server?.persistAcrossReboots ?? true,
     });
     await get().refreshStatuses();
+    await get().loadReplicas().catch(() => {});
     await get().loadVaults(normalized);
     await get().syncServer(normalized).catch(() => {});
   },
@@ -306,6 +363,7 @@ export const useMobileStore = create<MobileState>((set, get) => ({
     try {
       const vaults = await listHostedVaults(normalized);
       set((state) => ({ vaults: { ...state.vaults, [normalized]: vaults } }));
+      void get().refreshOfflineCopies(normalized).catch(() => {});
     } finally {
       set((state) => ({ vaultsBusy: { ...state.vaultsBusy, [normalized]: false } }));
     }
@@ -355,7 +413,7 @@ export const useMobileStore = create<MobileState>((set, get) => ({
         const files = (await listVaultFiles(serverUrl, vault.id)).filter(
           (file) => file.state === 'active',
         );
-        set({ files, filesOffline: false });
+        set({ files, filesOffline: false, fileCache: {} });
       } else if (!(await loadFromReplica())) {
         throw new Error('This vault is not available offline. Reconnect to browse it.');
       }

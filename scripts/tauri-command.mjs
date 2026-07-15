@@ -37,6 +37,7 @@ function withAndroidNodeHeap(env = process.env) {
 }
 
 function run(tool, commandArgs, env = process.env) {
+  console.log(`Running ${tool.command} ${[...tool.prefixArgs, ...commandArgs].join(' ')}`);
   const result = spawnSync(tool.command, [...tool.prefixArgs, ...commandArgs], {
     cwd: rootDir,
     env,
@@ -65,6 +66,7 @@ export function createTauriBuildArgs(args, signingKey = process.env.TAURI_SIGNIN
 
 function main(args) {
   const childEnv = args[0] === 'android' ? withAndroidNodeHeap() : process.env;
+  console.log(`Syncing version manifests before tauri ${args.join(' ')}...`);
   const syncVersions = spawnSync(process.execPath, [join(rootDir, 'scripts', 'sync-versions.mjs')], {
     cwd: rootDir,
     env: childEnv,
@@ -77,6 +79,7 @@ function main(args) {
   }
 
   if (args[0] === 'build') {
+    console.log('Preparing OCR assets...');
     const prepareOcr = spawnSync(process.execPath, [join(rootDir, 'scripts', 'prepare-ocr-assets.mjs')], {
       cwd: rootDir,
       env: childEnv,
@@ -88,16 +91,20 @@ function main(args) {
       process.exit(prepareOcr.status ?? 1);
     }
 
+    console.log('Type-checking desktop frontend...');
     if (!run(resolveNodeTool('tsc'), [], childEnv)) {
       process.exit(process.exitCode ?? 1);
     }
 
+    console.log('Building desktop frontend...');
     if (!run(resolveNodeTool('vite'), ['build'], childEnv)) {
       process.exit(process.exitCode ?? 1);
     }
 
+    console.log('Building Tauri desktop bundle...');
     run(resolveNodeTool('tauri'), createTauriBuildArgs(args), childEnv);
   } else {
+    console.log(`Running Tauri command: tauri ${args.join(' ')}`);
     run(resolveNodeTool('tauri'), args, childEnv);
   }
 }

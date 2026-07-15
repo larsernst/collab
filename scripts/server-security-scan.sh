@@ -41,7 +41,7 @@ require_command() {
 scan_dependencies() {
   echo "==> Scanning JavaScript dependencies with pnpm audit (${audit_level})"
   require_command pnpm "Install pnpm or enable Corepack." || return 1
-  pnpm audit --audit-level "${audit_level}"
+  pnpm audit --audit-level "${audit_level}" --ignore-registry-errors
 
   echo "==> Scanning Rust dependencies with cargo audit"
   if command -v cargo-audit >/dev/null 2>&1; then

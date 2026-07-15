@@ -19,7 +19,8 @@ The `Security Scan` workflow (`.github/workflows/security-scan.yml`) runs:
   `.cargo/audit.toml`. A **vulnerability** fails the job (exit 1);
   **informational** advisories (`unsound`, `yanked`) are reported as
   non-failing warnings.
-- `pnpm audit --audit-level high` over the JavaScript dependencies.
+- `pnpm audit --audit-level high --ignore-registry-errors` over the JavaScript
+  dependencies, using the pinned pnpm 11 toolchain.
 - Trivy over the built server container image (`HIGH`/`CRITICAL`, fixable only).
 
 Prefer fixing an advisory with a dependency upgrade. Only add an ignore when

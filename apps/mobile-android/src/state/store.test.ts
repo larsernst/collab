@@ -176,6 +176,205 @@ describe('offline replica store actions', () => {
     expect(invoke).not.toHaveBeenCalledWith('hosted_vault_request', expect.anything());
   });
 
+  it('refreshOfflineCopies updates stale offline replicas for connected vaults', async () => {
+    useMobileStore.setState({
+      statuses: {
+        [SERVER]: {
+          connected: true,
+          serverUrl: SERVER,
+          allowInvalidCertificates: false,
+          user: null,
+          accessExpiresAt: null,
+        },
+      },
+      vaults: { [SERVER]: [VAULT] },
+      replicas: {
+        [SERVER + '::v1']: {
+          serverUrl: SERVER,
+          vaultId: 'v1',
+          vaultName: 'Research',
+          manifestSequence: 4,
+          lastSyncedAt: null,
+          status: 'idle',
+          pendingCount: 0,
+          updatedAt: '',
+          role: 'editor',
+          capabilities: ['vault.offlineCopy'],
+        },
+      },
+    });
+
+    invoke.mockImplementation((command: string, args: Record<string, unknown> = {}) => {
+      switch (command) {
+        case 'hosted_vault_request': {
+          const path = args.path as string;
+          if (path.endsWith('/manifest')) return Promise.resolve(MANIFEST);
+          if (path.endsWith('/files/doc-1')) return Promise.resolve({ content: 'hello world' });
+          return Promise.reject(new Error(`unexpected path ${path}`));
+        }
+        case 'hosted_vault_asset_data_url':
+          return Promise.resolve('data:image/png;base64,QUJD');
+        case 'replica_cached_content_status':
+          return Promise.resolve({
+            present: false,
+            matchesExpectedHash: false,
+            actualSha256: null,
+            sizeBytes: null,
+          });
+        case 'replica_read_sync_state':
+          return Promise.resolve({ manifestSequence: 4, lastSyncedAt: null, status: 'idle' });
+        case 'replica_list':
+          return Promise.resolve([
+            {
+              serverUrl: SERVER,
+              vaultId: 'v1',
+              vaultName: 'Research',
+              manifestSequence: 5,
+              lastSyncedAt: new Date().toISOString(),
+              status: 'idle',
+              pendingCount: 0,
+              updatedAt: new Date().toISOString(),
+              role: 'editor',
+              capabilities: ['vault.offlineCopy'],
+            },
+          ]);
+        case 'replica_seed':
+        case 'replica_cache_document':
+        case 'replica_cache_asset':
+        case 'replica_write_sync_state':
+          return Promise.resolve(null);
+        default:
+          return Promise.reject(new Error(`unhandled ${command}`));
+      }
+    });
+
+    await useMobileStore.getState().refreshOfflineCopies(SERVER);
+
+    expect(invoke).toHaveBeenCalledWith(
+      'replica_seed',
+      expect.objectContaining({ serverUrl: SERVER, vaultId: 'v1', manifest: MANIFEST }),
+    );
+    expect(invoke).toHaveBeenCalledWith(
+      'replica_cache_document',
+      expect.objectContaining({ fileId: 'doc-1', content: 'hello world' }),
+    );
+    expect(invoke).toHaveBeenCalledWith(
+      'replica_cache_asset',
+      expect.objectContaining({ fileId: 'asset-1', base64Content: 'QUJD' }),
+    );
+  });
+
+  it('refreshOfflineCopies skips replicas already at the vault manifest sequence', async () => {
+    useMobileStore.setState({
+      statuses: {
+        [SERVER]: {
+          connected: true,
+          serverUrl: SERVER,
+          allowInvalidCertificates: false,
+          user: null,
+          accessExpiresAt: null,
+        },
+      },
+      vaults: { [SERVER]: [VAULT] },
+      replicas: {
+        [SERVER + '::v1']: {
+          serverUrl: SERVER,
+          vaultId: 'v1',
+          vaultName: 'Research',
+          manifestSequence: 5,
+          lastSyncedAt: null,
+          status: 'idle',
+          pendingCount: 0,
+          updatedAt: '',
+          role: 'editor',
+          capabilities: ['vault.offlineCopy'],
+        },
+      },
+    });
+
+    await useMobileStore.getState().refreshOfflineCopies(SERVER);
+
+    expect(invoke).not.toHaveBeenCalledWith(
+      'hosted_vault_request',
+      expect.objectContaining({ path: '/api/v1/vaults/v1/manifest' }),
+    );
+  });
+
+  it('loadVaults does not block on automatic offline refresh', async () => {
+    const vault = { ...VAULT, id: 'v2', manifestSequence: 6 };
+    useMobileStore.setState({
+      statuses: {
+        [SERVER]: {
+          connected: true,
+          serverUrl: SERVER,
+          allowInvalidCertificates: false,
+          user: null,
+          accessExpiresAt: null,
+        },
+      },
+      replicas: {
+        [SERVER + '::v2']: {
+          serverUrl: SERVER,
+          vaultId: 'v2',
+          vaultName: 'Research',
+          manifestSequence: 4,
+          lastSyncedAt: null,
+          status: 'idle',
+          pendingCount: 0,
+          updatedAt: '',
+          role: 'editor',
+          capabilities: ['vault.offlineCopy'],
+        },
+      },
+    });
+    let resolveManifest: (value: typeof MANIFEST) => void = () => {};
+    const manifestRequest = new Promise<typeof MANIFEST>((resolve) => {
+      resolveManifest = resolve;
+    });
+
+    invoke.mockImplementation((command: string, args: Record<string, unknown> = {}) => {
+      switch (command) {
+        case 'hosted_vault_request': {
+          const path = args.path as string;
+          if (path.endsWith('/vaults')) return Promise.resolve([vault]);
+          if (path.endsWith('/manifest')) return manifestRequest;
+          if (path.endsWith('/files/doc-1')) return Promise.resolve({ content: 'hello world' });
+          return Promise.reject(new Error(`unexpected path ${path}`));
+        }
+        case 'replica_cached_content_status':
+          return Promise.resolve({
+            present: true,
+            matchesExpectedHash: true,
+            actualSha256: 'x',
+            sizeBytes: 5,
+          });
+        case 'replica_seed':
+        case 'replica_read_sync_state':
+        case 'replica_write_sync_state':
+        case 'replica_list':
+          return Promise.resolve(
+            command === 'replica_read_sync_state'
+              ? { manifestSequence: 4, lastSyncedAt: null, status: 'idle' }
+              : command === 'replica_list'
+                ? []
+                : null,
+          );
+        default:
+          return Promise.reject(new Error(`unhandled ${command}`));
+      }
+    });
+
+    await useMobileStore.getState().loadVaults(SERVER);
+
+    expect(useMobileStore.getState().vaults[SERVER]).toEqual([vault]);
+    expect(invoke).toHaveBeenCalledWith(
+      'hosted_vault_request',
+      expect.objectContaining({ path: '/api/v1/vaults/v2/manifest' }),
+    );
+    resolveManifest(MANIFEST);
+    await manifestRequest;
+  });
+
   it('goBack closes a sheet, walks up folders, then returns from Files to Vaults', () => {
     const store = useMobileStore.getState;
 

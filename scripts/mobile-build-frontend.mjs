@@ -20,6 +20,7 @@ const childEnv = {
 
 function run(toolName, args) {
   const tool = resolveNodeTool(toolName, rootDir);
+  console.log(`Running ${toolName} ${args.join(' ')}...`);
   const result = spawnSync(tool.command, [...tool.prefixArgs, ...args], {
     cwd: rootDir,
     env: childEnv,
@@ -34,5 +35,6 @@ function run(toolName, args) {
   if (result.status !== 0) process.exit(result.status ?? 1);
 }
 
+console.log('Building Android companion frontend...');
 run('tsc', ['--noEmit', '-p', 'apps/mobile-android/tsconfig.json']);
 run('vite', ['build', '--config', 'apps/mobile-android/vite.config.ts']);

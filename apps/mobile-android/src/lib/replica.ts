@@ -52,12 +52,32 @@ async function fetchManifest(serverUrl: string, vaultId: string): Promise<RawHos
   );
 }
 
+async function cacheFileBody(
+  serverUrl: string,
+  vaultId: string,
+  file: HostedFileEntry,
+): Promise<void> {
+  if (file.kind === 'document') {
+    const document = await hostedRequest<{ content: string }>(
+      serverUrl,
+      'GET',
+      `/api/v1/vaults/${vaultId}/files/${file.id}`,
+    );
+    await replicaCacheDocument(serverUrl, vaultId, file.id, document.content);
+    return;
+  }
+
+  if (file.kind === 'asset') {
+    const dataUrl = await hostedAssetDataUrl(serverUrl, vaultId, file.id);
+    await replicaCacheAsset(serverUrl, vaultId, file.id, dataUrlBase64(dataUrl));
+  }
+}
+
 /**
- * Downloads the vault's active document and asset bodies into the native replica
- * so it can be opened and read while offline. Seeds the manifest first, then
- * caches content, then marks the replica offline-available.
+ * Seeds the latest manifest and downloads missing/stale active document and
+ * asset bodies into the native replica so the vault remains usable offline.
  */
-export async function makeVaultAvailableOffline(
+export async function refreshVaultOfflineContents(
   serverUrl: string,
   vault: HostedVault,
   onProgress?: (progress: OfflineProgress) => void,
@@ -97,17 +117,7 @@ export async function makeVaultAvailableOffline(
       if (status.present && status.matchesExpectedHash) {
         continue;
       }
-      if (file.kind === 'document') {
-        const document = await hostedRequest<{ content: string }>(
-          serverUrl,
-          'GET',
-          `/api/v1/vaults/${vault.id}/files/${file.id}`,
-        );
-        await replicaCacheDocument(serverUrl, vault.id, file.id, document.content);
-      } else {
-        const dataUrl = await hostedAssetDataUrl(serverUrl, vault.id, file.id);
-        await replicaCacheAsset(serverUrl, vault.id, file.id, dataUrlBase64(dataUrl));
-      }
+      await cacheFileBody(serverUrl, vault.id, file);
     } catch {
       // Skip individual failures; the vault is still usable for what cached.
     } finally {
@@ -124,6 +134,19 @@ export async function makeVaultAvailableOffline(
     offlineAvailableAt: nowIso(),
     status: 'idle',
   });
+}
+
+/**
+ * Downloads the vault's active document and asset bodies into the native replica
+ * so it can be opened and read while offline. This is also the same repair path
+ * used later to keep an already-enabled offline copy current.
+ */
+export async function makeVaultAvailableOffline(
+  serverUrl: string,
+  vault: HostedVault,
+  onProgress?: (progress: OfflineProgress) => void,
+): Promise<void> {
+  await refreshVaultOfflineContents(serverUrl, vault, onProgress);
 }
 
 /** Removes all app-local replica data (and the durable key) for a vault. */

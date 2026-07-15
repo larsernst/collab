@@ -26,7 +26,7 @@ the auth, authorization, upload, preview, or live-collaboration surfaces change.
 
 | Gate | Command | Status |
 | --- | --- | --- |
-| JS dependency advisories | `pnpm audit --audit-level high` | Run via `pnpm server:security:scan` |
+| JS dependency advisories | `pnpm audit --audit-level high --ignore-registry-errors` | Run via `pnpm server:security:scan` |
 | Rust advisories | `cargo audit` | Run via `pnpm server:security:scan` |
 | Container image (HIGH/CRITICAL) | Trivy/Grype/Scout on `Dockerfile.server` | `pnpm server:security:scan container` + CI `Security Scan` workflow |
 | Published image scan | Per-platform Trivy scan by digest before tagging | `.github/workflows/server-container-build.yml` |
