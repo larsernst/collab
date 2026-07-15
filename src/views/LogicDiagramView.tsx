@@ -427,7 +427,19 @@ function SharpLogicNode({
   return (
     <div
       onPointerDown={(event) => onPointerDown(event, node)}
-      onDoubleClick={() => onDoubleClick(node)}
+      onMouseDown={(event) => {
+        if (kind === 'input' && event.detail >= 2) {
+          event.stopPropagation();
+          onDoubleClick(node);
+        }
+      }}
+      onDoubleClick={(event) => {
+        if (kind === 'input') {
+          event.stopPropagation();
+          return;
+        }
+        onDoubleClick(node);
+      }}
       onContextMenu={(event) => onContextMenu(event, node)}
       className={cn(
         'absolute flex items-center justify-center overflow-hidden rounded border bg-card text-center shadow-sm transition-colors',
@@ -1791,26 +1803,26 @@ function LogicDiagramEditor({ relativePath }: Props) {
     }
   }, [getConnectionSnap, nodesById, renderedEdges, renderedNodes, setEdges, setNodes, viewport]);
 
-  const finishPointerSession = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
-    if (panSessionRef.current?.pointerId === event.pointerId) {
+  const finishPointerSessionById = useCallback((pointerId: number, captureTarget?: Element | null) => {
+    if (panSessionRef.current?.pointerId === pointerId) {
       panSessionRef.current = null;
-      if (event.currentTarget.hasPointerCapture(event.pointerId)) {
-        event.currentTarget.releasePointerCapture(event.pointerId);
+      if (captureTarget instanceof HTMLElement && captureTarget.hasPointerCapture(pointerId)) {
+        captureTarget.releasePointerCapture(pointerId);
       }
     }
-    if (dragSessionRef.current?.pointerId === event.pointerId) {
+    if (dragSessionRef.current?.pointerId === pointerId) {
       const { moved } = dragSessionRef.current;
       dragSessionRef.current = null;
-      if (event.currentTarget.hasPointerCapture(event.pointerId)) {
-        event.currentTarget.releasePointerCapture(event.pointerId);
+      if (captureTarget instanceof HTMLElement && captureTarget.hasPointerCapture(pointerId)) {
+        captureTarget.releasePointerCapture(pointerId);
       }
       if (moved) markChanged();
     }
-    if (selectionSessionRef.current?.pointerId === event.pointerId) {
+    if (selectionSessionRef.current?.pointerId === pointerId) {
       selectionSessionRef.current = null;
       setSelectionBox(null);
-      if (event.currentTarget.hasPointerCapture(event.pointerId)) {
-        event.currentTarget.releasePointerCapture(event.pointerId);
+      if (captureTarget instanceof HTMLElement && captureTarget.hasPointerCapture(pointerId)) {
+        captureTarget.releasePointerCapture(pointerId);
       }
     }
     if (connectionSessionRef.current) {
@@ -1827,6 +1839,23 @@ function LogicDiagramEditor({ relativePath }: Props) {
       }
     }
   }, [markChanged, onConnect]);
+
+  const finishPointerSession = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
+    finishPointerSessionById(event.pointerId, event.currentTarget);
+  }, [finishPointerSessionById]);
+
+  useEffect(() => {
+    const finishFromWindow = (event: PointerEvent) => {
+      const pane = viewportRef.current?.querySelector('[data-testid="logic-sharp-flow"]');
+      finishPointerSessionById(event.pointerId, pane);
+    };
+    window.addEventListener('pointerup', finishFromWindow);
+    window.addEventListener('pointercancel', finishFromWindow);
+    return () => {
+      window.removeEventListener('pointerup', finishFromWindow);
+      window.removeEventListener('pointercancel', finishFromWindow);
+    };
+  }, [finishPointerSessionById]);
 
   const handleNodePointerDown = useCallback((event: ReactPointerEvent<HTMLDivElement>, node: LogicFlowNode) => {
     if (event.button !== 0) return;
@@ -1868,7 +1897,7 @@ function LogicDiagramEditor({ relativePath }: Props) {
     });
     const pane = viewportRef.current?.querySelector('[data-testid="logic-sharp-flow"]');
     if (pane instanceof HTMLElement) pane.setPointerCapture(event.pointerId);
-  }, [closeContextMenu, markChanged, setEdges, setNodes]);
+  }, [closeContextMenu, setEdges, setNodes]);
 
   const handleEdgePointerDown = useCallback((event: ReactPointerEvent<SVGPathElement>, edge: LogicFlowEdge) => {
     if (event.button !== 0) return;
@@ -2401,6 +2430,7 @@ function LogicDiagramEditor({ relativePath }: Props) {
           onPointerMove={handlePanePointerMove}
           onPointerUp={finishPointerSession}
           onPointerCancel={finishPointerSession}
+          onLostPointerCapture={finishPointerSession}
           onWheel={handlePaneWheel}
           onContextMenu={handlePaneContextMenu}
           style={{

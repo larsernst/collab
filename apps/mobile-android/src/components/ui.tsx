@@ -5,6 +5,7 @@ import {
   Image as ImageIcon,
   KanbanSquare,
   Loader2,
+  CircuitBoard,
   Shapes,
 } from 'lucide-react';
 import type { ReactNode } from 'react';
@@ -119,6 +120,8 @@ export function GlyphIcon({ glyph, size = 20 }: { glyph: FileGlyph; size?: numbe
       return <KanbanSquare size={size} aria-hidden />;
     case 'canvas':
       return <Shapes size={size} aria-hidden />;
+    case 'logic':
+      return <CircuitBoard size={size} aria-hidden />;
     case 'image':
       return <ImageIcon size={size} aria-hidden />;
     case 'pdf':

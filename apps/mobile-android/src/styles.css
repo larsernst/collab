@@ -114,6 +114,10 @@ p {
   padding-bottom: 0;
   overflow: hidden;
 }
+.app-main:has(.kanban-screen) {
+  padding-bottom: 0;
+  overflow: hidden;
+}
 
 .main-view {
   min-height: 100%;
@@ -540,6 +544,9 @@ p {
 }
 .file-icon.glyph-canvas {
   color: oklch(0.7 0.18 300);
+}
+.file-icon.glyph-logic {
+  color: oklch(0.74 0.17 215);
 }
 .file-icon.glyph-image {
   color: oklch(0.72 0.16 190);
@@ -1051,6 +1058,12 @@ p {
   touch-action: none;
   background: var(--background);
 }
+.logic-stage {
+  position: relative;
+  overflow: hidden;
+  touch-action: none;
+  background: var(--background);
+}
 .mobile-canvas-camera {
   position: absolute;
   top: 0;
@@ -1076,6 +1089,173 @@ p {
     48px 48px,
     24px 24px;
   pointer-events: none;
+}
+.mobile-logic-grid {
+  background:
+    radial-gradient(circle, color-mix(in oklch, var(--muted-foreground) 30%, transparent) 1px, transparent 1.5px);
+  background-size: 24px 24px;
+}
+.mobile-logic-edges {
+  position: absolute;
+  overflow: visible;
+  pointer-events: none;
+}
+.mobile-logic-edges marker path {
+  fill: color-mix(in oklch, var(--muted-foreground) 72%, transparent);
+}
+.mobile-logic-wire {
+  fill: none;
+  stroke: color-mix(in oklch, var(--muted-foreground) 72%, transparent);
+  stroke-width: 2.3;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  opacity: 0.82;
+}
+.mobile-logic-wire.on {
+  stroke: color-mix(in oklch, var(--primary) 86%, white 12%);
+  opacity: 1;
+}
+.mobile-logic-wire.off {
+  stroke: color-mix(in oklch, var(--muted-foreground) 74%, transparent);
+}
+.mobile-logic-wire.unknown {
+  stroke-dasharray: 8 8;
+  opacity: 0.58;
+}
+.logic-sim-toolbar {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  z-index: 5;
+  display: inline-flex;
+  gap: 6px;
+  max-width: calc(100% - 20px);
+  padding: 4px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: color-mix(in oklch, var(--card) 90%, transparent);
+  box-shadow: 0 10px 28px rgb(0 0 0 / 24%);
+}
+.logic-sim-toolbar span {
+  min-height: 26px;
+  padding: 5px 9px;
+  border-radius: 999px;
+  background: color-mix(in oklch, var(--surface) 76%, transparent);
+  color: var(--muted-foreground);
+  font-size: 0.68rem;
+  font-weight: 800;
+  white-space: nowrap;
+}
+.mobile-logic-node {
+  position: absolute;
+}
+.mobile-logic-group {
+  padding: 10px 12px;
+  border: 1px dashed color-mix(in oklch, var(--border) 92%, transparent);
+  border-radius: 12px;
+  background: color-mix(in oklch, var(--card) 36%, transparent);
+  color: var(--muted-foreground);
+  font-size: 0.76rem;
+  font-weight: 750;
+}
+.mobile-logic-gate {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  padding: 8px 14px;
+  border: 1px solid color-mix(in oklch, var(--border) 86%, transparent);
+  border-radius: 10px;
+  background: color-mix(in oklch, var(--card) 96%, transparent);
+  color: var(--foreground);
+  text-align: center;
+  box-shadow: 0 8px 18px rgb(0 0 0 / 18%);
+}
+.mobile-logic-gate.on {
+  border-color: color-mix(in oklch, var(--primary) 62%, white 10%);
+  box-shadow: 0 0 0 2px color-mix(in oklch, var(--primary) 16%, transparent), 0 10px 22px rgb(0 0 0 / 22%);
+}
+.mobile-logic-input {
+  cursor: pointer;
+}
+.mobile-logic-kind {
+  color: var(--muted-foreground);
+  font-size: 0.56rem;
+  font-weight: 850;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+.mobile-logic-gate strong {
+  max-width: 100%;
+  overflow: hidden;
+  font-size: 0.74rem;
+  font-weight: 800;
+  line-height: 1.15;
+  text-overflow: ellipsis;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+.mobile-logic-value {
+  min-width: 30px;
+  padding: 3px 7px;
+  border: 1px solid color-mix(in oklch, var(--border) 72%, transparent);
+  border-radius: 999px;
+  background: color-mix(in oklch, var(--surface) 80%, transparent);
+  color: var(--muted-foreground);
+  font-size: 0.66rem;
+  font-weight: 850;
+  line-height: 1;
+}
+.mobile-logic-value.on {
+  border-color: color-mix(in oklch, var(--primary) 60%, transparent);
+  background: color-mix(in oklch, var(--primary) 18%, transparent);
+  color: color-mix(in oklch, var(--primary) 78%, white 20%);
+}
+.mobile-logic-value.off {
+  color: color-mix(in oklch, var(--foreground) 72%, transparent);
+}
+.mobile-logic-component-ports {
+  max-width: 100%;
+  overflow: hidden;
+  color: var(--muted-foreground);
+  font-size: 0.55rem;
+  font-weight: 700;
+  line-height: 1.15;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.mobile-logic-handle {
+  position: absolute;
+  width: 9px;
+  height: 9px;
+  border: 1px solid color-mix(in oklch, var(--border) 88%, transparent);
+  border-radius: 999px;
+  background: var(--background);
+  transform: translateY(-50%);
+}
+.mobile-logic-handle.input {
+  left: -5px;
+}
+.mobile-logic-handle.output {
+  right: -5px;
+}
+.logic-warning-strip {
+  position: absolute;
+  right: 10px;
+  bottom: 10px;
+  left: 10px;
+  z-index: 5;
+  display: grid;
+  gap: 5px;
+  padding: 8px 10px;
+  border: 1px solid oklch(0.78 0.17 86 / 34%);
+  border-radius: 12px;
+  background: color-mix(in oklch, var(--card) 92%, transparent);
+  color: oklch(0.82 0.15 86);
+  font-size: 0.72rem;
+  font-weight: 700;
+  box-shadow: 0 10px 28px rgb(0 0 0 / 24%);
 }
 .mobile-canvas-edges {
   position: absolute;
@@ -2089,7 +2269,7 @@ p {
 .kanban-screen {
   /* Fill the visible area (above the fixed tab bar) and own an internal scroll
      region so the column indicator can be pinned as a footer. */
-  height: 100%;
+  height: calc(100dvh - 72px - var(--safe-top) - var(--safe-bottom));
   min-height: 0;
   display: flex;
   flex-direction: column;
@@ -2501,8 +2681,9 @@ p {
   align-items: center;
   justify-content: center;
   gap: 8px;
-  padding: 10px 0 2px;
+  padding: 10px 0 calc(2px + var(--safe-bottom));
   border-top: 1px solid var(--border);
+  background: var(--background);
 }
 .kanban-dot {
   width: 8px;
@@ -2775,6 +2956,16 @@ p {
   .app-main {
     padding-left: calc(82px + env(safe-area-inset-left, 0px));
     padding-bottom: var(--safe-bottom);
+  }
+
+  .app-main:has(.kanban-screen),
+  .app-main:has(.rich-viewer-screen) {
+    padding-bottom: var(--safe-bottom);
+  }
+
+  .kanban-screen,
+  .rich-viewer-screen {
+    height: calc(100dvh - var(--safe-top) - var(--safe-bottom));
   }
 
   .tab-bar {

@@ -5,7 +5,8 @@ import { yCollab } from 'y-codemirror.next';
 import { Banner, ReadOnlyBadge, Spinner } from '../components/ui';
 import { MobileMarkdownEditor } from '../components/MobileMarkdownEditor';
 import { readMobileAssetDataUrl, isRichViewableFile } from '../lib/assets';
-import { isReadOnlyRole } from '../lib/format';
+import { fileEntryExtension, isReadOnlyRole } from '../lib/format';
+import { isLogicFile } from '../lib/logic';
 import {
   isExternalHref,
   readNoteDocument,
@@ -247,7 +248,9 @@ export function NoteScreen({ file, prefs }: { file: HostedFileEntry; prefs: Them
     if (linkedFile.kind === 'folder') {
       enterFolder({ id: linkedFile.id, name: linkedFile.name });
       closeSheet();
-    } else if (linkedFile.kind === 'document' && /\.(md|markdown)$/i.test(linkedFile.name)) {
+    } else if (isLogicFile(linkedFile)) {
+      openSheet({ kind: 'viewer', fileId: linkedFile.id });
+    } else if (linkedFile.kind === 'document' && ['md', 'markdown'].includes(fileEntryExtension(linkedFile))) {
       openSheet({ kind: 'note', fileId: linkedFile.id });
     } else if (isRichViewableFile(linkedFile)) {
       openSheet({ kind: 'viewer', fileId: linkedFile.id });

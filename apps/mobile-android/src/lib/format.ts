@@ -43,14 +43,19 @@ export function fileExtension(name: string): string {
   return dot > 0 ? name.slice(dot + 1).toLowerCase() : '';
 }
 
-export type FileGlyph = 'folder' | 'note' | 'kanban' | 'canvas' | 'image' | 'pdf' | 'file';
+export function fileEntryExtension(entry: HostedFileEntry): string {
+  return fileExtension(entry.relativePath) || fileExtension(entry.name);
+}
+
+export type FileGlyph = 'folder' | 'note' | 'kanban' | 'canvas' | 'logic' | 'image' | 'pdf' | 'file';
 
 export function fileGlyph(entry: HostedFileEntry): FileGlyph {
   if (entry.kind === 'folder') return 'folder';
-  const ext = fileExtension(entry.name);
+  const ext = fileEntryExtension(entry);
   if (ext === 'md' || ext === 'markdown') return 'note';
   if (ext === 'kanban') return 'kanban';
   if (ext === 'canvas') return 'canvas';
+  if (ext === 'logic') return 'logic';
   if (ext === 'pdf') return 'pdf';
   if (['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg', 'bmp', 'apng', 'avif', 'ico'].includes(ext)) {
     return 'image';

@@ -43,6 +43,8 @@ describe('fileGlyph', () => {
     expect(fileGlyph(file({ id: 'n', name: 'plan.md' }))).toBe('note');
     expect(fileGlyph(file({ id: 'k', name: 'board.kanban' }))).toBe('kanban');
     expect(fileGlyph(file({ id: 'c', name: 'map.canvas' }))).toBe('canvas');
+    expect(fileGlyph(file({ id: 'l', name: 'adder.logic' }))).toBe('logic');
+    expect(fileGlyph(file({ id: 'lp', name: 'adder', relativePath: 'Diagrams/adder.logic' }))).toBe('logic');
     expect(fileGlyph(file({ id: 'p', name: 'doc.pdf' }))).toBe('pdf');
     expect(fileGlyph(file({ id: 'i', name: 'pic.png' }))).toBe('image');
     expect(fileGlyph(file({ id: 'x', name: 'data.bin' }))).toBe('file');

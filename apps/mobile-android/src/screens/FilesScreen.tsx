@@ -10,6 +10,7 @@ import {
 } from '../lib/format';
 import { isCanvasFile } from '../lib/canvas';
 import { isKanbanFile } from '../lib/kanban';
+import { isLogicFile } from '../lib/logic';
 import { isNoteFile } from '../lib/notes';
 import { isRichViewableFile } from '../lib/assets';
 import type { FileCacheState } from '../lib/replica';
@@ -228,9 +229,11 @@ export function FilesScreen({ prefs }: { prefs: ThemePrefs }) {
                   onClick={() =>
                     isFolder
                       ? enterFolder({ id: entry.id, name: entry.name })
-                      : isNoteFile(entry)
-                        ? openSheet({ kind: 'note', fileId: entry.id })
-                        : isKanbanFile(entry)
+                      : isLogicFile(entry)
+                        ? openSheet({ kind: 'viewer', fileId: entry.id })
+                        : isNoteFile(entry)
+                          ? openSheet({ kind: 'note', fileId: entry.id })
+                          : isKanbanFile(entry)
                           ? openSheet({ kind: 'kanban', fileId: entry.id })
                           : isRichViewableFile(entry) || isCanvasFile(entry)
                             ? openSheet({ kind: 'viewer', fileId: entry.id })

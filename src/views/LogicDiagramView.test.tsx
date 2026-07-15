@@ -233,6 +233,26 @@ describe('LogicDiagramView safe reload policy', () => {
     expect(tauriMocks.writeNote).not.toHaveBeenCalled();
   });
 
+  it('toggles an input node on the second pointer down of a double click', async () => {
+    tauriMocks.readNote.mockResolvedValueOnce({ content: logicDoc(['input']), hash: 'logic-v1', modifiedAt: 1 });
+
+    render(<LogicDiagramView relativePath={PATH} />);
+    expect(await screen.findByText(/1 gates/)).toBeTruthy();
+
+    const inputNode = screen
+      .getAllByText('Input')
+      .map((element) => element.closest('[data-logic-node]'))
+      .find((element): element is HTMLElement => element instanceof HTMLElement);
+
+    if (!inputNode) throw new Error('Expected rendered input node.');
+    const inputNodeSurface = inputNode.firstElementChild;
+    if (!(inputNodeSurface instanceof HTMLElement)) throw new Error('Expected rendered input node surface.');
+    expect(inputNode.textContent).toContain('unset');
+    fireEvent.mouseDown(inputNodeSurface, { button: 0, detail: 2 });
+
+    await waitFor(() => expect(inputNode.textContent).toContain('1'));
+  });
+
   it('exports the current diagram SVG and appends it to an open note', async () => {
     useEditorStore.setState({
       openTabs: [

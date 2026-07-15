@@ -2,6 +2,7 @@ import {
   ArrowLeft,
   Calendar,
   CheckCircle2,
+  CircuitBoard,
   CircleDot,
   Diamond,
   FileImage,
@@ -38,12 +39,20 @@ import { getDocument, GlobalWorkerOptions, type PDFDocumentProxy, type RenderTas
 
 import { Banner, EmptyState, Spinner } from '../components/ui';
 import { isCanvasFile, readCanvasDocument, type CanvasData, type CanvasEdge, type CanvasNode } from '../lib/canvas';
+import { isLogicFile, readLogicDocument, type LogicDiagramDocument } from '../lib/logic';
 import {
   isImageFile,
   isPdfFile,
   readMobileAssetDataUrl,
   uint8ArrayFromDataUrlChunked,
 } from '../lib/assets';
+import {
+  evaluateLogicDiagram,
+  getLogicInputHandles,
+  getLogicOutputHandles,
+  type LogicSignal,
+} from '../../../../src/components/logic/logicDiagramEvaluator';
+import type { LogicDiagramNode } from '../../../../src/types/logicDiagram';
 import type { HostedFileEntry } from '../mobileTauri';
 import { useMobileStore } from '../state/store';
 
@@ -52,7 +61,7 @@ GlobalWorkerOptions.workerSrc = workerUrl;
 
 type LoadState =
   | { status: 'loading' }
-  | { status: 'ready'; dataUrl?: string; canvas?: CanvasData; source: 'network' | 'cache' }
+  | { status: 'ready'; dataUrl?: string; canvas?: CanvasData; logic?: LogicDiagramDocument; source: 'network' | 'cache' }
   | { status: 'error'; message: string };
 type PdfLayoutMode = 'single' | 'scroll';
 type TouchPoint = { x: number; y: number };
@@ -78,6 +87,7 @@ function statusForFile(file: HostedFileEntry, state: LoadState): string {
   if (isPdfFile(file)) return 'PDF viewer';
   if (isImageFile(file)) return 'Image viewer';
   if (isCanvasFile(file)) return 'Canvas viewer';
+  if (isLogicFile(file)) return 'Logic viewer';
   return 'Viewer';
 }
 
@@ -92,6 +102,7 @@ export function RichFileViewerScreen({ file }: { file: HostedFileEntry }) {
   const image = isImageFile(file);
   const pdf = isPdfFile(file);
   const canvas = isCanvasFile(file);
+  const logic = isLogicFile(file);
 
   useEffect(() => {
     let cancelled = false;
@@ -103,6 +114,9 @@ export function RichFileViewerScreen({ file }: { file: HostedFileEntry }) {
         if (canvas) {
           const result = await readCanvasDocument(selected.serverUrl, selected.vault.id, file, connected);
           if (!cancelled) setLoadState({ status: 'ready', canvas: result.canvas, source: result.source });
+        } else if (logic) {
+          const result = await readLogicDocument(selected.serverUrl, selected.vault.id, file, connected);
+          if (!cancelled) setLoadState({ status: 'ready', logic: result.logic, source: result.source });
         } else {
           const result = await readMobileAssetDataUrl({
             serverUrl: selected.serverUrl,
@@ -125,7 +139,7 @@ export function RichFileViewerScreen({ file }: { file: HostedFileEntry }) {
     return () => {
       cancelled = true;
     };
-  }, [canvas, connected, file, selected]);
+  }, [canvas, connected, file, logic, selected]);
 
   function adjustZoom(delta: number) {
     setZoom((value) => clamp(Number((value + delta).toFixed(2)), 0.35, 4));
@@ -194,6 +208,14 @@ export function RichFileViewerScreen({ file }: { file: HostedFileEntry }) {
       ) : canvas && loadState.canvas ? (
         <CanvasMobileViewer
           canvas={loadState.canvas}
+          zoom={zoom}
+          setZoom={setZoom}
+          resetToken={resetToken}
+          onWheel={handleWheel}
+        />
+      ) : logic && loadState.logic ? (
+        <LogicMobileViewer
+          logic={loadState.logic}
           zoom={zoom}
           setZoom={setZoom}
           resetToken={resetToken}
@@ -1366,6 +1388,484 @@ function CanvasNodeDetail({ node, onClose }: { node: CanvasNode; onClose: () => 
 
 function asCanvasRecord(value: unknown): Record<string, unknown> | null {
   return value && typeof value === 'object' ? (value as Record<string, unknown>) : null;
+}
+
+const MOBILE_LOGIC_NODE_WIDTH = 116;
+const MOBILE_LOGIC_NODE_HEIGHT = 72;
+const MOBILE_LOGIC_COMPONENT_WIDTH = 156;
+const MOBILE_LOGIC_GROUP_WIDTH = 260;
+const MOBILE_LOGIC_GROUP_HEIGHT = 180;
+const MOBILE_LOGIC_PORT_TOP = 0.22;
+const MOBILE_LOGIC_PORT_SPAN = 0.56;
+
+function logicNodeLabel(node: LogicDiagramNode): string {
+  if (node.label?.trim()) return node.label.trim();
+  if (node.kind === 'component') return node.component?.definition.name ?? 'Component';
+  return node.kind.toUpperCase();
+}
+
+function logicNodeWidth(node: LogicDiagramNode): number {
+  if (node.kind === 'group') return node.width ?? MOBILE_LOGIC_GROUP_WIDTH;
+  if (node.kind === 'component') return node.width ?? MOBILE_LOGIC_COMPONENT_WIDTH;
+  return node.width ?? MOBILE_LOGIC_NODE_WIDTH;
+}
+
+function logicNodeHeight(node: LogicDiagramNode): number {
+  if (node.kind === 'group') return node.height ?? MOBILE_LOGIC_GROUP_HEIGHT;
+  if (node.kind === 'component') {
+    const inputCount = node.component?.definition.ports.filter((port) => port.direction === 'input').length ?? 0;
+    const outputCount = node.component?.definition.ports.filter((port) => port.direction === 'output').length ?? 0;
+    return Math.max(node.height ?? MOBILE_LOGIC_NODE_HEIGHT, 78 + Math.max(inputCount, outputCount, 1) * 15);
+  }
+  return node.height ?? MOBILE_LOGIC_NODE_HEIGHT;
+}
+
+function logicHandleRatio(index: number, count: number): number {
+  if (count <= 1) return 0.5;
+  return MOBILE_LOGIC_PORT_TOP + (index / Math.max(1, count - 1)) * MOBILE_LOGIC_PORT_SPAN;
+}
+
+function absoluteLogicNodePosition(
+  node: LogicDiagramNode,
+  nodeById: Map<string, LogicDiagramNode>,
+): TouchPoint {
+  if (!node.parentId) return node.position;
+  const parent = nodeById.get(node.parentId);
+  if (!parent) return node.position;
+  const parentPosition = absoluteLogicNodePosition(parent, nodeById);
+  return {
+    x: parentPosition.x + node.position.x,
+    y: parentPosition.y + node.position.y,
+  };
+}
+
+function logicHandleAnchor(
+  node: LogicDiagramNode,
+  handleId: string | undefined,
+  type: 'source' | 'target',
+  nodeById: Map<string, LogicDiagramNode>,
+): TouchPoint {
+  const position = absoluteLogicNodePosition(node, nodeById);
+  const handles = type === 'source'
+    ? getLogicOutputHandles(node.kind, node.component)
+    : getLogicInputHandles(node.kind, node.component);
+  const index = Math.max(0, handleId ? handles.indexOf(handleId) : 0);
+  const width = logicNodeWidth(node);
+  const height = logicNodeHeight(node);
+  const yRatio = logicHandleRatio(index, handles.length);
+  return {
+    x: position.x + (type === 'source' ? width : 0),
+    y: position.y + height * yRatio,
+  };
+}
+
+function computeLogicBounds(nodes: LogicDiagramNode[], nodeById: Map<string, LogicDiagramNode>): CanvasWorldBounds {
+  if (nodes.length === 0) {
+    return {
+      minX: -320,
+      minY: -210,
+      maxX: 320,
+      maxY: 210,
+      width: 640,
+      height: 420,
+      centerX: 0,
+      centerY: 0,
+    };
+  }
+  let minX = Number.POSITIVE_INFINITY;
+  let minY = Number.POSITIVE_INFINITY;
+  let maxX = Number.NEGATIVE_INFINITY;
+  let maxY = Number.NEGATIVE_INFINITY;
+  for (const node of nodes) {
+    const position = absoluteLogicNodePosition(node, nodeById);
+    minX = Math.min(minX, position.x);
+    minY = Math.min(minY, position.y);
+    maxX = Math.max(maxX, position.x + logicNodeWidth(node));
+    maxY = Math.max(maxY, position.y + logicNodeHeight(node));
+  }
+  const width = Math.max(1, maxX - minX);
+  const height = Math.max(1, maxY - minY);
+  return {
+    minX,
+    minY,
+    maxX,
+    maxY,
+    width,
+    height,
+    centerX: minX + width / 2,
+    centerY: minY + height / 2,
+  };
+}
+
+function logicSignalClass(signal: LogicSignal): string {
+  if (signal === true) return 'on';
+  if (signal === false) return 'off';
+  return 'unknown';
+}
+
+function logicSignalLabel(signal: LogicSignal): string {
+  if (signal === true) return '1';
+  if (signal === false) return '0';
+  return 'unset';
+}
+
+function logicEdgePath(source: TouchPoint, target: TouchPoint): string {
+  const lane = Math.max(28, Math.min(72, Math.abs(target.x - source.x) * 0.25));
+  const sourceLaneX = source.x + lane;
+  const targetLaneX = target.x - lane;
+  const midX = sourceLaneX <= targetLaneX
+    ? (sourceLaneX + targetLaneX) / 2
+    : Math.max(source.x, target.x) + lane;
+  const radius = Math.min(16, Math.abs(midX - sourceLaneX) / 2, Math.abs(targetLaneX - midX) / 2, Math.abs(target.y - source.y) / 2);
+  if (radius <= 0.5) {
+    return [
+      `M ${source.x} ${source.y}`,
+      `L ${sourceLaneX} ${source.y}`,
+      `L ${midX} ${source.y}`,
+      `L ${midX} ${target.y}`,
+      `L ${targetLaneX} ${target.y}`,
+      `L ${target.x} ${target.y}`,
+    ].join(' ');
+  }
+  const sourceTurnY = source.y + Math.sign(target.y - source.y) * radius;
+  const targetTurnY = target.y - Math.sign(target.y - source.y) * radius;
+  return [
+    `M ${source.x} ${source.y}`,
+    `L ${sourceLaneX} ${source.y}`,
+    `L ${midX - radius} ${source.y}`,
+    `Q ${midX} ${source.y} ${midX} ${sourceTurnY}`,
+    `L ${midX} ${targetTurnY}`,
+    `Q ${midX} ${target.y} ${midX + radius} ${target.y}`,
+    `L ${targetLaneX} ${target.y}`,
+    `L ${target.x} ${target.y}`,
+  ].join(' ');
+}
+
+function LogicMobileViewer({
+  logic,
+  zoom,
+  setZoom,
+  resetToken,
+  onWheel,
+}: {
+  logic: LogicDiagramDocument;
+  zoom: number;
+  setZoom: Dispatch<SetStateAction<number>>;
+  resetToken: number;
+  onWheel: (event: WheelEvent<HTMLElement>) => void;
+}) {
+  const stageRef = useRef<HTMLElement | null>(null);
+  const dragRef = useRef<TouchPoint | null>(null);
+  const pinchRef = useRef<{ distance: number; center: TouchPoint; zoom: number; pan: TouchPoint } | null>(null);
+  const [pan, setPan] = useState<TouchPoint>({ x: 0, y: 0 });
+  const [inputValues, setInputValues] = useState<Record<string, boolean>>({});
+  const [stageWidth, stageHeight] = useElementSize(stageRef);
+  const lastFitKeyRef = useRef<string | null>(null);
+
+  const baseInputs = useMemo(() => {
+    const values: Record<string, boolean> = {};
+    for (const node of logic.nodes) {
+      if (node.kind === 'input') values[node.id] = node.value === true;
+    }
+    return values;
+  }, [logic.nodes]);
+
+  useEffect(() => {
+    setInputValues(baseInputs);
+  }, [baseInputs]);
+
+  const simulatedNodes = useMemo(() => logic.nodes.map((node) => (
+    node.kind === 'input' ? { ...node, value: inputValues[node.id] ?? node.value ?? false } : node
+  )), [inputValues, logic.nodes]);
+  const nodeById = useMemo(() => new Map(simulatedNodes.map((node) => [node.id, node])), [simulatedNodes]);
+  const bounds = useMemo(() => computeLogicBounds(simulatedNodes, nodeById), [nodeById, simulatedNodes]);
+  const evaluation = useMemo(() => evaluateLogicDiagram(simulatedNodes, logic.wires, { components: logic.components }), [logic.components, logic.wires, simulatedNodes]);
+  const inputNodes = useMemo(() => simulatedNodes.filter((node) => node.kind === 'input'), [simulatedNodes]);
+  const outputNodes = useMemo(() => simulatedNodes.filter((node) => node.kind === 'output'), [simulatedNodes]);
+
+  function fitToStage() {
+    const stage = stageRef.current;
+    if (!stage) return;
+    const fitKey = `${bounds.width}:${bounds.height}:${resetToken}:${stage.clientWidth}:${stage.clientHeight}`;
+    if (lastFitKeyRef.current === fitKey) return;
+    lastFitKeyRef.current = fitKey;
+    const margin = Math.max(52, Math.min(stage.clientWidth, stage.clientHeight) * 0.14);
+    const fitZoom = clamp(
+      Math.min(
+        Math.max(1, stage.clientWidth - margin * 2) / bounds.width,
+        Math.max(1, stage.clientHeight - margin * 2) / bounds.height,
+      ),
+      0.08,
+      1.4,
+    );
+    setZoom(Number(fitZoom.toFixed(3)));
+    setPan({ x: 0, y: 0 });
+  }
+
+  useEffect(() => {
+    fitToStage();
+    // Fit after the stage has a measured size and when explicit reset is requested.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [bounds.height, bounds.width, resetToken, stageHeight, stageWidth]);
+
+  function clampLogicPan(next: TouchPoint, nextZoom = zoom): TouchPoint {
+    const stage = stageRef.current;
+    if (!stage) return next;
+    const margin = Math.max(42, Math.min(stage.clientWidth, stage.clientHeight) * 0.16);
+    const overflowX = Math.max(0, bounds.width * nextZoom - (stage.clientWidth - margin * 2));
+    const overflowY = Math.max(0, bounds.height * nextZoom - (stage.clientHeight - margin * 2));
+    return {
+      x: clamp(next.x, -overflowX / 2 - margin, overflowX / 2 + margin),
+      y: clamp(next.y, -overflowY / 2 - margin, overflowY / 2 + margin),
+    };
+  }
+
+  function handleTouchStart(event: TouchEvent<HTMLElement>) {
+    if (event.touches.length === 2) {
+      const first = touchPoint(event.touches[0]);
+      const second = touchPoint(event.touches[1]);
+      pinchRef.current = { distance: distanceBetween(first, second), center: midpoint(first, second), zoom, pan };
+      dragRef.current = null;
+      return;
+    }
+    if (event.touches.length === 1) {
+      dragRef.current = touchPoint(event.touches[0]);
+      pinchRef.current = null;
+    }
+  }
+
+  function handleTouchMove(event: TouchEvent<HTMLElement>) {
+    if (event.touches.length === 2 && pinchRef.current) {
+      event.preventDefault();
+      const first = touchPoint(event.touches[0]);
+      const second = touchPoint(event.touches[1]);
+      const center = midpoint(first, second);
+      const distance = distanceBetween(first, second);
+      const previous = pinchRef.current;
+      const ratio = distance / Math.max(1, previous.distance);
+      const nextZoom = clamp(Number((previous.zoom * ratio).toFixed(3)), 0.08, 3);
+      const stage = stageRef.current;
+      const stageCenter = stage ? { x: stage.clientWidth / 2, y: stage.clientHeight / 2 } : { x: 0, y: 0 };
+      const zoomRatio = nextZoom / Math.max(0.001, previous.zoom);
+      setZoom(nextZoom);
+      setPan(
+        clampLogicPan(
+          {
+            x: center.x - stageCenter.x - zoomRatio * (previous.center.x - stageCenter.x - previous.pan.x),
+            y: center.y - stageCenter.y - zoomRatio * (previous.center.y - stageCenter.y - previous.pan.y),
+          },
+          nextZoom,
+        ),
+      );
+      return;
+    }
+    if (event.touches.length === 1 && dragRef.current) {
+      event.preventDefault();
+      const current = touchPoint(event.touches[0]);
+      const previous = dragRef.current;
+      dragRef.current = current;
+      setPan((value) => clampLogicPan({ x: value.x + current.x - previous.x, y: value.y + current.y - previous.y }));
+    }
+  }
+
+  function handleTouchEnd(event: TouchEvent<HTMLElement>) {
+    if (event.touches.length === 1) {
+      dragRef.current = touchPoint(event.touches[0]);
+      pinchRef.current = null;
+      return;
+    }
+    dragRef.current = null;
+    pinchRef.current = null;
+  }
+
+  const cameraStyle = {
+    '--canvas-origin-x': `${(stageWidth || 0) / 2 + pan.x}px`,
+    '--canvas-origin-y': `${(stageHeight || 0) / 2 + pan.y}px`,
+    '--canvas-zoom': zoom,
+    '--canvas-center-x': `${bounds.centerX}px`,
+    '--canvas-center-y': `${bounds.centerY}px`,
+  } as CSSProperties;
+  const gridPadding = 840;
+  const gridStyle = {
+    left: `${bounds.minX - gridPadding}px`,
+    top: `${bounds.minY - gridPadding}px`,
+    width: `${bounds.width + gridPadding * 2}px`,
+    height: `${bounds.height + gridPadding * 2}px`,
+  } as CSSProperties;
+
+  return (
+    <section
+      ref={stageRef}
+      className="viewer-stage logic-stage"
+      onTouchStart={handleTouchStart}
+      onTouchMove={handleTouchMove}
+      onTouchEnd={handleTouchEnd}
+      onTouchCancel={handleTouchEnd}
+      onWheel={onWheel}
+    >
+      {simulatedNodes.length === 0 ? (
+        <EmptyState
+          icon={<CircuitBoard size={28} aria-hidden />}
+          title="Empty logic diagram"
+          message="This logic file does not contain any nodes yet."
+        />
+      ) : (
+        <>
+          <div className="logic-sim-toolbar">
+            <span>{inputNodes.length} inputs</span>
+            <span>{outputNodes.length} outputs</span>
+            {evaluation.warnings.length > 0 ? <span>{evaluation.warnings.length} warnings</span> : null}
+          </div>
+          <div className="mobile-canvas-camera mobile-logic-camera" style={cameraStyle}>
+            <div className="mobile-canvas-grid mobile-logic-grid" style={gridStyle} aria-hidden />
+            <svg
+              className="mobile-logic-edges"
+              style={{
+                left: `${bounds.minX}px`,
+                top: `${bounds.minY}px`,
+                width: `${bounds.width}px`,
+                height: `${bounds.height}px`,
+              }}
+              viewBox={`${bounds.minX} ${bounds.minY} ${bounds.width} ${bounds.height}`}
+              aria-hidden
+            >
+              <defs>
+                <marker
+                  id="mobile-logic-arrow"
+                  viewBox="0 0 12 10"
+                  refX="5.6"
+                  refY="5"
+                  markerWidth="9"
+                  markerHeight="9"
+                  markerUnits="strokeWidth"
+                  orient="auto"
+                >
+                  <path d="M10.6 5L5.2 1.6C3.6 0.6 1.6 1.75 1.6 3.62V6.38C1.6 8.25 3.6 9.4 5.2 8.4L10.6 5Z" />
+                </marker>
+              </defs>
+              {logic.wires.map((wire) => {
+                const sourceNode = nodeById.get(wire.source);
+                const targetNode = nodeById.get(wire.target);
+                if (!sourceNode || !targetNode) return null;
+                const source = logicHandleAnchor(sourceNode, wire.sourceHandle, 'source', nodeById);
+                const target = logicHandleAnchor(targetNode, wire.targetHandle, 'target', nodeById);
+                return (
+                  <path
+                    key={wire.id}
+                    className={`mobile-logic-wire ${logicSignalClass(evaluation.wireValues[wire.id])}`}
+                    d={logicEdgePath(source, target)}
+                    markerEnd="url(#mobile-logic-arrow)"
+                  />
+                );
+              })}
+            </svg>
+            {simulatedNodes.map((node) => (
+              <MobileLogicNode
+                key={node.id}
+                node={node}
+                nodeById={nodeById}
+                value={evaluation.nodeValues[node.id]}
+                onToggleInput={node.kind === 'input'
+                  ? () => setInputValues((current) => ({ ...current, [node.id]: !(current[node.id] ?? node.value ?? false) }))
+                  : undefined}
+              />
+            ))}
+          </div>
+          {evaluation.warnings.length > 0 ? (
+            <div className="logic-warning-strip">
+              {evaluation.warnings.slice(0, 2).map((warning) => (
+                <span key={`${warning.code}-${warning.nodeId}-${warning.message}`}>{warning.message}</span>
+              ))}
+            </div>
+          ) : null}
+        </>
+      )}
+    </section>
+  );
+}
+
+function MobileLogicNode({
+  node,
+  nodeById,
+  value,
+  onToggleInput,
+}: {
+  node: LogicDiagramNode;
+  nodeById: Map<string, LogicDiagramNode>;
+  value: LogicSignal;
+  onToggleInput?: () => void;
+}) {
+  const position = absoluteLogicNodePosition(node, nodeById);
+  const inputHandles = getLogicInputHandles(node.kind, node.component);
+  const outputHandles = getLogicOutputHandles(node.kind, node.component);
+  const style = {
+    left: `${position.x}px`,
+    top: `${position.y}px`,
+    width: `${logicNodeWidth(node)}px`,
+    height: `${logicNodeHeight(node)}px`,
+  } as CSSProperties;
+
+  if (node.kind === 'group') {
+    return (
+      <div className="mobile-logic-node mobile-logic-group" style={style}>
+        <strong>{logicNodeLabel(node)}</strong>
+      </div>
+    );
+  }
+
+  const content = (
+    <>
+      {inputHandles.map((handleId, index) => (
+        <span
+          key={handleId}
+          className="mobile-logic-handle input"
+          style={{ top: `${logicHandleRatio(index, inputHandles.length) * 100}%` }}
+        />
+      ))}
+      <span className="mobile-logic-kind">{node.kind === 'component' ? 'COMP' : node.kind}</span>
+      <strong>{logicNodeLabel(node)}</strong>
+      <span className={`mobile-logic-value ${logicSignalClass(value)}`}>{logicSignalLabel(value)}</span>
+      {node.kind === 'component' ? (
+        <span className="mobile-logic-component-ports">
+          {node.component?.definition.ports
+            .filter((port) => port.direction === 'input')
+            .map((port) => port.label)
+            .join(', ') || 'inputs'}
+          {' / '}
+          {node.component?.definition.ports
+            .filter((port) => port.direction === 'output')
+            .map((port) => port.label)
+            .join(', ') || 'outputs'}
+        </span>
+      ) : null}
+      {outputHandles.map((handleId, index) => (
+        <span
+          key={handleId}
+          className="mobile-logic-handle output"
+          style={{ top: `${logicHandleRatio(index, outputHandles.length) * 100}%` }}
+        />
+      ))}
+    </>
+  );
+
+  if (onToggleInput) {
+    return (
+      <button
+        type="button"
+        className={`mobile-logic-node mobile-logic-gate mobile-logic-input ${logicSignalClass(value)}`}
+        style={style}
+        onClick={onToggleInput}
+      >
+        {content}
+      </button>
+    );
+  }
+
+  return (
+    <div className={`mobile-logic-node mobile-logic-gate mobile-logic-${node.kind} ${logicSignalClass(value)}`} style={style}>
+      {content}
+    </div>
+  );
 }
 
 function PdfMobileViewer({
