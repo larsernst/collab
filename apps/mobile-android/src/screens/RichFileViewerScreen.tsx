@@ -46,6 +46,7 @@ import {
   readMobileAssetDataUrl,
   uint8ArrayFromDataUrlChunked,
 } from '../lib/assets';
+import { calculateMobilePdfPageSize, type MobilePdfPageSize } from '../lib/pdf';
 import {
   evaluateLogicDiagram,
   getLogicInputHandles,
@@ -2155,6 +2156,7 @@ function PdfPageCanvas({
   const renderTaskRef = useRef<RenderTask | null>(null);
   const [visible, setVisible] = useState(eager);
   const [rendering, setRendering] = useState(false);
+  const [pageSize, setPageSize] = useState<MobilePdfPageSize | null>(null);
 
   useEffect(() => {
     if (eager) {
@@ -2178,9 +2180,9 @@ function PdfPageCanvas({
 
   useEffect(() => {
     const canvas = canvasRef.current;
-    if (!canvas || !visible) return;
+    if (!canvas) return;
     let cancelled = false;
-    setRendering(true);
+    setRendering(visible);
     onError(null);
     renderTaskRef.current?.cancel();
     document
@@ -2188,19 +2190,24 @@ function PdfPageCanvas({
       .then((page) => {
         if (cancelled) return;
         const naturalViewport = page.getViewport({ scale: 1 });
-        const horizontalPadding = 28;
-        const fitWidth = Math.max(1, stageWidth - horizontalPadding);
-        const fitScale = fitWidth / naturalViewport.width;
-        const displayScale = clamp(fitScale * zoom, 0.1, 6);
+        const nextPageSize = calculateMobilePdfPageSize({
+          naturalWidth: naturalViewport.width,
+          naturalHeight: naturalViewport.height,
+          stageWidth,
+          zoom,
+        });
+        setPageSize(nextPageSize);
+        if (!visible) return;
+
+        const displayScale = nextPageSize.width / naturalViewport.width;
         const pixelRatio = clamp(window.devicePixelRatio || 1, 1, 2);
         const renderViewport = page.getViewport({ scale: displayScale * pixelRatio });
-        const cssViewport = page.getViewport({ scale: displayScale });
         const context = canvas.getContext('2d', { alpha: false });
         if (!context) throw new Error('Could not create the PDF canvas context.');
         canvas.width = Math.max(1, Math.ceil(renderViewport.width));
         canvas.height = Math.max(1, Math.ceil(renderViewport.height));
-        canvas.style.width = `${Math.ceil(cssViewport.width)}px`;
-        canvas.style.height = `${Math.ceil(cssViewport.height)}px`;
+        canvas.style.width = `${nextPageSize.width}px`;
+        canvas.style.height = `${nextPageSize.height}px`;
         const task = page.render({ canvas, canvasContext: context, viewport: renderViewport });
         renderTaskRef.current = task;
         return task.promise;
@@ -2225,13 +2232,14 @@ function PdfPageCanvas({
       className="pdf-page-wrap"
       data-pdf-page={pageNumber}
       aria-label={`PDF page ${pageNumber}`}
+      style={pageSize ? { height: `${pageSize.height}px`, minHeight: `${pageSize.height}px` } : undefined}
     >
       {rendering ? (
         <div className="pdf-page-loading">
           <Spinner size={16} />
         </div>
       ) : null}
-      <canvas ref={canvasRef} />
+      <canvas ref={canvasRef} style={!visible ? { visibility: 'hidden' } : undefined} />
     </div>
   );
 }
