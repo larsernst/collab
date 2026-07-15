@@ -175,6 +175,7 @@ const GROUPS: Group[] = [
       { label: 'Add AND gate',       keys: [['A']] },
       { label: 'Add NOT gate',       keys: [['N']] },
       { label: 'Add XOR gate',       keys: [['X']] },
+      { label: 'Add resistor (schematic)', keys: [['R']] },
       { label: 'Select all',         keys: [['Ctrl', 'A']] },
       { label: 'Group selection',    keys: [['Ctrl', 'G']] },
       { label: 'Ungroup selection',  keys: [['Ctrl', 'Shift', 'G']] },

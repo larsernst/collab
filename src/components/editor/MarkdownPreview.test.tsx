@@ -57,6 +57,7 @@ describe('MarkdownPreview', () => {
     vaultClientMocks.readAssetDataUrl.mockResolvedValue(buildLogicDiagramSvgDataUrl({
       schemaVersion: 1,
       kind: 'logic-diagram',
+      diagramMode: 'logic',
       title: 'Adder',
       nodes: [],
       wires: [],
@@ -94,6 +95,7 @@ describe('MarkdownPreview', () => {
     vaultClientMocks.readAssetDataUrl.mockResolvedValue(buildLogicDiagramSvgDataUrl({
       schemaVersion: 1,
       kind: 'logic-diagram',
+      diagramMode: 'logic',
       title: 'Adder',
       nodes: [],
       wires: [],

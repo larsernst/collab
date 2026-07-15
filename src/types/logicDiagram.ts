@@ -1,5 +1,7 @@
 export const LOGIC_DIAGRAM_EXTENSION = 'logic';
-export const LOGIC_DIAGRAM_SCHEMA_VERSION = 2;
+export const LOGIC_DIAGRAM_SCHEMA_VERSION = 3;
+
+export type LogicDiagramMode = 'logic' | 'schematic';
 
 export type LogicGateKind =
   | 'input'
@@ -13,7 +15,18 @@ export type LogicGateKind =
   | 'nor'
   | 'xnor';
 
-export type LogicNodeKind = LogicGateKind | 'component';
+export type ElectronicComponentKind =
+  | 'resistor'
+  | 'capacitor'
+  | 'inductor'
+  | 'diode'
+  | 'led'
+  | 'transistor'
+  | 'switch'
+  | 'ground'
+  | 'voltage-source';
+
+export type LogicNodeKind = LogicGateKind | 'component' | ElectronicComponentKind;
 export type LogicComponentInstanceMode = 'snapshot' | 'linked';
 export type LogicComponentPortDirection = 'input' | 'output';
 
@@ -66,6 +79,7 @@ export interface LogicDiagramWire {
 export interface LogicDiagramDocument {
   schemaVersion: number;
   kind: 'logic-diagram';
+  diagramMode: LogicDiagramMode;
   title?: string;
   nodes: LogicDiagramNode[];
   wires: LogicDiagramWire[];
@@ -86,14 +100,31 @@ const LOGIC_GATE_KINDS = new Set<LogicGateKind>([
   'xnor',
 ]);
 
+const ELECTRONIC_COMPONENT_KINDS = new Set<ElectronicComponentKind>([
+  'resistor',
+  'capacitor',
+  'inductor',
+  'diode',
+  'led',
+  'transistor',
+  'switch',
+  'ground',
+  'voltage-source',
+]);
+
 export function isLogicGateKind(kind: unknown): kind is LogicGateKind {
   return LOGIC_GATE_KINDS.has(kind as LogicGateKind);
 }
 
-export function createEmptyLogicDiagram(title?: string): LogicDiagramDocument {
+export function isElectronicComponentKind(kind: unknown): kind is ElectronicComponentKind {
+  return ELECTRONIC_COMPONENT_KINDS.has(kind as ElectronicComponentKind);
+}
+
+export function createEmptyLogicDiagram(title?: string, diagramMode: LogicDiagramMode = 'logic'): LogicDiagramDocument {
   return {
     schemaVersion: LOGIC_DIAGRAM_SCHEMA_VERSION,
     kind: 'logic-diagram',
+    diagramMode,
     title,
     nodes: [],
     wires: [],
@@ -185,7 +216,7 @@ function normalizeNode(value: unknown): LogicDiagramNode | null {
   if (
     !record
     || typeof record.id !== 'string'
-    || !(isLogicGateKind(record.kind) || record.kind === 'component')
+    || !(isLogicGateKind(record.kind) || isElectronicComponentKind(record.kind) || record.kind === 'component')
   ) {
     return null;
   }
@@ -226,13 +257,18 @@ export function normalizeLogicDiagramDocument(input: unknown): LogicDiagramDocum
   if (!record) return createEmptyLogicDiagram();
 
   const viewport = asRecord(record.viewport);
+  const nodes = Array.isArray(record.nodes)
+    ? record.nodes.map(normalizeNode).filter((node): node is LogicDiagramNode => Boolean(node))
+    : [];
+  const inferredMode = nodes.some((node) => isElectronicComponentKind(node.kind)) ? 'schematic' : 'logic';
   return {
     schemaVersion: LOGIC_DIAGRAM_SCHEMA_VERSION,
     kind: 'logic-diagram',
+    diagramMode: record.diagramMode === 'schematic' || record.diagramMode === 'logic'
+      ? record.diagramMode
+      : inferredMode,
     title: optionalString(record.title),
-    nodes: Array.isArray(record.nodes)
-      ? record.nodes.map(normalizeNode).filter((node): node is LogicDiagramNode => Boolean(node))
-      : [],
+    nodes,
     wires: Array.isArray(record.wires)
       ? record.wires.map(normalizeWire).filter((wire): wire is LogicDiagramWire => Boolean(wire))
       : [],

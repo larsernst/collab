@@ -24,6 +24,7 @@ import {
   Users,
 } from 'lucide-react';
 import {
+  useCallback,
   useEffect,
   useMemo,
   useRef,
@@ -1890,6 +1891,7 @@ function PdfMobileViewer({
   const [pan, setPan] = useState<TouchPoint>({ x: 0, y: 0 });
   const [pageCount, setPageCount] = useState(0);
   const [layoutMode, setLayoutMode] = useState<PdfLayoutMode>('single');
+  const [pageWidths, setPageWidths] = useState<Record<number, number>>({});
   const [stageWidth] = useElementSize(stageRef);
   const [busy, setBusy] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -1898,6 +1900,15 @@ function PdfMobileViewer({
     () => Array.from({ length: pageCount }, (_, index) => index + 1),
     [pageCount],
   );
+  const widestPage = useMemo(
+    () => Math.max(0, ...Object.values(pageWidths)),
+    [pageWidths],
+  );
+  const handlePageMeasured = useCallback((measuredPage: number, size: MobilePdfPageSize) => {
+    setPageWidths((current) => current[measuredPage] === size.width
+      ? current
+      : { ...current, [measuredPage]: size.width });
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -1906,6 +1917,7 @@ function PdfMobileViewer({
     setDocument(null);
     setPageNumber(1);
     setPageCount(0);
+    setPageWidths({});
     let task: ReturnType<typeof getDocument> | null = null;
     uint8ArrayFromDataUrlChunked(dataUrl)
       .then((data) => {
@@ -1943,6 +1955,17 @@ function PdfMobileViewer({
   useEffect(() => {
     if (zoom <= 1) setPan({ x: 0, y: 0 });
   }, [zoom]);
+
+  useEffect(() => {
+    const stage = stageRef.current;
+    if (!stage || layoutMode !== 'scroll') return;
+    const frame = window.requestAnimationFrame(() => {
+      stage.scrollLeft = scale > 1
+        ? Math.max(0, (stage.scrollWidth - stage.clientWidth) / 2)
+        : 0;
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [layoutMode, scale, stageWidth, widestPage]);
 
   function clampPdfPan(next: TouchPoint, nextZoom = zoom): TouchPoint {
     const stage = stageRef.current;
@@ -2092,7 +2115,7 @@ function PdfMobileViewer({
       ) : null}
       <div
         ref={stageRef}
-        className={`viewer-stage pdf-stage pdf-stage-${layoutMode}`}
+        className={`viewer-stage pdf-stage pdf-stage-${layoutMode}${layoutMode === 'scroll' && scale > 1 ? ' is-horizontally-zoomed' : ''}`}
         onTouchStart={handleTouchStart}
         onTouchMove={handleTouchMove}
         onTouchEnd={handleTouchEnd}
@@ -2117,7 +2140,10 @@ function PdfMobileViewer({
           </div>
         ) : null}
         {document && stageWidth > 0 && layoutMode === 'scroll' ? (
-          <div className="pdf-scroll-stack">
+          <div
+            className="pdf-scroll-stack"
+            style={widestPage > 0 ? { width: `max(100%, ${widestPage}px)` } : undefined}
+          >
             {pages.map((page) => (
               <PdfPageCanvas
                 key={page}
@@ -2127,6 +2153,7 @@ function PdfMobileViewer({
                 zoom={scale}
                 eager={page <= 2}
                 onError={setError}
+                onMeasured={handlePageMeasured}
               />
             ))}
           </div>
@@ -2143,6 +2170,7 @@ function PdfPageCanvas({
   zoom,
   eager,
   onError,
+  onMeasured,
 }: {
   document: PDFDocumentProxy;
   pageNumber: number;
@@ -2150,6 +2178,7 @@ function PdfPageCanvas({
   zoom: number;
   eager: boolean;
   onError: (message: string | null) => void;
+  onMeasured?: (pageNumber: number, size: MobilePdfPageSize) => void;
 }) {
   const wrapperRef = useRef<HTMLDivElement | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
@@ -2197,6 +2226,7 @@ function PdfPageCanvas({
           zoom,
         });
         setPageSize(nextPageSize);
+        onMeasured?.(pageNumber, nextPageSize);
         if (!visible) return;
 
         const displayScale = nextPageSize.width / naturalViewport.width;
@@ -2224,7 +2254,7 @@ function PdfPageCanvas({
       cancelled = true;
       renderTaskRef.current?.cancel();
     };
-  }, [document, onError, pageNumber, stageWidth, visible, zoom]);
+  }, [document, onError, onMeasured, pageNumber, stageWidth, visible, zoom]);
 
   return (
     <div
@@ -2232,7 +2262,10 @@ function PdfPageCanvas({
       className="pdf-page-wrap"
       data-pdf-page={pageNumber}
       aria-label={`PDF page ${pageNumber}`}
-      style={pageSize ? { height: `${pageSize.height}px`, minHeight: `${pageSize.height}px` } : undefined}
+      style={pageSize ? {
+        height: `${pageSize.height}px`,
+        minHeight: `${pageSize.height}px`,
+      } : undefined}
     >
       {rendering ? (
         <div className="pdf-page-loading">

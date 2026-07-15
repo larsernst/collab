@@ -979,6 +979,13 @@ p {
 .pdf-stage-scroll {
   align-items: stretch;
   justify-content: flex-start;
+  overflow-x: hidden;
+  overscroll-behavior-x: none;
+  touch-action: pan-y;
+}
+.pdf-stage-scroll.is-horizontally-zoomed {
+  overflow-x: auto;
+  touch-action: pan-x pan-y;
 }
 .pdf-single-page {
   display: flex;
@@ -1022,6 +1029,7 @@ p {
   align-self: flex-start;
   gap: 18px;
   width: 100%;
+  min-width: 100%;
 }
 .pdf-page-wrap {
   position: relative;

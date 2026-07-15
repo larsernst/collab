@@ -6,6 +6,8 @@ import type {
   LogicGateKind,
 } from '../../types/logicDiagram';
 import { isLogicGateKind } from '../../types/logicDiagram';
+import { isElectronicComponentKind } from '../../types/logicDiagram';
+import { getSchematicSymbol } from './schematicSymbols';
 
 export type LogicSignal = boolean | undefined;
 
@@ -34,6 +36,7 @@ export function componentOutputHandle(portId: string) {
 }
 
 export function getLogicInputHandles(kind: LogicDiagramNode['kind'], component?: LogicComponentInstance) {
+  if (isElectronicComponentKind(kind)) return getSchematicSymbol(kind).inputHandles;
   if (kind === 'component') {
     return component?.definition.ports
       .filter((port) => port.direction === 'input')
@@ -45,6 +48,7 @@ export function getLogicInputHandles(kind: LogicDiagramNode['kind'], component?:
 }
 
 export function getLogicOutputHandles(kind: LogicDiagramNode['kind'], component?: LogicComponentInstance) {
+  if (isElectronicComponentKind(kind)) return getSchematicSymbol(kind).outputHandles;
   if (kind === 'component') {
     return component?.definition.ports
       .filter((port) => port.direction === 'output')

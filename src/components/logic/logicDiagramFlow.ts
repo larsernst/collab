@@ -6,6 +6,8 @@ import type {
   LogicDiagramNode,
   LogicDiagramWire,
 } from '../../types/logicDiagram';
+import { isElectronicComponentKind } from '../../types/logicDiagram';
+import { getSchematicSymbol } from './schematicSymbols';
 
 export interface LogicFlowNodeData extends Record<string, unknown> {
   kind: LogicDiagramNode['kind'];
@@ -37,6 +39,8 @@ export function logicNodeLabel(node: Pick<LogicDiagramNode, 'kind' | 'label'>) {
     case 'nor': return 'NOR';
     case 'xnor': return 'XNOR';
     case 'component': return 'Component';
+    default:
+      return isElectronicComponentKind(node.kind) ? getSchematicSymbol(node.kind).label : 'Component';
   }
 }
 

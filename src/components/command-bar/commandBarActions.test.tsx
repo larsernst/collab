@@ -113,6 +113,32 @@ describe('commandBarActions', () => {
     expect(ctx.setActiveView).toHaveBeenCalledWith('editor');
   });
 
+  it('creates an electronic schematic with the separate diagram mode', async () => {
+    const ctx = makeCtx();
+    createNote.mockResolvedValueOnce({
+      relativePath: 'Power Supply.logic',
+      name: 'Power Supply.logic',
+      extension: 'logic',
+      modifiedAt: 0,
+      size: 0,
+      isFolder: false,
+    });
+    readNote.mockResolvedValueOnce({ content: '', hash: 'v0', modifiedAt: 0 });
+    writeNote.mockResolvedValueOnce({ hash: 'v1' });
+    const action = ACTIONS.find((entry) => entry.id === 'new-schematic');
+
+    await action?.onSelect(ctx, 'new schematic Power Supply');
+
+    expect(writeNote).toHaveBeenCalledWith(
+      '/vault',
+      'Power Supply.logic',
+      expect.stringContaining('"diagramMode": "schematic"'),
+      'v0',
+      '',
+    );
+    expect(ctx.openTab).toHaveBeenCalledWith('Power Supply.logic', 'Power Supply', 'logic');
+  });
+
   it('guards editor-only actions outside editor view', async () => {
     const ctx = makeCtx({ activeView: 'canvas' });
     const action = ACTIONS.find((entry) => entry.id === 'open-link-editor');

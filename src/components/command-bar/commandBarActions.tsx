@@ -151,7 +151,7 @@ export const ACTIONS: Action[] = [
   },
   {
     id: 'new-logic',
-    keywords: ['new logic', 'create logic', 'logic diagram', 'logic gate', 'circuit diagram'],
+    keywords: ['new logic', 'create logic', 'logic diagram', 'logic gate', 'digital circuit'],
     label: 'New Logic Diagram',
     icon: <CircuitBoard className="size-4 shrink-0" />,
     onSelect: async (ctx, query) => {
@@ -170,6 +170,31 @@ export const ACTIONS: Action[] = [
         ctx.setActiveView('editor');
       } catch (e) {
         toast.error('Failed to create logic diagram: ' + e);
+      }
+      ctx.close();
+    },
+  },
+  {
+    id: 'new-schematic',
+    keywords: ['new schematic', 'create schematic', 'electronic diagram', 'circuit diagram', 'resistor transistor'],
+    label: 'New Electronic Schematic',
+    icon: <CircuitBoard className="size-4 shrink-0" />,
+    onSelect: async (ctx, query) => {
+      const rawName = query.replace(/^new\s+(?:electronic\s+)?schematic\s*/i, '').trim() || 'Electronic Schematic';
+      const name = rawName.replace(/\.logic$/i, '');
+      if (!ctx.vault) return;
+      try {
+        const client = createVaultClient(ctx.vault);
+        const relativePath = `${name}.logic`;
+        const file = await client.createDocument(relativePath);
+        const created = await client.readDocument(file.relativePath);
+        const content = JSON.stringify(createEmptyLogicDiagram(name, 'schematic'), null, 2);
+        await client.writeDocument(file.relativePath, content, created.version, created.content);
+        await ctx.refreshFileTree();
+        ctx.openTab(file.relativePath, name, 'logic');
+        ctx.setActiveView('editor');
+      } catch (e) {
+        toast.error('Failed to create electronic schematic: ' + e);
       }
       ctx.close();
     },

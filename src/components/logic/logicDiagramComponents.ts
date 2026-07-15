@@ -168,6 +168,7 @@ export function componentDocumentForTests(component: LogicComponentDefinition): 
   return {
     schemaVersion: LOGIC_DIAGRAM_SCHEMA_VERSION,
     kind: 'logic-diagram',
+    diagramMode: 'logic',
     title: component.name,
     nodes: component.nodes.map(cloneNode),
     wires: component.wires.map(cloneWire),

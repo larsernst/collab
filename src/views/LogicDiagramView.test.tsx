@@ -117,6 +117,18 @@ function logicDoc(kinds: string[]) {
   });
 }
 
+function schematicDoc(kinds: string[]) {
+  return JSON.stringify({
+    schemaVersion: 3,
+    kind: 'logic-diagram',
+    diagramMode: 'schematic',
+    title: 'test',
+    nodes: kinds.map((kind, i) => ({ id: `s${i}`, kind, position: { x: i * 144, y: 0 } })),
+    wires: [],
+    viewport: { x: 0, y: 0, zoom: 1 },
+  });
+}
+
 function seedVault() {
   useVaultStore.setState({
     vault: { id: 'v1', path: '/vault', name: 'Vault', isEncrypted: false, lastOpened: Date.now() },
@@ -251,6 +263,21 @@ describe('LogicDiagramView safe reload policy', () => {
     fireEvent.mouseDown(inputNodeSurface, { button: 0, detail: 2 });
 
     await waitFor(() => expect(inputNode.textContent).toContain('1'));
+  });
+
+  it('renders electronic schematics as static symbols', async () => {
+    tauriMocks.readNote.mockResolvedValueOnce({
+      content: schematicDoc(['voltage-source', 'resistor', 'ground']),
+      hash: 'schematic-v1',
+      modifiedAt: 1,
+    });
+
+    render(<LogicDiagramView relativePath={PATH} />);
+
+    expect(await screen.findByText(/3 symbols/)).toBeTruthy();
+    expect(screen.getByText('Voltage source')).toBeTruthy();
+    expect(screen.getAllByText('Resistor').length).toBeGreaterThan(0);
+    expect(screen.queryByText(/unset/)).toBeNull();
   });
 
   it('exports the current diagram SVG and appends it to an open note', async () => {

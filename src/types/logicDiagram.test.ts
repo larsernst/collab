@@ -7,10 +7,11 @@ import {
 } from './logicDiagram';
 
 describe('logic diagram document helpers', () => {
-  it('creates an empty v2 logic diagram document', () => {
+  it('creates an empty v3 logic diagram document', () => {
     expect(createEmptyLogicDiagram('Adder')).toEqual({
-      schemaVersion: 2,
+      schemaVersion: 3,
       kind: 'logic-diagram',
+      diagramMode: 'logic',
       title: 'Adder',
       nodes: [],
       wires: [],
@@ -37,8 +38,9 @@ describe('logic diagram document helpers', () => {
     });
 
     expect(normalized).toMatchObject({
-      schemaVersion: 2,
+      schemaVersion: 3,
       kind: 'logic-diagram',
+      diagramMode: 'logic',
       components: [],
       nodes: [
         { id: 'a', kind: 'input', position: { x: 10, y: 20 }, value: true },
@@ -50,6 +52,21 @@ describe('logic diagram document helpers', () => {
       ],
       viewport: { x: 5, y: 0, zoom: 1.25 },
     });
+  });
+
+  it('preserves schematic mode and infers it for early electronic documents', () => {
+    expect(normalizeLogicDiagramDocument({
+      kind: 'logic-diagram',
+      diagramMode: 'schematic',
+      nodes: [{ id: 'r1', kind: 'resistor', position: { x: 0, y: 0 } }],
+      wires: [],
+    })).toMatchObject({ diagramMode: 'schematic', nodes: [{ kind: 'resistor' }] });
+
+    expect(normalizeLogicDiagramDocument({
+      kind: 'logic-diagram',
+      nodes: [{ id: 'c1', kind: 'capacitor', position: { x: 0, y: 0 } }],
+      wires: [],
+    }).diagramMode).toBe('schematic');
   });
 
   it('parses valid .logic JSON and rejects unsupported shapes', () => {

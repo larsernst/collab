@@ -40,6 +40,7 @@ function doc(title: string, nodes: LogicDiagramNode[], wires: LogicDiagramWire[]
   return {
     schemaVersion: LOGIC_DIAGRAM_SCHEMA_VERSION,
     kind: 'logic-diagram',
+    diagramMode: 'logic',
     title,
     nodes,
     wires,

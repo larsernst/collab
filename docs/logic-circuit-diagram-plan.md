@@ -13,7 +13,7 @@ Add a phased diagramming feature for university-oriented logic-gate overviews fi
 | 2. Boolean interaction | Complete | Add toggleable inputs and live gate evaluation. |
 | 3. Note insertion/export | Complete | Export editable-source-linked graphics into notes. |
 | 4. Diagram polish and reuse | Complete | Add templates, library improvements, and better authoring flow. |
-| 5. Electronic component diagrams | Planned | Add static resistor/transistor/etc. schematic symbols. |
+| 5. Electronic component diagrams | Complete | Add static resistor/transistor/etc. schematic symbols. |
 | 6. Circuit simulation research | Deferred | Decide whether real electronics simulation is worth integrating. |
 
 ## Phase Details
@@ -38,6 +38,7 @@ Groundwork completed:
 - `.logic` imports are validated before document creation.
 - Local vault file allow-lists and encryption handling include `.logic`.
 - Hosted `.logic` support remains a Phase 1 implementation item because hosted document typing currently recognizes note, kanban, and canvas only.
+- The current schema is v3 and adds a persisted `diagramMode` plus static electronic symbol node kinds; older documents normalize to digital logic mode.
 
 ### Phase 1: Static Logic Diagram Editor
 
@@ -151,6 +152,17 @@ Acceptance criteria:
 
 - Users can create clean static electronics overviews for notes.
 - No UI implies real analog simulation unless simulation has actually been implemented.
+
+Implementation notes:
+
+- `.logic` schema v3 adds `diagramMode: "logic" | "schematic"`; existing documents migrate to logic mode, while early electronic documents are inferred as schematic mode.
+- The shared editor shell, document sessions, live JSON collaboration, grouping, labels, wires, zoom/pan, optimistic save, and note-export pipeline are reused by both modes.
+- Schematic mode includes resistor, capacitor, inductor, diode, LED, NPN transistor, switch, ground, and voltage-source symbols with component-specific terminals.
+- Schematic wires are deliberately static and neutral: they do not show digital values, active-state coloring, unresolved-state dashes, or direction arrows.
+- Empty diagrams can switch mode from the document toolbar. The command bar also provides `New Electronic Schematic` for direct creation.
+- The mode selector locks after the first element is added, preventing mixed digital/electronic documents and ambiguous evaluator behavior.
+- SVG note exports render the actual schematic symbols and preserve the same source metadata used to reopen the editable `.logic` document.
+- No analog values or simulation controls are exposed; Phase 6 remains a separate research decision.
 
 ### Phase 6: Circuit Simulation Research
 

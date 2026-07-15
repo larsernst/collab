@@ -5,6 +5,8 @@ import {
   getLogicOutputHandles,
 } from '../components/logic/logicDiagramEvaluator';
 import type { LogicDiagramDocument, LogicDiagramNode, LogicDiagramWire } from '../types/logicDiagram';
+import { isElectronicComponentKind } from '../types/logicDiagram';
+import { getSchematicSymbol, schematicSymbolMarkup } from '../components/logic/schematicSymbols';
 
 const DEFAULT_NODE_WIDTH = 112;
 const DEFAULT_NODE_HEIGHT = 64;
@@ -43,6 +45,10 @@ function nodeSize(node: LogicDiagramNode) {
     };
   }
   if (node.kind === 'component') return { width: 144, height: Math.max(76, (node.component?.definition.ports.length ?? 1) * 24 + 28) };
+  if (isElectronicComponentKind(node.kind)) {
+    const symbol = getSchematicSymbol(node.kind);
+    return { width: symbol.width, height: symbol.height };
+  }
   return { width: DEFAULT_NODE_WIDTH, height: DEFAULT_NODE_HEIGHT };
 }
 
@@ -95,6 +101,17 @@ function renderHandle(bounds: { x: number; y: number; width: number; height: num
 
 function renderNode(node: LogicDiagramNode, outputValue: boolean | null | undefined, inputValues: Record<string, boolean | null | undefined>) {
   const bounds = nodeBounds(node);
+  if (isElectronicComponentKind(node.kind)) {
+    const symbol = getSchematicSymbol(node.kind);
+    const symbolHeight = Math.min(72, bounds.height);
+    const label = logicNodeLabel(node);
+    return [
+      `<g transform="translate(${bounds.x} ${bounds.y}) scale(${bounds.width / 100} ${symbolHeight / 72})">${schematicSymbolMarkup(node.kind, '#334155')}</g>`,
+      `<text x="${bounds.x + bounds.width / 2}" y="${bounds.y + bounds.height - 2}" text-anchor="middle" font-family="Inter, Arial, sans-serif" font-size="10" font-weight="600" fill="#475569">${escapeXml(label)}</text>`,
+      symbol.inputHandles.map((_, index) => renderHandle(bounds, 'input', index, symbol.inputHandles.length, undefined)).join(''),
+      symbol.outputHandles.map((_, index) => renderHandle(bounds, 'output', index, symbol.outputHandles.length, undefined)).join(''),
+    ].join('');
+  }
   const rx = node.kind === 'group' ? 12 : 10;
   const stroke = node.kind === 'group' ? '#94a3b8' : signalColor(outputValue);
   const dash = node.kind === 'group' ? ' stroke-dasharray="8 6"' : '';
@@ -127,14 +144,14 @@ function renderNode(node: LogicDiagramNode, outputValue: boolean | null | undefi
   ].join('');
 }
 
-function renderWire(wire: LogicDiagramWire, nodesById: Map<string, LogicDiagramNode>, value: boolean | null | undefined) {
+function renderWire(wire: LogicDiagramWire, nodesById: Map<string, LogicDiagramNode>, value: boolean | null | undefined, schematic: boolean) {
   const source = handlePoint(nodesById.get(wire.source), 'source', wire.sourceHandle);
   const target = handlePoint(nodesById.get(wire.target), 'target', wire.targetHandle);
   const labelX = (source.x + target.x) / 2;
   const labelY = (source.y + target.y) / 2 - 8;
-  const color = signalColor(value);
+  const color = schematic ? '#334155' : signalColor(value);
   return [
-    `<path d="${wirePath(source, target)}" fill="none" stroke="${color}" stroke-width="3" stroke-linecap="round" marker-end="url(#logic-arrow)"/>`,
+    `<path d="${wirePath(source, target)}" fill="none" stroke="${color}" stroke-width="3" stroke-linecap="round"${schematic ? '' : ' marker-end="url(#logic-arrow)"'}/>`,
     wire.label
       ? `<text x="${labelX}" y="${labelY}" text-anchor="middle" font-family="Inter, Arial, sans-serif" font-size="12" fill="#475569">${escapeXml(wire.label)}</text>`
       : '',
@@ -177,17 +194,20 @@ export function buildLogicDiagramSvg(document: LogicDiagramDocument, sourceRelat
     source: sourceRelativePath,
     title: document.title,
   };
-  const evaluation = evaluateLogicDiagram(document.nodes, document.wires, { components: document.components });
+  const schematic = document.diagramMode === 'schematic';
+  const evaluation = schematic
+    ? { nodeValues: {}, wireValues: {}, warnings: [] }
+    : evaluateLogicDiagram(document.nodes, document.wires, { components: document.components });
   const nodeInputValues = inputValuesByNode(document.wires, evaluation.wireValues);
   const nodesById = new Map(nodes.map((node) => [node.id, node]));
-  const wires = document.wires.map((wire) => renderWire(wire, nodesById, evaluation.wireValues[wire.id])).join('');
+  const wires = document.wires.map((wire) => renderWire(wire, nodesById, evaluation.wireValues[wire.id], schematic)).join('');
   const nodeMarkup = nodes
     .slice()
     .sort((a, b) => (a.kind === 'group' ? -1 : 0) - (b.kind === 'group' ? -1 : 0))
     .map((node) => renderNode(node, evaluation.nodeValues[node.id], nodeInputValues[node.id] ?? {}))
     .join('');
 
-  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="${viewBox}" role="img" aria-label="${escapeXml(document.title ?? 'Logic diagram')}">
+  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="${viewBox}" role="img" aria-label="${escapeXml(document.title ?? (schematic ? 'Electronic schematic' : 'Logic diagram'))}">
 <metadata>${escapeXml(JSON.stringify(metadata))}</metadata>
 <defs><marker id="logic-arrow" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto" markerUnits="strokeWidth"><path d="M0,0 L0,6 L9,3 z" fill="#334155"/></marker></defs>
 <rect x="${bounds.minX - PADDING}" y="${bounds.minY - PADDING}" width="${Math.max(320, bounds.maxX - bounds.minX + PADDING * 2)}" height="${Math.max(180, bounds.maxY - bounds.minY + PADDING * 2)}" fill="#f8fafc"/>

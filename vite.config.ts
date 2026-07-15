@@ -23,6 +23,10 @@ export default defineConfig(async () => ({
   // of the dev server feeling "mind-numbingly slow". Listing them here keeps the
   // cost to one cold prebundle that is then cached under node_modules/.vite.
   optimizeDeps: {
+    // Every dependency that needs pre-bundling is listed below. Letting Vite
+    // discover the same large graph again can exhaust Node's heap on a cold
+    // dev start before the server answers its first request.
+    noDiscovery: true,
     exclude: [
       "tesseract.js",
       "tesseract.js-core",
@@ -43,12 +47,21 @@ export default defineConfig(async () => ({
       "katex",
       "d3",
       "@xyflow/react",
+      "date-fns",
       "react-day-picker",
       "radix-ui",
       "cmdk",
       "sonner",
       "dompurify",
       "markdown-it",
+      "markdown-it-anchor",
+      "markdown-it-container",
+      "markdown-it-deflist",
+      "markdown-it-footnote",
+      "markdown-it-mark",
+      "markdown-it-sub",
+      "markdown-it-sup",
+      "markdown-it-task-lists",
       "markdown-it-texmath",
       "@codemirror/autocomplete",
       "@codemirror/commands",
