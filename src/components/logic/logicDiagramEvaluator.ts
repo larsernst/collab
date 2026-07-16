@@ -20,6 +20,7 @@ export interface LogicEvaluationWarning {
 
 export interface LogicEvaluationResult {
   nodeValues: Record<string, LogicSignal>;
+  nodeOutputValues: Record<string, Record<string, LogicSignal>>;
   wireValues: Record<string, LogicSignal>;
   warnings: LogicEvaluationWarning[];
 }
@@ -296,5 +297,5 @@ export function evaluateLogicDiagram(
     }
   }
 
-  return { nodeValues, wireValues, warnings };
+  return { nodeValues, nodeOutputValues: nodeOutputs, wireValues, warnings };
 }

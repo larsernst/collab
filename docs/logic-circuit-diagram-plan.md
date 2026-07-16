@@ -141,6 +141,9 @@ Implementation notes:
 - A "Logic Diagram" slash command is added to `slashCommands.ts` for discoverability. The command-bar `new-logic` entry already existed.
 - Truth-value display kept as-is (color wash, wire color, `0`/`1`/`unset` text) — no new badge component.
 - Reusable logic components are stored in local vaults under `.collab/templates/logic-components/`. Existing templates still append node collections; components are placed as executable single nodes with snapshot or linked behavior.
+- Saved components can be opened from the component picker in an isolated full-editor workspace, updated in place without changing their stable ID, or cancelled back to the host diagram without writing component internals into that file.
+- Hosted component libraries are cached in the encrypted offline replica. Offline creates, edits, and deletes update the local library immediately and queue component-specific mutations for replay after reconnect.
+- Custom component nodes share one N-to-M port geometry model across the editor and SVG export: their height grows with the larger port count, handles and labels remain centered at fixed spacing, and active-state radial fades originate independently at every active input and output port.
 
 ### Phase 5: Electronic Component Diagrams
 

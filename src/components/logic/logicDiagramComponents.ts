@@ -164,7 +164,7 @@ export function instantiateLogicComponentNode(
   };
 }
 
-export function componentDocumentForTests(component: LogicComponentDefinition): LogicDiagramDocument {
+export function logicDocumentFromComponent(component: LogicComponentDefinition): LogicDiagramDocument {
   return {
     schemaVersion: LOGIC_DIAGRAM_SCHEMA_VERSION,
     kind: 'logic-diagram',

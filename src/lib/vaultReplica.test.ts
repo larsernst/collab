@@ -38,6 +38,8 @@ vi.mock('./tauri', () => ({
     replicaCacheAsset: vi.fn().mockResolvedValue(undefined),
     replicaCachedContentStatus: vi.fn(),
     replicaReadCachedAsset: vi.fn(),
+    replicaReadLogicComponents: vi.fn().mockResolvedValue([]),
+    replicaWriteLogicComponents: vi.fn().mockResolvedValue(undefined),
     replicaCleanup: vi.fn().mockResolvedValue({ removedFiles: 2, freedBytes: 10, remainingBytes: 5 }),
   },
 }));
@@ -556,6 +558,77 @@ describe('vaultReplica', () => {
       'https://collab.example.test',
       'hosted-vault',
       'op-upload',
+    );
+  });
+
+  it('replays offline logic component saves and deletes and refreshes the cached library', async () => {
+    const component = {
+      id: 'component-1',
+      name: 'Half adder',
+      version: 2,
+      createdAt: 1,
+      updatedAt: 2,
+      ports: [],
+      nodes: [],
+      wires: [],
+    };
+    vi.mocked(tauriCommands.replicaListPendingOperations).mockResolvedValue([
+      {
+        id: 'op-component-save',
+        kind: 'logicComponentSave',
+        fileId: null,
+        relativePath: null,
+        payload: { component },
+        baseManifestSequence: 8,
+        createdAt: '2026-07-16T08:00:00Z',
+        status: 'pending',
+      },
+      {
+        id: 'op-component-delete',
+        kind: 'logicComponentDelete',
+        fileId: null,
+        relativePath: null,
+        payload: { componentId: 'component-old' },
+        baseManifestSequence: 8,
+        createdAt: '2026-07-16T08:00:01Z',
+        status: 'pending',
+      },
+    ]);
+    vi.mocked(tauriCommands.replicaReadLogicComponents).mockResolvedValue([]);
+    vi.mocked(tauriCommands.hostedVaultRequest)
+      .mockResolvedValueOnce({ ...component, version: 3 })
+      .mockResolvedValueOnce(undefined)
+      .mockResolvedValueOnce({ vaultId: 'hosted-vault', sequence: 9, files: [] });
+
+    await replayPendingOperations(hostedVault);
+
+    expect(tauriCommands.hostedVaultRequest).toHaveBeenNthCalledWith(
+      1,
+      hostedVault.serverUrl,
+      'POST',
+      '/api/v1/vaults/hosted-vault/logic-components',
+      component,
+    );
+    expect(tauriCommands.hostedVaultRequest).toHaveBeenNthCalledWith(
+      2,
+      hostedVault.serverUrl,
+      'DELETE',
+      '/api/v1/vaults/hosted-vault/logic-components/component-old',
+    );
+    expect(tauriCommands.replicaWriteLogicComponents).toHaveBeenCalledWith(
+      hostedVault.serverUrl,
+      hostedVault.hostedVaultId,
+      [{ ...component, version: 3 }],
+    );
+    expect(tauriCommands.replicaRemoveOperation).toHaveBeenCalledWith(
+      hostedVault.serverUrl,
+      hostedVault.hostedVaultId,
+      'op-component-save',
+    );
+    expect(tauriCommands.replicaRemoveOperation).toHaveBeenCalledWith(
+      hostedVault.serverUrl,
+      hostedVault.hostedVaultId,
+      'op-component-delete',
     );
   });
 

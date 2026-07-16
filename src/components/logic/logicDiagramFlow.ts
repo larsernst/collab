@@ -16,6 +16,7 @@ export interface LogicFlowNodeData extends Record<string, unknown> {
   clock?: LogicDiagramNode['clock'];
   evaluatedValue?: boolean;
   inputSignals?: Record<string, boolean | undefined>;
+  outputSignals?: Record<string, boolean | undefined>;
   component?: LogicComponentInstance;
 }
 
@@ -25,6 +26,33 @@ export interface LogicFlowEdgeData extends Record<string, unknown> {
 
 export type LogicFlowNode = Node<LogicFlowNodeData, 'logicGate'>;
 export type LogicFlowEdge = Edge<LogicFlowEdgeData, 'logicWire'>;
+
+export const LOGIC_COMPONENT_WIDTH = 176;
+export const LOGIC_COMPONENT_MIN_HEIGHT = 80;
+export const LOGIC_COMPONENT_PORT_SPACING = 24;
+
+export function logicComponentDimensions(component?: LogicComponentInstance) {
+  const inputCount = component?.definition.ports.filter((port) => port.direction === 'input').length ?? 0;
+  const outputCount = component?.definition.ports.filter((port) => port.direction === 'output').length ?? 0;
+  const rows = Math.max(1, inputCount, outputCount);
+  return {
+    width: LOGIC_COMPONENT_WIDTH,
+    height: Math.max(LOGIC_COMPONENT_MIN_HEIGHT, 48 + (rows - 1) * LOGIC_COMPONENT_PORT_SPACING),
+  };
+}
+
+export function logicHandleYOffset(
+  kind: LogicDiagramNode['kind'],
+  count: number,
+  index: number,
+  height: number,
+) {
+  if (count <= 1) return height / 2;
+  if (kind === 'component') {
+    return height / 2 + (index - (count - 1) / 2) * LOGIC_COMPONENT_PORT_SPACING;
+  }
+  return height * ((index + 1) / (count + 1));
+}
 
 export function logicNodeLabel(node: Pick<LogicDiagramNode, 'kind' | 'label'>) {
   if (node.label?.trim()) return node.label.trim();

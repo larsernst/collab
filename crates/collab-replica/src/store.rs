@@ -15,6 +15,7 @@ use collab_core::crypto;
 use collab_protocol::HostedVaultManifest;
 use serde::de::DeserializeOwned;
 use serde::Serialize;
+use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -28,6 +29,7 @@ const INTEGRITY_FILE: &str = "integrity.json";
 const DOCUMENTS_DIR: &str = "documents";
 const ASSETS_DIR: &str = "assets";
 const CRDT_DIR: &str = "crdt";
+const LOGIC_COMPONENTS_FILE: &str = "logic-components.json";
 
 /// A filesystem-safe key derived from a server URL. Trailing slashes are
 /// trimmed so the same server resolves to a single replica namespace.
@@ -359,6 +361,31 @@ impl ReplicaStore {
             .filter(|tombstone| tombstone.file_id != file_id)
             .collect::<Vec<_>>();
         self.write_json(TOMBSTONES_FILE, &tombstones)
+    }
+
+    // ---- reusable logic components ------------------------------------
+
+    pub fn write_logic_components(&self, components: &[Value]) -> Result<(), String> {
+        let plain = serde_json::to_vec_pretty(components).map_err(|e| e.to_string())?;
+        let bytes = self.encrypt_persisted(&plain)?;
+        self.write_atomic(LOGIC_COMPONENTS_FILE, &bytes)
+    }
+
+    pub fn read_logic_components(&self) -> Result<Vec<Value>, String> {
+        let path = self.root.join(LOGIC_COMPONENTS_FILE);
+        let bytes = match std::fs::read(path) {
+            Ok(bytes) => bytes,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(err) => return Err(err.to_string()),
+        };
+        let plain = match self.decrypt_persisted(&bytes) {
+            Ok(plain) => plain,
+            Err(_) => {
+                self.quarantine_unreadable(LOGIC_COMPONENTS_FILE);
+                return Ok(Vec::new());
+            }
+        };
+        serde_json::from_slice(&plain).map_err(|e| e.to_string())
     }
 
     // ---- content cache --------------------------------------------------
@@ -1043,6 +1070,35 @@ mod tests {
         );
 
         assert!(store.cache_document("../escape", "x").is_err());
+    }
+
+    #[test]
+    fn logic_component_library_round_trips_through_encrypted_replica_storage() {
+        let temp = TempDir::new().unwrap();
+        let store = ReplicaStore::open_or_create(
+            temp.path(),
+            "https://example.test",
+            "vault-1",
+            "Vault",
+            None,
+            &[],
+        )
+        .unwrap()
+        .with_encryption_key([7; 32]);
+        let components = vec![json!({
+            "id": "half-adder",
+            "name": "Half Adder",
+            "version": 1,
+            "ports": [],
+            "nodes": [],
+            "wires": []
+        })];
+
+        store.write_logic_components(&components).unwrap();
+
+        assert_eq!(store.read_logic_components().unwrap(), components);
+        let bytes = std::fs::read(store.root().join(LOGIC_COMPONENTS_FILE)).unwrap();
+        assert!(crypto::is_encrypted_data(&bytes));
     }
 
     #[test]

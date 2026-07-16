@@ -9,6 +9,7 @@
 
 import { tauriCommands } from './tauri';
 import { vaultCan, type HostedVaultMeta } from '../types/vault';
+import type { LogicComponentDefinition } from '../types/logicDiagram';
 
 /**
  * Lightweight change notification for the replica's local state. The sync UI
@@ -78,7 +79,9 @@ export type PendingOpKind =
   | 'trash'
   | 'restore'
   | 'delete'
-  | 'assetUpload';
+  | 'assetUpload'
+  | 'logicComponentSave'
+  | 'logicComponentDelete';
 
 export type PendingOpStatus = 'pending' | 'inflight' | 'failed';
 
@@ -213,6 +216,14 @@ interface PendingStructuralPayload {
   targetFileId: string;
   parentId?: string | null;
   [key: string]: unknown;
+}
+
+interface PendingLogicComponentSavePayload {
+  component: LogicComponentDefinition;
+}
+
+interface PendingLogicComponentDeletePayload {
+  componentId: string;
 }
 
 export function initialSyncState(manifestSequence: number): ReplicaSyncState {
@@ -399,6 +410,18 @@ export async function enqueuePendingOperation(
   return operation;
 }
 
+export async function readCachedLogicComponents(vault: HostedVaultMeta): Promise<LogicComponentDefinition[]> {
+  return tauriCommands.replicaReadLogicComponents(vault.serverUrl, vault.hostedVaultId);
+}
+
+export async function writeCachedLogicComponents(
+  vault: HostedVaultMeta,
+  components: LogicComponentDefinition[],
+): Promise<void> {
+  await tauriCommands.replicaWriteLogicComponents(vault.serverUrl, vault.hostedVaultId, components);
+  emitReplicaMutated({ kind: 'content' });
+}
+
 export async function listPendingOperationRecoveries(
   vault: HostedVaultMeta,
 ): Promise<PendingOperationRecovery[]> {
@@ -518,6 +541,26 @@ export async function replayPendingOperations(vault: HostedVaultMeta): Promise<v
             contentBase64,
             expectedHash: payload.expectedHash,
           },
+        );
+      } else if (operation.kind === 'logicComponentSave') {
+        const payload = operation.payload as PendingLogicComponentSavePayload;
+        const saved = await tauriCommands.hostedVaultRequest<LogicComponentDefinition>(
+          vault.serverUrl,
+          'POST',
+          `/api/v1/vaults/${vault.hostedVaultId}/logic-components`,
+          payload.component,
+        );
+        const cached = await readCachedLogicComponents(vault);
+        await writeCachedLogicComponents(vault, [
+          ...cached.filter((component) => component.id !== saved.id && component.name.toLowerCase() !== saved.name.toLowerCase()),
+          saved,
+        ].sort((a, b) => a.name.localeCompare(b.name)));
+      } else if (operation.kind === 'logicComponentDelete') {
+        const payload = operation.payload as PendingLogicComponentDeletePayload;
+        await tauriCommands.hostedVaultRequest(
+          vault.serverUrl,
+          'DELETE',
+          `/api/v1/vaults/${vault.hostedVaultId}/logic-components/${encodeURIComponent(payload.componentId)}`,
         );
       } else {
         const payload = replaceMappedIds(operation.payload as PendingStructuralPayload, idMap);
@@ -689,6 +732,17 @@ export async function makeHostedVaultAvailableOffline(
   if (!manifest) throw new Error('Replica manifest was not available after seeding.');
 
   const report = await cacheActiveFilesForOffline(vault, manifest.files, onProgress);
+  try {
+    const components = await tauriCommands.hostedVaultRequest<LogicComponentDefinition[]>(
+      vault.serverUrl,
+      'GET',
+      `/api/v1/vaults/${vault.hostedVaultId}/logic-components`,
+    );
+    if (Array.isArray(components)) await writeCachedLogicComponents(vault, components);
+  } catch {
+    // Component caching is best-effort; document and asset availability should
+    // still complete when this optional library endpoint is unavailable.
+  }
   await markOfflineAvailable(vault, manifest.sequence);
   await cleanupReplicaCache(vault);
   emitReplicaMutated({ kind: 'content' });

@@ -459,6 +459,10 @@ export const tauriCommands = {
     invoke<Tombstone[]>('replica_list_tombstones', { serverUrl, vaultId }),
   replicaRemoveTombstone: (serverUrl: string, vaultId: string, fileId: string) =>
     invoke<void>('replica_remove_tombstone', { serverUrl, vaultId, fileId }),
+  replicaWriteLogicComponents: (serverUrl: string, vaultId: string, components: LogicComponentTemplate[]) =>
+    invoke<void>('replica_write_logic_components', { serverUrl, vaultId, components }),
+  replicaReadLogicComponents: (serverUrl: string, vaultId: string) =>
+    invoke<LogicComponentTemplate[]>('replica_read_logic_components', { serverUrl, vaultId }),
   replicaCacheDocument: (serverUrl: string, vaultId: string, fileId: string, content: string) =>
     invoke<void>('replica_cache_document', { serverUrl, vaultId, fileId, content }),
   replicaReadCachedDocument: (serverUrl: string, vaultId: string, fileId: string) =>

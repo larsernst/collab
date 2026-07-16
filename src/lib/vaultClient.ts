@@ -22,8 +22,10 @@ import {
   enqueuePendingOperation,
   emitReplicaMutated,
   isLikelyConnectivityError,
+  readCachedLogicComponents,
   readCachedReplicaManifest,
   syncReplicaManifestDelta,
+  writeCachedLogicComponents,
   writeOptimisticReplicaManifest,
   type PendingOpKind,
   type ReplicaManifest,
@@ -470,10 +472,70 @@ export class HostedVaultClient implements VaultClient {
           this.uploadDataUrl(dataUrl, suggestedName, targetFolder),
       },
       logicComponents: {
-        list: () => this.request<LogicComponentDefinition[]>('GET', '/logic-components'),
-        save: (component) => this.request<LogicComponentDefinition>('POST', '/logic-components', component),
-        delete: (componentId) =>
-          this.request<void>('DELETE', `/logic-components/${encodeURIComponent(componentId)}`).then(() => {}),
+        list: async () => {
+          try {
+            const components = await this.request<LogicComponentDefinition[]>('GET', '/logic-components');
+            await writeCachedLogicComponents(this.vault, components).catch(() => {});
+            return components;
+          } catch (error) {
+            if (!isLikelyConnectivityError(error)) throw error;
+            return readCachedLogicComponents(this.vault);
+          }
+        },
+        save: async (component) => {
+          try {
+            const saved = await this.request<LogicComponentDefinition>('POST', '/logic-components', component);
+            const cached = await readCachedLogicComponents(this.vault).catch(() => []);
+            await writeCachedLogicComponents(this.vault, [
+              ...cached.filter((candidate) => candidate.id !== saved.id && candidate.name.toLowerCase() !== saved.name.toLowerCase()),
+              saved,
+            ].sort((a, b) => a.name.localeCompare(b.name))).catch(() => {});
+            return saved;
+          } catch (error) {
+            if (!isLikelyConnectivityError(error)) throw error;
+            const cached = await readCachedLogicComponents(this.vault);
+            const existing = cached.find((candidate) => candidate.id === component.id || candidate.name.toLowerCase() === component.name.toLowerCase());
+            const saved = {
+              ...component,
+              id: existing?.id ?? component.id,
+              version: existing ? Math.max(existing.version + 1, component.version) : Math.max(1, component.version),
+              createdAt: existing?.createdAt ?? component.createdAt,
+              updatedAt: Date.now(),
+            };
+            await writeCachedLogicComponents(this.vault, [
+              ...cached.filter((candidate) => candidate.id !== saved.id && candidate.name.toLowerCase() !== saved.name.toLowerCase()),
+              saved,
+            ].sort((a, b) => a.name.localeCompare(b.name)));
+            const manifest = await readCachedReplicaManifest(this.vault);
+            await enqueuePendingOperation(this.vault, {
+              kind: 'logicComponentSave',
+              fileId: null,
+              relativePath: null,
+              payload: { component: saved },
+              baseManifestSequence: manifest?.sequence ?? 0,
+            });
+            return saved;
+          }
+        },
+        delete: async (componentId) => {
+          try {
+            await this.request<void>('DELETE', `/logic-components/${encodeURIComponent(componentId)}`);
+            const cached = await readCachedLogicComponents(this.vault).catch(() => []);
+            await writeCachedLogicComponents(this.vault, cached.filter((component) => component.id !== componentId)).catch(() => {});
+          } catch (error) {
+            if (!isLikelyConnectivityError(error)) throw error;
+            const cached = await readCachedLogicComponents(this.vault);
+            await writeCachedLogicComponents(this.vault, cached.filter((component) => component.id !== componentId));
+            const manifest = await readCachedReplicaManifest(this.vault);
+            await enqueuePendingOperation(this.vault, {
+              kind: 'logicComponentDelete',
+              fileId: null,
+              relativePath: null,
+              payload: { componentId },
+              baseManifestSequence: manifest?.sequence ?? 0,
+            });
+          }
+        },
       },
       members: {
         list: () => this.request<HostedVaultMember[]>('GET', '/members'),

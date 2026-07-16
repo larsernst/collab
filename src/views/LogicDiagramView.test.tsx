@@ -19,6 +19,8 @@ const tauriMocks = vi.hoisted(() => ({
   listLogicComponents: vi.fn(),
   saveLogicComponent: vi.fn(),
   deleteLogicComponent: vi.fn(),
+  replicaReadLogicComponents: vi.fn(),
+  replicaWriteLogicComponents: vi.fn(),
 }));
 
 const liveJsonMocks = vi.hoisted(() => ({
@@ -45,6 +47,8 @@ vi.mock('../lib/tauri', () => ({
     listLogicComponents: tauriMocks.listLogicComponents,
     saveLogicComponent: tauriMocks.saveLogicComponent,
     deleteLogicComponent: tauriMocks.deleteLogicComponent,
+    replicaReadLogicComponents: tauriMocks.replicaReadLogicComponents,
+    replicaWriteLogicComponents: tauriMocks.replicaWriteLogicComponents,
   },
 }));
 
@@ -53,9 +57,11 @@ vi.mock('../lib/vaultReplica', () => ({
   enqueuePendingOperation: vi.fn(),
   isLikelyConnectivityError: vi.fn(() => false),
   onReplicaMutated: vi.fn(() => () => {}),
+  readCachedLogicComponents: vi.fn(async () => []),
   replicaMutationAffectsPath: vi.fn(() => true),
   readCachedReplicaManifest: vi.fn(async () => null),
   syncReplicaManifestDelta: vi.fn(async () => null),
+  writeCachedLogicComponents: vi.fn(async () => {}),
   writeOptimisticReplicaManifest: vi.fn(),
 }));
 
@@ -156,6 +162,8 @@ describe('LogicDiagramView safe reload policy', () => {
     tauriMocks.listLogicComponents.mockResolvedValue([]);
     tauriMocks.saveLogicComponent.mockImplementation(async (_vaultPath, component) => component);
     tauriMocks.deleteLogicComponent.mockResolvedValue(undefined);
+    tauriMocks.replicaReadLogicComponents.mockResolvedValue([]);
+    tauriMocks.replicaWriteLogicComponents.mockResolvedValue(undefined);
   });
 
   afterEach(() => {
@@ -433,6 +441,55 @@ describe('LogicDiagramView safe reload policy', () => {
     fireEvent.click(await screen.findByRole('button', { name: /Reusable Inverter/i }));
 
     await waitFor(() => expect(screen.getByText(/1 components/)).toBeTruthy());
+  });
+
+  it('opens and updates an existing saved component without replacing its identity', async () => {
+    const component = {
+      id: 'component-1',
+      name: 'Reusable Inverter',
+      version: 4,
+      createdAt: 1,
+      updatedAt: 4,
+      ports: [
+        { id: 'in', direction: 'input' as const, label: 'In', sourceNodeId: 'in' },
+        { id: 'out', direction: 'output' as const, label: 'Out', sourceNodeId: 'out' },
+      ],
+      nodes: [
+        { id: 'in', kind: 'input' as const, position: { x: 0, y: 0 } },
+        { id: 'not', kind: 'not' as const, position: { x: 120, y: 0 } },
+        { id: 'out', kind: 'output' as const, position: { x: 240, y: 0 } },
+      ],
+      wires: [
+        { id: 'in-not', source: 'in', target: 'not', sourceHandle: 'out', targetHandle: 'in' },
+        { id: 'not-out', source: 'not', target: 'out', sourceHandle: 'out', targetHandle: 'in' },
+      ],
+    };
+    tauriMocks.readNote.mockResolvedValueOnce({ content: logicDoc([]), hash: 'logic-v1', modifiedAt: 1 });
+    tauriMocks.listLogicComponents.mockResolvedValue([component]);
+    tauriMocks.saveLogicComponent.mockImplementation(async (_vaultPath, definition) => ({
+      ...definition,
+      version: definition.version + 1,
+    }));
+
+    render(<LogicDiagramView relativePath={PATH} />);
+    expect(await screen.findByText(/0 gates/)).toBeTruthy();
+
+    fireEvent.click(screen.getByRole('button', { name: /components/i }));
+    fireEvent.click(await screen.findByRole('button', { name: /edit saved component/i }));
+    expect(await screen.findByText(/reusable component editor/i)).toBeTruthy();
+
+    fireEvent.click(screen.getByRole('button', { name: /^add$/i }));
+    fireEvent.click(screen.getByRole('button', { name: /update component/i }));
+
+    await waitFor(() => expect(tauriMocks.saveLogicComponent).toHaveBeenCalledWith(
+      '/vault',
+      expect.objectContaining({
+        id: 'component-1',
+        name: 'Reusable Inverter',
+        version: 4,
+      }),
+    ));
+    expect(await screen.findByText(/0 gates/)).toBeTruthy();
   });
 
   it('loads and inserts hosted vault components through the server library', async () => {

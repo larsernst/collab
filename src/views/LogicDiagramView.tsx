@@ -49,6 +49,8 @@ import {
 } from '../components/layout/DocumentTopBar';
 import {
   fromFlowGraph,
+  logicComponentDimensions,
+  logicHandleYOffset,
   logicNodeLabel,
   toFlowGraph,
   type LogicFlowEdge,
@@ -66,6 +68,7 @@ import {
 import {
   captureLogicComponent,
   instantiateLogicComponentNode,
+  logicDocumentFromComponent,
 } from '../components/logic/logicDiagramComponents';
 import {
   getLogicDiagramTemplates,
@@ -184,14 +187,14 @@ function snapPosition(position: { x: number; y: number }, grid = LOGIC_GRID) {
 
 function nodeBaseWidth(node: LogicFlowNode) {
   if (node.data.kind === 'group') return typeof node.style?.width === 'number' ? node.style.width : 240;
-  if (node.data.kind === 'component') return 144;
+  if (node.data.kind === 'component') return logicComponentDimensions(node.data.component).width;
   if (isElectronicComponentKind(node.data.kind)) return getSchematicSymbol(node.data.kind).width;
   return DEFAULT_GATE_WIDTH;
 }
 
 function nodeBaseHeight(node: LogicFlowNode) {
   if (node.data.kind === 'group') return typeof node.style?.height === 'number' ? node.style.height : 160;
-  if (node.data.kind === 'component') return 80;
+  if (node.data.kind === 'component') return logicComponentDimensions(node.data.component).height;
   if (isElectronicComponentKind(node.data.kind)) return getSchematicSymbol(node.data.kind).height;
   return DEFAULT_GATE_HEIGHT;
 }
@@ -234,10 +237,9 @@ function getHandleAnchor(
   const index = Math.max(0, handles.indexOf(handleId));
   const width = nodeBaseWidth(node);
   const height = nodeBaseHeight(node);
-  const yRatio = handles.length <= 1 ? 0.5 : (0.34 + index * 0.32);
   return {
     x: absolute.x + (type === 'source' ? width : 0),
-    y: absolute.y + height * yRatio,
+    y: absolute.y + logicHandleYOffset(node.data.kind, handles.length, index, height),
   };
 }
 
@@ -352,31 +354,23 @@ function liveLogicStatePreservesCanonicalEntities(
 
 function logicNodeActiveOverlay(kind: LogicNodeKind, data: LogicFlowNode['data']): CSSProperties | undefined {
   if (kind === 'group') return undefined;
-  if (data.evaluatedValue === true || ((kind === 'input' || kind === 'clock') && data.value === true)) {
-    return {
-      background: LOGIC_NODE_ACTIVE_WASH,
-    };
-  }
-
   const inputHandles = getLogicInputHandles(kind, data.component);
-  const firstInputOn = data.inputSignals?.['in-a'] === true || data.inputSignals?.in === true;
-  const secondInputOn = data.inputSignals?.['in-b'] === true;
-  if ((firstInputOn && secondInputOn) || (inputHandles.length === 1 && firstInputOn)) {
-    return {
-      background: `linear-gradient(90deg, ${LOGIC_NODE_ACTIVE_WASH}, transparent 72%)`,
-    };
-  }
-  if (firstInputOn) {
-    return {
-      background: `linear-gradient(135deg, ${LOGIC_NODE_ACTIVE_WASH}, transparent 70%)`,
-    };
-  }
-  if (secondInputOn) {
-    return {
-      background: `linear-gradient(45deg, ${LOGIC_NODE_ACTIVE_WASH}, transparent 70%)`,
-    };
-  }
-  return undefined;
+  const outputHandles = getLogicOutputHandles(kind, data.component);
+  const height = kind === 'component' ? logicComponentDimensions(data.component).height : DEFAULT_GATE_HEIGHT;
+  const gradients: string[] = [];
+  inputHandles.forEach((handle, index) => {
+    if (data.inputSignals?.[handle] !== true) return;
+    const y = logicHandleYOffset(kind, inputHandles.length, index, height) / height * 100;
+    gradients.push(`radial-gradient(circle at 0% ${y}%, ${LOGIC_NODE_ACTIVE_WASH} 0%, transparent 44%)`);
+  });
+  outputHandles.forEach((handle, index) => {
+    const active = data.outputSignals?.[handle] === true
+      || (outputHandles.length === 1 && data.evaluatedValue === true);
+    if (!active) return;
+    const y = logicHandleYOffset(kind, outputHandles.length, index, height) / height * 100;
+    gradients.push(`radial-gradient(circle at 100% ${y}%, ${LOGIC_NODE_ACTIVE_WASH} 0%, transparent 44%)`);
+  });
+  return gradients.length > 0 ? { background: gradients.join(', ') } : undefined;
 }
 
 function SharpLogicNode({
@@ -466,7 +460,7 @@ function SharpLogicNode({
             className="absolute z-20 cursor-crosshair rounded-full border border-border bg-background"
             style={{
               left: -5 * zoom,
-              top: (inputHandles.length === 1 ? 0.5 : 0.34 + index * 0.32) * height,
+              top: logicHandleYOffset(kind, inputHandles.length, index, nodeBaseHeight(node)) * zoom,
               width: 10 * zoom,
               height: 10 * zoom,
               transform: 'translateY(-50%)',
@@ -497,7 +491,7 @@ function SharpLogicNode({
             className="absolute z-20 cursor-crosshair rounded-full border border-border bg-background"
             style={{
               right: -5 * zoom,
-              top: (outputHandles.length === 1 ? 0.5 : 0.34 + index * 0.32) * height,
+              top: logicHandleYOffset(kind, outputHandles.length, index, nodeBaseHeight(node)) * zoom,
               width: 10 * zoom,
               height: 10 * zoom,
               transform: 'translateY(-50%)',
@@ -558,26 +552,17 @@ function SharpLogicNode({
           className="absolute z-20 cursor-crosshair rounded-full border border-border bg-background"
           style={{
             left: -5 * zoom,
-            top: (inputHandles.length === 1 ? 0.5 : 0.34 + index * 0.32) * height,
+            top: logicHandleYOffset(kind, inputHandles.length, index, nodeBaseHeight(node)) * zoom,
             width: 10 * zoom,
             height: 10 * zoom,
             transform: 'translateY(-50%)',
           }}
         />
       ))}
-      <div className="relative z-10 min-w-0">
-        <div className="font-semibold uppercase tracking-normal text-foreground" style={{ fontSize: 11 * zoom, lineHeight: 1.2 }}>
+      <div className={cn('relative z-10 min-w-0', kind === 'component' && 'absolute inset-x-3 top-2')}>
+        <div className="truncate font-semibold uppercase tracking-normal text-foreground" style={{ fontSize: 11 * zoom, lineHeight: 1.2 }}>
           {logicNodeLabel({ kind, label: data.label })}
         </div>
-        {kind === 'component' && (
-          <div
-            className="grid grid-cols-2 text-muted-foreground"
-            style={{ marginTop: 4 * zoom, columnGap: 12 * zoom, fontSize: 9 * zoom, lineHeight: 1.2 }}
-          >
-            <span className="truncate text-left">{componentInputs.map((port) => port.label).join(', ')}</span>
-            <span className="truncate text-right">{componentOutputs.map((port) => port.label).join(', ')}</span>
-          </div>
-        )}
         {(kind === 'input' || kind === 'clock' || kind === 'output') && (
           <div className="text-muted-foreground" style={{ marginTop: 4 * zoom, fontSize: 10 * zoom, lineHeight: 1.2 }}>
             {typeof displayValue === 'boolean' ? (displayValue ? '1' : '0') : 'unset'}
@@ -585,6 +570,34 @@ function SharpLogicNode({
           </div>
         )}
       </div>
+      {kind === 'component' && componentInputs.map((port, index) => (
+        <span
+          key={port.id}
+          className="pointer-events-none absolute z-10 max-w-[42%] truncate text-left text-muted-foreground"
+          style={{
+            left: 10 * zoom,
+            top: logicHandleYOffset(kind, componentInputs.length, index, nodeBaseHeight(node)) * zoom,
+            transform: 'translateY(-50%)',
+            fontSize: 9 * zoom,
+          }}
+        >
+          {port.label}
+        </span>
+      ))}
+      {kind === 'component' && componentOutputs.map((port, index) => (
+        <span
+          key={port.id}
+          className="pointer-events-none absolute z-10 max-w-[42%] truncate text-right text-muted-foreground"
+          style={{
+            right: 10 * zoom,
+            top: logicHandleYOffset(kind, componentOutputs.length, index, nodeBaseHeight(node)) * zoom,
+            transform: 'translateY(-50%)',
+            fontSize: 9 * zoom,
+          }}
+        >
+          {port.label}
+        </span>
+      ))}
       {isInversion && (
         <span
           className="absolute top-1/2 z-20 -translate-y-1/2 rounded-full border border-border bg-background"
@@ -602,7 +615,7 @@ function SharpLogicNode({
           className="absolute z-20 cursor-crosshair rounded-full border border-border bg-background"
           style={{
             right: -5 * zoom,
-            top: (outputHandles.length === 1 ? 0.5 : 0.34 + index * 0.32) * height,
+            top: logicHandleYOffset(kind, outputHandles.length, index, nodeBaseHeight(node)) * zoom,
             width: 10 * zoom,
             height: 10 * zoom,
             transform: 'translateY(-50%)',
@@ -748,6 +761,12 @@ function LogicDiagramEditor({ relativePath }: Props) {
   const [componentName, setComponentName] = useState('');
   const [componentDescription, setComponentDescription] = useState('');
   const [componentInsertMode, setComponentInsertMode] = useState<LogicComponentInstanceMode>('snapshot');
+  const [componentEditSession, setComponentEditSession] = useState<{
+    component: LogicComponentDefinition;
+    original: LogicDiagramDocument;
+  } | null>(null);
+  const [componentEditDirty, setComponentEditDirty] = useState(false);
+  const componentEditingRef = useRef<LogicComponentDefinition | null>(null);
   const [truthTableOpen, setTruthTableOpen] = useState(false);
   const [truthTableScope, setTruthTableScope] = useState('document');
   const [clockSettingsNodeId, setClockSettingsNodeId] = useState<string | null>(null);
@@ -851,7 +870,7 @@ function LogicDiagramEditor({ relativePath }: Props) {
   );
   const evaluation = useMemo(() => {
     if (diagram.diagramMode === 'schematic') {
-      return { nodeValues: {}, wireValues: {}, warnings: [] };
+      return { nodeValues: {}, nodeOutputValues: {}, wireValues: {}, warnings: [] };
     }
     const graph = fromFlowGraph(diagram, nodes, edges, diagram.viewport);
     return evaluateLogicDiagram(graph.nodes, graph.wires, {
@@ -906,8 +925,9 @@ function LogicDiagramEditor({ relativePath }: Props) {
       ...node.data,
       evaluatedValue: evaluation.nodeValues[node.id],
       inputSignals: inputSignalsByNode.get(node.id) ?? {},
+      outputSignals: evaluation.nodeOutputValues[node.id] ?? {},
     },
-  })), [evaluation.nodeValues, inputSignalsByNode, nodes]);
+  })), [evaluation.nodeOutputValues, evaluation.nodeValues, inputSignalsByNode, nodes]);
   const renderedEdges = useMemo(() => edges.map((edge) => {
     const signal = evaluation.wireValues[edge.id];
     return {
@@ -1004,6 +1024,7 @@ function LogicDiagramEditor({ relativePath }: Props) {
   }, [client, controller, relativePath, setSavedHash]);
 
   const applyLiveLogicDocument = useCallback((document: LogicDiagramDocument) => {
+    if (componentEditingRef.current) return;
     applyLogicDocument(document);
   }, [applyLogicDocument]);
 
@@ -1042,6 +1063,10 @@ function LogicDiagramEditor({ relativePath }: Props) {
   const livePeers = useLivePeers(liveSession);
 
   const markChanged = useCallback(() => {
+    if (componentEditingRef.current) {
+      setComponentEditDirty(true);
+      return;
+    }
     if (liveSessionRef.current) return;
     markDirty(relativePath);
   }, [markDirty, relativePath]);
@@ -1099,7 +1124,7 @@ function LogicDiagramEditor({ relativePath }: Props) {
   // own state change) never re-marks the same edit.
   const lastMarkedSigRef = useRef<string | null>(null);
   useEffect(() => {
-    if (!vault || readOnly || !readyRef.current) return;
+    if (!vault || readOnly || !readyRef.current || componentEditSession) return;
     const sig = structuralSignature(nodes, edges, diagram.diagramMode);
     if (sig === savedStructuralRef.current) {
       lastMarkedSigRef.current = sig;
@@ -1113,7 +1138,7 @@ function LogicDiagramEditor({ relativePath }: Props) {
     } else {
       controller.markLocalChange(next);
     }
-  }, [controller, diagram, edges, getViewport, nodes, readOnly, structuralSignature, vault]);
+  }, [componentEditSession, controller, diagram, edges, getViewport, nodes, readOnly, structuralSignature, vault]);
 
   // Re-baseline the structural signature when a save (without a merge adoption,
   // which reseeds via applyDocument) completes cleanly, so the autosave effect
@@ -1634,6 +1659,80 @@ function LogicDiagramEditor({ relativePath }: Props) {
     markChanged();
     setComponentPickerOpen(false);
   }, [clientPointToFlowPosition, componentInsertMode, getViewportCenterClientPoint, markChanged, readOnly, setNodes]);
+
+  const restoreComponentWorkspace = useCallback((session: NonNullable<typeof componentEditSession>) => {
+    let restored = session.original;
+    const live = liveSessionRef.current;
+    if (live) restored = logicDocumentFromJson(live.readJson()) ?? restored;
+    const graph = toFlowGraph(restored);
+    componentEditingRef.current = null;
+    setComponentEditSession(null);
+    setComponentEditDirty(false);
+    setDiagram(restored);
+    canonicalLogicRef.current = restored;
+    setNodes(graph.nodes);
+    setEdges(graph.edges);
+    setViewportState(restored.viewport);
+    savedStructuralRef.current = structuralSignature(graph.nodes, graph.edges, restored.diagramMode);
+    lastMarkedSigRef.current = savedStructuralRef.current;
+  }, [setEdges, setNodes, structuralSignature]);
+
+  const editLogicComponent = useCallback(async (component: LogicComponentDefinition) => {
+    if (readOnly || !logicComponentsCapability || componentEditingRef.current) return;
+    try {
+      if (!liveSessionRef.current) {
+        await controller.requestSave('manual');
+        if (controller.getSnapshot().conflicted) {
+          toast.error('Resolve the current logic file conflict before editing a component.');
+          return;
+        }
+      }
+      const original = fromFlowGraph(diagram, nodes, edges, getViewport() as Viewport);
+      const editDocument = logicDocumentFromComponent(component);
+      const graph = toFlowGraph(editDocument);
+      componentEditingRef.current = component;
+      setComponentEditSession({ component, original });
+      setComponentEditDirty(false);
+      setDiagram(editDocument);
+      setNodes(graph.nodes.map((node) => ({ ...node, selected: false })));
+      setEdges(graph.edges.map((edge) => ({ ...edge, selected: false })));
+      setViewportState(editDocument.viewport);
+      setComponentPickerOpen(false);
+      window.setTimeout(fitLogicView, 60);
+    } catch (error) {
+      toast.error(`Could not open component for editing: ${error}`);
+    }
+  }, [controller, diagram, edges, fitLogicView, getViewport, logicComponentsCapability, nodes, readOnly, setEdges, setNodes]);
+
+  const saveEditedLogicComponent = useCallback(async () => {
+    if (!componentEditSession || !logicComponentsCapability) return;
+    setSaving(true);
+    try {
+      const current = fromFlowGraph(diagram, nodes, edges, getViewport() as Viewport);
+      const capture = captureLogicComponent(
+        current,
+        [],
+        componentEditSession.component.name,
+        componentEditSession.component.description,
+      );
+      const saved = await logicComponentsCapability.save({
+        ...capture.component,
+        id: componentEditSession.component.id,
+        version: componentEditSession.component.version,
+        createdAt: componentEditSession.component.createdAt,
+      });
+      setLogicComponents((components) => [
+        ...components.filter((component) => component.id !== saved.id),
+        saved,
+      ].sort((a, b) => a.name.localeCompare(b.name)));
+      restoreComponentWorkspace(componentEditSession);
+      toast.success(`Updated component "${saved.name}".`);
+    } catch (error) {
+      toast.error(`Failed to update component: ${error}`);
+    } finally {
+      setSaving(false);
+    }
+  }, [componentEditSession, diagram, edges, getViewport, logicComponentsCapability, nodes, restoreComponentWorkspace]);
 
   const duplicateSelection = useCallback(() => {
     if (readOnly) return;
@@ -2318,6 +2417,16 @@ function LogicDiagramEditor({ relativePath }: Props) {
 
   const secondary = (
     <>
+      {componentEditSession && (
+        <div className={documentTopBarGroupClass}>
+          <span className="px-2 text-xs font-medium text-primary">
+            Editing {componentEditSession.component.name}{componentEditDirty ? ' · modified' : ''}
+          </span>
+          <DocumentTopBarButton onClick={() => restoreComponentWorkspace(componentEditSession)} disabled={saving}>
+            Cancel
+          </DocumentTopBarButton>
+        </div>
+      )}
       <div className={documentTopBarGroupClass}>
         <Select value={diagram.diagramMode} onValueChange={(value) => changeDiagramMode(value as LogicDiagramMode)} disabled={readOnly || nodes.length > 0 || edges.length > 0}>
           <SelectTrigger size="sm" className="h-8 min-w-32 border-0 bg-transparent text-xs shadow-none" title={nodes.length > 0 || edges.length > 0 ? 'Mode is fixed once the diagram contains elements' : 'Diagram mode'}>
@@ -2363,7 +2472,7 @@ function LogicDiagramEditor({ relativePath }: Props) {
         </DocumentTopBarButton>
         <DocumentTopBarButton
           onClick={openSaveComponentDialog}
-          disabled={readOnly || !logicComponentsCapability || nodes.length === 0}
+          disabled={readOnly || !logicComponentsCapability || nodes.length === 0 || Boolean(componentEditSession)}
           title="Save the selection, or the whole diagram if nothing is selected, as a component"
         >
           <Save size={14} />
@@ -2464,15 +2573,18 @@ function LogicDiagramEditor({ relativePath }: Props) {
       <div className={documentTopBarGroupClass}>
         <DocumentTopBarButton
           onClick={(event) => handleExportToNote(event.shiftKey)}
-          disabled={exporting || loading || readOnly}
+          disabled={exporting || loading || readOnly || Boolean(componentEditSession)}
           title="Insert in note. Shift-click saves a unique export."
         >
           {exporting ? <Loader2 size={14} className="animate-spin" /> : <Image size={14} />}
           Insert in note
         </DocumentTopBarButton>
-        <DocumentTopBarButton onClick={handleSave} disabled={saving || loading || readOnly}>
+        <DocumentTopBarButton
+          onClick={() => componentEditSession ? void saveEditedLogicComponent() : void handleSave()}
+          disabled={saving || loading || readOnly || (Boolean(componentEditSession) && !componentEditDirty)}
+        >
           {saving ? <Loader2 size={14} className="animate-spin" /> : <Save size={14} />}
-          Save
+          {componentEditSession ? 'Update component' : 'Save'}
         </DocumentTopBarButton>
       </div>
     </>
@@ -2506,7 +2618,11 @@ function LogicDiagramEditor({ relativePath }: Props) {
 
   const meta = (
     <div className="flex items-center gap-2">
-      <DocumentStatusPill status={snapshot.status} compact />
+      {componentEditSession ? (
+        <div className="rounded-full border border-primary/40 bg-primary/10 px-2 py-1 text-[11px] text-primary">
+          Component library
+        </div>
+      ) : <DocumentStatusPill status={snapshot.status} compact />}
       <LivePeers peers={livePeers} />
       <div className="rounded-full border border-border/60 px-2 py-1 text-[11px] text-muted-foreground">
         {diagram.diagramMode === 'schematic'
@@ -2519,8 +2635,8 @@ function LogicDiagramEditor({ relativePath }: Props) {
   return (
     <div className={`flex h-full min-h-0 flex-col bg-background app-document-ready ${refreshPulse ? 'app-refresh-pulse' : ''}`}>
       <DocumentTopBar
-        title={title}
-        subtitle={getDocumentFolderPath(relativePath)}
+        title={componentEditSession?.component.name ?? title}
+        subtitle={componentEditSession ? 'Reusable component editor' : getDocumentFolderPath(relativePath)}
         icon={<CircuitBoard size={18} />}
         meta={meta}
         secondary={secondary}
@@ -2954,18 +3070,29 @@ function LogicDiagramEditor({ relativePath }: Props) {
               const inputs = component.ports.filter((port) => port.direction === 'input').map((port) => port.label).join(', ');
               const outputs = component.ports.filter((port) => port.direction === 'output').map((port) => port.label).join(', ');
               return (
-                <button
-                  key={component.id}
-                  type="button"
-                  className="flex w-full flex-col items-start gap-1 rounded-lg border border-border/60 px-3 py-2.5 text-left outline-none transition-colors hover:bg-accent hover:text-accent-foreground focus-visible:bg-accent"
-                  onClick={() => insertLogicComponent(component)}
-                >
-                  <span className="text-sm font-medium">{component.name}</span>
-                  {component.description && <span className="text-xs text-muted-foreground">{component.description}</span>}
-                  <span className="text-[11px] text-muted-foreground">
-                    In: {inputs || 'none'} · Out: {outputs || 'none'} · v{component.version}
-                  </span>
-                </button>
+                <div key={component.id} className="flex items-stretch rounded-md border border-border/60 transition-colors hover:bg-accent hover:text-accent-foreground">
+                  <button
+                    type="button"
+                    className="flex min-w-0 flex-1 flex-col items-start gap-1 px-3 py-2.5 text-left outline-none focus-visible:bg-accent"
+                    onClick={() => insertLogicComponent(component)}
+                  >
+                    <span className="text-sm font-medium">{component.name}</span>
+                    {component.description && <span className="text-xs text-muted-foreground">{component.description}</span>}
+                    <span className="text-[11px] text-muted-foreground">
+                      In: {inputs || 'none'} · Out: {outputs || 'none'} · v{component.version}
+                    </span>
+                  </button>
+                  <button
+                    type="button"
+                    className="m-1 flex w-9 shrink-0 items-center justify-center rounded text-muted-foreground outline-none hover:bg-background/70 hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring"
+                    title={`Edit ${component.name}`}
+                    aria-label="Edit saved component"
+                    disabled={Boolean(componentEditSession)}
+                    onClick={() => void editLogicComponent(component)}
+                  >
+                    <Pencil size={14} />
+                  </button>
+                </div>
               );
             })}
           </div>

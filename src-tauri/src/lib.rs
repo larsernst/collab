@@ -251,6 +251,8 @@ pub fn run() {
             commands::replica::replica_record_tombstone,
             commands::replica::replica_list_tombstones,
             commands::replica::replica_remove_tombstone,
+            commands::replica::replica_write_logic_components,
+            commands::replica::replica_read_logic_components,
             commands::replica::replica_cache_document,
             commands::replica::replica_read_cached_document,
             commands::replica::replica_cache_asset,

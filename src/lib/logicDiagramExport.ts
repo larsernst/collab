@@ -1,4 +1,4 @@
-import { logicNodeLabel } from '../components/logic/logicDiagramFlow';
+import { logicComponentDimensions, logicHandleYOffset, logicNodeLabel } from '../components/logic/logicDiagramFlow';
 import {
   evaluateLogicDiagram,
   getLogicInputHandles,
@@ -44,7 +44,7 @@ function nodeSize(node: LogicDiagramNode) {
       height: Math.max(GROUP_MIN_HEIGHT, node.height ?? GROUP_MIN_HEIGHT),
     };
   }
-  if (node.kind === 'component') return { width: 144, height: Math.max(76, (node.component?.definition.ports.length ?? 1) * 24 + 28) };
+  if (node.kind === 'component') return logicComponentDimensions(node.component);
   if (isElectronicComponentKind(node.kind)) {
     const symbol = getSchematicSymbol(node.kind);
     return { width: symbol.width, height: symbol.height };
@@ -70,7 +70,7 @@ function handlePoint(node: LogicDiagramNode | undefined, side: 'source' | 'targe
   const index = Math.max(0, handles.indexOf(handleId ?? handles[0]));
   return {
     x: side === 'source' ? bounds.x + bounds.width : bounds.x,
-    y: bounds.y + (handles.length <= 1 ? bounds.height / 2 : bounds.height * ((index + 1) / (handles.length + 1))),
+    y: bounds.y + logicHandleYOffset(node.kind, handles.length, index, bounds.height),
   };
 }
 
@@ -93,13 +93,18 @@ function signalColor(value: boolean | null | undefined) {
   return '#cbd5e1';
 }
 
-function renderHandle(bounds: { x: number; y: number; width: number; height: number }, side: 'input' | 'output', index: number, count: number, value: boolean | null | undefined) {
-  const y = bounds.y + (count === 1 ? bounds.height / 2 : bounds.height * (0.34 + index * 0.32));
+function renderHandle(node: LogicDiagramNode, bounds: { x: number; y: number; width: number; height: number }, side: 'input' | 'output', index: number, count: number, value: boolean | null | undefined) {
+  const y = bounds.y + logicHandleYOffset(node.kind, count, index, bounds.height);
   const x = side === 'input' ? bounds.x : bounds.x + bounds.width;
   return `<circle cx="${x}" cy="${y}" r="5" fill="#ffffff" stroke="${signalColor(value)}" stroke-width="2"/>`;
 }
 
-function renderNode(node: LogicDiagramNode, outputValue: boolean | null | undefined, inputValues: Record<string, boolean | null | undefined>) {
+function renderNode(
+  node: LogicDiagramNode,
+  outputValue: boolean | null | undefined,
+  inputValues: Record<string, boolean | null | undefined>,
+  outputValues: Record<string, boolean | null | undefined> = {},
+) {
   const bounds = nodeBounds(node);
   if (isElectronicComponentKind(node.kind)) {
     const symbol = getSchematicSymbol(node.kind);
@@ -108,8 +113,8 @@ function renderNode(node: LogicDiagramNode, outputValue: boolean | null | undefi
     return [
       `<g transform="translate(${bounds.x} ${bounds.y}) scale(${bounds.width / 100} ${symbolHeight / 72})">${schematicSymbolMarkup(node.kind, '#334155')}</g>`,
       `<text x="${bounds.x + bounds.width / 2}" y="${bounds.y + bounds.height - 2}" text-anchor="middle" font-family="Inter, Arial, sans-serif" font-size="10" font-weight="600" fill="#475569">${escapeXml(label)}</text>`,
-      symbol.inputHandles.map((_, index) => renderHandle(bounds, 'input', index, symbol.inputHandles.length, undefined)).join(''),
-      symbol.outputHandles.map((_, index) => renderHandle(bounds, 'output', index, symbol.outputHandles.length, undefined)).join(''),
+      symbol.inputHandles.map((_, index) => renderHandle(node, bounds, 'input', index, symbol.inputHandles.length, undefined)).join(''),
+      symbol.outputHandles.map((_, index) => renderHandle(node, bounds, 'output', index, symbol.outputHandles.length, undefined)).join(''),
     ].join('');
   }
   const rx = node.kind === 'group' ? 12 : 10;
@@ -121,25 +126,38 @@ function renderNode(node: LogicDiagramNode, outputValue: boolean | null | undefi
     : '';
   const inputHandles = getLogicInputHandles(node.kind, node.component);
   const outputHandles = getLogicOutputHandles(node.kind, node.component);
-  const activeWash = outputValue === true
+  const active = outputValue === true || Object.values(outputValues).some((signal) => signal === true);
+  const activeWash = active
     ? `<rect x="${bounds.x + 2}" y="${bounds.y + 2}" width="${bounds.width - 4}" height="${bounds.height - 4}" rx="${Math.max(0, rx - 2)}" fill="#dbeafe" opacity="0.72"/>`
     : '';
   const inversion = ['not', 'nand', 'nor', 'xnor'].includes(node.kind)
     ? `<circle cx="${bounds.x + bounds.width + 7}" cy="${bounds.y + bounds.height / 2}" r="6" fill="#ffffff" stroke="#475569" stroke-width="2"/>`
     : '';
   const handles = [
-    ...inputHandles.map((handle, index) => renderHandle(bounds, 'input', index, inputHandles.length, inputValues[handle])),
-    ...outputHandles.map((handle, index) => renderHandle(bounds, 'output', index, outputHandles.length, inputValues[handle] ?? outputValue)),
+    ...inputHandles.map((handle, index) => renderHandle(node, bounds, 'input', index, inputHandles.length, inputValues[handle])),
+    ...outputHandles.map((handle, index) => renderHandle(node, bounds, 'output', index, outputHandles.length, outputValues[handle] ?? outputValue)),
   ].join('');
+  const componentPorts = node.component?.definition.ports ?? [];
+  const componentLabels = node.kind === 'component'
+    ? componentPorts.map((port) => {
+        const sameDirection = componentPorts.filter((candidate) => candidate.direction === port.direction);
+        const index = sameDirection.findIndex((candidate) => candidate.id === port.id);
+        const y = bounds.y + logicHandleYOffset(node.kind, sameDirection.length, index, bounds.height) + 3;
+        const isInput = port.direction === 'input';
+        return `<text x="${isInput ? bounds.x + 12 : bounds.x + bounds.width - 12}" y="${y}" text-anchor="${isInput ? 'start' : 'end'}" font-family="Inter, Arial, sans-serif" font-size="9" fill="#64748b">${escapeXml(port.label)}</text>`;
+      }).join('')
+    : '';
+  const labelY = node.kind === 'component' ? bounds.y + 15 : bounds.y + bounds.height / 2 - (value ? 6 : 0);
 
   return [
     `<rect x="${bounds.x}" y="${bounds.y}" width="${bounds.width}" height="${bounds.height}" rx="${rx}" fill="${nodeFill(node)}" stroke="${stroke}" stroke-width="2"${dash}/>`,
     activeWash,
-    `<text x="${bounds.x + bounds.width / 2}" y="${bounds.y + bounds.height / 2 - (value ? 6 : 0)}" text-anchor="middle" dominant-baseline="middle" font-family="Inter, Arial, sans-serif" font-size="16" font-weight="700" fill="#0f172a">${escapeXml(label)}</text>`,
+    `<text x="${bounds.x + bounds.width / 2}" y="${labelY}" text-anchor="middle" dominant-baseline="middle" font-family="Inter, Arial, sans-serif" font-size="${node.kind === 'component' ? 11 : 16}" font-weight="700" fill="#0f172a">${escapeXml(label)}</text>`,
     value
       ? `<text x="${bounds.x + bounds.width / 2}" y="${bounds.y + bounds.height / 2 + 18}" text-anchor="middle" dominant-baseline="middle" font-family="Inter, Arial, sans-serif" font-size="13" font-weight="600" fill="#2563eb">${value}</text>`
       : '',
     inversion,
+    componentLabels,
     handles,
   ].join('');
 }
@@ -196,7 +214,7 @@ export function buildLogicDiagramSvg(document: LogicDiagramDocument, sourceRelat
   };
   const schematic = document.diagramMode === 'schematic';
   const evaluation = schematic
-    ? { nodeValues: {}, wireValues: {}, warnings: [] }
+    ? { nodeValues: {}, nodeOutputValues: {}, wireValues: {}, warnings: [] }
     : evaluateLogicDiagram(document.nodes, document.wires, { components: document.components });
   const nodeInputValues = inputValuesByNode(document.wires, evaluation.wireValues);
   const nodesById = new Map(nodes.map((node) => [node.id, node]));
@@ -204,7 +222,12 @@ export function buildLogicDiagramSvg(document: LogicDiagramDocument, sourceRelat
   const nodeMarkup = nodes
     .slice()
     .sort((a, b) => (a.kind === 'group' ? -1 : 0) - (b.kind === 'group' ? -1 : 0))
-    .map((node) => renderNode(node, evaluation.nodeValues[node.id], nodeInputValues[node.id] ?? {}))
+    .map((node) => renderNode(
+      node,
+      evaluation.nodeValues[node.id],
+      nodeInputValues[node.id] ?? {},
+      evaluation.nodeOutputValues[node.id] ?? {},
+    ))
     .join('');
 
   return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="${viewBox}" role="img" aria-label="${escapeXml(document.title ?? (schematic ? 'Electronic schematic' : 'Logic diagram'))}">

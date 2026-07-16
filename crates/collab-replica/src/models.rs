@@ -99,6 +99,10 @@ pub enum PendingOpKind {
     Restore,
     Delete,
     AssetUpload,
+    #[serde(rename = "logicComponentSave")]
+    LogicComponentSave,
+    #[serde(rename = "logicComponentDelete")]
+    LogicComponentDelete,
 }
 
 /// The lifecycle state of a pending operation in the replay queue.

@@ -217,6 +217,10 @@ describe('logic diagram evaluator', () => {
     expect(result.nodeValues.carry).toBe(true);
     expect(result.wireValues['ha-sum']).toBe(false);
     expect(result.wireValues['ha-carry']).toBe(true);
+    expect(result.nodeOutputValues.ha).toEqual({
+      [componentOutputHandle('sum')]: false,
+      [componentOutputHandle('carry')]: true,
+    });
   });
 
   it('uses the latest library definition for linked components', () => {

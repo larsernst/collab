@@ -1,7 +1,13 @@
 import { describe, expect, it } from 'vitest';
 
 import { createEmptyLogicDiagram } from '../../types/logicDiagram';
-import { fromFlowGraph, logicNodeLabel, toFlowGraph } from './logicDiagramFlow';
+import {
+  fromFlowGraph,
+  logicComponentDimensions,
+  logicHandleYOffset,
+  logicNodeLabel,
+  toFlowGraph,
+} from './logicDiagramFlow';
 
 describe('logic diagram flow helpers', () => {
   it('maps logic diagrams to React Flow graph data and back', () => {
@@ -98,5 +104,49 @@ describe('logic diagram flow helpers', () => {
     const graph = toFlowGraph(diagram);
     expect(graph.nodes[0].data.clock).toEqual({ periodMs: 500, dutyCycle: 0.25, phaseMs: 50 });
     expect(fromFlowGraph(diagram, graph.nodes, graph.edges, graph.viewport)).toEqual(diagram);
+  });
+
+  it('grows custom components and centers arbitrary port counts', () => {
+    const component = {
+      id: 'mux',
+      name: 'Multiplexer',
+      version: 1,
+      createdAt: 1,
+      updatedAt: 1,
+      ports: [
+        ...Array.from({ length: 5 }, (_, index) => ({
+          id: `in-${index}`,
+          label: `In ${index}`,
+          direction: 'input' as const,
+          sourceNodeId: `in-${index}`,
+        })),
+        ...Array.from({ length: 3 }, (_, index) => ({
+          id: `out-${index}`,
+          label: `Out ${index}`,
+          direction: 'output' as const,
+          sourceNodeId: `out-${index}`,
+        })),
+      ],
+      nodes: [],
+      wires: [],
+    };
+
+    const dimensions = logicComponentDimensions({
+      mode: 'snapshot',
+      componentId: component.id,
+      definition: component,
+    });
+    expect(dimensions.height).toBeGreaterThan(80);
+
+    const inputs = Array.from({ length: 5 }, (_, index) =>
+      logicHandleYOffset('component', 5, index, dimensions.height));
+    const outputs = Array.from({ length: 3 }, (_, index) =>
+      logicHandleYOffset('component', 3, index, dimensions.height));
+
+    expect(inputs).toEqual([...inputs].sort((a, b) => a - b));
+    expect(outputs).toEqual([...outputs].sort((a, b) => a - b));
+    expect(inputs[2]).toBe(dimensions.height / 2);
+    expect(outputs[1]).toBe(dimensions.height / 2);
+    expect(inputs.every((offset) => offset > 0 && offset < dimensions.height)).toBe(true);
   });
 });

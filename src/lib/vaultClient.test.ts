@@ -67,6 +67,8 @@ vi.mock('./tauri', () => ({
     saveLogicComponent: vi.fn(),
     deleteLogicComponent: vi.fn(),
     replicaReadCachedDocument: vi.fn(),
+    replicaReadLogicComponents: vi.fn().mockResolvedValue([]),
+    replicaWriteLogicComponents: vi.fn().mockResolvedValue(undefined),
   },
 }));
 
@@ -419,6 +421,47 @@ describe('HostedVaultClient', () => {
       'DELETE',
       '/api/v1/vaults/hosted-vault/logic-components/component%201',
       undefined,
+    );
+  });
+
+  it('uses and updates hosted logic components through the offline replica', async () => {
+    const component = {
+      id: 'component-1',
+      name: 'Half adder',
+      version: 1,
+      createdAt: 1,
+      updatedAt: 1,
+      ports: [],
+      nodes: [],
+      wires: [],
+    };
+    vi.mocked(tauriCommands.replicaReadLogicComponents).mockResolvedValue([component]);
+    vi.mocked(tauriCommands.replicaReadManifest).mockResolvedValue(mockHostedManifest(8));
+    vi.mocked(tauriCommands.hostedVaultRequest).mockRejectedValue(new Error('Network connection unavailable'));
+
+    const logicComponents = new HostedVaultClient(hostedVault).runtime.logicComponents!;
+    await expect(logicComponents.list()).resolves.toEqual([component]);
+    await expect(logicComponents.save({ ...component, description: 'Updated' })).resolves.toMatchObject({
+      id: 'component-1',
+      version: 2,
+      description: 'Updated',
+    });
+    await expect(logicComponents.delete('component-1')).resolves.toBeUndefined();
+
+    expect(tauriCommands.replicaWriteLogicComponents).toHaveBeenCalledWith(
+      hostedVault.serverUrl,
+      hostedVault.hostedVaultId,
+      expect.any(Array),
+    );
+    expect(tauriCommands.replicaEnqueueOperation).toHaveBeenCalledWith(
+      hostedVault.serverUrl,
+      hostedVault.hostedVaultId,
+      expect.objectContaining({ kind: 'logicComponentSave', baseManifestSequence: 8 }),
+    );
+    expect(tauriCommands.replicaEnqueueOperation).toHaveBeenCalledWith(
+      hostedVault.serverUrl,
+      hostedVault.hostedVaultId,
+      expect.objectContaining({ kind: 'logicComponentDelete', baseManifestSequence: 8 }),
     );
   });
 

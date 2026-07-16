@@ -11,6 +11,7 @@ use crate::replica::{
 use base64::Engine as _;
 use collab_protocol::HostedVaultManifest;
 use rand::RngCore;
+use serde_json::Value;
 
 const REPLICA_KEYRING_SERVICE: &str = "collab-replica";
 
@@ -384,6 +385,26 @@ pub fn replica_remove_tombstone(
     file_id: String,
 ) -> Result<(), String> {
     existing(&server_url, &vault_id)?.remove_tombstone(&file_id)
+}
+
+#[tauri::command]
+pub fn replica_write_logic_components(
+    server_url: String,
+    vault_id: String,
+    components: Vec<Value>,
+) -> Result<(), String> {
+    existing(&server_url, &vault_id)?.write_logic_components(&components)
+}
+
+#[tauri::command]
+pub fn replica_read_logic_components(
+    server_url: String,
+    vault_id: String,
+) -> Result<Vec<Value>, String> {
+    match existing_read(&server_url, &vault_id)? {
+        Some(store) => store.read_logic_components(),
+        None => Ok(Vec::new()),
+    }
 }
 
 #[tauri::command]

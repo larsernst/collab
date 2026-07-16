@@ -54,6 +54,8 @@ const OP_META: Record<PendingOpKind, { label: string; Icon: typeof Pencil }> = {
   restore: { label: 'Restore', Icon: Undo2 },
   delete: { label: 'Delete', Icon: Trash2 },
   assetUpload: { label: 'Upload', Icon: Upload },
+  logicComponentSave: { label: 'Component', Icon: Pencil },
+  logicComponentDelete: { label: 'Component', Icon: Trash2 },
 };
 
 function opLabel(operation: PendingOperation): string {
