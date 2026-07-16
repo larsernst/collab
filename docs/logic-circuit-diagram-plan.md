@@ -15,7 +15,7 @@ Add a phased diagramming feature for university-oriented logic-gate overviews fi
 | 4. Diagram polish and reuse | Complete | Add templates, library improvements, and better authoring flow. |
 | 5. Electronic component diagrams | Complete | Add static resistor/transistor/etc. schematic symbols. |
 | 5.1 Digital simulation tools | Complete | Add sequenced clock sources and dynamic value tables. |
-| 6. Circuit simulation research | Deferred | Decide whether real electronics simulation is worth integrating. |
+| 6. Full circuit simulation | In progress | Build first-party analog and mixed-signal simulation in Rust. |
 
 ## Phase Details
 
@@ -39,7 +39,7 @@ Groundwork completed:
 - `.logic` imports are validated before document creation.
 - Local vault file allow-lists and encryption handling include `.logic`.
 - Hosted `.logic` support remains a Phase 1 implementation item because hosted document typing currently recognizes note, kanban, and canvas only.
-- The current schema is v4 and adds persisted clock timing on top of the v3 `diagramMode` and static electronic symbol node kinds; older documents normalize safely to digital logic mode.
+- The current schema is v5 and adds persisted schematic-symbol rotation on top of v4 clock timing and the v3 `diagramMode`; older documents normalize safely.
 
 ### Phase 1: Static Logic Diagram Editor
 
@@ -162,7 +162,9 @@ Implementation notes:
 - `.logic` schema v3 adds `diagramMode: "logic" | "schematic"`; existing documents migrate to logic mode, while early electronic documents are inferred as schematic mode.
 - The shared editor shell, document sessions, live JSON collaboration, grouping, labels, wires, zoom/pan, optimistic save, and note-export pipeline are reused by both modes.
 - Schematic mode includes resistor, capacitor, inductor, diode, LED, NPN transistor, switch, ground, and voltage-source symbols with component-specific terminals.
-- Schematic wires are deliberately static and neutral: they do not show digital values, active-state coloring, unresolved-state dashes, or direction arrows.
+- Schematic terminals are bidirectional and allow fan-out or multiple wires on the same electrical terminal. Digital gate inputs retain their one-driver constraint.
+- Schematic symbols rotate clockwise in 90-degree steps; symbol bounds, terminal handles, wire anchors, persisted JSON, and SVG exports use the same rotated geometry.
+- Schematic wires remain electrically neutral until a solver result exists. The renderer supports solver-driven energized-wire glow without inferring voltage from connectivity alone.
 - Empty diagrams can switch mode from the document toolbar. The command bar also provides `New Electronic Schematic` for direct creation.
 - The mode selector locks after the first element is added, preventing mixed digital/electronic documents and ambiguous evaluator behavior.
 - SVG note exports render the actual schematic symbols and preserve the same source metadata used to reopen the editable `.logic` document.
@@ -191,17 +193,14 @@ Implementation notes:
 - `logicTruthTable.ts` reuses the normal evaluator for each input permutation instead of maintaining a second simulation implementation.
 - The editor exposes clock configuration on double-click and run, pause, reset, and value-table controls in the shared document toolbar.
 
-### Phase 6: Circuit Simulation Research
+### Phase 6: Full Circuit Simulation
 
-- Treat real electronics simulation as a separate research task.
-- Evaluate whether to integrate an existing SPICE-like engine rather than hand-rolling simulation.
-- Decide supported scope: DC-only, transient analysis, small educational circuits, or no simulation.
-- Consider performance, packaging, licensing, wasm/native boundary, and offline support.
+The implementation is specified in [Electronic Circuit Simulation Integration Plan](electronic-circuit-simulation-plan.md).
 
-Acceptance criteria:
-
-- A written decision exists before implementation starts.
-- The app does not commit to analog simulation without a proven engine path.
+- Build the focused simulation engine as the first-party MIT-licensed `collab-circuit` Rust crate; do not link or redistribute an external simulator.
+- Deliver a deterministic linear DC baseline first, then nonlinear DC, transient/DC sweep, AC analysis, and a Collab-owned mixed-signal scheduler.
+- Keep simulation local and offline-capable; synchronize source/configuration through the existing document session while treating numerical results as derived cache data.
+- Require identical crate behavior and numerical fixtures across desktop targets and Android arm64 before enabling each analysis there.
 
 ## Key Implementation Changes
 
@@ -228,7 +227,7 @@ Acceptance criteria:
 ## Assumptions
 
 - The first version uses `.logic` as the editable source format.
-- The first version is digital logic only, not analog electronics simulation.
+- Existing releases remain usable as static diagrams while Phase 6 simulation is added incrementally.
 - Note embedding uses exported SVG graphics first, but those graphics remain linked to their editable source document.
 - React Flow remains the diagram editing foundation.
-- Electronics components are a later static-diagram feature unless simulation research proves feasible.
+- Electronics simulation uses documented component equations, deterministic numerical fixtures, explicit model limitations, and a first-party Rust engine; the UI never claims unsupported SPICE compatibility.

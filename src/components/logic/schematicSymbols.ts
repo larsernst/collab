@@ -1,4 +1,4 @@
-import type { ElectronicComponentKind } from '../../types/logicDiagram';
+import type { ElectronicComponentKind, SchematicRotation } from '../../types/logicDiagram';
 
 export interface SchematicSymbolDefinition {
   kind: ElectronicComponentKind;
@@ -25,6 +25,82 @@ export const SCHEMATIC_SYMBOL_CHOICES = Object.values(SYMBOLS);
 
 export function getSchematicSymbol(kind: ElectronicComponentKind) {
   return SYMBOLS[kind];
+}
+
+export function getSchematicTerminals(kind: ElectronicComponentKind) {
+  const symbol = getSchematicSymbol(kind);
+  return [...symbol.inputHandles, ...symbol.outputHandles];
+}
+
+export function schematicSymbolDimensions(kind: ElectronicComponentKind, rotation: SchematicRotation = 0) {
+  const symbol = getSchematicSymbol(kind);
+  return rotation === 90 || rotation === 270
+    ? { width: symbol.height, height: symbol.width }
+    : { width: symbol.width, height: symbol.height };
+}
+
+export function rotateSchematicClockwise(rotation: SchematicRotation = 0): SchematicRotation {
+  return ((rotation + 90) % 360) as SchematicRotation;
+}
+
+function unrotatedTerminalPoint(kind: ElectronicComponentKind, handleId: string) {
+  const symbol = getSchematicSymbol(kind);
+  const inputIndex = symbol.inputHandles.indexOf(handleId);
+  if (inputIndex >= 0) {
+    return {
+      x: 0,
+      y: symbol.height * ((inputIndex + 1) / (symbol.inputHandles.length + 1)),
+    };
+  }
+  const outputIndex = symbol.outputHandles.indexOf(handleId);
+  if (outputIndex >= 0) {
+    return {
+      x: symbol.width,
+      y: symbol.height * ((outputIndex + 1) / (symbol.outputHandles.length + 1)),
+    };
+  }
+  return { x: symbol.width / 2, y: symbol.height / 2 };
+}
+
+export function schematicTerminalPoint(
+  kind: ElectronicComponentKind,
+  handleId: string,
+  rotation: SchematicRotation = 0,
+) {
+  const symbol = getSchematicSymbol(kind);
+  const point = unrotatedTerminalPoint(kind, handleId);
+  switch (rotation) {
+    case 90: return { x: symbol.height - point.y, y: point.x };
+    case 180: return { x: symbol.width - point.x, y: symbol.height - point.y };
+    case 270: return { x: point.y, y: symbol.width - point.x };
+    default: return point;
+  }
+}
+
+export function schematicTerminalSide(
+  kind: ElectronicComponentKind,
+  handleId: string,
+  rotation: SchematicRotation = 0,
+): 'left' | 'right' | 'top' | 'bottom' {
+  const dimensions = schematicSymbolDimensions(kind, rotation);
+  const point = schematicTerminalPoint(kind, handleId, rotation);
+  if (point.x === 0) return 'left';
+  if (point.x === dimensions.width) return 'right';
+  if (point.y === 0) return 'top';
+  return 'bottom';
+}
+
+export function schematicSymbolTransform(rotation: SchematicRotation = 0) {
+  switch (rotation) {
+    case 90: return 'translate(72 0) rotate(90)';
+    case 180: return 'translate(100 72) rotate(180)';
+    case 270: return 'translate(0 100) rotate(270)';
+    default: return '';
+  }
+}
+
+export function schematicSymbolViewBox(rotation: SchematicRotation = 0) {
+  return rotation === 90 || rotation === 270 ? '0 0 72 100' : '0 0 100 72';
 }
 
 export function schematicSymbolMarkup(kind: ElectronicComponentKind, stroke = 'currentColor') {

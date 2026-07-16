@@ -6,7 +6,13 @@ import {
 } from '../components/logic/logicDiagramEvaluator';
 import type { LogicDiagramDocument, LogicDiagramNode, LogicDiagramWire } from '../types/logicDiagram';
 import { isElectronicComponentKind } from '../types/logicDiagram';
-import { getSchematicSymbol, schematicSymbolMarkup } from '../components/logic/schematicSymbols';
+import {
+  getSchematicTerminals,
+  schematicSymbolDimensions,
+  schematicSymbolMarkup,
+  schematicSymbolTransform,
+  schematicTerminalPoint,
+} from '../components/logic/schematicSymbols';
 
 const DEFAULT_NODE_WIDTH = 112;
 const DEFAULT_NODE_HEIGHT = 64;
@@ -46,8 +52,7 @@ function nodeSize(node: LogicDiagramNode) {
   }
   if (node.kind === 'component') return logicComponentDimensions(node.component);
   if (isElectronicComponentKind(node.kind)) {
-    const symbol = getSchematicSymbol(node.kind);
-    return { width: symbol.width, height: symbol.height };
+    return schematicSymbolDimensions(node.kind, node.rotation ?? 0);
   }
   return { width: DEFAULT_NODE_WIDTH, height: DEFAULT_NODE_HEIGHT };
 }
@@ -64,6 +69,11 @@ function nodeBounds(node: LogicDiagramNode) {
 function handlePoint(node: LogicDiagramNode | undefined, side: 'source' | 'target', handleId?: string) {
   if (!node) return { x: 0, y: 0 };
   const bounds = nodeBounds(node);
+  if (isElectronicComponentKind(node.kind)) {
+    const terminals = getSchematicTerminals(node.kind);
+    const point = schematicTerminalPoint(node.kind, handleId ?? terminals[0], node.rotation ?? 0);
+    return { x: bounds.x + point.x, y: bounds.y + point.y };
+  }
   const handles = side === 'source'
     ? getLogicOutputHandles(node.kind, node.component)
     : getLogicInputHandles(node.kind, node.component);
@@ -107,14 +117,19 @@ function renderNode(
 ) {
   const bounds = nodeBounds(node);
   if (isElectronicComponentKind(node.kind)) {
-    const symbol = getSchematicSymbol(node.kind);
-    const symbolHeight = Math.min(72, bounds.height);
+    const kind = node.kind;
+    const rotation = node.rotation ?? 0;
+    const rotatedViewWidth = rotation === 90 || rotation === 270 ? 72 : 100;
+    const rotatedViewHeight = rotation === 90 || rotation === 270 ? 100 : 72;
     const label = logicNodeLabel(node);
+    const terminals = getSchematicTerminals(kind);
     return [
-      `<g transform="translate(${bounds.x} ${bounds.y}) scale(${bounds.width / 100} ${symbolHeight / 72})">${schematicSymbolMarkup(node.kind, '#334155')}</g>`,
+      `<g transform="translate(${bounds.x} ${bounds.y}) scale(${bounds.width / rotatedViewWidth} ${bounds.height / rotatedViewHeight})"><g${schematicSymbolTransform(rotation) ? ` transform="${schematicSymbolTransform(rotation)}"` : ''}>${schematicSymbolMarkup(kind, '#334155')}</g></g>`,
       `<text x="${bounds.x + bounds.width / 2}" y="${bounds.y + bounds.height - 2}" text-anchor="middle" font-family="Inter, Arial, sans-serif" font-size="10" font-weight="600" fill="#475569">${escapeXml(label)}</text>`,
-      symbol.inputHandles.map((_, index) => renderHandle(node, bounds, 'input', index, symbol.inputHandles.length, undefined)).join(''),
-      symbol.outputHandles.map((_, index) => renderHandle(node, bounds, 'output', index, symbol.outputHandles.length, undefined)).join(''),
+      terminals.map((handleId) => {
+        const point = schematicTerminalPoint(kind, handleId, rotation);
+        return `<circle cx="${bounds.x + point.x}" cy="${bounds.y + point.y}" r="5" fill="#ffffff" stroke="#64748b" stroke-width="2"/>`;
+      }).join(''),
     ].join('');
   }
   const rx = node.kind === 'group' ? 12 : 10;

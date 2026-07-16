@@ -7,9 +7,9 @@ import {
 } from './logicDiagram';
 
 describe('logic diagram document helpers', () => {
-  it('creates an empty v4 logic diagram document', () => {
+  it('creates an empty v5 logic diagram document', () => {
     expect(createEmptyLogicDiagram('Adder')).toEqual({
-      schemaVersion: 4,
+      schemaVersion: 5,
       kind: 'logic-diagram',
       diagramMode: 'logic',
       title: 'Adder',
@@ -53,7 +53,7 @@ describe('logic diagram document helpers', () => {
     });
 
     expect(normalized).toMatchObject({
-      schemaVersion: 4,
+      schemaVersion: 5,
       kind: 'logic-diagram',
       diagramMode: 'logic',
       components: [],
@@ -82,6 +82,21 @@ describe('logic diagram document helpers', () => {
       nodes: [{ id: 'c1', kind: 'capacitor', position: { x: 0, y: 0 } }],
       wires: [],
     }).diagramMode).toBe('schematic');
+  });
+
+  it('normalizes persisted schematic rotation and defaults older symbols to zero', () => {
+    expect(normalizeLogicDiagramDocument({
+      kind: 'logic-diagram',
+      diagramMode: 'schematic',
+      nodes: [
+        { id: 'r1', kind: 'resistor', position: { x: 0, y: 0 }, rotation: 90 },
+        { id: 'c1', kind: 'capacitor', position: { x: 0, y: 0 }, rotation: 45 },
+      ],
+      wires: [],
+    }).nodes).toMatchObject([
+      { id: 'r1', rotation: 90 },
+      { id: 'c1', rotation: 0 },
+    ]);
   });
 
   it('parses valid .logic JSON and rejects unsupported shapes', () => {

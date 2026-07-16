@@ -1,7 +1,8 @@
 export const LOGIC_DIAGRAM_EXTENSION = 'logic';
-export const LOGIC_DIAGRAM_SCHEMA_VERSION = 4;
+export const LOGIC_DIAGRAM_SCHEMA_VERSION = 5;
 
 export type LogicDiagramMode = 'logic' | 'schematic';
+export type SchematicRotation = 0 | 90 | 180 | 270;
 
 export type LogicGateKind =
   | 'input'
@@ -69,6 +70,7 @@ export interface LogicDiagramNode {
   label?: string;
   value?: boolean;
   clock?: LogicClockConfig;
+  rotation?: SchematicRotation;
   parentId?: string;
   width?: number;
   height?: number;
@@ -231,6 +233,9 @@ function normalizeNode(value: unknown): LogicDiagramNode | null {
   }
   const position = asRecord(record.position);
   const clock = asRecord(record.clock);
+  const rotation = record.rotation === 90 || record.rotation === 180 || record.rotation === 270
+    ? record.rotation
+    : 0;
   return {
     id: record.id,
     kind: record.kind as LogicNodeKind,
@@ -247,6 +252,7 @@ function normalizeNode(value: unknown): LogicDiagramNode | null {
           phaseMs: Math.max(0, finiteNumber(clock?.phaseMs, 0)),
         }
       : undefined,
+    rotation: isElectronicComponentKind(record.kind) ? rotation : undefined,
     parentId: optionalString(record.parentId),
     width: typeof record.width === 'number' && Number.isFinite(record.width) ? record.width : undefined,
     height: typeof record.height === 'number' && Number.isFinite(record.height) ? record.height : undefined,

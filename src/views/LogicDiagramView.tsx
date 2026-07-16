@@ -14,6 +14,7 @@ import {
   Plus as PlusIcon,
   Power,
   RotateCcw,
+  RotateCw,
   Save,
   Shapes,
   Table2,
@@ -113,9 +114,15 @@ import {
 } from '../types/logicDiagram';
 import { isElectronicComponentKind } from '../types/logicDiagram';
 import {
-  getSchematicSymbol,
+  getSchematicTerminals,
+  rotateSchematicClockwise,
   SCHEMATIC_SYMBOL_CHOICES,
+  schematicSymbolDimensions,
   schematicSymbolMarkup,
+  schematicSymbolTransform,
+  schematicSymbolViewBox,
+  schematicTerminalPoint,
+  schematicTerminalSide,
 } from '../components/logic/schematicSymbols';
 import type { NoteFile } from '../types/vault';
 import { cn } from '../lib/utils';
@@ -188,14 +195,18 @@ function snapPosition(position: { x: number; y: number }, grid = LOGIC_GRID) {
 function nodeBaseWidth(node: LogicFlowNode) {
   if (node.data.kind === 'group') return typeof node.style?.width === 'number' ? node.style.width : 240;
   if (node.data.kind === 'component') return logicComponentDimensions(node.data.component).width;
-  if (isElectronicComponentKind(node.data.kind)) return getSchematicSymbol(node.data.kind).width;
+  if (isElectronicComponentKind(node.data.kind)) {
+    return schematicSymbolDimensions(node.data.kind, node.data.rotation ?? 0).width;
+  }
   return DEFAULT_GATE_WIDTH;
 }
 
 function nodeBaseHeight(node: LogicFlowNode) {
   if (node.data.kind === 'group') return typeof node.style?.height === 'number' ? node.style.height : 160;
   if (node.data.kind === 'component') return logicComponentDimensions(node.data.component).height;
-  if (isElectronicComponentKind(node.data.kind)) return getSchematicSymbol(node.data.kind).height;
+  if (isElectronicComponentKind(node.data.kind)) {
+    return schematicSymbolDimensions(node.data.kind, node.data.rotation ?? 0).height;
+  }
   return DEFAULT_GATE_HEIGHT;
 }
 
@@ -231,6 +242,10 @@ function getHandleAnchor(
   nodesById: Map<string, LogicFlowNode>,
 ) {
   const absolute = absoluteNodePosition(node, nodesById);
+  if (isElectronicComponentKind(node.data.kind)) {
+    const point = schematicTerminalPoint(node.data.kind, handleId, node.data.rotation ?? 0);
+    return { x: absolute.x + point.x, y: absolute.y + point.y };
+  }
   const handles = type === 'source'
     ? getLogicOutputHandles(node.data.kind, node.data.component)
     : getLogicInputHandles(node.data.kind, node.data.component);
@@ -251,8 +266,12 @@ function logicEdgePath(
   const sourceNode = nodesById.get(edge.source);
   const targetNode = nodesById.get(edge.target);
   if (!sourceNode || !targetNode) return null;
-  const sourceHandles = getLogicOutputHandles(sourceNode.data.kind, sourceNode.data.component);
-  const targetHandles = getLogicInputHandles(targetNode.data.kind, targetNode.data.component);
+  const sourceHandles = isElectronicComponentKind(sourceNode.data.kind)
+    ? getSchematicTerminals(sourceNode.data.kind)
+    : getLogicOutputHandles(sourceNode.data.kind, sourceNode.data.component);
+  const targetHandles = isElectronicComponentKind(targetNode.data.kind)
+    ? getSchematicTerminals(targetNode.data.kind)
+    : getLogicInputHandles(targetNode.data.kind, targetNode.data.component);
   const sourceHandle = edge.sourceHandle && sourceHandles.includes(edge.sourceHandle)
     ? edge.sourceHandle
     : sourceHandles[0];
@@ -262,13 +281,19 @@ function logicEdgePath(
   if (!sourceHandle || !targetHandle) return null;
   const source = flowToScreen(getHandleAnchor(sourceNode, sourceHandle, 'source', nodesById), viewport);
   const target = flowToScreen(getHandleAnchor(targetNode, targetHandle, 'target', nodesById), viewport);
+  const sourcePosition = isElectronicComponentKind(sourceNode.data.kind)
+    ? schematicTerminalSide(sourceNode.data.kind, sourceHandle, sourceNode.data.rotation ?? 0)
+    : 'right';
+  const targetPosition = isElectronicComponentKind(targetNode.data.kind)
+    ? schematicTerminalSide(targetNode.data.kind, targetHandle, targetNode.data.rotation ?? 0)
+    : 'left';
   const [path, labelX, labelY] = getSmoothStepPath({
     sourceX: source.x,
     sourceY: source.y,
-    sourcePosition: 'right' as never,
+    sourcePosition: sourcePosition as never,
     targetX: target.x,
     targetY: target.y,
-    targetPosition: 'left' as never,
+    targetPosition: targetPosition as never,
     borderRadius: 12 * viewport.zoom,
   });
   return { path, labelX, labelY, source, target };
@@ -437,6 +462,9 @@ function SharpLogicNode({
   const componentOutputs = componentPorts.filter((port) => port.direction === 'output');
 
   if (isElectronicComponentKind(kind)) {
+    const rotation = data.rotation ?? 0;
+    const terminals = getSchematicTerminals(kind);
+    const symbolMarkup = schematicSymbolMarkup(kind);
     return (
       <div
         onPointerDown={(event) => onPointerDown(event, node)}
@@ -448,39 +476,9 @@ function SharpLogicNode({
         )}
         style={{ left: screen.x, top: screen.y, width, height }}
       >
-        {inputHandles.map((handleId, index) => (
-          <button
-            key={handleId}
-            type="button"
-            data-logic-handle
-            aria-label={`${logicNodeLabel({ kind, label: data.label })} terminal ${handleId}`}
-            disabled={readOnly}
-            onPointerDown={(event) => event.stopPropagation()}
-            onPointerUp={(event) => onHandlePointerUp(event, node, handleId)}
-            className="absolute z-20 cursor-crosshair rounded-full border border-border bg-background"
-            style={{
-              left: -5 * zoom,
-              top: logicHandleYOffset(kind, inputHandles.length, index, nodeBaseHeight(node)) * zoom,
-              width: 10 * zoom,
-              height: 10 * zoom,
-              transform: 'translateY(-50%)',
-            }}
-          />
-        ))}
-        <svg
-          aria-hidden="true"
-          viewBox="0 0 100 72"
-          className="pointer-events-none absolute"
-          style={{ left: 0, top: 0, width, height }}
-          dangerouslySetInnerHTML={{ __html: schematicSymbolMarkup(kind) }}
-        />
-        <span
-          className="pointer-events-none absolute max-w-full truncate font-medium text-muted-foreground"
-          style={{ bottom: -2 * zoom, fontSize: 10 * zoom, lineHeight: 1.1 }}
-        >
-          {logicNodeLabel({ kind, label: data.label })}
-        </span>
-        {outputHandles.map((handleId, index) => (
+        {terminals.map((handleId) => {
+          const point = schematicTerminalPoint(kind, handleId, rotation);
+          return (
           <button
             key={handleId}
             type="button"
@@ -488,16 +486,35 @@ function SharpLogicNode({
             aria-label={`${logicNodeLabel({ kind, label: data.label })} terminal ${handleId}`}
             disabled={readOnly}
             onPointerDown={(event) => onHandlePointerDown(event, node, handleId)}
+            onPointerUp={(event) => onHandlePointerUp(event, node, handleId)}
             className="absolute z-20 cursor-crosshair rounded-full border border-border bg-background"
             style={{
-              right: -5 * zoom,
-              top: logicHandleYOffset(kind, outputHandles.length, index, nodeBaseHeight(node)) * zoom,
+              left: (point.x - 5) * zoom,
+              top: point.y * zoom,
               width: 10 * zoom,
               height: 10 * zoom,
               transform: 'translateY(-50%)',
             }}
           />
-        ))}
+          );
+        })}
+        <svg
+          aria-hidden="true"
+          viewBox={schematicSymbolViewBox(rotation)}
+          className="pointer-events-none absolute"
+          style={{ left: 0, top: 0, width, height }}
+        >
+          <g
+            transform={schematicSymbolTransform(rotation) || undefined}
+            dangerouslySetInnerHTML={{ __html: symbolMarkup }}
+          />
+        </svg>
+        <span
+          className="pointer-events-none absolute max-w-full truncate font-medium text-muted-foreground"
+          style={{ bottom: -2 * zoom, fontSize: 10 * zoom, lineHeight: 1.1 }}
+        >
+          {logicNodeLabel({ kind, label: data.label })}
+        </span>
       </div>
     );
   }
@@ -647,7 +664,9 @@ function SharpLogicEdge({
 }) {
   const signal = edge.data?.signal;
   const stroke = schematic
-    ? 'color-mix(in oklch, var(--foreground) 78%, transparent)'
+    ? signal === true
+      ? LOGIC_SIGNAL_ON
+      : 'color-mix(in oklch, var(--foreground) 78%, transparent)'
     : signal === true
     ? LOGIC_SIGNAL_ON
     : signal === false
@@ -696,6 +715,19 @@ function SharpLogicEdge({
           strokeLinejoin="round"
           opacity={0.22}
           pointerEvents="none"
+        />
+      ) : null}
+      {signal === true ? (
+        <path
+          d={path}
+          fill="none"
+          stroke={LOGIC_SIGNAL_ON}
+          strokeWidth={strokeWidth + 6 * zoom}
+          strokeLinecap="round"
+          strokeLinejoin="round"
+          opacity={0.24}
+          pointerEvents="none"
+          style={{ filter: `drop-shadow(0 0 ${4 * zoom}px ${LOGIC_SIGNAL_ON})` }}
         />
       ) : null}
       <path
@@ -1321,11 +1353,37 @@ function LogicDiagramEditor({ relativePath }: Props) {
     const targetNode = nodes.find((node) => node.id === connection.target);
     if (!sourceNode || !targetNode) return;
 
-    const sourceHandles = getLogicOutputHandles(sourceNode.data.kind, sourceNode.data.component);
-    const targetHandles = getLogicInputHandles(targetNode.data.kind, targetNode.data.component);
+    const schematicConnection = diagram.diagramMode === 'schematic'
+      && isElectronicComponentKind(sourceNode.data.kind)
+      && isElectronicComponentKind(targetNode.data.kind);
+    const sourceHandles = schematicConnection
+      ? getSchematicTerminals(sourceNode.data.kind as ElectronicComponentKind)
+      : getLogicOutputHandles(sourceNode.data.kind, sourceNode.data.component);
+    const targetHandles = schematicConnection
+      ? getSchematicTerminals(targetNode.data.kind as ElectronicComponentKind)
+      : getLogicInputHandles(targetNode.data.kind, targetNode.data.component);
     const sourceHandle = connection.sourceHandle && sourceHandles.includes(connection.sourceHandle)
       ? connection.sourceHandle
       : sourceHandles[0];
+    if (schematicConnection) {
+      const targetHandle = connection.targetHandle && targetHandles.includes(connection.targetHandle)
+        ? connection.targetHandle
+        : targetHandles[0];
+      if (!sourceHandle || !targetHandle) return;
+      const duplicate = edges.some((edge) => (
+        edge.source === sourceNode.id
+        && edge.target === targetNode.id
+        && edge.sourceHandle === sourceHandle
+        && edge.targetHandle === targetHandle
+      ) || (
+        edge.source === targetNode.id
+        && edge.target === sourceNode.id
+        && edge.sourceHandle === targetHandle
+        && edge.targetHandle === sourceHandle
+      ));
+      if (duplicate) return;
+      return { sourceHandle, targetHandle };
+    }
     const requestedTargetHandle = connection.targetHandle && targetHandles.includes(connection.targetHandle)
       ? connection.targetHandle
       : targetHandles.find((handleId) => !edges.some((edge) => (
@@ -1340,7 +1398,7 @@ function LogicDiagramEditor({ relativePath }: Props) {
     ))) return;
 
     return { sourceHandle, targetHandle: requestedTargetHandle };
-  }, [edges, nodes]);
+  }, [diagram.diagramMode, edges, nodes]);
 
   const onConnect = useCallback((connection: Connection) => {
     if (readOnly) return;
@@ -1368,7 +1426,10 @@ function LogicDiagramEditor({ relativePath }: Props) {
     let nearest: { nodeId: string; handleId: string; point: { x: number; y: number }; distance: number } | null = null;
     for (const node of renderedNodes) {
       if (node.id === sourceNodeId) continue;
-      for (const handleId of getLogicInputHandles(node.data.kind, node.data.component)) {
+      const targetHandles = diagram.diagramMode === 'schematic' && isElectronicComponentKind(node.data.kind)
+        ? getSchematicTerminals(node.data.kind)
+        : getLogicInputHandles(node.data.kind, node.data.component);
+      for (const handleId of targetHandles) {
         const resolved = resolveLogicConnection({
           source: sourceNodeId,
           target: node.id,
@@ -1386,7 +1447,7 @@ function LogicDiagramEditor({ relativePath }: Props) {
     return nearest
       ? { pointer: nearest.point, target: { nodeId: nearest.nodeId, handleId: nearest.handleId } }
       : { pointer, target: null };
-  }, [nodesById, renderedNodes, resolveLogicConnection, viewport]);
+  }, [diagram.diagramMode, nodesById, renderedNodes, resolveLogicConnection, viewport]);
 
   const selectedGroups = useMemo(
     () => nodes.filter((node) => node.selected && node.data.kind === 'group'),
@@ -1587,6 +1648,28 @@ function LogicDiagramEditor({ relativePath }: Props) {
   const addSchematicSymbol = useCallback((kind: ElectronicComponentKind) => {
     addSchematicSymbolAt(kind, clientPointToFlowPosition(getViewportCenterClientPoint()));
   }, [addSchematicSymbolAt, clientPointToFlowPosition, getViewportCenterClientPoint]);
+
+  const rotateSelectedSchematicSymbols = useCallback((nodeIds?: string[]) => {
+    if (readOnly) return;
+    const requested = new Set(nodeIds ?? nodes.filter((node) => node.selected).map((node) => node.id));
+    const rotatableIds = new Set(nodes
+      .filter((node) => requested.has(node.id) && isElectronicComponentKind(node.data.kind))
+      .map((node) => node.id));
+    if (rotatableIds.size === 0) return;
+    setNodes((current) => current.map((node) => {
+      if (!rotatableIds.has(node.id) || !isElectronicComponentKind(node.data.kind)) {
+        return node;
+      }
+      return {
+        ...node,
+        data: {
+          ...node.data,
+          rotation: rotateSchematicClockwise(node.data.rotation),
+        },
+      };
+    }));
+    markChanged();
+  }, [markChanged, nodes, readOnly, setNodes]);
 
   const changeDiagramMode = useCallback((mode: LogicDiagramMode) => {
     if (readOnly || nodes.length > 0 || edges.length > 0 || mode === diagram.diagramMode) return;
@@ -2326,7 +2409,8 @@ function LogicDiagramEditor({ relativePath }: Props) {
       if (diagram.diagramMode === 'schematic') {
         if (!modifier && event.key.toLowerCase() === 'r') {
           event.preventDefault();
-          addSchematicSymbol('resistor');
+          if (event.shiftKey) rotateSelectedSchematicSymbols();
+          else addSchematicSymbol('resistor');
         }
         if (event.key === 'Delete' || event.key === 'Backspace') {
           const hasSelection = selectedNodeIds.length > 0 || selectedEdgeIds.length > 0;
@@ -2394,7 +2478,7 @@ function LogicDiagramEditor({ relativePath }: Props) {
 
     document.addEventListener('keydown', handleKeyDown, { capture: true });
     return () => document.removeEventListener('keydown', handleKeyDown, { capture: true } as EventListenerOptions);
-  }, [addGate, addSchematicSymbol, adjustZoom, deleteSelection, diagram.diagramMode, duplicateSelection, fitLogicView, groupSelection, nodes, readOnly, renameSelectedNode, resetZoom, selectedEdgeIds.length, selectedNodeIds.length, setEdges, setNodes, toggleInputNodes, ungroupSelection]);
+  }, [addGate, addSchematicSymbol, adjustZoom, deleteSelection, diagram.diagramMode, duplicateSelection, fitLogicView, groupSelection, nodes, readOnly, renameSelectedNode, resetZoom, rotateSelectedSchematicSymbols, selectedEdgeIds.length, selectedNodeIds.length, setEdges, setNodes, toggleInputNodes, ungroupSelection]);
 
   const zoomLabel = `${Math.round(viewport.zoom * 100)}%`;
   const selectedGateNodes = nodes.filter((node) => node.selected && node.data.kind !== 'group' && node.data.kind !== 'component');
@@ -2517,6 +2601,13 @@ function LogicDiagramEditor({ relativePath }: Props) {
           <Plus size={14} />
           Add
         </DocumentTopBarButton>
+        <DocumentTopBarIconButton
+          title="Rotate selected symbols clockwise"
+          onClick={() => rotateSelectedSchematicSymbols()}
+          disabled={readOnly || !nodes.some((node) => node.selected && isElectronicComponentKind(node.data.kind))}
+        >
+          <RotateCw size={14} />
+        </DocumentTopBarIconButton>
       </div>
       )}
       <div className={documentTopBarGroupClass}>
@@ -2749,14 +2840,26 @@ function LogicDiagramEditor({ relativePath }: Props) {
               )}
 
               {contextMenu.kind === 'node' && contextTargetNode && contextTargetNode.data.kind !== 'group' && contextTargetNode.data.kind !== 'input' && (
-                <button
-                  type="button"
-                  className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm outline-none transition-colors hover:bg-accent hover:text-accent-foreground focus-visible:bg-accent"
-                  onClick={() => runContextAction(() => openRenameNode(contextTargetNode.id))}
-                >
-                  <Pencil size={14} />
-                  Label {contextTargetNode.data.kind === 'output' ? 'output' : contextTargetNode.data.kind === 'component' ? 'component' : isElectronicComponentKind(contextTargetNode.data.kind) ? 'symbol' : 'gate'}
-                </button>
+                <>
+                  <button
+                    type="button"
+                    className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm outline-none transition-colors hover:bg-accent hover:text-accent-foreground focus-visible:bg-accent"
+                    onClick={() => runContextAction(() => openRenameNode(contextTargetNode.id))}
+                  >
+                    <Pencil size={14} />
+                    Label {contextTargetNode.data.kind === 'output' ? 'output' : contextTargetNode.data.kind === 'component' ? 'component' : isElectronicComponentKind(contextTargetNode.data.kind) ? 'symbol' : 'gate'}
+                  </button>
+                  {isElectronicComponentKind(contextTargetNode.data.kind) && (
+                    <button
+                      type="button"
+                      className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm outline-none transition-colors hover:bg-accent hover:text-accent-foreground focus-visible:bg-accent"
+                      onClick={() => runContextAction(() => rotateSelectedSchematicSymbols([contextTargetNode.id]))}
+                    >
+                      <RotateCw size={14} />
+                      Rotate clockwise
+                    </button>
+                  )}
+                </>
               )}
 
               {contextMenu.kind === 'node' && diagram.diagramMode === 'logic' && contextTargetNode?.data.kind !== 'group' && contextTargetNode?.data.kind !== 'component' && selectedGateNodes.length > 0 && (

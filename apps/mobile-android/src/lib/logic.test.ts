@@ -55,9 +55,20 @@ describe('mobile logic documents', () => {
   it('parses and normalizes logic content through the shared schema helper', () => {
     const parsed = parseLogicContent(CONTENT);
     expect(parsed.kind).toBe('logic-diagram');
-    expect(parsed.schemaVersion).toBe(2);
+    expect(parsed.schemaVersion).toBe(5);
     expect(parsed.nodes).toHaveLength(4);
     expect(parsed.wires[0].targetHandle).toBe('in-a');
+  });
+
+  it('preserves rotated schematic symbols for the mobile viewer', () => {
+    const parsed = parseLogicContent(JSON.stringify({
+      kind: 'logic-diagram',
+      diagramMode: 'schematic',
+      nodes: [{ id: 'r1', kind: 'resistor', position: { x: 0, y: 0 }, rotation: 270 }],
+      wires: [],
+    }));
+
+    expect(parsed.nodes[0]).toMatchObject({ kind: 'resistor', rotation: 270 });
   });
 
   it('reads logic online and warms the replica cache', async () => {

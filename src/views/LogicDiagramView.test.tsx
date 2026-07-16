@@ -661,4 +661,40 @@ describe('LogicDiagramView safe reload policy', () => {
     expect(screen.getByRole('columnheader', { name: 'A' })).toBeTruthy();
     expect(screen.getByRole('columnheader', { name: 'Result' })).toBeTruthy();
   });
+
+  it('allows schematic terminals to branch and receive multiple wires', async () => {
+    tauriMocks.readNote.mockResolvedValueOnce({
+      content: JSON.stringify({
+        schemaVersion: 5,
+        kind: 'logic-diagram',
+        diagramMode: 'schematic',
+        nodes: [
+          { id: 'source', kind: 'voltage-source', label: 'Supply', position: { x: 0, y: 0 } },
+          { id: 'r1', kind: 'resistor', label: 'R1', position: { x: 200, y: 0 } },
+          { id: 'r2', kind: 'resistor', label: 'R2', position: { x: 200, y: 120 } },
+        ],
+        wires: [],
+        viewport: { x: 0, y: 0, zoom: 1 },
+      }),
+      hash: 'v1',
+      modifiedAt: 1,
+    });
+
+    render(<LogicDiagramView relativePath={PATH} />);
+    expect(await screen.findByText(/3 symbols/)).toBeTruthy();
+
+    const supplyPositive = screen.getByRole('button', { name: /Supply terminal positive/i });
+    const firstInput = screen.getByRole('button', { name: /R1 terminal terminal-a/i });
+    const secondInput = screen.getByRole('button', { name: /R2 terminal terminal-a/i });
+    const secondOutput = screen.getByRole('button', { name: /R2 terminal terminal-b/i });
+
+    fireEvent.pointerDown(supplyPositive, { button: 0, pointerId: 1, clientX: 0, clientY: 0 });
+    fireEvent.pointerUp(firstInput, { pointerId: 1 });
+    fireEvent.pointerDown(supplyPositive, { button: 0, pointerId: 2, clientX: 0, clientY: 0 });
+    fireEvent.pointerUp(secondInput, { pointerId: 2 });
+    fireEvent.pointerDown(secondOutput, { button: 0, pointerId: 3, clientX: 0, clientY: 0 });
+    fireEvent.pointerUp(firstInput, { pointerId: 3 });
+
+    expect(await screen.findByText(/3 wires/)).toBeTruthy();
+  });
 });

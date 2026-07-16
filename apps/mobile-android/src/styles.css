@@ -1133,6 +1133,11 @@ p {
   stroke-dasharray: 8 8;
   opacity: 0.58;
 }
+.mobile-logic-wire.schematic {
+  stroke: color-mix(in oklch, var(--foreground) 78%, transparent);
+  stroke-dasharray: none;
+  opacity: 0.9;
+}
 .logic-sim-toolbar {
   position: absolute;
   top: 10px;
@@ -1168,6 +1173,30 @@ p {
   color: var(--muted-foreground);
   font-size: 0.76rem;
   font-weight: 750;
+}
+.mobile-logic-schematic {
+  color: var(--foreground);
+}
+.mobile-logic-schematic svg {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+}
+.mobile-logic-schematic strong {
+  position: absolute;
+  right: 0;
+  bottom: -2px;
+  left: 0;
+  overflow: hidden;
+  color: var(--muted-foreground);
+  font-size: 0.64rem;
+  font-weight: 800;
+  line-height: 1.1;
+  text-align: center;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .mobile-logic-gate {
   display: flex;

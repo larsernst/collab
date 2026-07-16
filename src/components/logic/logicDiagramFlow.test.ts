@@ -106,6 +106,16 @@ describe('logic diagram flow helpers', () => {
     expect(fromFlowGraph(diagram, graph.nodes, graph.edges, graph.viewport)).toEqual(diagram);
   });
 
+  it('round-trips schematic symbol rotation', () => {
+    const diagram = {
+      ...createEmptyLogicDiagram('Rotated', 'schematic'),
+      nodes: [{ id: 'r1', kind: 'resistor' as const, position: { x: 10, y: 20 }, rotation: 270 as const }],
+    };
+    const graph = toFlowGraph(diagram);
+    expect(graph.nodes[0].data.rotation).toBe(270);
+    expect(fromFlowGraph(diagram, graph.nodes, graph.edges, graph.viewport)).toEqual(diagram);
+  });
+
   it('grows custom components and centers arbitrary port counts', () => {
     const component = {
       id: 'mux',

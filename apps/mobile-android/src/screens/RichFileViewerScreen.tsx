@@ -54,7 +54,18 @@ import {
   getLogicOutputHandles,
   type LogicSignal,
 } from '../../../../src/components/logic/logicDiagramEvaluator';
-import type { LogicDiagramNode } from '../../../../src/types/logicDiagram';
+import {
+  isElectronicComponentKind,
+  type LogicDiagramNode,
+} from '../../../../src/types/logicDiagram';
+import {
+  getSchematicTerminals,
+  schematicSymbolDimensions,
+  schematicSymbolMarkup,
+  schematicSymbolTransform,
+  schematicSymbolViewBox,
+  schematicTerminalPoint,
+} from '../../../../src/components/logic/schematicSymbols';
 import type { HostedFileEntry } from '../mobileTauri';
 import { useMobileStore } from '../state/store';
 
@@ -1409,6 +1420,7 @@ function logicNodeLabel(node: LogicDiagramNode): string {
 function logicNodeWidth(node: LogicDiagramNode): number {
   if (node.kind === 'group') return node.width ?? MOBILE_LOGIC_GROUP_WIDTH;
   if (node.kind === 'component') return node.width ?? MOBILE_LOGIC_COMPONENT_WIDTH;
+  if (isElectronicComponentKind(node.kind)) return schematicSymbolDimensions(node.kind, node.rotation ?? 0).width;
   return node.width ?? MOBILE_LOGIC_NODE_WIDTH;
 }
 
@@ -1419,6 +1431,7 @@ function logicNodeHeight(node: LogicDiagramNode): number {
     const outputCount = node.component?.definition.ports.filter((port) => port.direction === 'output').length ?? 0;
     return Math.max(node.height ?? MOBILE_LOGIC_NODE_HEIGHT, 78 + Math.max(inputCount, outputCount, 1) * 15);
   }
+  if (isElectronicComponentKind(node.kind)) return schematicSymbolDimensions(node.kind, node.rotation ?? 0).height;
   return node.height ?? MOBILE_LOGIC_NODE_HEIGHT;
 }
 
@@ -1448,6 +1461,11 @@ function logicHandleAnchor(
   nodeById: Map<string, LogicDiagramNode>,
 ): TouchPoint {
   const position = absoluteLogicNodePosition(node, nodeById);
+  if (isElectronicComponentKind(node.kind)) {
+    const terminals = getSchematicTerminals(node.kind);
+    const point = schematicTerminalPoint(node.kind, handleId ?? terminals[0], node.rotation ?? 0);
+    return { x: position.x + point.x, y: position.y + point.y };
+  }
   const handles = type === 'source'
     ? getLogicOutputHandles(node.kind, node.component)
     : getLogicInputHandles(node.kind, node.component);
@@ -1754,9 +1772,9 @@ function LogicMobileViewer({
                 return (
                   <path
                     key={wire.id}
-                    className={`mobile-logic-wire ${logicSignalClass(evaluation.wireValues[wire.id])}`}
+                    className={`mobile-logic-wire ${logic.diagramMode === 'schematic' ? 'schematic' : logicSignalClass(evaluation.wireValues[wire.id])}`}
                     d={logicEdgePath(source, target)}
-                    markerEnd="url(#mobile-logic-arrow)"
+                    markerEnd={logic.diagramMode === 'schematic' ? undefined : 'url(#mobile-logic-arrow)'}
                   />
                 );
               })}
@@ -1810,6 +1828,33 @@ function MobileLogicNode({
   if (node.kind === 'group') {
     return (
       <div className="mobile-logic-node mobile-logic-group" style={style}>
+        <strong>{logicNodeLabel(node)}</strong>
+      </div>
+    );
+  }
+
+  if (isElectronicComponentKind(node.kind)) {
+    const kind = node.kind;
+    const rotation = node.rotation ?? 0;
+    const terminals = getSchematicTerminals(kind);
+    return (
+      <div className="mobile-logic-node mobile-logic-schematic" style={style}>
+        {terminals.map((handleId) => {
+          const point = schematicTerminalPoint(kind, handleId, rotation);
+          return (
+            <span
+              key={handleId}
+              className="mobile-logic-handle"
+              style={{ left: `${point.x - 4.5}px`, top: `${point.y}px` }}
+            />
+          );
+        })}
+        <svg viewBox={schematicSymbolViewBox(rotation)} aria-hidden>
+          <g
+            transform={schematicSymbolTransform(rotation) || undefined}
+            dangerouslySetInnerHTML={{ __html: schematicSymbolMarkup(kind, 'currentColor') }}
+          />
+        </svg>
         <strong>{logicNodeLabel(node)}</strong>
       </div>
     );

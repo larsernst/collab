@@ -830,6 +830,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "collab-circuit"
+version = "0.6.5"
+dependencies = [
+ "serde",
+ "thiserror 1.0.69",
+]
+
+[[package]]
 name = "collab-core"
 version = "0.6.5"
 dependencies = [

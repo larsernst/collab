@@ -5,6 +5,7 @@ import type {
   LogicDiagramDocument,
   LogicDiagramNode,
   LogicDiagramWire,
+  SchematicRotation,
 } from '../../types/logicDiagram';
 import { isElectronicComponentKind } from '../../types/logicDiagram';
 import { getSchematicSymbol } from './schematicSymbols';
@@ -14,6 +15,7 @@ export interface LogicFlowNodeData extends Record<string, unknown> {
   label?: string;
   value?: boolean;
   clock?: LogicDiagramNode['clock'];
+  rotation?: SchematicRotation;
   evaluatedValue?: boolean;
   inputSignals?: Record<string, boolean | undefined>;
   outputSignals?: Record<string, boolean | undefined>;
@@ -97,6 +99,7 @@ function toFlowNode(node: LogicDiagramNode, parent?: LogicDiagramNode): LogicFlo
       label: node.label,
       value: node.value,
       clock: node.clock,
+      rotation: node.rotation,
       component: node.component,
     },
     parentId: node.parentId,
@@ -124,6 +127,7 @@ function fromFlowNode(node: LogicFlowNode, parent?: LogicFlowNode): LogicDiagram
     label: typeof node.data.label === 'string' ? node.data.label : undefined,
     value: typeof node.data.value === 'boolean' ? node.data.value : undefined,
     clock: node.data.kind === 'clock' ? node.data.clock : undefined,
+    rotation: isElectronicComponentKind(node.data.kind) ? node.data.rotation ?? 0 : undefined,
     parentId: typeof node.parentId === 'string' ? node.parentId : undefined,
     // Only groups carry an explicit size; gate nodes are intrinsically sized, so
     // persisting their measured pixel dimensions would make the serialized
