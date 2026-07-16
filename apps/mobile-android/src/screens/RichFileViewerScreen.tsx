@@ -57,6 +57,7 @@ import {
 import {
   isElectronicComponentKind,
   type LogicDiagramNode,
+  type SchematicSymbolSet,
 } from '../../../../src/types/logicDiagram';
 import {
   getSchematicTerminals,
@@ -104,7 +105,13 @@ function statusForFile(file: HostedFileEntry, state: LoadState): string {
   return 'Viewer';
 }
 
-export function RichFileViewerScreen({ file }: { file: HostedFileEntry }) {
+export function RichFileViewerScreen({
+  file,
+  schematicSymbolSet = 'ansi',
+}: {
+  file: HostedFileEntry;
+  schematicSymbolSet?: SchematicSymbolSet;
+}) {
   const selected = useMobileStore((s) => s.selected);
   const statuses = useMobileStore((s) => s.statuses);
   const closeSheet = useMobileStore((s) => s.closeSheet);
@@ -233,6 +240,7 @@ export function RichFileViewerScreen({ file }: { file: HostedFileEntry }) {
           setZoom={setZoom}
           resetToken={resetToken}
           onWheel={handleWheel}
+          schematicSymbolSet={schematicSymbolSet}
         />
       ) : (
         <EmptyState
@@ -1567,12 +1575,14 @@ function LogicMobileViewer({
   setZoom,
   resetToken,
   onWheel,
+  schematicSymbolSet,
 }: {
   logic: LogicDiagramDocument;
   zoom: number;
   setZoom: Dispatch<SetStateAction<number>>;
   resetToken: number;
   onWheel: (event: WheelEvent<HTMLElement>) => void;
+  schematicSymbolSet: SchematicSymbolSet;
 }) {
   const stageRef = useRef<HTMLElement | null>(null);
   const dragRef = useRef<TouchPoint | null>(null);
@@ -1788,6 +1798,7 @@ function LogicMobileViewer({
                 onToggleInput={node.kind === 'input'
                   ? () => setInputValues((current) => ({ ...current, [node.id]: !(current[node.id] ?? node.value ?? false) }))
                   : undefined}
+                schematicSymbolSet={schematicSymbolSet}
               />
             ))}
           </div>
@@ -1809,11 +1820,13 @@ function MobileLogicNode({
   nodeById,
   value,
   onToggleInput,
+  schematicSymbolSet,
 }: {
   node: LogicDiagramNode;
   nodeById: Map<string, LogicDiagramNode>;
   value: LogicSignal;
   onToggleInput?: () => void;
+  schematicSymbolSet: SchematicSymbolSet;
 }) {
   const position = absoluteLogicNodePosition(node, nodeById);
   const inputHandles = getLogicInputHandles(node.kind, node.component);
@@ -1852,7 +1865,7 @@ function MobileLogicNode({
         <svg viewBox={schematicSymbolViewBox(rotation)} aria-hidden>
           <g
             transform={schematicSymbolTransform(rotation) || undefined}
-            dangerouslySetInnerHTML={{ __html: schematicSymbolMarkup(kind, 'currentColor') }}
+            dangerouslySetInnerHTML={{ __html: schematicSymbolMarkup(kind, 'currentColor', schematicSymbolSet) }}
           />
         </svg>
         <strong>{logicNodeLabel(node)}</strong>

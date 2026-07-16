@@ -2,14 +2,15 @@ import { describe, expect, it } from 'vitest';
 
 import {
   createEmptyLogicDiagram,
+  defaultSchematicElectricalParameters,
   normalizeLogicDiagramDocument,
   parseLogicDiagramDocument,
 } from './logicDiagram';
 
 describe('logic diagram document helpers', () => {
-  it('creates an empty v5 logic diagram document', () => {
+  it('creates an empty v6 logic diagram document', () => {
     expect(createEmptyLogicDiagram('Adder')).toEqual({
-      schemaVersion: 5,
+      schemaVersion: 6,
       kind: 'logic-diagram',
       diagramMode: 'logic',
       title: 'Adder',
@@ -53,7 +54,7 @@ describe('logic diagram document helpers', () => {
     });
 
     expect(normalized).toMatchObject({
-      schemaVersion: 5,
+      schemaVersion: 6,
       kind: 'logic-diagram',
       diagramMode: 'logic',
       components: [],
@@ -97,6 +98,55 @@ describe('logic diagram document helpers', () => {
       { id: 'r1', rotation: 90 },
       { id: 'c1', rotation: 0 },
     ]);
+  });
+
+  it('normalizes SI electrical values without inventing values for migrated nodes', () => {
+    const document = normalizeLogicDiagramDocument({
+      kind: 'logic-diagram',
+      diagramMode: 'schematic',
+      nodes: [
+        { id: 'r1', kind: 'resistor', position: { x: 0, y: 0 }, electrical: { resistanceOhms: 2200 } },
+        { id: 'r2', kind: 'resistor', position: { x: 0, y: 0 }, electrical: { resistanceOhms: -1 } },
+        { id: 'v1', kind: 'voltage-source', position: { x: 0, y: 0 }, electrical: { voltageVolts: -5 } },
+        { id: 'legacy', kind: 'capacitor', position: { x: 0, y: 0 } },
+      ],
+      wires: [],
+    });
+
+    expect(document.schemaVersion).toBe(6);
+    expect(document.nodes).toMatchObject([
+      { id: 'r1', electrical: { resistanceOhms: 2200 } },
+      { id: 'r2', electrical: undefined },
+      { id: 'v1', electrical: { voltageVolts: -5 } },
+      { id: 'legacy', electrical: undefined },
+    ]);
+  });
+
+  it('normalizes DC simulation probes and removes malformed probes', () => {
+    const document = normalizeLogicDiagramDocument({
+      kind: 'logic-diagram',
+      diagramMode: 'schematic',
+      nodes: [],
+      wires: [],
+      simulation: {
+        analysis: 'dc-operating-point',
+        probes: [
+          { id: 'p1', kind: 'node-voltage', nodeId: 'r1', handleId: 'terminal-a', label: 'Input' },
+          { id: 'bad', kind: 'temperature', nodeId: 'r1' },
+        ],
+      },
+    });
+
+    expect(document.simulation).toEqual({
+      analysis: 'dc-operating-point',
+      probes: [{ id: 'p1', kind: 'node-voltage', nodeId: 'r1', handleId: 'terminal-a', label: 'Input' }],
+    });
+  });
+
+  it('provides explicit electrical defaults only for newly inserted symbols', () => {
+    expect(defaultSchematicElectricalParameters('resistor')).toEqual({ resistanceOhms: 1000 });
+    expect(defaultSchematicElectricalParameters('voltage-source')).toEqual({ voltageVolts: 5 });
+    expect(defaultSchematicElectricalParameters('ground')).toBeUndefined();
   });
 
   it('parses valid .logic JSON and rejects unsupported shapes', () => {

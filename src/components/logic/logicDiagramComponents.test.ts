@@ -29,7 +29,7 @@ describe('logic diagram components', () => {
   it('normalizes v1 documents into the current logic document schema', () => {
     const normalized = doc();
 
-    expect(normalized.schemaVersion).toBe(5);
+    expect(normalized.schemaVersion).toBe(6);
     expect(normalized.diagramMode).toBe('logic');
     expect(normalized.components).toEqual([]);
     expect(normalized.nodes).toHaveLength(5);

@@ -9,6 +9,7 @@ export type Theme = 'dark' | 'midnight' | 'warm' | 'light';
 export type AccentColor = 'violet' | 'blue' | 'emerald' | 'rose' | 'orange' | 'cyan';
 export type IndentStyle = 'spaces' | 'tabs';
 export type ColorPreviewFormat = 'hex' | 'rgb' | 'hsl' | 'oklch' | 'oklab';
+export type SchematicSymbolSet = 'ansi' | 'iec';
 
 export interface ThemePrefs {
   theme: Theme;
@@ -20,6 +21,7 @@ export interface ThemePrefs {
   colorPreviewShowSwatch: boolean;
   colorPreviewTintText: boolean;
   colorPreviewFormats: Record<ColorPreviewFormat, boolean>;
+  schematicSymbolSet: SchematicSymbolSet;
 }
 
 export const TAB_WIDTH_OPTIONS = [2, 3, 4, 6, 8] as const;
@@ -50,6 +52,7 @@ export const DEFAULT_PREFS: ThemePrefs = {
   colorPreviewShowSwatch: true,
   colorPreviewTintText: true,
   colorPreviewFormats: { ...DEFAULT_COLOR_PREVIEW_FORMATS },
+  schematicSymbolSet: 'ansi',
 };
 
 export const THEMES: { id: Theme; label: string }[] = [
@@ -158,6 +161,7 @@ export function loadPrefs(): ThemePrefs {
             ? parsed.colorPreviewTintText
             : DEFAULT_PREFS.colorPreviewTintText,
         colorPreviewFormats: normalizeColorPreviewFormats(parsed.colorPreviewFormats),
+        schematicSymbolSet: parsed.schematicSymbolSet === 'iec' ? 'iec' : 'ansi',
       };
     }
   } catch {

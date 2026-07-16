@@ -39,11 +39,11 @@ Deferred until the core is stable:
 
 | Phase | Status | Goal |
 | --- | --- | --- |
-| 6.0 First-party foundation | In progress | Establish the Rust crate, typed model, deterministic behavior, and linear DC baseline. |
-| 6.1 Simulation document model | Planned | Add electrical values, probes, analyses, junctions, and source waveforms to `.logic`. |
-| 6.2 Schematic compiler | Planned | Compile validated `.logic` connectivity into deterministic electrical nets and solver systems. |
-| 6.3 DC operating point | Planned | Expand the baseline solver with diagnostics, nonlinear devices, and live overlays. |
-| 6.4 Runtime integration | Planned | Run, cancel, and stream simulations through typed Tauri commands on desktop and Android. |
+| 6.0 First-party foundation | Complete | Establish the Rust crate, typed model, deterministic behavior, and linear DC baseline. |
+| 6.1 Simulation document model | In progress | Add electrical values, probes, analyses, junctions, and source waveforms to `.logic`. |
+| 6.2 Schematic compiler | In progress | Compile validated `.logic` connectivity into deterministic electrical nets and solver systems. |
+| 6.3 DC operating point | In progress | Expand the baseline solver with diagnostics, nonlinear devices, and live overlays. |
+| 6.4 Runtime integration | In progress | Run, cancel, and stream simulations through typed Tauri commands on desktop and Android. |
 | 6.5 Transient and DC sweep | Planned | Add dynamic elements, time integration, sweeps, and plot inspection. |
 | 6.6 AC analysis | Planned | Add small-signal magnitude/phase analysis and Bode plots. |
 | 6.7 Mixed-signal simulation | Planned | Coordinate the existing digital evaluator with analog timesteps through explicit bridges. |
@@ -64,6 +64,15 @@ Baseline deliverables:
 - Node-voltage and per-component branch-current results with typed diagnostics.
 - Divider, source, current-source, invalid-value, singular-circuit, and ordering tests.
 
+Implemented baseline:
+
+- `collab-circuit` is a workspace crate used directly by the Tauri application on desktop and Android builds.
+- The deterministic compiler unions stable terminal handles through wires, supports terminal fan-out, ignores visual rotation/order, and returns terminal/wire source maps.
+- Schema v6 persists normalized SI electrical parameters plus DC analysis/probe configuration. Migrated documents do not receive invented values; newly inserted symbols receive explicit editable defaults.
+- `circuit_solve_dc` compiles and solves resistor, capacitor, inductor, switch, independent-voltage-source, diode, LED, and built-in NPN schematics through a typed frontend wrapper. Unsupported model references and malformed connectivity return structured diagnostics.
+- The desktop editor can edit persisted SI values, run the local DC solver, inspect node voltages/component currents, and highlight mapped wires whose solved node voltage is nonzero. Electrically relevant edits mark displayed results stale and remove their glow until rerun.
+- The bounded solver now uses damped Newton-Raphson for the built-in diode and LED models, reports iteration counts and convergence failures, treats capacitors as DC-open and inductors as DC-shorts, and keeps deterministic ordering. It remains a single native invocation; cancellation and streamed progress remain Phase 6.4 work before larger jobs are enabled.
+
 The dense solver is a correctness baseline, not the final large-circuit implementation. Its public model and result types must remain usable when the matrix backend is replaced with a sparse implementation.
 
 Gate:
@@ -72,7 +81,7 @@ Gate:
 
 ## Phase 6.1: Simulation Document Model
 
-Advance `.logic` to schema v6 with validated optional simulation data:
+Schema v6 is established. Continue expanding its validated optional simulation data:
 
 - Numeric SI component parameters plus display-unit preferences.
 - Stable built-in `modelRef` values for nonlinear components.
@@ -117,6 +126,16 @@ Testing:
 
 Acceptance fixtures must cover dividers, bridges, open/floating circuits, shorts, diode bias, LED current limiting, and deliberately difficult convergence cases against independently calculated or published reference values.
 
+Implemented slice:
+
+- Damped Newton-Raphson with bounded iterations, absolute/relative convergence checks, voltage-step limiting, and typed non-convergence diagnostics.
+- Built-in Shockley diode and LED models selected through stable `modelRef` values.
+- A deliberately scoped `builtin:npn` forward-active model with exponential base-emitter current and fixed current gain. Saturation, reverse-active behavior, breakdown, capacitances, Early effect, and temperature variation remain explicitly unsupported.
+- DC operating-point behavior for capacitors (open), inductors (ideal short with branch current), and resistive open/closed switches.
+- Iteration metadata in the typed Tauri result and desktop results panel.
+
+Remaining before Phase 6.3 is complete: source-mapped validation beyond model IDs, power/polarity/direction readouts, difficult convergence fixtures, NPN saturation handling or explicit operating-region diagnostics, and sparse-backend evaluation.
+
 ## Phase 6.4: Runtime Integration
 
 - Add typed Tauri wrappers for validate, start, cancel, status, and bounded result reads.
@@ -128,7 +147,7 @@ Acceptance fixtures must cover dividers, bridges, open/floating circuits, shorts
 
 ## Phase 6.5: Transient And DC Sweep
 
-- Add capacitor and inductor companion models.
+- Add transient capacitor and inductor companion models (their DC-open/DC-short behavior is already implemented).
 - Begin with backward Euler for stability, then add trapezoidal integration with oscillation detection and method fallback.
 - Add adaptive timesteps with explicit minimum/maximum bounds and rejection limits.
 - Add source sweeps and bounded typed-array result buffers.

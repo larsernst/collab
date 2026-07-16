@@ -16,6 +16,7 @@ export interface LogicFlowNodeData extends Record<string, unknown> {
   value?: boolean;
   clock?: LogicDiagramNode['clock'];
   rotation?: SchematicRotation;
+  electrical?: LogicDiagramNode['electrical'];
   evaluatedValue?: boolean;
   inputSignals?: Record<string, boolean | undefined>;
   outputSignals?: Record<string, boolean | undefined>;
@@ -24,6 +25,7 @@ export interface LogicFlowNodeData extends Record<string, unknown> {
 
 export interface LogicFlowEdgeData extends Record<string, unknown> {
   signal?: boolean;
+  analogVoltage?: number;
 }
 
 export type LogicFlowNode = Node<LogicFlowNodeData, 'logicGate'>;
@@ -100,6 +102,7 @@ function toFlowNode(node: LogicDiagramNode, parent?: LogicDiagramNode): LogicFlo
       value: node.value,
       clock: node.clock,
       rotation: node.rotation,
+      electrical: node.electrical,
       component: node.component,
     },
     parentId: node.parentId,
@@ -128,6 +131,7 @@ function fromFlowNode(node: LogicFlowNode, parent?: LogicFlowNode): LogicDiagram
     value: typeof node.data.value === 'boolean' ? node.data.value : undefined,
     clock: node.data.kind === 'clock' ? node.data.clock : undefined,
     rotation: isElectronicComponentKind(node.data.kind) ? node.data.rotation ?? 0 : undefined,
+    electrical: isElectronicComponentKind(node.data.kind) ? node.data.electrical : undefined,
     parentId: typeof node.parentId === 'string' ? node.parentId : undefined,
     // Only groups carry an explicit size; gate nodes are intrinsically sized, so
     // persisting their measured pixel dimensions would make the serialized

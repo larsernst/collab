@@ -20,6 +20,8 @@ import {
   Table2,
   Trash2,
   Ungroup,
+  X,
+  Zap,
 } from 'lucide-react';
 import { toast } from 'sonner';
 
@@ -33,6 +35,7 @@ import {
   DialogTitle,
 } from '../components/ui/dialog';
 import { Input } from '../components/ui/input';
+import { Checkbox } from '../components/ui/checkbox';
 import {
   Select,
   SelectContent,
@@ -101,8 +104,10 @@ import { useLiveDocumentStatus } from '../lib/useLiveDocumentStatus';
 import { getMarkdownImageTarget } from '../lib/noteAssets';
 import { buildLogicDiagramSvg } from '../lib/logicDiagramExport';
 import { flattenVaultFiles } from '../lib/vaultLinks';
+import { tauriCommands, type CircuitDcResult } from '../lib/tauri';
 import {
   createEmptyLogicDiagram,
+  defaultSchematicElectricalParameters,
   normalizeLogicDiagramDocument,
   type LogicDiagramDocument,
   type LogicComponentDefinition,
@@ -111,6 +116,8 @@ import {
   type ElectronicComponentKind,
   type LogicDiagramMode,
   type LogicNodeKind,
+  type SchematicElectricalParameters,
+  type SchematicSymbolSet,
 } from '../types/logicDiagram';
 import { isElectronicComponentKind } from '../types/logicDiagram';
 import {
@@ -377,6 +384,104 @@ function liveLogicStatePreservesCanonicalEntities(
     && canonical.wires.every((wire) => liveWireIds.has(wire.id));
 }
 
+const ANALOG_ACTIVE_VOLTAGE = 1e-9;
+
+type NumericElectricalField = 'resistanceOhms' | 'capacitanceFarads' | 'inductanceHenries' | 'voltageVolts';
+
+function schematicNumericField(kind: ElectronicComponentKind): {
+  field: NumericElectricalField;
+  label: string;
+  unit: string;
+  positive: boolean;
+} | null {
+  switch (kind) {
+    case 'resistor': return { field: 'resistanceOhms', label: 'Resistance', unit: 'Ω', positive: true };
+    case 'capacitor': return { field: 'capacitanceFarads', label: 'Capacitance', unit: 'F', positive: true };
+    case 'inductor': return { field: 'inductanceHenries', label: 'Inductance', unit: 'H', positive: true };
+    case 'voltage-source': return { field: 'voltageVolts', label: 'DC voltage', unit: 'V', positive: false };
+    default: return null;
+  }
+}
+
+function formatEngineering(value: number, unit: string) {
+  if (!Number.isFinite(value)) return `— ${unit}`;
+  if (value === 0) return `0 ${unit}`;
+  const magnitude = Math.abs(value);
+  const prefixes = [
+    { threshold: 1e9, scale: 1e9, prefix: 'G' },
+    { threshold: 1e6, scale: 1e6, prefix: 'M' },
+    { threshold: 1e3, scale: 1e3, prefix: 'k' },
+    { threshold: 1, scale: 1, prefix: '' },
+    { threshold: 1e-3, scale: 1e-3, prefix: 'm' },
+    { threshold: 1e-6, scale: 1e-6, prefix: 'µ' },
+    { threshold: 1e-9, scale: 1e-9, prefix: 'n' },
+    { threshold: 0, scale: 1e-12, prefix: 'p' },
+  ];
+  const selected = prefixes.find((candidate) => magnitude >= candidate.threshold) ?? prefixes[prefixes.length - 1];
+  return `${Number((value / selected.scale).toPrecision(4))} ${selected.prefix}${unit}`;
+}
+
+function schematicValueLabel(kind: ElectronicComponentKind, electrical?: SchematicElectricalParameters) {
+  const numeric = schematicNumericField(kind);
+  if (numeric) {
+    const value = electrical?.[numeric.field];
+    return typeof value === 'number' ? formatEngineering(value, numeric.unit) : 'Value required';
+  }
+  if (kind === 'switch') return electrical?.switchClosed ? 'Closed' : 'Open';
+  if (kind === 'ground') return 'Reference';
+  return electrical?.modelRef?.replace(/^builtin:/, '') ?? 'Model required';
+}
+
+function circuitErrorText(error: unknown) {
+  if (typeof error === 'string') {
+    try {
+      const parsed = JSON.parse(error) as unknown;
+      if (parsed !== error) return circuitErrorText(parsed);
+    } catch {
+      return error;
+    }
+  }
+  if (!error || typeof error !== 'object') return String(error);
+  const record = error as Record<string, unknown>;
+  const detail = record.detail && typeof record.detail === 'object'
+    ? record.detail as Record<string, unknown>
+    : record;
+  const code = typeof detail.code === 'string' ? detail.code : '';
+  const context = detail.context && typeof detail.context === 'object'
+    ? detail.context as Record<string, unknown>
+    : {};
+  switch (code) {
+    case 'missingGround': return 'Add one ground reference before running the simulation.';
+    case 'multipleGrounds': return 'This baseline currently requires exactly one ground symbol.';
+    case 'unsupportedComponent':
+      return `${String(context.kind ?? 'This component')} is not supported by the current DC solver.`;
+    case 'unsupportedModel':
+      return `${String(context.modelRef ?? 'This model')} is not supported for ${String(context.nodeId ?? 'the component')}.`;
+    case 'missingElectricalValue':
+      return `Configure ${String(context.field ?? 'the electrical value')} for ${String(context.nodeId ?? 'the component')}.`;
+    case 'missingWireHandle': return 'A wire is not attached to a valid component terminal.';
+    case 'unknownWireNode':
+    case 'unknownTerminal': return 'A wire references a component or terminal that no longer exists.';
+    case 'singularSystem': return 'The circuit is floating, underconstrained, or contains conflicting ideal sources.';
+    case 'invalidResistance': return 'Every resistor must have resistance greater than zero.';
+    case 'invalidCapacitance': return 'Every capacitor must have capacitance greater than zero.';
+    case 'invalidInductance': return 'Every inductor must have inductance greater than zero.';
+    case 'invalidSwitchResistance': return 'The switch model contains an invalid resistance.';
+    case 'invalidDiodeModel': return 'The diode model contains invalid parameters.';
+    case 'invalidBipolarModel': return 'The transistor model contains invalid parameters.';
+    case 'convergenceFailed':
+      return `The nonlinear DC solution did not converge after ${String(context.iterations ?? 'the maximum number of')} iterations.`;
+    case 'nonFiniteValue': return 'A component contains an invalid numerical value.';
+    default:
+      if (typeof record.message === 'string') return record.message;
+      try {
+        return JSON.stringify(error);
+      } catch {
+        return 'The circuit could not be simulated.';
+      }
+  }
+}
+
 function logicNodeActiveOverlay(kind: LogicNodeKind, data: LogicFlowNode['data']): CSSProperties | undefined {
   if (kind === 'group') return undefined;
   const inputHandles = getLogicInputHandles(kind, data.component);
@@ -408,6 +513,7 @@ function SharpLogicNode({
   onContextMenu,
   onHandlePointerDown,
   onHandlePointerUp,
+  schematicSymbolSet,
 }: {
   node: LogicFlowNode;
   viewport: Viewport;
@@ -418,6 +524,7 @@ function SharpLogicNode({
   onContextMenu: (event: ReactMouseEvent<HTMLDivElement>, node: LogicFlowNode) => void;
   onHandlePointerDown: (event: ReactPointerEvent<HTMLButtonElement>, node: LogicFlowNode, handleId: string) => void;
   onHandlePointerUp: (event: ReactPointerEvent<HTMLButtonElement>, node: LogicFlowNode, handleId: string) => void;
+  schematicSymbolSet: SchematicSymbolSet;
 }) {
   const { data, selected } = node;
   const kind = data.kind;
@@ -464,7 +571,7 @@ function SharpLogicNode({
   if (isElectronicComponentKind(kind)) {
     const rotation = data.rotation ?? 0;
     const terminals = getSchematicTerminals(kind);
-    const symbolMarkup = schematicSymbolMarkup(kind);
+    const symbolMarkup = schematicSymbolMarkup(kind, 'currentColor', schematicSymbolSet);
     return (
       <div
         onPointerDown={(event) => onPointerDown(event, node)}
@@ -510,10 +617,11 @@ function SharpLogicNode({
           />
         </svg>
         <span
-          className="pointer-events-none absolute max-w-full truncate font-medium text-muted-foreground"
+          className="pointer-events-none absolute max-w-[140%] truncate font-medium text-muted-foreground"
           style={{ bottom: -2 * zoom, fontSize: 10 * zoom, lineHeight: 1.1 }}
         >
-          {logicNodeLabel({ kind, label: data.label })}
+          <span>{logicNodeLabel({ kind, label: data.label })}</span>
+          <span aria-hidden="true"> · {schematicValueLabel(kind, data.electrical)}</span>
         </span>
       </div>
     );
@@ -745,6 +853,7 @@ function SharpLogicEdge({
         onDoubleClick={() => onDoubleClick(edge)}
       />
       <path
+        data-schematic-live={schematic && signal === true ? 'true' : undefined}
         d={path}
         fill="none"
         stroke={stroke}
@@ -772,6 +881,7 @@ function LogicDiagramEditor({ relativePath }: Props) {
   const activeTabPath = useEditorStore((state) => state.activeTabPath);
   const openTab = useEditorStore((state) => state.openTab);
   const setActiveView = useUiStore((state) => state.setActiveView);
+  const schematicSymbolSet = useUiStore((state) => state.schematicSymbolSet);
   const readOnly = vault ? isVaultReadOnly(vault) : false;
   const { userId: myUserId, userName: myUserName, userColor: myUserColor } = useCollabIdentity();
   const [nodes, setNodes] = useState<LogicFlowNode[]>([]);
@@ -807,6 +917,14 @@ function LogicDiagramEditor({ relativePath }: Props) {
   const [clockPhaseValue, setClockPhaseValue] = useState('0');
   const [clockRunning, setClockRunning] = useState(false);
   const [clockElapsedMs, setClockElapsedMs] = useState(0);
+  const [schematicSettingsNodeId, setSchematicSettingsNodeId] = useState<string | null>(null);
+  const [schematicValueInput, setSchematicValueInput] = useState('');
+  const [schematicSwitchClosed, setSchematicSwitchClosed] = useState(false);
+  const [circuitRunning, setCircuitRunning] = useState(false);
+  const [circuitResult, setCircuitResult] = useState<CircuitDcResult | null>(null);
+  const [circuitError, setCircuitError] = useState<string | null>(null);
+  const [circuitResultSignature, setCircuitResultSignature] = useState<string | null>(null);
+  const [circuitResultsOpen, setCircuitResultsOpen] = useState(false);
   const clockStartedAtRef = useRef(Date.now());
   const [logicComponents, setLogicComponents] = useState<LogicComponentDefinition[]>([]);
   const [loadingComponents, setLoadingComponents] = useState(false);
@@ -865,6 +983,8 @@ function LogicDiagramEditor({ relativePath }: Props) {
         label: node.data.label ?? null,
         value: node.data.value ?? null,
         clock: node.data.clock ?? null,
+        rotation: node.data.rotation ?? null,
+        electrical: node.data.electrical ?? null,
         component: node.data.component ?? null,
         parentId: node.parentId ?? null,
         x: node.position.x,
@@ -900,6 +1020,25 @@ function LogicDiagramEditor({ relativePath }: Props) {
     () => edges.filter((edge) => edge.selected).map((edge) => edge.id),
     [edges],
   );
+  const circuitInputSignature = useMemo(() => JSON.stringify({
+    nodes: nodes
+      .filter((node) => isElectronicComponentKind(node.data.kind))
+      .map((node) => ({ id: node.id, kind: node.data.kind, electrical: node.data.electrical ?? null }))
+      .sort((left, right) => left.id.localeCompare(right.id)),
+    wires: edges
+      .map((edge) => ({
+        id: edge.id,
+        source: edge.source,
+        target: edge.target,
+        sourceHandle: edge.sourceHandle ?? null,
+        targetHandle: edge.targetHandle ?? null,
+      }))
+      .sort((left, right) => left.id.localeCompare(right.id)),
+  }), [edges, nodes]);
+  const circuitResultStale = Boolean(
+    circuitResult && circuitResultSignature && circuitResultSignature !== circuitInputSignature,
+  );
+  const activeCircuitResult = circuitResultStale ? null : circuitResult;
   const evaluation = useMemo(() => {
     if (diagram.diagramMode === 'schematic') {
       return { nodeValues: {}, nodeOutputValues: {}, wireValues: {}, warnings: [] };
@@ -960,17 +1099,30 @@ function LogicDiagramEditor({ relativePath }: Props) {
       outputSignals: evaluation.nodeOutputValues[node.id] ?? {},
     },
   })), [evaluation.nodeOutputValues, evaluation.nodeValues, inputSignalsByNode, nodes]);
+  const circuitWireVoltages = useMemo(() => {
+    const voltages = new Map<string, number>();
+    if (!activeCircuitResult) return voltages;
+    for (const mapping of activeCircuitResult.sourceMap.wires) {
+      const voltage = activeCircuitResult.operatingPoint.nodeVoltages[mapping.electricalNode];
+      if (typeof voltage === 'number') voltages.set(mapping.wireId, voltage);
+    }
+    return voltages;
+  }, [activeCircuitResult]);
   const renderedEdges = useMemo(() => edges.map((edge) => {
-    const signal = evaluation.wireValues[edge.id];
+    const analogVoltage = circuitWireVoltages.get(edge.id);
+    const signal = diagram.diagramMode === 'schematic'
+      ? typeof analogVoltage === 'number' && Math.abs(analogVoltage) > ANALOG_ACTIVE_VOLTAGE
+      : evaluation.wireValues[edge.id];
     return {
       ...edge,
       type: 'logicWire' as const,
       data: {
         ...edge.data,
         signal,
+        analogVoltage,
       },
     };
-  }), [edges, evaluation.wireValues]);
+  }), [circuitWireVoltages, diagram.diagramMode, edges, evaluation.wireValues]);
   const nodesById = useMemo(() => new Map(renderedNodes.map((node) => [node.id, node])), [renderedNodes]);
   const edgeGeometries = useMemo(() => new Map(renderedEdges
     .map((edge) => [edge.id, logicEdgePath(edge, nodesById, viewport)] as const)
@@ -1257,7 +1409,7 @@ function LogicDiagramEditor({ relativePath }: Props) {
     try {
       await controller.requestSave('manual');
       const current = fromFlowGraph(diagram, nodes, edges, getViewport() as Viewport);
-      const svg = buildLogicDiagramSvg(current, relativePath);
+      const svg = buildLogicDiagramSvg(current, relativePath, schematicSymbolSet);
       const existingPaths = new Set(flattenVaultFiles(fileTree).map((entry) => entry.relativePath.toLowerCase()));
       if (!vaultTreeHasPath(fileTree, 'Pictures')) {
         await client.createFolder('Pictures');
@@ -1283,7 +1435,7 @@ function LogicDiagramEditor({ relativePath }: Props) {
     } finally {
       setExporting(false);
     }
-  }, [client, controller, diagram, edges, fileTree, getViewport, markSaved, nodes, noteTarget, openTab, readOnly, refreshFileTree, relativePath, setActiveView, setForceReloadPath, title, vault]);
+  }, [client, controller, diagram, edges, fileTree, getViewport, markSaved, nodes, noteTarget, openTab, readOnly, refreshFileTree, relativePath, schematicSymbolSet, setActiveView, setForceReloadPath, title, vault]);
 
   const getMenuPosition = useCallback((clientX: number, clientY: number) => {
     const rect = viewportRef.current?.getBoundingClientRect();
@@ -1639,7 +1791,7 @@ function LogicDiagramEditor({ relativePath }: Props) {
         type: 'logicGate',
         position: snapPosition(position),
         zIndex: 1,
-        data: { kind },
+        data: { kind, electrical: defaultSchematicElectricalParameters(kind) },
       },
     ]);
     markChanged();
@@ -1896,6 +2048,79 @@ function LogicDiagramEditor({ relativePath }: Props) {
     markChanged();
   }, [clockDutyValue, clockPeriodValue, clockPhaseValue, clockSettingsNodeId, markChanged, readOnly, setNodes]);
 
+  const openSchematicSettings = useCallback((node: LogicFlowNode) => {
+    if (!isElectronicComponentKind(node.data.kind) || node.data.kind === 'ground') return;
+    const numeric = schematicNumericField(node.data.kind);
+    if (numeric) {
+      setSchematicValueInput(String(node.data.electrical?.[numeric.field] ?? ''));
+    } else if (node.data.kind === 'switch') {
+      setSchematicSwitchClosed(node.data.electrical?.switchClosed === true);
+      setSchematicValueInput('');
+    } else {
+      setSchematicValueInput(node.data.electrical?.modelRef ?? '');
+    }
+    setSchematicSettingsNodeId(node.id);
+  }, []);
+
+  const saveSchematicSettings = useCallback(() => {
+    if (!schematicSettingsNodeId || readOnly) return;
+    const node = nodes.find((candidate) => candidate.id === schematicSettingsNodeId);
+    if (!node || !isElectronicComponentKind(node.data.kind) || node.data.kind === 'ground') return;
+
+    let electrical: SchematicElectricalParameters;
+    const numeric = schematicNumericField(node.data.kind);
+    if (numeric) {
+      const trimmedValue = schematicValueInput.trim();
+      const value = Number(trimmedValue);
+      if (!trimmedValue || !Number.isFinite(value) || (numeric.positive && value <= 0)) {
+        toast.error(`${numeric.label} must be ${numeric.positive ? 'greater than zero' : 'a valid number'}.`);
+        return;
+      }
+      electrical = { [numeric.field]: value };
+    } else if (node.data.kind === 'switch') {
+      electrical = { switchClosed: schematicSwitchClosed };
+    } else {
+      const modelRef = schematicValueInput.trim();
+      if (!modelRef) {
+        toast.error('Select or enter a component model.');
+        return;
+      }
+      electrical = { modelRef };
+    }
+
+    setNodes((current) => current.map((candidate) => candidate.id === schematicSettingsNodeId
+      ? { ...candidate, data: { ...candidate.data, electrical } }
+      : candidate));
+    setSchematicSettingsNodeId(null);
+    markChanged();
+  }, [markChanged, nodes, readOnly, schematicSettingsNodeId, schematicSwitchClosed, schematicValueInput, setNodes]);
+
+  const runDcSimulation = useCallback(async () => {
+    if (diagram.diagramMode !== 'schematic' || circuitRunning) return;
+    const document = fromFlowGraph(diagram, nodes, edges, viewport);
+    setCircuitRunning(true);
+    setCircuitError(null);
+    setCircuitResultsOpen(true);
+    try {
+      const result = await tauriCommands.circuitSolveDc(document);
+      setCircuitResult(result);
+      setCircuitResultSignature(circuitInputSignature);
+    } catch (error) {
+      setCircuitResult(null);
+      setCircuitResultSignature(null);
+      setCircuitError(circuitErrorText(error));
+    } finally {
+      setCircuitRunning(false);
+    }
+  }, [circuitInputSignature, circuitRunning, diagram, edges, nodes, viewport]);
+
+  const resetCircuitResults = useCallback(() => {
+    setCircuitResult(null);
+    setCircuitResultSignature(null);
+    setCircuitError(null);
+    setCircuitResultsOpen(false);
+  }, []);
+
   const startClocks = useCallback(() => {
     clockStartedAtRef.current = Date.now() - clockElapsedMs;
     setClockRunning(true);
@@ -1908,6 +2133,11 @@ function LogicDiagramEditor({ relativePath }: Props) {
 
   const handleNodeDoubleClick = useCallback((node: LogicFlowNode) => {
     if (readOnly) return;
+    if (isElectronicComponentKind(node.data.kind)) {
+      if (node.data.kind === 'ground') openRenameNode(node.id);
+      else openSchematicSettings(node);
+      return;
+    }
     if (node.data.kind === 'input') {
       toggleInputNodes([node.id]);
       return;
@@ -1922,7 +2152,7 @@ function LogicDiagramEditor({ relativePath }: Props) {
     }
     // Logic gates (and/or/not/xor/...) — open label editor
     openRenameNode(node.id);
-  }, [openClockSettings, openRenameNode, readOnly, toggleInputNodes]);
+  }, [openClockSettings, openRenameNode, openSchematicSettings, readOnly, toggleInputNodes]);
 
   const deleteSelection = useCallback(() => {
     if (readOnly) return;
@@ -2493,6 +2723,13 @@ function LogicDiagramEditor({ relativePath }: Props) {
   const contextTargetEdge = contextMenu?.kind === 'edge'
     ? edges.find((edge) => edge.id === contextMenu.edgeId)
     : null;
+  const schematicSettingsNode = schematicSettingsNodeId
+    ? nodes.find((node) => node.id === schematicSettingsNodeId && isElectronicComponentKind(node.data.kind))
+    : null;
+  const schematicSettingsKind = schematicSettingsNode && isElectronicComponentKind(schematicSettingsNode.data.kind)
+    ? schematicSettingsNode.data.kind
+    : null;
+  const schematicSettingsNumeric = schematicSettingsKind ? schematicNumericField(schematicSettingsKind) : null;
 
   const runContextAction = (action: () => void) => {
     action();
@@ -2608,6 +2845,21 @@ function LogicDiagramEditor({ relativePath }: Props) {
         >
           <RotateCw size={14} />
         </DocumentTopBarIconButton>
+        <DocumentTopBarButton
+          onClick={() => void runDcSimulation()}
+          disabled={loading || circuitRunning || nodes.length === 0}
+          title="Compile and solve the DC operating point locally"
+        >
+          {circuitRunning ? <Loader2 size={14} className="animate-spin" /> : <Play size={14} />}
+          Run DC
+        </DocumentTopBarButton>
+        <DocumentTopBarIconButton
+          title={circuitResultsOpen ? 'Hide DC results' : 'Show DC results'}
+          onClick={() => setCircuitResultsOpen((open) => !open)}
+          disabled={!circuitResult && !circuitError}
+        >
+          <Zap size={14} />
+        </DocumentTopBarIconButton>
       </div>
       )}
       <div className={documentTopBarGroupClass}>
@@ -2707,6 +2959,46 @@ function LogicDiagramEditor({ relativePath }: Props) {
     return { gateCount, groupCount, componentCount, schematicCount };
   }, [nodes]);
 
+  const circuitVoltageRows = useMemo(() => {
+    if (!circuitResult) return [];
+    const nodeById = new Map(nodes.map((node) => [node.id, node]));
+    const terminalsByNet = new Map<string, CircuitDcResult['sourceMap']['terminals']>();
+    for (const mapping of circuitResult.sourceMap.terminals) {
+      const entries = terminalsByNet.get(mapping.electricalNode) ?? [];
+      entries.push(mapping);
+      terminalsByNet.set(mapping.electricalNode, entries);
+    }
+    return Object.entries(circuitResult.operatingPoint.nodeVoltages)
+      .map(([electricalNode, voltage]) => {
+        const terminal = terminalsByNet.get(electricalNode)?.[0];
+        const sourceNode = terminal ? nodeById.get(terminal.terminal.nodeId) : null;
+        const label = electricalNode === '0'
+          ? 'Ground'
+          : terminal && sourceNode
+          ? `${logicNodeLabel({ kind: sourceNode.data.kind, label: sourceNode.data.label })} · ${terminal.terminal.handleId}`
+          : electricalNode;
+        return { electricalNode, label, voltage };
+      })
+      .sort((left, right) => left.label.localeCompare(right.label));
+  }, [circuitResult, nodes]);
+
+  const circuitCurrentRows = useMemo(() => {
+    if (!circuitResult) return [];
+    const nodeById = new Map(nodes.map((node) => [node.id, node]));
+    return Object.entries(circuitResult.operatingPoint.componentCurrents)
+      .map(([componentId, current]) => {
+        const sourceNode = nodeById.get(componentId);
+        return {
+          componentId,
+          label: sourceNode
+            ? `${logicNodeLabel({ kind: sourceNode.data.kind, label: sourceNode.data.label })}${sourceNode.data.kind === 'transistor' ? ' · collector' : ''}`
+            : componentId,
+          current,
+        };
+      })
+      .sort((left, right) => left.label.localeCompare(right.label));
+  }, [circuitResult, nodes]);
+
   const meta = (
     <div className="flex items-center gap-2">
       {componentEditSession ? (
@@ -2717,7 +3009,7 @@ function LogicDiagramEditor({ relativePath }: Props) {
       <LivePeers peers={livePeers} />
       <div className="rounded-full border border-border/60 px-2 py-1 text-[11px] text-muted-foreground">
         {diagram.diagramMode === 'schematic'
-          ? `${counts.schematicCount} symbols · ${counts.groupCount} groups · ${edges.length} wires · static`
+          ? `${counts.schematicCount} symbols · ${counts.groupCount} groups · ${edges.length} wires · ${circuitRunning ? 'solving' : circuitResultStale ? 'DC stale' : circuitResult ? 'DC result' : 'DC ready'}`
           : `${counts.gateCount} gates · ${counts.componentCount} components · ${counts.groupCount} groups · ${edges.length} wires`}
       </div>
     </div>
@@ -2738,6 +3030,72 @@ function LogicDiagramEditor({ relativePath }: Props) {
             <Loader2 size={16} className="mr-2 animate-spin" />
             Loading {diagram.diagramMode === 'schematic' ? 'electronic schematic' : 'logic diagram'}...
           </div>
+        )}
+        {diagram.diagramMode === 'schematic' && circuitResultsOpen && (
+          <aside className="absolute bottom-3 right-3 z-20 flex max-h-[min(68vh,520px)] w-[min(360px,calc(100%-24px))] flex-col overflow-hidden rounded-md border border-border/70 bg-popover/96 text-popover-foreground shadow-xl backdrop-blur-xs-webkit">
+            <div className="flex h-10 shrink-0 items-center gap-2 border-b border-border/60 px-3">
+              {circuitRunning ? <Loader2 size={15} className="animate-spin text-primary" /> : <Zap size={15} className="text-primary" />}
+              <div className="min-w-0 flex-1 truncate text-sm font-semibold">DC operating point</div>
+              <button
+                type="button"
+                title="Clear DC results"
+                aria-label="Clear DC results"
+                className="grid size-7 place-items-center rounded text-muted-foreground hover:bg-accent hover:text-accent-foreground"
+                onClick={resetCircuitResults}
+              >
+                <X size={14} />
+              </button>
+            </div>
+            <div className="min-h-0 overflow-y-auto px-3 py-2.5 text-xs">
+              {circuitRunning && (
+                <div className="flex items-center gap-2 py-4 text-muted-foreground">
+                  <Loader2 size={14} className="animate-spin" />
+                  Compiling and solving locally...
+                </div>
+              )}
+              {circuitError && !circuitRunning && (
+                <div className="border-l-2 border-destructive pl-3 text-destructive">
+                  <div className="font-semibold">Simulation failed</div>
+                  <div className="mt-1 leading-relaxed text-foreground/80">{circuitError}</div>
+                </div>
+              )}
+              {circuitResultStale && circuitResult && (
+                <div className="mb-3 border-l-2 border-amber-500 pl-3 text-amber-600 dark:text-amber-400">
+                  Results are stale. Run DC again to update wire highlighting and values.
+                </div>
+              )}
+              {circuitResult && !circuitRunning && (
+                <div className={cn('space-y-3', circuitResultStale && 'opacity-55')}>
+                  <div className="text-[11px] text-muted-foreground">
+                    Converged in {circuitResult.operatingPoint.iterations}{' '}
+                    {circuitResult.operatingPoint.iterations === 1 ? 'iteration' : 'iterations'}
+                  </div>
+                  <section>
+                    <h3 className="mb-1.5 font-semibold text-foreground">Node voltages</h3>
+                    <div className="divide-y divide-border/50 border-y border-border/50">
+                      {circuitVoltageRows.map((row) => (
+                        <div key={row.electricalNode} className="flex items-center justify-between gap-3 py-1.5">
+                          <span className="min-w-0 truncate text-muted-foreground" title={row.label}>{row.label}</span>
+                          <span className="shrink-0 font-mono text-foreground">{formatEngineering(row.voltage, 'V')}</span>
+                        </div>
+                      ))}
+                    </div>
+                  </section>
+                  <section>
+                    <h3 className="mb-1.5 font-semibold text-foreground">Component currents</h3>
+                    <div className="divide-y divide-border/50 border-y border-border/50">
+                      {circuitCurrentRows.map((row) => (
+                        <div key={row.componentId} className="flex items-center justify-between gap-3 py-1.5">
+                          <span className="min-w-0 truncate text-muted-foreground" title={row.label}>{row.label}</span>
+                          <span className="shrink-0 font-mono text-foreground">{formatEngineering(row.current, 'A')}</span>
+                        </div>
+                      ))}
+                    </div>
+                  </section>
+                </div>
+              )}
+            </div>
+          </aside>
         )}
         {contextMenu && (
           <>
@@ -2850,14 +3208,26 @@ function LogicDiagramEditor({ relativePath }: Props) {
                     Label {contextTargetNode.data.kind === 'output' ? 'output' : contextTargetNode.data.kind === 'component' ? 'component' : isElectronicComponentKind(contextTargetNode.data.kind) ? 'symbol' : 'gate'}
                   </button>
                   {isElectronicComponentKind(contextTargetNode.data.kind) && (
-                    <button
-                      type="button"
-                      className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm outline-none transition-colors hover:bg-accent hover:text-accent-foreground focus-visible:bg-accent"
-                      onClick={() => runContextAction(() => rotateSelectedSchematicSymbols([contextTargetNode.id]))}
-                    >
-                      <RotateCw size={14} />
-                      Rotate clockwise
-                    </button>
+                    <>
+                      {contextTargetNode.data.kind !== 'ground' && (
+                        <button
+                          type="button"
+                          className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm outline-none transition-colors hover:bg-accent hover:text-accent-foreground focus-visible:bg-accent"
+                          onClick={() => runContextAction(() => openSchematicSettings(contextTargetNode))}
+                        >
+                          <Zap size={14} />
+                          Edit electrical value
+                        </button>
+                      )}
+                      <button
+                        type="button"
+                        className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm outline-none transition-colors hover:bg-accent hover:text-accent-foreground focus-visible:bg-accent"
+                        onClick={() => runContextAction(() => rotateSelectedSchematicSymbols([contextTargetNode.id]))}
+                      >
+                        <RotateCw size={14} />
+                        Rotate clockwise
+                      </button>
+                    </>
                   )}
                 </>
               )}
@@ -3063,6 +3433,7 @@ function LogicDiagramEditor({ relativePath }: Props) {
                   onContextMenu={handleNodeContextMenu}
                   onHandlePointerDown={handleOutputPointerDown}
                   onHandlePointerUp={handleInputPointerUp}
+                  schematicSymbolSet={schematicSymbolSet}
                 />
               </div>
             ))}
@@ -3351,6 +3722,66 @@ function LogicDiagramEditor({ relativePath }: Props) {
             </label>
             <DialogFooter className="border-none bg-transparent -mx-0 -mb-0 px-0 pb-0">
               <Button type="button" variant="outline" onClick={() => setClockSettingsNodeId(null)}>Cancel</Button>
+              <Button type="submit" disabled={readOnly}>Apply</Button>
+            </DialogFooter>
+          </form>
+        </DialogContent>
+      </Dialog>
+      <Dialog open={schematicSettingsNodeId !== null} onOpenChange={(open) => !open && setSchematicSettingsNodeId(null)}>
+        <DialogContent className="sm:max-w-sm">
+          <DialogHeader>
+            <DialogTitle>
+              {schematicSettingsNode && schematicSettingsKind
+                ? `${logicNodeLabel({ kind: schematicSettingsKind, label: schematicSettingsNode.data.label })} settings`
+                : 'Component settings'}
+            </DialogTitle>
+            <DialogDescription>
+              Electrical values are stored in SI units and used by local circuit simulation.
+            </DialogDescription>
+          </DialogHeader>
+          <form
+            className="space-y-4"
+            onSubmit={(event) => {
+              event.preventDefault();
+              saveSchematicSettings();
+            }}
+          >
+            {schematicSettingsNumeric && (
+              <label className="block space-y-1.5 text-xs font-medium text-muted-foreground">
+                {schematicSettingsNumeric.label} ({schematicSettingsNumeric.unit})
+                <Input
+                  autoFocus
+                  type="number"
+                  inputMode="decimal"
+                  step="any"
+                  min={schematicSettingsNumeric.positive ? Number.MIN_VALUE : undefined}
+                  value={schematicValueInput}
+                  onChange={(event) => setSchematicValueInput(event.target.value)}
+                />
+              </label>
+            )}
+            {schematicSettingsKind === 'switch' && (
+              <label className="flex items-center gap-2 text-sm font-medium text-foreground">
+                <Checkbox
+                  checked={schematicSwitchClosed}
+                  onCheckedChange={(checked) => setSchematicSwitchClosed(checked === true)}
+                />
+                Switch closed
+              </label>
+            )}
+            {(schematicSettingsKind === 'diode' || schematicSettingsKind === 'led' || schematicSettingsKind === 'transistor') && (
+              <label className="block space-y-1.5 text-xs font-medium text-muted-foreground">
+                Model reference
+                <Input
+                  autoFocus
+                  value={schematicValueInput}
+                  onChange={(event) => setSchematicValueInput(event.target.value)}
+                  placeholder={`builtin:${schematicSettingsKind === 'transistor' ? 'npn' : schematicSettingsKind}`}
+                />
+              </label>
+            )}
+            <DialogFooter className="border-none bg-transparent -mx-0 -mb-0 px-0 pb-0">
+              <Button type="button" variant="outline" onClick={() => setSchematicSettingsNodeId(null)}>Cancel</Button>
               <Button type="submit" disabled={readOnly}>Apply</Button>
             </DialogFooter>
           </form>

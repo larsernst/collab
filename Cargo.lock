@@ -788,6 +788,7 @@ dependencies = [
  "argon2",
  "base64 0.22.1",
  "chrono",
+ "collab-circuit",
  "collab-core",
  "collab-protocol",
  "collab-replica",

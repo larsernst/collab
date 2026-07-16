@@ -40,6 +40,44 @@ pub enum Component {
         negative: NodeId,
         resistance_ohms: f64,
     },
+    Capacitor {
+        id: ComponentId,
+        positive: NodeId,
+        negative: NodeId,
+        capacitance_farads: f64,
+    },
+    Inductor {
+        id: ComponentId,
+        positive: NodeId,
+        negative: NodeId,
+        inductance_henries: f64,
+    },
+    Switch {
+        id: ComponentId,
+        positive: NodeId,
+        negative: NodeId,
+        closed: bool,
+        closed_resistance_ohms: f64,
+        open_resistance_ohms: f64,
+    },
+    Diode {
+        id: ComponentId,
+        anode: NodeId,
+        cathode: NodeId,
+        saturation_current_amps: f64,
+        emission_coefficient: f64,
+        thermal_voltage_volts: f64,
+    },
+    BipolarNpn {
+        id: ComponentId,
+        base: NodeId,
+        collector: NodeId,
+        emitter: NodeId,
+        saturation_current_amps: f64,
+        forward_beta: f64,
+        emission_coefficient: f64,
+        thermal_voltage_volts: f64,
+    },
     /// Conventional current flows from `positive` to `negative`.
     CurrentSource {
         id: ComponentId,
@@ -59,14 +97,28 @@ impl Component {
     pub fn id(&self) -> &ComponentId {
         match self {
             Self::Resistor { id, .. }
+            | Self::Capacitor { id, .. }
+            | Self::Inductor { id, .. }
+            | Self::Switch { id, .. }
+            | Self::Diode { id, .. }
+            | Self::BipolarNpn { id, .. }
             | Self::CurrentSource { id, .. }
             | Self::VoltageSource { id, .. } => id,
         }
     }
 
-    pub(crate) fn nodes(&self) -> (&NodeId, &NodeId) {
+    pub(crate) fn nodes(&self) -> Vec<&NodeId> {
         match self {
             Self::Resistor {
+                positive, negative, ..
+            }
+            | Self::Capacitor {
+                positive, negative, ..
+            }
+            | Self::Inductor {
+                positive, negative, ..
+            }
+            | Self::Switch {
                 positive, negative, ..
             }
             | Self::CurrentSource {
@@ -74,7 +126,14 @@ impl Component {
             }
             | Self::VoltageSource {
                 positive, negative, ..
-            } => (positive, negative),
+            } => vec![positive, negative],
+            Self::Diode { anode, cathode, .. } => vec![anode, cathode],
+            Self::BipolarNpn {
+                base,
+                collector,
+                emitter,
+                ..
+            } => vec![base, collector, emitter],
         }
     }
 }

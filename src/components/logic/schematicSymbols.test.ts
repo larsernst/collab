@@ -5,6 +5,7 @@ import {
   getSchematicTerminals,
   rotateSchematicClockwise,
   SCHEMATIC_SYMBOL_CHOICES,
+  SCHEMATIC_SYMBOL_SETS,
   schematicSymbolDimensions,
   schematicSymbolMarkup,
   schematicTerminalPoint,
@@ -25,6 +26,10 @@ describe('schematic symbols', () => {
     });
     expect(getSchematicSymbol('ground')).toMatchObject({ inputHandles: ['terminal'], outputHandles: [] });
     expect(schematicSymbolMarkup('resistor', '#fff')).toContain('stroke="#fff"');
+    expect(SCHEMATIC_SYMBOL_SETS.iec.label).toContain('DIN');
+    expect(schematicSymbolMarkup('resistor', '#fff', 'ansi')).toContain('L26 20');
+    expect(schematicSymbolMarkup('resistor', '#fff', 'iec')).toContain('H76V44');
+    expect(schematicSymbolMarkup('transistor')).toContain('M46 42L78 48');
   });
 
   it('rotates symbol bounds and every terminal around the symbol geometry', () => {

@@ -51,6 +51,23 @@ describe('logicDiagramExport', () => {
     expect(svg).not.toContain('marker-end="url(#logic-arrow)"');
   });
 
+  it('uses the selected IEC/DIN schematic notation without changing document data', () => {
+    const schematic: LogicDiagramDocument = {
+      schemaVersion: 6,
+      kind: 'logic-diagram',
+      diagramMode: 'schematic',
+      nodes: [{ id: 'r1', kind: 'resistor', position: { x: 0, y: 0 }, electrical: { resistanceOhms: 1000 } }],
+      wires: [],
+      viewport: { x: 0, y: 0, zoom: 1 },
+    };
+
+    const ansi = buildLogicDiagramSvg(schematic, 'Diagrams/resistor.logic', 'ansi');
+    const iec = buildLogicDiagramSvg(schematic, 'Diagrams/resistor.logic', 'iec');
+    expect(ansi).toContain('L26 20');
+    expect(iec).toContain('H76V44');
+    expect(schematic.nodes[0].kind).toBe('resistor');
+  });
+
   it('extracts source metadata from exported SVG data URLs', () => {
     const dataUrl = buildLogicDiagramSvgDataUrl(diagram, 'Diagrams/half-adder.logic');
 

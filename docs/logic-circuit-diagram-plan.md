@@ -39,7 +39,7 @@ Groundwork completed:
 - `.logic` imports are validated before document creation.
 - Local vault file allow-lists and encryption handling include `.logic`.
 - Hosted `.logic` support remains a Phase 1 implementation item because hosted document typing currently recognizes note, kanban, and canvas only.
-- The current schema is v5 and adds persisted schematic-symbol rotation on top of v4 clock timing and the v3 `diagramMode`; older documents normalize safely.
+- The current schema is v6 and adds SI electrical parameters plus DC analysis/probe configuration on top of v5 schematic rotation, v4 clock timing, and the v3 `diagramMode`; older documents normalize safely without invented electrical values.
 
 ### Phase 1: Static Logic Diagram Editor
 
@@ -201,6 +201,14 @@ The implementation is specified in [Electronic Circuit Simulation Integration Pl
 - Deliver a deterministic linear DC baseline first, then nonlinear DC, transient/DC sweep, AC analysis, and a Collab-owned mixed-signal scheduler.
 - Keep simulation local and offline-capable; synchronize source/configuration through the existing document session while treating numerical results as derived cache data.
 - Require identical crate behavior and numerical fixtures across desktop targets and Android arm64 before enabling each analysis there.
+
+Current implementation:
+
+- Schema v6 persists optional SI electrical parameters and DC probe configuration; new symbols receive explicit defaults while migrated symbols remain unconfigured until edited.
+- `collab-circuit` compiles stable terminal/wire connectivity into deterministic electrical nets, preserving terminal and wire source maps for future probes and energized-wire rendering.
+- The Tauri DC slice compiles and solves resistors, capacitors, inductors, switches, independent voltage sources, built-in diode/LED models, and a deliberately scoped forward-active NPN model. It uses damped Newton-Raphson for nonlinear devices and returns explicit diagnostics for unsupported model references.
+- Schematic symbols expose an electrical-value dialog, the toolbar runs DC operating-point analysis, and a compact results surface shows convergence iterations, node voltages, and component currents. Only fresh solver results can energize wires; electrical edits make old results visibly stale.
+- Desktop and Android settings expose ANSI/IEEE and IEC/DIN schematic notation. The preference is client-local, applies to rendering and desktop SVG export, and never mutates `.logic` topology or collaboration state.
 
 ## Key Implementation Changes
 

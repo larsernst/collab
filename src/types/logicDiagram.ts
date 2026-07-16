@@ -1,8 +1,9 @@
 export const LOGIC_DIAGRAM_EXTENSION = 'logic';
-export const LOGIC_DIAGRAM_SCHEMA_VERSION = 5;
+export const LOGIC_DIAGRAM_SCHEMA_VERSION = 6;
 
 export type LogicDiagramMode = 'logic' | 'schematic';
 export type SchematicRotation = 0 | 90 | 180 | 270;
+export type SchematicSymbolSet = 'ansi' | 'iec';
 
 export type LogicGateKind =
   | 'input'
@@ -38,6 +39,30 @@ export interface LogicClockConfig {
   phaseMs: number;
 }
 
+export interface SchematicElectricalParameters {
+  resistanceOhms?: number;
+  capacitanceFarads?: number;
+  inductanceHenries?: number;
+  voltageVolts?: number;
+  switchClosed?: boolean;
+  modelRef?: string;
+}
+
+export type LogicCircuitProbeKind = 'node-voltage' | 'branch-current';
+
+export interface LogicCircuitProbe {
+  id: string;
+  kind: LogicCircuitProbeKind;
+  nodeId: string;
+  handleId?: string;
+  label?: string;
+}
+
+export interface LogicSimulationConfig {
+  analysis: 'dc-operating-point';
+  probes: LogicCircuitProbe[];
+}
+
 export interface LogicComponentPort {
   id: string;
   label: string;
@@ -71,6 +96,7 @@ export interface LogicDiagramNode {
   value?: boolean;
   clock?: LogicClockConfig;
   rotation?: SchematicRotation;
+  electrical?: SchematicElectricalParameters;
   parentId?: string;
   width?: number;
   height?: number;
@@ -94,6 +120,7 @@ export interface LogicDiagramDocument {
   nodes: LogicDiagramNode[];
   wires: LogicDiagramWire[];
   components?: LogicComponentDefinition[];
+  simulation?: LogicSimulationConfig;
   viewport: { x: number; y: number; zoom: number };
 }
 
@@ -222,6 +249,96 @@ function normalizeComponentInstance(value: unknown): LogicComponentInstance | un
   };
 }
 
+function positiveFinite(value: unknown) {
+  return typeof value === 'number' && Number.isFinite(value) && value > 0 ? value : undefined;
+}
+
+function normalizeElectricalParameters(
+  kind: LogicNodeKind,
+  value: unknown,
+): SchematicElectricalParameters | undefined {
+  if (!isElectronicComponentKind(kind)) return undefined;
+  const record = asRecord(value);
+  if (!record) return undefined;
+
+  switch (kind) {
+    case 'resistor': {
+      const resistanceOhms = positiveFinite(record.resistanceOhms);
+      return resistanceOhms === undefined ? undefined : { resistanceOhms };
+    }
+    case 'capacitor': {
+      const capacitanceFarads = positiveFinite(record.capacitanceFarads);
+      return capacitanceFarads === undefined ? undefined : { capacitanceFarads };
+    }
+    case 'inductor': {
+      const inductanceHenries = positiveFinite(record.inductanceHenries);
+      return inductanceHenries === undefined ? undefined : { inductanceHenries };
+    }
+    case 'voltage-source':
+      return typeof record.voltageVolts === 'number' && Number.isFinite(record.voltageVolts)
+        ? { voltageVolts: record.voltageVolts }
+        : undefined;
+    case 'switch':
+      return typeof record.switchClosed === 'boolean'
+        ? { switchClosed: record.switchClosed }
+        : undefined;
+    case 'diode':
+    case 'led':
+    case 'transistor': {
+      const modelRef = optionalString(record.modelRef);
+      return modelRef ? { modelRef } : undefined;
+    }
+    case 'ground':
+      return undefined;
+  }
+}
+
+export function defaultSchematicElectricalParameters(
+  kind: ElectronicComponentKind,
+): SchematicElectricalParameters | undefined {
+  switch (kind) {
+    case 'resistor': return { resistanceOhms: 1_000 };
+    case 'capacitor': return { capacitanceFarads: 1e-6 };
+    case 'inductor': return { inductanceHenries: 1e-3 };
+    case 'voltage-source': return { voltageVolts: 5 };
+    case 'switch': return { switchClosed: false };
+    case 'diode': return { modelRef: 'builtin:diode' };
+    case 'led': return { modelRef: 'builtin:led' };
+    case 'transistor': return { modelRef: 'builtin:npn' };
+    case 'ground': return undefined;
+  }
+}
+
+function normalizeCircuitProbe(value: unknown): LogicCircuitProbe | null {
+  const record = asRecord(value);
+  if (
+    !record
+    || typeof record.id !== 'string'
+    || typeof record.nodeId !== 'string'
+    || (record.kind !== 'node-voltage' && record.kind !== 'branch-current')
+  ) {
+    return null;
+  }
+  return {
+    id: record.id,
+    kind: record.kind,
+    nodeId: record.nodeId,
+    handleId: optionalString(record.handleId),
+    label: optionalString(record.label),
+  };
+}
+
+function normalizeSimulationConfig(value: unknown): LogicSimulationConfig | undefined {
+  const record = asRecord(value);
+  if (!record || record.analysis !== 'dc-operating-point') return undefined;
+  return {
+    analysis: 'dc-operating-point',
+    probes: Array.isArray(record.probes)
+      ? record.probes.map(normalizeCircuitProbe).filter((probe): probe is LogicCircuitProbe => Boolean(probe))
+      : [],
+  };
+}
+
 function normalizeNode(value: unknown): LogicDiagramNode | null {
   const record = asRecord(value);
   if (
@@ -253,6 +370,7 @@ function normalizeNode(value: unknown): LogicDiagramNode | null {
         }
       : undefined,
     rotation: isElectronicComponentKind(record.kind) ? rotation : undefined,
+    electrical: normalizeElectricalParameters(record.kind as LogicNodeKind, record.electrical),
     parentId: optionalString(record.parentId),
     width: typeof record.width === 'number' && Number.isFinite(record.width) ? record.width : undefined,
     height: typeof record.height === 'number' && Number.isFinite(record.height) ? record.height : undefined,
@@ -298,6 +416,7 @@ export function normalizeLogicDiagramDocument(input: unknown): LogicDiagramDocum
     components: Array.isArray(record.components)
       ? record.components.map(normalizeComponentDefinition).filter((component): component is LogicComponentDefinition => Boolean(component))
       : [],
+    simulation: normalizeSimulationConfig(record.simulation),
     viewport: {
       x: finiteNumber(viewport?.x, 0),
       y: finiteNumber(viewport?.y, 0),

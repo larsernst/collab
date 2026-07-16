@@ -4,7 +4,12 @@ import {
   getLogicInputHandles,
   getLogicOutputHandles,
 } from '../components/logic/logicDiagramEvaluator';
-import type { LogicDiagramDocument, LogicDiagramNode, LogicDiagramWire } from '../types/logicDiagram';
+import type {
+  LogicDiagramDocument,
+  LogicDiagramNode,
+  LogicDiagramWire,
+  SchematicSymbolSet,
+} from '../types/logicDiagram';
 import { isElectronicComponentKind } from '../types/logicDiagram';
 import {
   getSchematicTerminals,
@@ -114,6 +119,7 @@ function renderNode(
   outputValue: boolean | null | undefined,
   inputValues: Record<string, boolean | null | undefined>,
   outputValues: Record<string, boolean | null | undefined> = {},
+  schematicSymbolSet: SchematicSymbolSet = 'ansi',
 ) {
   const bounds = nodeBounds(node);
   if (isElectronicComponentKind(node.kind)) {
@@ -124,7 +130,7 @@ function renderNode(
     const label = logicNodeLabel(node);
     const terminals = getSchematicTerminals(kind);
     return [
-      `<g transform="translate(${bounds.x} ${bounds.y}) scale(${bounds.width / rotatedViewWidth} ${bounds.height / rotatedViewHeight})"><g${schematicSymbolTransform(rotation) ? ` transform="${schematicSymbolTransform(rotation)}"` : ''}>${schematicSymbolMarkup(kind, '#334155')}</g></g>`,
+      `<g transform="translate(${bounds.x} ${bounds.y}) scale(${bounds.width / rotatedViewWidth} ${bounds.height / rotatedViewHeight})"><g${schematicSymbolTransform(rotation) ? ` transform="${schematicSymbolTransform(rotation)}"` : ''}>${schematicSymbolMarkup(kind, '#334155', schematicSymbolSet)}</g></g>`,
       `<text x="${bounds.x + bounds.width / 2}" y="${bounds.y + bounds.height - 2}" text-anchor="middle" font-family="Inter, Arial, sans-serif" font-size="10" font-weight="600" fill="#475569">${escapeXml(label)}</text>`,
       terminals.map((handleId) => {
         const point = schematicTerminalPoint(kind, handleId, rotation);
@@ -203,7 +209,11 @@ function inputValuesByNode(wires: LogicDiagramWire[], wireValues: Record<string,
   return values;
 }
 
-export function buildLogicDiagramSvg(document: LogicDiagramDocument, sourceRelativePath: string): string {
+export function buildLogicDiagramSvg(
+  document: LogicDiagramDocument,
+  sourceRelativePath: string,
+  schematicSymbolSet: SchematicSymbolSet = 'ansi',
+): string {
   const nodes = document.nodes;
   const bounds = nodes.length > 0
     ? nodes.reduce((acc, node) => {
@@ -242,6 +252,7 @@ export function buildLogicDiagramSvg(document: LogicDiagramDocument, sourceRelat
       evaluation.nodeValues[node.id],
       nodeInputValues[node.id] ?? {},
       evaluation.nodeOutputValues[node.id] ?? {},
+      schematicSymbolSet,
     ))
     .join('');
 

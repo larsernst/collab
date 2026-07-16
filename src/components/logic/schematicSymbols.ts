@@ -1,4 +1,8 @@
-import type { ElectronicComponentKind, SchematicRotation } from '../../types/logicDiagram';
+import type {
+  ElectronicComponentKind,
+  SchematicRotation,
+  SchematicSymbolSet,
+} from '../../types/logicDiagram';
 
 export interface SchematicSymbolDefinition {
   kind: ElectronicComponentKind;
@@ -22,6 +26,16 @@ const SYMBOLS: Record<ElectronicComponentKind, SchematicSymbolDefinition> = {
 };
 
 export const SCHEMATIC_SYMBOL_CHOICES = Object.values(SYMBOLS);
+export const SCHEMATIC_SYMBOL_SETS: Record<SchematicSymbolSet, { label: string; description: string }> = {
+  ansi: {
+    label: 'ANSI / IEEE',
+    description: 'American notation with the zigzag resistor symbol.',
+  },
+  iec: {
+    label: 'IEC / DIN',
+    description: 'International and German notation with the rectangular resistor symbol.',
+  },
+};
 
 export function getSchematicSymbol(kind: ElectronicComponentKind) {
   return SYMBOLS[kind];
@@ -103,11 +117,17 @@ export function schematicSymbolViewBox(rotation: SchematicRotation = 0) {
   return rotation === 90 || rotation === 270 ? '0 0 72 100' : '0 0 100 72';
 }
 
-export function schematicSymbolMarkup(kind: ElectronicComponentKind, stroke = 'currentColor') {
+export function schematicSymbolMarkup(
+  kind: ElectronicComponentKind,
+  stroke = 'currentColor',
+  symbolSet: SchematicSymbolSet = 'ansi',
+) {
   const common = `fill="none" stroke="${stroke}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"`;
   switch (kind) {
     case 'resistor':
-      return `<path d="M0 32H20L26 20L38 44L50 20L62 44L74 20L80 32H100" ${common}/>`;
+      return symbolSet === 'iec'
+        ? `<path d="M0 32H24M24 20H76V44H24ZM76 32H100" ${common}/>`
+        : `<path d="M0 32H20L26 20L38 44L50 20L62 44L74 20L80 32H100" ${common}/>`;
     case 'capacitor':
       return `<path d="M0 32H42M42 16V48M58 16V48M58 32H100" ${common}/>`;
     case 'inductor':
@@ -117,12 +137,12 @@ export function schematicSymbolMarkup(kind: ElectronicComponentKind, stroke = 'c
     case 'led':
       return `<path d="M0 32H32M68 32H100M32 14L68 32L32 50Z M68 14V50M70 14L82 2M78 20L90 8" ${common}/><path d="M79 2L82 2L82 5M87 8L90 8L90 11" ${common}/>`;
     case 'transistor':
-      return `<path d="M0 36H38M38 14V58M38 24L78 24H100M38 48L78 48H100M72 40L78 48L68 50" ${common}/>`;
+      return `<path d="M0 36H40M40 14V58M46 28L78 24H100M46 42L78 48H100M68 42L78 48L69 52" ${common}/>`;
     case 'switch':
       return `<path d="M0 32H30M70 32H100M30 32L68 12" ${common}/><circle cx="30" cy="32" r="3" fill="${stroke}"/><circle cx="70" cy="32" r="3" fill="${stroke}"/>`;
     case 'ground':
       return `<path d="M0 32H50V40M24 40H76M32 50H68M40 60H60" ${common}/>`;
     case 'voltage-source':
-      return `<path d="M0 36H22M78 36H100" ${common}/><circle cx="50" cy="36" r="28" ${common}/><path d="M40 24H52M46 18V30M40 48H52" ${common}/>`;
+      return `<path d="M0 36H22M78 36H100" ${common}/><circle cx="50" cy="36" r="28" ${common}/><path d="M31 36H43M57 36H69M63 30V42" ${common}/>`;
   }
 }

@@ -1,5 +1,6 @@
 import { create } from 'zustand';
 import { createJSONStorage, persist } from 'zustand/middleware';
+import type { SchematicSymbolSet } from '../types/logicDiagram';
 
 export type ActiveView    = 'editor' | 'graph' | 'canvas' | 'kanban' | 'grid';
 export type SidebarPanel  = 'files' | 'search' | 'tags' | 'canvas-boards' | 'kanban-boards' | 'collab';
@@ -91,6 +92,10 @@ function isOcrPreprocessingMode(value: unknown): value is OcrPreprocessingMode {
   return value === 'none' || value === 'grayscale' || value === 'contrast' || value === 'threshold' || value === 'invert';
 }
 
+function isSchematicSymbolSet(value: unknown): value is SchematicSymbolSet {
+  return value === 'ansi' || value === 'iec';
+}
+
 function normalizeFontSize(value: unknown, fallback: number): number {
   return typeof value === 'number' && Number.isFinite(value) ? value : fallback;
 }
@@ -128,6 +133,7 @@ function normalizePersistedUiState(
     interfaceFontSize: normalizeFontSize(state.interfaceFontSize ?? legacyFontSize, DEFAULT_INTERFACE_FONT_SIZE),
     editorFont,
     editorFontSize: normalizeFontSize(state.editorFontSize, DEFAULT_EDITOR_FONT_SIZE),
+    schematicSymbolSet: isSchematicSymbolSet(state.schematicSymbolSet) ? state.schematicSymbolSet : 'ansi',
     ocrLanguage: typeof state.ocrLanguage === 'string' && state.ocrLanguage.length > 0 ? state.ocrLanguage : 'eng',
     ocrModelSource: isOcrModelSource(state.ocrModelSource) ? state.ocrModelSource : 'official-fast',
     ocrRenderScale: state.ocrRenderScale === 1 || state.ocrRenderScale === 2 || state.ocrRenderScale === 3 ? state.ocrRenderScale : 2,
@@ -234,6 +240,7 @@ interface UiState {
   ocrRenderScale: OcrRenderScale;
   ocrPreprocessingMode: OcrPreprocessingMode;
   ocrOverlayVisible: boolean;
+  schematicSymbolSet: SchematicSymbolSet;
 
   // Actions
   setActiveView:    (view: ActiveView) => void;
@@ -280,6 +287,7 @@ interface UiState {
   setOcrRenderScale: (scale: OcrRenderScale) => void;
   setOcrPreprocessingMode: (mode: OcrPreprocessingMode) => void;
   setOcrOverlayVisible: (visible: boolean) => void;
+  setSchematicSymbolSet: (symbolSet: SchematicSymbolSet) => void;
 }
 
 export const useUiStore = create<UiState>()(
@@ -329,6 +337,7 @@ export const useUiStore = create<UiState>()(
       ocrRenderScale: 2,
       ocrPreprocessingMode: 'none',
       ocrOverlayVisible: true,
+      schematicSymbolSet: 'ansi',
 
       setActiveView:   (activeView)   => set({ activeView }),
       setSidebarPanel: (sidebarPanel) => set({ sidebarPanel }),
@@ -382,6 +391,7 @@ export const useUiStore = create<UiState>()(
       setOcrRenderScale: (ocrRenderScale) => set({ ocrRenderScale }),
       setOcrPreprocessingMode: (ocrPreprocessingMode) => set({ ocrPreprocessingMode }),
       setOcrOverlayVisible: (ocrOverlayVisible) => set({ ocrOverlayVisible }),
+      setSchematicSymbolSet: (schematicSymbolSet) => set({ schematicSymbolSet }),
     }),
     {
       name: 'ui-storage',
@@ -429,6 +439,7 @@ export const useUiStore = create<UiState>()(
         ocrRenderScale: s.ocrRenderScale,
         ocrPreprocessingMode: s.ocrPreprocessingMode,
         ocrOverlayVisible: s.ocrOverlayVisible,
+        schematicSymbolSet: s.schematicSymbolSet,
       }),
     }
   )

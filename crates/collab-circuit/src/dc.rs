@@ -12,9 +12,11 @@ pub struct DcOperatingPoint {
     /// Conventional current from each component's positive terminal to its
     /// negative terminal.
     pub component_currents: BTreeMap<ComponentId, f64>,
+    pub iterations: usize,
 }
 
-#[derive(Clone, Debug, Error, PartialEq)]
+#[derive(Clone, Debug, Error, PartialEq, Serialize)]
+#[serde(tag = "code", content = "context", rename_all = "camelCase")]
 pub enum SimulationError {
     #[error("the circuit reference node is empty")]
     EmptyReference,
@@ -31,11 +33,30 @@ pub enum SimulationError {
     },
     #[error("resistor '{component}' must have resistance greater than zero")]
     InvalidResistance { component: ComponentId },
+    #[error("capacitor '{component}' must have capacitance greater than zero")]
+    InvalidCapacitance { component: ComponentId },
+    #[error("inductor '{component}' must have inductance greater than zero")]
+    InvalidInductance { component: ComponentId },
+    #[error("switch '{component}' must have positive open and closed resistances")]
+    InvalidSwitchResistance { component: ComponentId },
+    #[error("diode '{component}' has invalid model parameters")]
+    InvalidDiodeModel { component: ComponentId },
+    #[error("NPN transistor '{component}' has invalid model parameters")]
+    InvalidBipolarModel { component: ComponentId },
     #[error("the DC system is singular or underconstrained near unknown {index}")]
     SingularSystem { index: usize },
+    #[error("the nonlinear DC solution did not converge after {iterations} iterations")]
+    ConvergenceFailed { iterations: usize },
 }
 
-/// Solve the linear DC operating point using modified nodal analysis.
+const MAX_NEWTON_ITERATIONS: usize = 100;
+const MAX_NEWTON_VOLTAGE_STEP: f64 = 0.25;
+const ABSOLUTE_TOLERANCE: f64 = 1.0e-9;
+const RELATIVE_TOLERANCE: f64 = 1.0e-6;
+const MIN_EXPONENT: f64 = -40.0;
+const MAX_EXPONENT: f64 = 40.0;
+
+/// Solve the DC operating point using modified nodal analysis.
 ///
 /// This baseline uses a pivoted dense matrix. The circuit and result boundary
 /// is backend-independent so a sparse solver can replace it without changing
@@ -48,12 +69,10 @@ pub fn solve_dc(circuit: &Circuit) -> Result<DcOperatingPoint, SimulationError> 
 
     let mut nodes = BTreeSet::new();
     for component in &components {
-        let (positive, negative) = component.nodes();
-        if positive != &circuit.reference {
-            nodes.insert(positive.clone());
-        }
-        if negative != &circuit.reference {
-            nodes.insert(negative.clone());
+        for node in component.nodes() {
+            if node != &circuit.reference {
+                nodes.insert(node.clone());
+            }
         }
     }
     let nodes: Vec<_> = nodes.into_iter().collect();
@@ -64,79 +83,61 @@ pub fn solve_dc(circuit: &Circuit) -> Result<DcOperatingPoint, SimulationError> 
         .map(|(index, node)| (node, index))
         .collect();
 
-    let mut voltage_sources: Vec<_> = circuit
+    let mut branch_components: Vec<_> = circuit
         .components
         .iter()
         .filter_map(|component| match component {
-            Component::VoltageSource { id, .. } => Some(id.clone()),
+            Component::VoltageSource { id, .. } | Component::Inductor { id, .. } => {
+                Some(id.clone())
+            }
             _ => None,
         })
         .collect();
-    voltage_sources.sort();
-    let source_indices: BTreeMap<_, _> = voltage_sources
+    branch_components.sort();
+    let branch_indices: BTreeMap<_, _> = branch_components
         .iter()
         .cloned()
         .enumerate()
         .map(|(index, id)| (id, nodes.len() + index))
         .collect();
 
-    let unknown_count = nodes.len() + voltage_sources.len();
-    let mut matrix = vec![vec![0.0; unknown_count]; unknown_count];
-    let mut rhs = vec![0.0; unknown_count];
+    let unknown_count = nodes.len() + branch_components.len();
+    let nonlinear = components.iter().any(|component| {
+        matches!(
+            component,
+            Component::Diode { .. } | Component::BipolarNpn { .. }
+        )
+    });
+    let mut guess = vec![0.0; unknown_count];
+    let mut solution = Vec::new();
+    let mut iterations = 0;
 
-    for component in &components {
-        match component {
-            Component::Resistor {
-                positive,
-                negative,
-                resistance_ohms,
-                ..
-            } => {
-                let conductance = 1.0 / resistance_ohms;
-                stamp_conductance(
-                    &mut matrix,
-                    node_indices.get(positive).copied(),
-                    node_indices.get(negative).copied(),
-                    conductance,
-                );
-            }
-            Component::CurrentSource {
-                positive,
-                negative,
-                current_amps,
-                ..
-            } => {
-                if let Some(index) = node_indices.get(positive) {
-                    rhs[*index] -= current_amps;
-                }
-                if let Some(index) = node_indices.get(negative) {
-                    rhs[*index] += current_amps;
-                }
-            }
-            Component::VoltageSource {
-                id,
-                positive,
-                negative,
-                voltage_volts,
-            } => {
-                let source_index = source_indices[id];
-                stamp_voltage_source(
-                    &mut matrix,
-                    &mut rhs,
-                    node_indices.get(positive).copied(),
-                    node_indices.get(negative).copied(),
-                    source_index,
-                    *voltage_volts,
-                );
-            }
+    for iteration in 1..=if nonlinear { MAX_NEWTON_ITERATIONS } else { 1 } {
+        iterations = iteration;
+        let (matrix, rhs) = assemble_system(
+            &components,
+            &node_indices,
+            &branch_indices,
+            &guess,
+            unknown_count,
+        );
+        let candidate = if unknown_count == 0 {
+            Vec::new()
+        } else {
+            solve_linear_system(matrix, rhs)?
+        };
+
+        if !nonlinear || has_converged(&guess, &candidate) {
+            solution = candidate;
+            break;
         }
+
+        damp_voltage_update(&mut guess, &candidate, nodes.len());
     }
 
-    let solution = if unknown_count == 0 {
-        Vec::new()
-    } else {
-        solve_linear_system(matrix, rhs)?
-    };
+    if nonlinear && solution.is_empty() && unknown_count != 0 {
+        return Err(SimulationError::ConvergenceFailed { iterations });
+    }
 
     let mut node_voltages = BTreeMap::from([(circuit.reference.clone(), 0.0)]);
     for (node, index) in &node_indices {
@@ -153,8 +154,55 @@ pub fn solve_dc(circuit: &Circuit) -> Result<DcOperatingPoint, SimulationError> 
                 resistance_ohms,
                 ..
             } => (voltage_at(positive) - voltage_at(negative)) / resistance_ohms,
+            Component::Capacitor { .. } => 0.0,
+            Component::Inductor { id, .. } => solution[branch_indices[id]],
+            Component::Switch {
+                positive,
+                negative,
+                closed,
+                closed_resistance_ohms,
+                open_resistance_ohms,
+                ..
+            } => {
+                let resistance = if *closed {
+                    closed_resistance_ohms
+                } else {
+                    open_resistance_ohms
+                };
+                (voltage_at(positive) - voltage_at(negative)) / resistance
+            }
+            Component::Diode {
+                anode,
+                cathode,
+                saturation_current_amps,
+                emission_coefficient,
+                thermal_voltage_volts,
+                ..
+            } => diode_current(
+                voltage_at(anode) - voltage_at(cathode),
+                *saturation_current_amps,
+                *emission_coefficient,
+                *thermal_voltage_volts,
+            ),
+            Component::BipolarNpn {
+                base,
+                emitter,
+                saturation_current_amps,
+                forward_beta,
+                emission_coefficient,
+                thermal_voltage_volts,
+                ..
+            } => {
+                let base_current = diode_current(
+                    voltage_at(base) - voltage_at(emitter),
+                    *saturation_current_amps,
+                    *emission_coefficient,
+                    *thermal_voltage_volts,
+                );
+                *forward_beta * base_current
+            }
             Component::CurrentSource { current_amps, .. } => *current_amps,
-            Component::VoltageSource { id, .. } => solution[source_indices[id]],
+            Component::VoltageSource { id, .. } => solution[branch_indices[id]],
         };
         component_currents.insert(component.id().clone(), current);
     }
@@ -162,7 +210,190 @@ pub fn solve_dc(circuit: &Circuit) -> Result<DcOperatingPoint, SimulationError> 
     Ok(DcOperatingPoint {
         node_voltages,
         component_currents,
+        iterations,
     })
+}
+
+fn assemble_system(
+    components: &[&Component],
+    node_indices: &BTreeMap<NodeId, usize>,
+    branch_indices: &BTreeMap<ComponentId, usize>,
+    guess: &[f64],
+    unknown_count: usize,
+) -> (Vec<Vec<f64>>, Vec<f64>) {
+    let mut matrix = vec![vec![0.0; unknown_count]; unknown_count];
+    let mut rhs = vec![0.0; unknown_count];
+
+    for component in components {
+        match component {
+            Component::Resistor {
+                positive,
+                negative,
+                resistance_ohms,
+                ..
+            } => stamp_conductance(
+                &mut matrix,
+                node_indices.get(positive).copied(),
+                node_indices.get(negative).copied(),
+                1.0 / resistance_ohms,
+            ),
+            Component::Capacitor { .. } => {}
+            Component::Inductor {
+                id,
+                positive,
+                negative,
+                ..
+            } => stamp_voltage_source(
+                &mut matrix,
+                &mut rhs,
+                node_indices.get(positive).copied(),
+                node_indices.get(negative).copied(),
+                branch_indices[id],
+                0.0,
+            ),
+            Component::Switch {
+                positive,
+                negative,
+                closed,
+                closed_resistance_ohms,
+                open_resistance_ohms,
+                ..
+            } => {
+                let resistance = if *closed {
+                    closed_resistance_ohms
+                } else {
+                    open_resistance_ohms
+                };
+                stamp_conductance(
+                    &mut matrix,
+                    node_indices.get(positive).copied(),
+                    node_indices.get(negative).copied(),
+                    1.0 / resistance,
+                );
+            }
+            Component::Diode {
+                anode,
+                cathode,
+                saturation_current_amps,
+                emission_coefficient,
+                thermal_voltage_volts,
+                ..
+            } => {
+                let anode_index = node_indices.get(anode).copied();
+                let cathode_index = node_indices.get(cathode).copied();
+                let voltage = value_at(guess, anode_index) - value_at(guess, cathode_index);
+                let (conductance, equivalent_current) = diode_linearization(
+                    voltage,
+                    *saturation_current_amps,
+                    *emission_coefficient,
+                    *thermal_voltage_volts,
+                );
+                stamp_conductance(&mut matrix, anode_index, cathode_index, conductance);
+                stamp_current_source(&mut rhs, anode_index, cathode_index, equivalent_current);
+            }
+            Component::BipolarNpn {
+                base,
+                collector,
+                emitter,
+                saturation_current_amps,
+                forward_beta,
+                emission_coefficient,
+                thermal_voltage_volts,
+                ..
+            } => {
+                let base_index = node_indices.get(base).copied();
+                let collector_index = node_indices.get(collector).copied();
+                let emitter_index = node_indices.get(emitter).copied();
+                let base_emitter_voltage =
+                    value_at(guess, base_index) - value_at(guess, emitter_index);
+                let (base_conductance, base_equivalent_current) = diode_linearization(
+                    base_emitter_voltage,
+                    *saturation_current_amps,
+                    *emission_coefficient,
+                    *thermal_voltage_volts,
+                );
+                stamp_conductance(&mut matrix, base_index, emitter_index, base_conductance);
+                stamp_current_source(&mut rhs, base_index, emitter_index, base_equivalent_current);
+                stamp_voltage_controlled_current_source(
+                    &mut matrix,
+                    &mut rhs,
+                    collector_index,
+                    emitter_index,
+                    base_index,
+                    emitter_index,
+                    *forward_beta * base_conductance,
+                    *forward_beta * base_equivalent_current,
+                );
+            }
+            Component::CurrentSource {
+                positive,
+                negative,
+                current_amps,
+                ..
+            } => stamp_current_source(
+                &mut rhs,
+                node_indices.get(positive).copied(),
+                node_indices.get(negative).copied(),
+                *current_amps,
+            ),
+            Component::VoltageSource {
+                id,
+                positive,
+                negative,
+                voltage_volts,
+            } => stamp_voltage_source(
+                &mut matrix,
+                &mut rhs,
+                node_indices.get(positive).copied(),
+                node_indices.get(negative).copied(),
+                branch_indices[id],
+                *voltage_volts,
+            ),
+        }
+    }
+
+    (matrix, rhs)
+}
+
+fn value_at(values: &[f64], index: Option<usize>) -> f64 {
+    index.map(|index| values[index]).unwrap_or(0.0)
+}
+
+fn diode_linearization(voltage: f64, saturation: f64, emission: f64, thermal: f64) -> (f64, f64) {
+    let exponent = (voltage / (emission * thermal)).clamp(MIN_EXPONENT, MAX_EXPONENT);
+    let exponential = exponent.exp();
+    let current = saturation * (exponential - 1.0);
+    let conductance = saturation * exponential / (emission * thermal);
+    (conductance, current - conductance * voltage)
+}
+
+fn diode_current(voltage: f64, saturation: f64, emission: f64, thermal: f64) -> f64 {
+    let exponent = (voltage / (emission * thermal)).clamp(MIN_EXPONENT, MAX_EXPONENT);
+    saturation * (exponent.exp() - 1.0)
+}
+
+fn has_converged(previous: &[f64], next: &[f64]) -> bool {
+    previous.iter().zip(next).all(|(previous, next)| {
+        let tolerance = ABSOLUTE_TOLERANCE + RELATIVE_TOLERANCE * previous.abs().max(next.abs());
+        (next - previous).abs() <= tolerance
+    })
+}
+
+fn damp_voltage_update(guess: &mut [f64], candidate: &[f64], node_count: usize) {
+    let largest_voltage_step = guess
+        .iter()
+        .zip(candidate)
+        .take(node_count)
+        .map(|(previous, next)| (next - previous).abs())
+        .fold(0.0_f64, f64::max);
+    let damping = if largest_voltage_step > MAX_NEWTON_VOLTAGE_STEP {
+        MAX_NEWTON_VOLTAGE_STEP / largest_voltage_step
+    } else {
+        1.0
+    };
+    for (previous, next) in guess.iter_mut().zip(candidate) {
+        *previous += damping * (*next - *previous);
+    }
 }
 
 fn validate(circuit: &Circuit) -> Result<(), SimulationError> {
@@ -179,8 +410,7 @@ fn validate(circuit: &Circuit) -> Result<(), SimulationError> {
         if !component_ids.insert(id.clone()) {
             return Err(SimulationError::DuplicateComponentId(id.clone()));
         }
-        let (positive, negative) = component.nodes();
-        if positive.0.is_empty() || negative.0.is_empty() {
+        if component.nodes().iter().any(|node| node.0.is_empty()) {
             return Err(SimulationError::EmptyNodeId {
                 component: id.clone(),
             });
@@ -196,6 +426,78 @@ fn validate(circuit: &Circuit) -> Result<(), SimulationError> {
                     });
                 }
             }
+            Component::Capacitor {
+                capacitance_farads, ..
+            } => {
+                ensure_finite(id, "capacitance", *capacitance_farads)?;
+                if *capacitance_farads <= 0.0 {
+                    return Err(SimulationError::InvalidCapacitance {
+                        component: id.clone(),
+                    });
+                }
+            }
+            Component::Inductor {
+                inductance_henries, ..
+            } => {
+                ensure_finite(id, "inductance", *inductance_henries)?;
+                if *inductance_henries <= 0.0 {
+                    return Err(SimulationError::InvalidInductance {
+                        component: id.clone(),
+                    });
+                }
+            }
+            Component::Switch {
+                closed_resistance_ohms,
+                open_resistance_ohms,
+                ..
+            } => {
+                ensure_finite(id, "closed resistance", *closed_resistance_ohms)?;
+                ensure_finite(id, "open resistance", *open_resistance_ohms)?;
+                if *closed_resistance_ohms <= 0.0 || *open_resistance_ohms <= 0.0 {
+                    return Err(SimulationError::InvalidSwitchResistance {
+                        component: id.clone(),
+                    });
+                }
+            }
+            Component::Diode {
+                saturation_current_amps,
+                emission_coefficient,
+                thermal_voltage_volts,
+                ..
+            } => {
+                ensure_finite(id, "saturation current", *saturation_current_amps)?;
+                ensure_finite(id, "emission coefficient", *emission_coefficient)?;
+                ensure_finite(id, "thermal voltage", *thermal_voltage_volts)?;
+                if *saturation_current_amps <= 0.0
+                    || *emission_coefficient <= 0.0
+                    || *thermal_voltage_volts <= 0.0
+                {
+                    return Err(SimulationError::InvalidDiodeModel {
+                        component: id.clone(),
+                    });
+                }
+            }
+            Component::BipolarNpn {
+                saturation_current_amps,
+                forward_beta,
+                emission_coefficient,
+                thermal_voltage_volts,
+                ..
+            } => {
+                ensure_finite(id, "saturation current", *saturation_current_amps)?;
+                ensure_finite(id, "forward beta", *forward_beta)?;
+                ensure_finite(id, "emission coefficient", *emission_coefficient)?;
+                ensure_finite(id, "thermal voltage", *thermal_voltage_volts)?;
+                if *saturation_current_amps <= 0.0
+                    || *forward_beta <= 0.0
+                    || *emission_coefficient <= 0.0
+                    || *thermal_voltage_volts <= 0.0
+                {
+                    return Err(SimulationError::InvalidBipolarModel {
+                        component: id.clone(),
+                    });
+                }
+            }
             Component::CurrentSource { current_amps, .. } => {
                 ensure_finite(id, "current", *current_amps)?;
             }
@@ -205,6 +507,50 @@ fn validate(circuit: &Circuit) -> Result<(), SimulationError> {
         }
     }
     Ok(())
+}
+
+fn stamp_current_source(
+    rhs: &mut [f64],
+    positive: Option<usize>,
+    negative: Option<usize>,
+    current: f64,
+) {
+    if let Some(index) = positive {
+        rhs[index] -= current;
+    }
+    if let Some(index) = negative {
+        rhs[index] += current;
+    }
+}
+
+fn stamp_voltage_controlled_current_source(
+    matrix: &mut [Vec<f64>],
+    rhs: &mut [f64],
+    positive: Option<usize>,
+    negative: Option<usize>,
+    control_positive: Option<usize>,
+    control_negative: Option<usize>,
+    transconductance: f64,
+    equivalent_current: f64,
+) {
+    if let Some(row) = positive {
+        if let Some(column) = control_positive {
+            matrix[row][column] += transconductance;
+        }
+        if let Some(column) = control_negative {
+            matrix[row][column] -= transconductance;
+        }
+        rhs[row] -= equivalent_current;
+    }
+    if let Some(row) = negative {
+        if let Some(column) = control_positive {
+            matrix[row][column] -= transconductance;
+        }
+        if let Some(column) = control_negative {
+            matrix[row][column] += transconductance;
+        }
+        rhs[row] += equivalent_current;
+    }
 }
 
 fn ensure_finite(
@@ -495,5 +841,193 @@ mod tests {
         let result = solve_dc(&circuit).unwrap();
         assert_close(result.node_voltages[&node("out")], 1.0);
         assert_close(result.component_currents[&component("R1")], 1.0e-15);
+    }
+
+    #[test]
+    fn solves_a_diode_bias_point_with_damped_newton_iteration() {
+        let circuit = Circuit {
+            reference: node("0"),
+            components: vec![
+                Component::VoltageSource {
+                    id: component("V1"),
+                    positive: node("vin"),
+                    negative: node("0"),
+                    voltage_volts: 5.0,
+                },
+                Component::Resistor {
+                    id: component("R1"),
+                    positive: node("vin"),
+                    negative: node("out"),
+                    resistance_ohms: 1_000.0,
+                },
+                Component::Diode {
+                    id: component("D1"),
+                    anode: node("out"),
+                    cathode: node("0"),
+                    saturation_current_amps: 1.0e-12,
+                    emission_coefficient: 1.0,
+                    thermal_voltage_volts: 0.025_852,
+                },
+            ],
+        };
+
+        let result = solve_dc(&circuit).unwrap();
+        let output = result.node_voltages[&node("out")];
+        let diode_current = result.component_currents[&component("D1")];
+        assert!(
+            (0.55..0.65).contains(&output),
+            "unexpected diode voltage {output}"
+        );
+        assert!(
+            (0.004..0.0045).contains(&diode_current),
+            "unexpected diode current {diode_current}"
+        );
+        assert!(result.iterations > 1);
+    }
+
+    #[test]
+    fn solves_the_builtin_led_parameterization_with_current_limiting() {
+        let circuit = Circuit {
+            reference: node("0"),
+            components: vec![
+                Component::VoltageSource {
+                    id: component("V1"),
+                    positive: node("vin"),
+                    negative: node("0"),
+                    voltage_volts: 5.0,
+                },
+                Component::Resistor {
+                    id: component("R1"),
+                    positive: node("vin"),
+                    negative: node("out"),
+                    resistance_ohms: 1_000.0,
+                },
+                Component::Diode {
+                    id: component("LED1"),
+                    anode: node("out"),
+                    cathode: node("0"),
+                    saturation_current_amps: 1.0e-18,
+                    emission_coefficient: 2.0,
+                    thermal_voltage_volts: 0.025_852,
+                },
+            ],
+        };
+
+        let result = solve_dc(&circuit).unwrap();
+        let output = result.node_voltages[&node("out")];
+        let led_current = result.component_currents[&component("LED1")];
+        assert!(
+            (1.8..1.9).contains(&output),
+            "unexpected LED voltage {output}"
+        );
+        assert!(
+            (0.003..0.0033).contains(&led_current),
+            "unexpected LED current {led_current}"
+        );
+    }
+
+    #[test]
+    fn applies_dc_models_for_capacitors_inductors_and_switches() {
+        let circuit = Circuit {
+            reference: node("0"),
+            components: vec![
+                Component::VoltageSource {
+                    id: component("V1"),
+                    positive: node("vin"),
+                    negative: node("0"),
+                    voltage_volts: 2.0,
+                },
+                Component::Switch {
+                    id: component("S1"),
+                    positive: node("vin"),
+                    negative: node("mid"),
+                    closed: true,
+                    closed_resistance_ohms: 1.0e-3,
+                    open_resistance_ohms: 1.0e12,
+                },
+                Component::Inductor {
+                    id: component("L1"),
+                    positive: node("mid"),
+                    negative: node("out"),
+                    inductance_henries: 1.0e-3,
+                },
+                Component::Resistor {
+                    id: component("R1"),
+                    positive: node("out"),
+                    negative: node("0"),
+                    resistance_ohms: 1_000.0,
+                },
+                Component::Capacitor {
+                    id: component("C1"),
+                    positive: node("out"),
+                    negative: node("0"),
+                    capacitance_farads: 1.0e-6,
+                },
+            ],
+        };
+
+        let result = solve_dc(&circuit).unwrap();
+        assert!((result.node_voltages[&node("out")] - 2.0).abs() < 1.0e-5);
+        assert!((result.component_currents[&component("L1")] - 0.002).abs() < 1.0e-8);
+        assert_eq!(result.component_currents[&component("C1")], 0.0);
+        assert_eq!(result.iterations, 1);
+
+        let mut open = circuit;
+        let Component::Switch { closed, .. } = &mut open.components[1] else {
+            unreachable!();
+        };
+        *closed = false;
+        let open_result = solve_dc(&open).unwrap();
+        assert!(open_result.component_currents[&component("S1")].abs() < 1.0e-10);
+    }
+
+    #[test]
+    fn solves_a_forward_active_npn_common_emitter_stage() {
+        let circuit = Circuit {
+            reference: node("0"),
+            components: vec![
+                Component::VoltageSource {
+                    id: component("VCC"),
+                    positive: node("vcc"),
+                    negative: node("0"),
+                    voltage_volts: 5.0,
+                },
+                Component::VoltageSource {
+                    id: component("VB"),
+                    positive: node("base"),
+                    negative: node("0"),
+                    voltage_volts: 0.6,
+                },
+                Component::Resistor {
+                    id: component("RC"),
+                    positive: node("vcc"),
+                    negative: node("collector"),
+                    resistance_ohms: 1_000.0,
+                },
+                Component::BipolarNpn {
+                    id: component("Q1"),
+                    base: node("base"),
+                    collector: node("collector"),
+                    emitter: node("0"),
+                    saturation_current_amps: 1.0e-15,
+                    forward_beta: 100.0,
+                    emission_coefficient: 1.0,
+                    thermal_voltage_volts: 0.025_852,
+                },
+            ],
+        };
+
+        let result = solve_dc(&circuit).unwrap();
+        let collector_current = result.component_currents[&component("Q1")];
+        assert!(
+            (0.0011..0.0013).contains(&collector_current),
+            "unexpected collector current {collector_current}"
+        );
+        assert!(
+            (3.7..3.9).contains(&result.node_voltages[&node("collector")]),
+            "unexpected collector voltage {}",
+            result.node_voltages[&node("collector")]
+        );
+        assert!(result.iterations > 1);
     }
 }

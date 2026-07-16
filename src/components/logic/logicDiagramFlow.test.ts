@@ -109,10 +109,17 @@ describe('logic diagram flow helpers', () => {
   it('round-trips schematic symbol rotation', () => {
     const diagram = {
       ...createEmptyLogicDiagram('Rotated', 'schematic'),
-      nodes: [{ id: 'r1', kind: 'resistor' as const, position: { x: 10, y: 20 }, rotation: 270 as const }],
+      nodes: [{
+        id: 'r1',
+        kind: 'resistor' as const,
+        position: { x: 10, y: 20 },
+        rotation: 270 as const,
+        electrical: { resistanceOhms: 4700 },
+      }],
     };
     const graph = toFlowGraph(diagram);
     expect(graph.nodes[0].data.rotation).toBe(270);
+    expect(graph.nodes[0].data.electrical).toEqual({ resistanceOhms: 4700 });
     expect(fromFlowGraph(diagram, graph.nodes, graph.edges, graph.viewport)).toEqual(diagram);
   });
 

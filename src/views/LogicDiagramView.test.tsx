@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { useEditorStore } from '../store/editorStore';
 import { useDocumentStatusStore } from '../store/documentStatusStore';
 import { useVaultStore } from '../store/vaultStore';
+import { useUiStore } from '../store/uiStore';
 
 const logicEvents = vi.hoisted(() => ({
   fileModifiedHandler: null as null | ((event: { payload: { path: string } }) => void | Promise<void>),
@@ -21,6 +22,7 @@ const tauriMocks = vi.hoisted(() => ({
   deleteLogicComponent: vi.fn(),
   replicaReadLogicComponents: vi.fn(),
   replicaWriteLogicComponents: vi.fn(),
+  circuitSolveDc: vi.fn(),
 }));
 
 const liveJsonMocks = vi.hoisted(() => ({
@@ -49,6 +51,7 @@ vi.mock('../lib/tauri', () => ({
     deleteLogicComponent: tauriMocks.deleteLogicComponent,
     replicaReadLogicComponents: tauriMocks.replicaReadLogicComponents,
     replicaWriteLogicComponents: tauriMocks.replicaWriteLogicComponents,
+    circuitSolveDc: tauriMocks.circuitSolveDc,
   },
 }));
 
@@ -164,6 +167,8 @@ describe('LogicDiagramView safe reload policy', () => {
     tauriMocks.deleteLogicComponent.mockResolvedValue(undefined);
     tauriMocks.replicaReadLogicComponents.mockResolvedValue([]);
     tauriMocks.replicaWriteLogicComponents.mockResolvedValue(undefined);
+    tauriMocks.circuitSolveDc.mockReset();
+    useUiStore.setState({ schematicSymbolSet: 'ansi' });
   });
 
   afterEach(() => {
@@ -286,6 +291,143 @@ describe('LogicDiagramView safe reload policy', () => {
     expect(screen.getByText('Voltage source')).toBeTruthy();
     expect(screen.getAllByText('Resistor').length).toBeGreaterThan(0);
     expect(screen.queryByText(/unset/)).toBeNull();
+  });
+
+  it('renders schematic symbols with the selected IEC/DIN notation', async () => {
+    useUiStore.setState({ schematicSymbolSet: 'iec' });
+    tauriMocks.readNote.mockResolvedValueOnce({
+      content: schematicDoc(['resistor', 'transistor']),
+      hash: 'schematic-v1',
+      modifiedAt: 1,
+    });
+
+    const { container } = render(<LogicDiagramView relativePath={PATH} />);
+    expect(await screen.findByText(/2 symbols/)).toBeTruthy();
+    expect(container.innerHTML).toContain('H76V44');
+    expect(container.innerHTML).toContain('M46 42L78 48');
+  });
+
+  it('edits and displays persisted schematic electrical values', async () => {
+    tauriMocks.readNote.mockResolvedValueOnce({
+      content: JSON.stringify({
+        schemaVersion: 6,
+        kind: 'logic-diagram',
+        diagramMode: 'schematic',
+        nodes: [{
+          id: 'r1',
+          kind: 'resistor',
+          label: 'Load',
+          position: { x: 0, y: 0 },
+          electrical: { resistanceOhms: 1000 },
+        }],
+        wires: [],
+        viewport: { x: 0, y: 0, zoom: 1 },
+      }),
+      hash: 'v1',
+      modifiedAt: 1,
+    });
+
+    render(<LogicDiagramView relativePath={PATH} />);
+    expect(await screen.findByText('Load')).toBeTruthy();
+    expect(screen.getByText(/1 kΩ/)).toBeTruthy();
+
+    const node = screen.getByText('Load').closest('[data-logic-node]');
+    if (!(node?.firstElementChild instanceof HTMLElement)) throw new Error('Expected resistor surface.');
+    fireEvent.doubleClick(node.firstElementChild);
+
+    expect(await screen.findByRole('heading', { name: 'Load settings' })).toBeTruthy();
+    const resistance = screen.getByLabelText(/Resistance/);
+    fireEvent.change(resistance, { target: { value: '2200' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Apply' }));
+
+    expect(await screen.findByText(/2.2 kΩ/)).toBeTruthy();
+  });
+
+  it('runs DC simulation, renders results, and energizes mapped live wires', async () => {
+    tauriMocks.readNote.mockResolvedValueOnce({
+      content: JSON.stringify({
+        schemaVersion: 6,
+        kind: 'logic-diagram',
+        diagramMode: 'schematic',
+        nodes: [
+          { id: 'source', kind: 'voltage-source', label: 'Supply', position: { x: 0, y: 0 }, electrical: { voltageVolts: 5 } },
+          { id: 'r1', kind: 'resistor', label: 'Load', position: { x: 200, y: 0 }, electrical: { resistanceOhms: 1000 } },
+          { id: 'ground', kind: 'ground', position: { x: 400, y: 0 } },
+        ],
+        wires: [
+          { id: 'hot', source: 'source', sourceHandle: 'positive', target: 'r1', targetHandle: 'terminal-a' },
+          { id: 'return', source: 'r1', sourceHandle: 'terminal-b', target: 'ground', targetHandle: 'terminal' },
+          { id: 'reference', source: 'source', sourceHandle: 'negative', target: 'ground', targetHandle: 'terminal' },
+        ],
+        viewport: { x: 0, y: 0, zoom: 1 },
+      }),
+      hash: 'v1',
+      modifiedAt: 1,
+    });
+    tauriMocks.circuitSolveDc.mockResolvedValueOnce({
+      operatingPoint: {
+        nodeVoltages: { 0: 0, hotNet: 5 },
+        componentCurrents: { source: -0.005, r1: 0.005 },
+        iterations: 1,
+      },
+      sourceMap: {
+        terminals: [
+          { terminal: { nodeId: 'source', handleId: 'positive' }, electricalNode: 'hotNet' },
+          { terminal: { nodeId: 'ground', handleId: 'terminal' }, electricalNode: '0' },
+        ],
+        wires: [
+          { wireId: 'hot', electricalNode: 'hotNet' },
+          { wireId: 'return', electricalNode: '0' },
+          { wireId: 'reference', electricalNode: '0' },
+        ],
+      },
+    });
+
+    const { container } = render(<LogicDiagramView relativePath={PATH} />);
+    expect(await screen.findByText(/3 symbols/)).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Run DC' }));
+
+    expect(await screen.findByText('Node voltages')).toBeTruthy();
+    expect(screen.getByText('Converged in 1 iteration')).toBeTruthy();
+    expect(screen.getByText('5 V')).toBeTruthy();
+    expect(screen.getAllByText(/5 mA/).length).toBeGreaterThan(0);
+    expect(container.querySelectorAll('[data-schematic-live="true"]')).toHaveLength(1);
+    expect(tauriMocks.circuitSolveDc).toHaveBeenCalledWith(expect.objectContaining({ schemaVersion: 6 }));
+
+    const loadHandle = screen.getByRole('button', { name: /Load terminal terminal-a/i });
+    const loadNode = loadHandle.closest('[data-logic-node]');
+    if (!(loadNode?.firstElementChild instanceof HTMLElement)) throw new Error('Expected load surface.');
+    fireEvent.doubleClick(loadNode.firstElementChild);
+    fireEvent.change(await screen.findByLabelText(/Resistance/), { target: { value: '2000' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Apply' }));
+
+    expect(await screen.findByText(/Results are stale/)).toBeTruthy();
+    expect(container.querySelectorAll('[data-schematic-live="true"]')).toHaveLength(0);
+  });
+
+  it('shows actionable structured circuit compilation errors', async () => {
+    tauriMocks.readNote.mockResolvedValueOnce({
+      content: JSON.stringify({
+        schemaVersion: 6,
+        kind: 'logic-diagram',
+        diagramMode: 'schematic',
+        nodes: [{ id: 'r1', kind: 'resistor', position: { x: 0, y: 0 }, electrical: { resistanceOhms: 1000 } }],
+        wires: [],
+        viewport: { x: 0, y: 0, zoom: 1 },
+      }),
+      hash: 'v1',
+      modifiedAt: 1,
+    });
+    tauriMocks.circuitSolveDc.mockRejectedValueOnce({
+      stage: 'compilation',
+      detail: { code: 'missingGround' },
+    });
+
+    render(<LogicDiagramView relativePath={PATH} />);
+    expect(await screen.findByText(/1 symbols/)).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Run DC' }));
+
+    expect(await screen.findByText(/Add one ground reference/)).toBeTruthy();
   });
 
   it('exports the current diagram SVG and appends it to an open note', async () => {

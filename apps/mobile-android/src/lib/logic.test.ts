@@ -55,7 +55,7 @@ describe('mobile logic documents', () => {
   it('parses and normalizes logic content through the shared schema helper', () => {
     const parsed = parseLogicContent(CONTENT);
     expect(parsed.kind).toBe('logic-diagram');
-    expect(parsed.schemaVersion).toBe(5);
+    expect(parsed.schemaVersion).toBe(6);
     expect(parsed.nodes).toHaveLength(4);
     expect(parsed.wires[0].targetHandle).toBe('in-a');
   });

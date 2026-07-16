@@ -1,4 +1,4 @@
-import { Code2, Palette, Server, Type } from 'lucide-react';
+import { CircuitBoard, Code2, Palette, Server, Type } from 'lucide-react';
 
 import {
   ACCENTS,
@@ -204,6 +204,35 @@ export function SettingsScreen({
               <span>{meta.description}</span>
             </button>
           ))}
+        </div>
+      </section>
+
+      <section className="card">
+        <div className="card-title">
+          <CircuitBoard size={18} aria-hidden />
+          <span>Logic & circuits</span>
+        </div>
+        <div className="setting-row">
+          <div>
+            <strong>Schematic symbols</strong>
+            <span>Choose American or German/international electrical notation.</span>
+          </div>
+          <div className="segmented-control">
+            <button
+              type="button"
+              className={prefs.schematicSymbolSet === 'ansi' ? 'selected' : ''}
+              onClick={() => onChange({ ...prefs, schematicSymbolSet: 'ansi' })}
+            >
+              ANSI
+            </button>
+            <button
+              type="button"
+              className={prefs.schematicSymbolSet === 'iec' ? 'selected' : ''}
+              onClick={() => onChange({ ...prefs, schematicSymbolSet: 'iec' })}
+            >
+              IEC / DIN
+            </button>
+          </div>
         </div>
       </section>
 

@@ -1,4 +1,5 @@
 pub mod collab;
+pub mod circuit;
 pub mod crypto;
 pub mod files;
 pub mod index;

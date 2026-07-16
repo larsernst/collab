@@ -23,6 +23,7 @@ import type { KanbanAutomationPreset, KanbanFilterPreset, KanbanTemplate, LogicC
 import type { NoteSnippet, NoteSnippetDraft, NoteSnippetScope } from '../types/noteSnippet';
 import type { PdfSidecarState } from '../types/pdf';
 import type { UpdateInfo } from '../store/updateStore';
+import type { LogicDiagramDocument } from '../types/logicDiagram';
 import type {
   CacheCleanupReport,
   CachedContentStatus,
@@ -96,6 +97,28 @@ export interface NativeOcrWord {
 export interface NativeOcrResult {
   text: string;
   words: NativeOcrWord[];
+}
+
+export interface CircuitTerminalNet {
+  terminal: { nodeId: string; handleId: string };
+  electricalNode: string;
+}
+
+export interface CircuitWireNet {
+  wireId: string;
+  electricalNode: string;
+}
+
+export interface CircuitDcResult {
+  operatingPoint: {
+    nodeVoltages: Record<string, number>;
+    componentCurrents: Record<string, number>;
+    iterations: number;
+  };
+  sourceMap: {
+    terminals: CircuitTerminalNet[];
+    wires: CircuitWireNet[];
+  };
 }
 
 export const tauriCommands = {
@@ -357,6 +380,10 @@ export const tauriCommands = {
   // Watcher
   watchVault: (vaultPath: string) => invoke<void>('watch_vault', { vaultPath }),
   unwatchVault: () => invoke<void>('unwatch_vault'),
+
+  // First-party circuit simulation
+  circuitSolveDc: (document: LogicDiagramDocument) =>
+    invoke<CircuitDcResult>('circuit_solve_dc', { document }),
 
   // UI
   setUiZoom: (zoom: number) => invoke<void>('set_ui_zoom', { zoom }),

@@ -151,7 +151,7 @@ export function FilesScreen({ prefs }: { prefs: ThemePrefs }) {
   }
 
   if (viewerFile) {
-    return <RichFileViewerScreen file={viewerFile} />;
+    return <RichFileViewerScreen file={viewerFile} schematicSymbolSet={prefs.schematicSymbolSet} />;
   }
 
   return (

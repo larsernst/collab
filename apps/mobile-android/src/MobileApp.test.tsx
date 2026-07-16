@@ -54,6 +54,18 @@ describe('MobileApp shell', () => {
     expect(screen.getByRole('navigation', { name: 'Primary' })).toBeTruthy();
   });
 
+  it('persists the IEC/DIN schematic notation preference', async () => {
+    mockInvoke({ server_connection_statuses: () => [] });
+    render(<MobileApp />);
+    await waitFor(() => expect(useMobileStore.getState().restored).toBe(true));
+
+    screen.getByRole('button', { name: /Settings/ }).click();
+    (await screen.findByRole('button', { name: 'IEC / DIN' })).click();
+
+    const stored = JSON.parse(localStorage.getItem('collab-mobile-theme') ?? '{}') as Record<string, unknown>;
+    expect(stored.schematicSymbolSet).toBe('iec');
+  });
+
   it('restores a saved session and lists vaults on the Vaults tab', async () => {
     localStorage.setItem(
       'collab-mobile-servers',
