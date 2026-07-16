@@ -129,8 +129,10 @@ function renderNode(
     const rotatedViewHeight = rotation === 90 || rotation === 270 ? 100 : 72;
     const label = logicNodeLabel(node);
     const terminals = getSchematicTerminals(kind);
+    const symbol = `<g transform="translate(${bounds.x} ${bounds.y}) scale(${bounds.width / rotatedViewWidth} ${bounds.height / rotatedViewHeight})"><g${schematicSymbolTransform(rotation) ? ` transform="${schematicSymbolTransform(rotation)}"` : ''}>${schematicSymbolMarkup(kind, '#334155', schematicSymbolSet)}</g></g>`;
+    if (kind === 'junction') return symbol;
     return [
-      `<g transform="translate(${bounds.x} ${bounds.y}) scale(${bounds.width / rotatedViewWidth} ${bounds.height / rotatedViewHeight})"><g${schematicSymbolTransform(rotation) ? ` transform="${schematicSymbolTransform(rotation)}"` : ''}>${schematicSymbolMarkup(kind, '#334155', schematicSymbolSet)}</g></g>`,
+      symbol,
       `<text x="${bounds.x + bounds.width / 2}" y="${bounds.y + bounds.height - 2}" text-anchor="middle" font-family="Inter, Arial, sans-serif" font-size="10" font-weight="600" fill="#475569">${escapeXml(label)}</text>`,
       terminals.map((handleId) => {
         const point = schematicTerminalPoint(kind, handleId, rotation);

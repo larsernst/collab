@@ -835,6 +835,7 @@ name = "collab-circuit"
 version = "0.6.5"
 dependencies = [
  "serde",
+ "serde_json",
  "thiserror 1.0.69",
 ]
 

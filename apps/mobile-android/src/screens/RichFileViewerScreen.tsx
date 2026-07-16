@@ -1857,7 +1857,7 @@ function MobileLogicNode({
           return (
             <span
               key={handleId}
-              className="mobile-logic-handle"
+              className={`mobile-logic-handle${kind === 'junction' ? ' junction' : ''}`}
               style={{ left: `${point.x - 4.5}px`, top: `${point.y}px` }}
             />
           );
@@ -1868,7 +1868,7 @@ function MobileLogicNode({
             dangerouslySetInnerHTML={{ __html: schematicSymbolMarkup(kind, 'currentColor', schematicSymbolSet) }}
           />
         </svg>
-        <strong>{logicNodeLabel(node)}</strong>
+        {kind !== 'junction' ? <strong>{logicNodeLabel(node)}</strong> : null}
       </div>
     );
   }

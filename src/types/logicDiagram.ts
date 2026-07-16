@@ -27,6 +27,7 @@ export type ElectronicComponentKind =
   | 'transistor'
   | 'switch'
   | 'ground'
+  | 'junction'
   | 'voltage-source';
 
 export type LogicNodeKind = LogicGateKind | 'component' | ElectronicComponentKind;
@@ -147,6 +148,7 @@ const ELECTRONIC_COMPONENT_KINDS = new Set<ElectronicComponentKind>([
   'transistor',
   'switch',
   'ground',
+  'junction',
   'voltage-source',
 ]);
 
@@ -289,6 +291,7 @@ function normalizeElectricalParameters(
       return modelRef ? { modelRef } : undefined;
     }
     case 'ground':
+    case 'junction':
       return undefined;
   }
 }
@@ -305,7 +308,8 @@ export function defaultSchematicElectricalParameters(
     case 'diode': return { modelRef: 'builtin:diode' };
     case 'led': return { modelRef: 'builtin:led' };
     case 'transistor': return { modelRef: 'builtin:npn' };
-    case 'ground': return undefined;
+    case 'ground':
+    case 'junction': return undefined;
   }
 }
 

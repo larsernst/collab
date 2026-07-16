@@ -1280,6 +1280,10 @@ p {
 .mobile-logic-handle.output {
   right: -5px;
 }
+.mobile-logic-handle.junction {
+  border-color: var(--primary);
+  background: var(--primary);
+}
 .logic-warning-strip {
   position: absolute;
   right: 10px;

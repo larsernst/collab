@@ -41,7 +41,7 @@ Deferred until the core is stable:
 | --- | --- | --- |
 | 6.0 First-party foundation | Complete | Establish the Rust crate, typed model, deterministic behavior, and linear DC baseline. |
 | 6.1 Simulation document model | In progress | Add electrical values, probes, analyses, junctions, and source waveforms to `.logic`. |
-| 6.2 Schematic compiler | In progress | Compile validated `.logic` connectivity into deterministic electrical nets and solver systems. |
+| 6.2 Schematic compiler | Complete | Compile validated `.logic` connectivity into deterministic electrical nets and solver systems. |
 | 6.3 DC operating point | In progress | Expand the baseline solver with diagnostics, nonlinear devices, and live overlays. |
 | 6.4 Runtime integration | In progress | Run, cancel, and stream simulations through typed Tauri commands on desktop and Android. |
 | 6.5 Transient and DC sweep | Planned | Add dynamic elements, time integration, sweeps, and plot inspection. |
@@ -68,9 +68,12 @@ Implemented baseline:
 
 - `collab-circuit` is a workspace crate used directly by the Tauri application on desktop and Android builds.
 - The deterministic compiler unions stable terminal handles through wires, supports terminal fan-out, ignores visual rotation/order, and returns terminal/wire source maps.
+- Explicit junction nodes can be inserted at an arbitrary wire position; insertion splits the selected wire while preserving its ID and label. Only shared terminals and explicit junction endpoints join electrical nets, so visual wire crossings remain disconnected.
+- Persisted voltage and branch-current probes compile to stable electrical-node/component targets. Stale component references, removed terminals, duplicate probe IDs, and invalid ground-current probes fail with source-mapped compilation diagnostics.
+- Before matrix assembly, the bounded compiler rejects disconnected component terminals, DC-floating islands, self-connected ideal voltage sources, conflicting or redundant ideal-voltage loops, and jobs above 512 components, 4,096 wires, or 2,048 probes. Capacitors and current-source branches do not falsely establish a DC reference path.
 - Schema v6 persists normalized SI electrical parameters plus DC analysis/probe configuration. Migrated documents do not receive invented values; newly inserted symbols receive explicit editable defaults.
 - `circuit_solve_dc` compiles and solves resistor, capacitor, inductor, switch, independent-voltage-source, diode, LED, and built-in NPN schematics through a typed frontend wrapper. Unsupported model references and malformed connectivity return structured diagnostics.
-- The desktop editor can edit persisted SI values, run the local DC solver, inspect node voltages/component currents, and highlight mapped wires whose solved node voltage is nonzero. Electrically relevant edits mark displayed results stale and remove their glow until rerun.
+- The desktop editor can edit persisted SI values, run the local DC solver, inspect node voltage polarity, component current direction, and component power, and highlight mapped wires using positive/negative solved-voltage colors. Electrically relevant edits mark displayed results stale and remove their glow until rerun.
 - The bounded solver now uses damped Newton-Raphson for the built-in diode and LED models, reports iteration counts and convergence failures, treats capacitors as DC-open and inductors as DC-shorts, and keeps deterministic ordering. It remains a single native invocation; cancellation and streamed progress remain Phase 6.4 work before larger jobs are enabled.
 
 The dense solver is a correctness baseline, not the final large-circuit implementation. Its public model and result types must remain usable when the matrix backend is replaced with a sparse implementation.
@@ -114,6 +117,19 @@ Testing:
 - Property tests for net union, junction branching, and stable source mapping.
 - Regression fixtures for terminal fan-out and crossing wires that are not junctions.
 
+Implemented slice:
+
+- Deterministic union-find nets, terminal/wire/probe source maps, stable component ordering, and terminal fan-out.
+- Typed source diagnostics for missing values/models, stale wire/probe references, disconnected terminals, and invalid ground usage.
+- DC-aware reference-path validation, including a forward-active NPN collector that does not by itself constrain collector voltage.
+- Weighted ideal-voltage-source path validation that rejects inconsistent and redundant loops of any length before they reach MNA.
+- Explicit bounded-job rejection for the current dense-solver baseline.
+- Explicit junction validation and editor wire splitting, with regression fixtures proving junction fan-out and non-connecting wire crossings.
+- Exact typed golden contracts for every supported schematic component model and source-map output.
+- Generated branch-topology contracts cover 2-64 branches across 144 deterministic node/wire permutations and all persisted rotations.
+
+Phase 6.2 is complete. Future component models must add their compiler golden contract before they become supported.
+
 ## Phase 6.3: DC Operating Point
 
 - Replace the baseline dense backend with or supplement it by a reviewed sparse matrix backend before large diagrams are enabled.
@@ -132,9 +148,12 @@ Implemented slice:
 - Built-in Shockley diode and LED models selected through stable `modelRef` values.
 - A deliberately scoped `builtin:npn` forward-active model with exponential base-emitter current and fixed current gain. Saturation, reverse-active behavior, breakdown, capacitances, Early effect, and temperature variation remain explicitly unsupported.
 - DC operating-point behavior for capacitors (open), inductors (ideal short with branch current), and resistive open/closed switches.
-- Iteration metadata in the typed Tauri result and desktop results panel.
+- Passive-sign-convention component power, explicit component current direction, signed node/wire polarity, and iteration metadata in the typed Tauri result and desktop results panel.
+- Typed NPN operating-region diagnostics when a solved bias point leaves the supported forward-active approximation. The UI identifies the source component and reports its solved VBE/VCE values instead of silently presenting the approximation as a complete transistor model.
+- Current direction is reported per component and through explicit branch probes. A branched electrical net does not have one well-defined wire current, so wire overlays remain voltage/polarity indicators.
+- Schematic context actions create persisted voltage probes from wires and branch-current probes from components. `circuit_solve_dc` returns typed probe values, and the results panel renders those focused readings separately from the complete operating-point tables.
 
-Remaining before Phase 6.3 is complete: source-mapped validation beyond model IDs, power/polarity/direction readouts, difficult convergence fixtures, NPN saturation handling or explicit operating-region diagnostics, and sparse-backend evaluation.
+Remaining before Phase 6.3 is complete: difficult convergence fixtures, fuller NPN saturation handling, digital bridge states, and sparse-backend evaluation.
 
 ## Phase 6.4: Runtime Integration
 

@@ -68,6 +68,22 @@ describe('logicDiagramExport', () => {
     expect(schematic.nodes[0].kind).toBe('resistor');
   });
 
+  it('exports an explicit junction as a clean connection dot', () => {
+    const schematic: LogicDiagramDocument = {
+      schemaVersion: 6,
+      kind: 'logic-diagram',
+      diagramMode: 'schematic',
+      nodes: [{ id: 'join', kind: 'junction', position: { x: 20, y: 20 } }],
+      wires: [],
+      viewport: { x: 0, y: 0, zoom: 1 },
+    };
+
+    const svg = buildLogicDiagramSvg(schematic, 'Diagrams/junction.logic');
+    expect(svg).toContain('<circle cx="50" cy="36" r="10" fill="#334155"/>');
+    expect(svg).not.toContain('>Junction</text>');
+    expect(svg.match(/<circle/g)).toHaveLength(1);
+  });
+
   it('extracts source metadata from exported SVG data URLs', () => {
     const dataUrl = buildLogicDiagramSvgDataUrl(diagram, 'Diagrams/half-adder.logic');
 

@@ -109,16 +109,39 @@ export interface CircuitWireNet {
   electricalNode: string;
 }
 
+export type CircuitDcDiagnostic = {
+  code: 'npnOutsideForwardActive';
+  context: {
+    component: string;
+    baseEmitterVoltage: number;
+    collectorEmitterVoltage: number;
+  };
+};
+
+export type CircuitProbeValue =
+  | { kind: 'node-voltage'; probeId: string; label: string | null; valueVolts: number }
+  | { kind: 'branch-current'; probeId: string; label: string | null; valueAmps: number };
+
 export interface CircuitDcResult {
   operatingPoint: {
     nodeVoltages: Record<string, number>;
     componentCurrents: Record<string, number>;
+    componentPowers: Record<string, number>;
+    diagnostics: CircuitDcDiagnostic[];
     iterations: number;
   };
   sourceMap: {
     terminals: CircuitTerminalNet[];
     wires: CircuitWireNet[];
+    probes: Array<{
+      probeId: string;
+      label: string | null;
+      kind: 'node-voltage' | 'branch-current';
+      electricalNode?: string;
+      component?: string;
+    }>;
   };
+  probeValues: CircuitProbeValue[];
 }
 
 export const tauriCommands = {

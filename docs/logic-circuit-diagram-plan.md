@@ -206,8 +206,12 @@ Current implementation:
 
 - Schema v6 persists optional SI electrical parameters and DC probe configuration; new symbols receive explicit defaults while migrated symbols remain unconfigured until edited.
 - `collab-circuit` compiles stable terminal/wire connectivity into deterministic electrical nets, preserving terminal and wire source maps for future probes and energized-wire rendering.
-- The Tauri DC slice compiles and solves resistors, capacitors, inductors, switches, independent voltage sources, built-in diode/LED models, and a deliberately scoped forward-active NPN model. It uses damped Newton-Raphson for nonlinear devices and returns explicit diagnostics for unsupported model references.
-- Schematic symbols expose an electrical-value dialog, the toolbar runs DC operating-point analysis, and a compact results surface shows convergence iterations, node voltages, and component currents. Only fresh solver results can energize wires; electrical edits make old results visibly stale.
+- The schematic editor can split a wire at its context-menu position with an explicit junction node. Shared endpoints and junctions connect; wires that only cross visually remain separate electrical nets.
+- Schema-v6 voltage and branch-current probes are now editable from schematic wire/component context menus, persisted through normal document collaboration, validated by the Rust compiler, and returned as typed DC readouts.
+- The compiler now reports disconnected terminals, DC-floating islands, invalid ideal-source loops, and oversized dense-solver jobs before numerical assembly, with source IDs carried into actionable desktop errors.
+- The deterministic compiler phase is covered by exact typed component/source-map golden contracts and generated 2-64 branch permutations across ordering and rotation changes.
+- The Tauri DC slice compiles and solves resistors, capacitors, inductors, switches, independent voltage sources, built-in diode/LED models, and a deliberately scoped forward-active NPN model. It uses damped Newton-Raphson for nonlinear devices and returns explicit diagnostics for unsupported model references and NPN bias points outside the supported region.
+- Schematic symbols expose an electrical-value dialog, the toolbar runs DC operating-point analysis, and a compact results surface shows convergence iterations, signed node voltages, component current direction, and absorbed/supplied power. Fresh results color mapped wires by solved voltage polarity; electrical edits make old results visibly stale.
 - Desktop and Android settings expose ANSI/IEEE and IEC/DIN schematic notation. The preference is client-local, applies to rendering and desktop SVG export, and never mutates `.logic` topology or collaboration state.
 
 ## Key Implementation Changes

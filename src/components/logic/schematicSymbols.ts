@@ -22,6 +22,7 @@ const SYMBOLS: Record<ElectronicComponentKind, SchematicSymbolDefinition> = {
   transistor: { kind: 'transistor', label: 'NPN transistor', inputHandles: ['base'], outputHandles: ['collector', 'emitter'], width: 120, height: 88 },
   switch: { kind: 'switch', label: 'Switch', inputHandles: ['terminal-a'], outputHandles: ['terminal-b'], width: 120, height: 72 },
   ground: { kind: 'ground', label: 'Ground', inputHandles: ['terminal'], outputHandles: [], width: 96, height: 72 },
+  junction: { kind: 'junction', label: 'Junction', inputHandles: ['terminal'], outputHandles: [], width: 24, height: 24 },
   'voltage-source': { kind: 'voltage-source', label: 'Voltage source', inputHandles: ['negative'], outputHandles: ['positive'], width: 120, height: 80 },
 };
 
@@ -59,6 +60,9 @@ export function rotateSchematicClockwise(rotation: SchematicRotation = 0): Schem
 
 function unrotatedTerminalPoint(kind: ElectronicComponentKind, handleId: string) {
   const symbol = getSchematicSymbol(kind);
+  if (kind === 'junction') {
+    return { x: symbol.width / 2, y: symbol.height / 2 };
+  }
   const inputIndex = symbol.inputHandles.indexOf(handleId);
   if (inputIndex >= 0) {
     return {
@@ -96,6 +100,7 @@ export function schematicTerminalSide(
   handleId: string,
   rotation: SchematicRotation = 0,
 ): 'left' | 'right' | 'top' | 'bottom' {
+  if (kind === 'junction') return 'right';
   const dimensions = schematicSymbolDimensions(kind, rotation);
   const point = schematicTerminalPoint(kind, handleId, rotation);
   if (point.x === 0) return 'left';
@@ -142,6 +147,8 @@ export function schematicSymbolMarkup(
       return `<path d="M0 32H30M70 32H100M30 32L68 12" ${common}/><circle cx="30" cy="32" r="3" fill="${stroke}"/><circle cx="70" cy="32" r="3" fill="${stroke}"/>`;
     case 'ground':
       return `<path d="M0 32H50V40M24 40H76M32 50H68M40 60H60" ${common}/>`;
+    case 'junction':
+      return `<circle cx="50" cy="36" r="10" fill="${stroke}"/>`;
     case 'voltage-source':
       return `<path d="M0 36H22M78 36H100" ${common}/><circle cx="50" cy="36" r="28" ${common}/><path d="M31 36H43M57 36H69M63 30V42" ${common}/>`;
   }

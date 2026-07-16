@@ -115,6 +115,7 @@ import {
   type LogicGateKind,
   type ElectronicComponentKind,
   type LogicDiagramMode,
+  type LogicCircuitProbe,
   type LogicNodeKind,
   type SchematicElectricalParameters,
   type SchematicSymbolSet,
@@ -186,6 +187,7 @@ type LogicContextMenu =
       x: number;
       y: number;
       edgeId: string;
+      flowPosition: { x: number; y: number };
     };
 
 function snapValue(value: number, grid = LOGIC_GRID) {
@@ -242,6 +244,67 @@ function screenToFlow(position: { x: number; y: number }, viewport: Viewport) {
   };
 }
 
+function connectionSideToward(
+  origin: { x: number; y: number },
+  destination: { x: number; y: number },
+): 'left' | 'right' | 'top' | 'bottom' {
+  const dx = destination.x - origin.x;
+  const dy = destination.y - origin.y;
+  if (Math.abs(dx) >= Math.abs(dy)) return dx < 0 ? 'left' : 'right';
+  return dy < 0 ? 'top' : 'bottom';
+}
+
+function closestPointOnSvgPath(
+  path: SVGPathElement,
+  point: { x: number; y: number },
+) {
+  if (typeof path.getTotalLength !== 'function' || typeof path.getPointAtLength !== 'function') {
+    return point;
+  }
+  const totalLength = path.getTotalLength();
+  if (!Number.isFinite(totalLength) || totalLength <= 0) return point;
+
+  const distanceSquared = (candidate: DOMPoint) => (
+    (candidate.x - point.x) ** 2 + (candidate.y - point.y) ** 2
+  );
+  const sampleCount = Math.max(24, Math.min(160, Math.ceil(totalLength / 8)));
+  let bestLength = 0;
+  let bestPoint = path.getPointAtLength(0);
+  let bestDistance = distanceSquared(bestPoint);
+  for (let index = 1; index <= sampleCount; index += 1) {
+    const length = totalLength * index / sampleCount;
+    const candidate = path.getPointAtLength(length);
+    const distance = distanceSquared(candidate);
+    if (distance < bestDistance) {
+      bestLength = length;
+      bestPoint = candidate;
+      bestDistance = distance;
+    }
+  }
+
+  let step = totalLength / sampleCount;
+  for (let iteration = 0; iteration < 8; iteration += 1) {
+    const beforeLength = Math.max(0, bestLength - step);
+    const afterLength = Math.min(totalLength, bestLength + step);
+    const before = path.getPointAtLength(beforeLength);
+    const after = path.getPointAtLength(afterLength);
+    const beforeDistance = distanceSquared(before);
+    const afterDistance = distanceSquared(after);
+    if (beforeDistance < bestDistance) {
+      bestLength = beforeLength;
+      bestPoint = before;
+      bestDistance = beforeDistance;
+    }
+    if (afterDistance < bestDistance) {
+      bestLength = afterLength;
+      bestPoint = after;
+      bestDistance = afterDistance;
+    }
+    step /= 2;
+  }
+  return { x: bestPoint.x, y: bestPoint.y };
+}
+
 function getHandleAnchor(
   node: LogicFlowNode,
   handleId: string,
@@ -288,11 +351,15 @@ function logicEdgePath(
   if (!sourceHandle || !targetHandle) return null;
   const source = flowToScreen(getHandleAnchor(sourceNode, sourceHandle, 'source', nodesById), viewport);
   const target = flowToScreen(getHandleAnchor(targetNode, targetHandle, 'target', nodesById), viewport);
-  const sourcePosition = isElectronicComponentKind(sourceNode.data.kind)
-    ? schematicTerminalSide(sourceNode.data.kind, sourceHandle, sourceNode.data.rotation ?? 0)
+  const sourcePosition = sourceNode.data.kind === 'junction'
+    ? connectionSideToward(source, target)
+    : isElectronicComponentKind(sourceNode.data.kind)
+      ? schematicTerminalSide(sourceNode.data.kind, sourceHandle, sourceNode.data.rotation ?? 0)
     : 'right';
-  const targetPosition = isElectronicComponentKind(targetNode.data.kind)
-    ? schematicTerminalSide(targetNode.data.kind, targetHandle, targetNode.data.rotation ?? 0)
+  const targetPosition = targetNode.data.kind === 'junction'
+    ? connectionSideToward(target, source)
+    : isElectronicComponentKind(targetNode.data.kind)
+      ? schematicTerminalSide(targetNode.data.kind, targetHandle, targetNode.data.rotation ?? 0)
     : 'left';
   const [path, labelX, labelY] = getSmoothStepPath({
     sourceX: source.x,
@@ -385,6 +452,7 @@ function liveLogicStatePreservesCanonicalEntities(
 }
 
 const ANALOG_ACTIVE_VOLTAGE = 1e-9;
+const ANALOG_NEGATIVE_COLOR = '#fb7185';
 
 type NumericElectricalField = 'resistanceOhms' | 'capacitanceFarads' | 'inductanceHenries' | 'voltageVolts';
 
@@ -429,6 +497,7 @@ function schematicValueLabel(kind: ElectronicComponentKind, electrical?: Schemat
   }
   if (kind === 'switch') return electrical?.switchClosed ? 'Closed' : 'Open';
   if (kind === 'ground') return 'Reference';
+  if (kind === 'junction') return 'Connection';
   return electrical?.modelRef?.replace(/^builtin:/, '') ?? 'Model required';
 }
 
@@ -462,6 +531,27 @@ function circuitErrorText(error: unknown) {
     case 'missingWireHandle': return 'A wire is not attached to a valid component terminal.';
     case 'unknownWireNode':
     case 'unknownTerminal': return 'A wire references a component or terminal that no longer exists.';
+    case 'duplicateProbeId': return 'Two circuit probes use the same ID. Remove and recreate one of them.';
+    case 'unknownProbeNode': return 'A circuit probe references a component that no longer exists.';
+    case 'missingProbeHandle': return 'A voltage probe is not attached to a component terminal.';
+    case 'unknownProbeTerminal': return 'A voltage probe references a terminal that no longer exists.';
+    case 'invalidBranchProbeTarget': return 'Branch-current probes cannot target the ground reference or a junction.';
+    case 'invalidJunctionDegree':
+      return `Junction ${String(context.nodeId ?? '')} needs at least two connected wires.`.trim();
+    case 'disconnectedTerminal':
+      return `Connect ${String(context.nodeId ?? 'the component')}'s ${String(context.handleId ?? 'terminal')} before running DC.`;
+    case 'floatingDcIsland': {
+      const nodeIds = Array.isArray(context.nodeIds) ? context.nodeIds.join(', ') : 'part of the circuit';
+      return `${nodeIds} has no DC path to the ground reference.`;
+    }
+    case 'invalidIdealVoltageSource':
+      return `${String(context.nodeId ?? 'A voltage source')} has both terminals connected to the same electrical node.`;
+    case 'conflictingIdealVoltageSources':
+      return `${String(context.firstNodeId ?? 'One voltage source')} and ${String(context.secondNodeId ?? 'another voltage source')} impose conflicting voltages on the same nodes.`;
+    case 'redundantIdealVoltageSources':
+      return `${String(context.firstNodeId ?? 'One voltage source')} and ${String(context.secondNodeId ?? 'another voltage source')} redundantly constrain the same nodes.`;
+    case 'oversizedCircuit':
+      return `This schematic exceeds the bounded DC baseline (${String(context.components ?? '?')} components, ${String(context.wires ?? '?')} wires, ${String(context.probes ?? '?')} probes).`;
     case 'singularSystem': return 'The circuit is floating, underconstrained, or contains conflicting ideal sources.';
     case 'invalidResistance': return 'Every resistor must have resistance greater than zero.';
     case 'invalidCapacitance': return 'Every capacitor must have capacitance greater than zero.';
@@ -572,6 +662,36 @@ function SharpLogicNode({
     const rotation = data.rotation ?? 0;
     const terminals = getSchematicTerminals(kind);
     const symbolMarkup = schematicSymbolMarkup(kind, 'currentColor', schematicSymbolSet);
+    if (kind === 'junction') {
+      return (
+        <div
+          onPointerDown={(event) => onPointerDown(event, node)}
+          onDoubleClick={() => onDoubleClick(node)}
+          onContextMenu={(event) => onContextMenu(event, node)}
+          className="absolute"
+          style={{ left: screen.x, top: screen.y, width, height }}
+        >
+          <button
+            type="button"
+            data-logic-handle
+            aria-label={`${logicNodeLabel({ kind, label: data.label })} terminal terminal`}
+            disabled={readOnly}
+            onPointerDown={(event) => onHandlePointerDown(event, node, 'terminal')}
+            onPointerUp={(event) => onHandlePointerUp(event, node, 'terminal')}
+            className={cn(
+              'absolute cursor-crosshair rounded-full border border-primary bg-primary',
+              selected && 'ring-2 ring-primary/35 ring-offset-2 ring-offset-background',
+            )}
+            style={{
+              left: 6 * zoom,
+              top: 6 * zoom,
+              width: 12 * zoom,
+              height: 12 * zoom,
+            }}
+          />
+        </div>
+      );
+    }
     return (
       <div
         onPointerDown={(event) => onPointerDown(event, node)}
@@ -771,9 +891,18 @@ function SharpLogicEdge({
   schematic: boolean;
 }) {
   const signal = edge.data?.signal;
+  const analogVoltage = edge.data?.analogVoltage;
+  const analogPolarity = schematic && typeof analogVoltage === 'number'
+    ? analogVoltage > ANALOG_ACTIVE_VOLTAGE
+      ? 'positive'
+      : analogVoltage < -ANALOG_ACTIVE_VOLTAGE
+      ? 'negative'
+      : 'reference'
+    : undefined;
+  const activeStroke = analogPolarity === 'negative' ? ANALOG_NEGATIVE_COLOR : LOGIC_SIGNAL_ON;
   const stroke = schematic
     ? signal === true
-      ? LOGIC_SIGNAL_ON
+      ? activeStroke
       : 'color-mix(in oklch, var(--foreground) 78%, transparent)'
     : signal === true
     ? LOGIC_SIGNAL_ON
@@ -829,13 +958,13 @@ function SharpLogicEdge({
         <path
           d={path}
           fill="none"
-          stroke={LOGIC_SIGNAL_ON}
+          stroke={activeStroke}
           strokeWidth={strokeWidth + 6 * zoom}
           strokeLinecap="round"
           strokeLinejoin="round"
           opacity={0.24}
           pointerEvents="none"
-          style={{ filter: `drop-shadow(0 0 ${4 * zoom}px ${LOGIC_SIGNAL_ON})` }}
+          style={{ filter: `drop-shadow(0 0 ${4 * zoom}px ${activeStroke})` }}
         />
       ) : null}
       <path
@@ -854,6 +983,7 @@ function SharpLogicEdge({
       />
       <path
         data-schematic-live={schematic && signal === true ? 'true' : undefined}
+        data-schematic-polarity={analogPolarity}
         d={path}
         fill="none"
         stroke={stroke}
@@ -974,9 +1104,15 @@ function LogicDiagramEditor({ relativePath }: Props) {
   } | null>(null);
   const getViewport = useCallback(() => viewport, [viewport]);
 
-  const structuralSignature = useCallback((flowNodes: LogicFlowNode[], flowEdges: LogicFlowEdge[], diagramMode: LogicDiagramMode) =>
+  const structuralSignature = useCallback((
+    flowNodes: LogicFlowNode[],
+    flowEdges: LogicFlowEdge[],
+    diagramMode: LogicDiagramMode,
+    simulation: LogicDiagramDocument['simulation'],
+  ) =>
     JSON.stringify({
       diagramMode,
+      simulation: simulation ?? null,
       nodes: flowNodes.map((node) => ({
         id: node.id,
         kind: node.data.kind,
@@ -1034,7 +1170,8 @@ function LogicDiagramEditor({ relativePath }: Props) {
         targetHandle: edge.targetHandle ?? null,
       }))
       .sort((left, right) => left.id.localeCompare(right.id)),
-  }), [edges, nodes]);
+    simulation: diagram.simulation ?? null,
+  }), [diagram.simulation, edges, nodes]);
   const circuitResultStale = Boolean(
     circuitResult && circuitResultSignature && circuitResultSignature !== circuitInputSignature,
   );
@@ -1146,7 +1283,7 @@ function LogicDiagramEditor({ relativePath }: Props) {
     setNodes(graph.nodes);
     setEdges(graph.edges);
     setViewportState(loaded.viewport);
-    savedStructuralRef.current = structuralSignature(graph.nodes, graph.edges, loaded.diagramMode);
+    savedStructuralRef.current = structuralSignature(graph.nodes, graph.edges, loaded.diagramMode, loaded.simulation);
     readyRef.current = true;
   }, [setEdges, setNodes, structuralSignature]);
 
@@ -1309,7 +1446,7 @@ function LogicDiagramEditor({ relativePath }: Props) {
   const lastMarkedSigRef = useRef<string | null>(null);
   useEffect(() => {
     if (!vault || readOnly || !readyRef.current || componentEditSession) return;
-    const sig = structuralSignature(nodes, edges, diagram.diagramMode);
+    const sig = structuralSignature(nodes, edges, diagram.diagramMode, diagram.simulation);
     if (sig === savedStructuralRef.current) {
       lastMarkedSigRef.current = sig;
       return;
@@ -1330,7 +1467,7 @@ function LogicDiagramEditor({ relativePath }: Props) {
   const prevSavingRef = useRef(false);
   useEffect(() => {
     if (prevSavingRef.current && !snapshot.saving && !snapshot.dirty && !snapshot.conflicted) {
-      savedStructuralRef.current = structuralSignature(nodes, edges, diagram.diagramMode);
+      savedStructuralRef.current = structuralSignature(nodes, edges, diagram.diagramMode, diagram.simulation);
     }
     prevSavingRef.current = snapshot.saving;
   }, [diagram.diagramMode, edges, nodes, snapshot.conflicted, snapshot.dirty, snapshot.saving, structuralSignature]);
@@ -1801,11 +1938,51 @@ function LogicDiagramEditor({ relativePath }: Props) {
     addSchematicSymbolAt(kind, clientPointToFlowPosition(getViewportCenterClientPoint()));
   }, [addSchematicSymbolAt, clientPointToFlowPosition, getViewportCenterClientPoint]);
 
+  const insertJunctionOnEdge = useCallback((edge: LogicFlowEdge, position: { x: number; y: number }) => {
+    if (readOnly || diagram.diagramMode !== 'schematic') return;
+    const junctionIndex = idCounterRef.current++;
+    const wireIndex = idCounterRef.current++;
+    const timestamp = Date.now();
+    const junctionId = `junction-${timestamp}-${junctionIndex}`;
+
+    setNodes((current) => [
+      ...current.map((node) => ({ ...node, selected: false })),
+      {
+        id: junctionId,
+        type: 'logicGate',
+        position: { x: position.x - 12, y: position.y - 12 },
+        zIndex: 2,
+        selected: true,
+        data: { kind: 'junction' },
+      },
+    ]);
+    setEdges((current) => [
+      ...current.map((candidate) => candidate.id === edge.id
+        ? {
+            ...candidate,
+            target: junctionId,
+            targetHandle: 'terminal',
+            selected: false,
+          }
+        : { ...candidate, selected: false }),
+      {
+        id: `wire-${timestamp}-${wireIndex}`,
+        type: 'logicWire',
+        source: junctionId,
+        sourceHandle: 'terminal',
+        target: edge.target,
+        targetHandle: edge.targetHandle,
+        selected: false,
+      },
+    ]);
+    markChanged();
+  }, [diagram.diagramMode, markChanged, readOnly, setEdges, setNodes]);
+
   const rotateSelectedSchematicSymbols = useCallback((nodeIds?: string[]) => {
     if (readOnly) return;
     const requested = new Set(nodeIds ?? nodes.filter((node) => node.selected).map((node) => node.id));
     const rotatableIds = new Set(nodes
-      .filter((node) => requested.has(node.id) && isElectronicComponentKind(node.data.kind))
+      .filter((node) => requested.has(node.id) && isElectronicComponentKind(node.data.kind) && node.data.kind !== 'junction')
       .map((node) => node.id));
     if (rotatableIds.size === 0) return;
     setNodes((current) => current.map((node) => {
@@ -1908,7 +2085,7 @@ function LogicDiagramEditor({ relativePath }: Props) {
     setNodes(graph.nodes);
     setEdges(graph.edges);
     setViewportState(restored.viewport);
-    savedStructuralRef.current = structuralSignature(graph.nodes, graph.edges, restored.diagramMode);
+    savedStructuralRef.current = structuralSignature(graph.nodes, graph.edges, restored.diagramMode, restored.simulation);
     lastMarkedSigRef.current = savedStructuralRef.current;
   }, [setEdges, setNodes, structuralSignature]);
 
@@ -2049,7 +2226,7 @@ function LogicDiagramEditor({ relativePath }: Props) {
   }, [clockDutyValue, clockPeriodValue, clockPhaseValue, clockSettingsNodeId, markChanged, readOnly, setNodes]);
 
   const openSchematicSettings = useCallback((node: LogicFlowNode) => {
-    if (!isElectronicComponentKind(node.data.kind) || node.data.kind === 'ground') return;
+    if (!isElectronicComponentKind(node.data.kind) || node.data.kind === 'ground' || node.data.kind === 'junction') return;
     const numeric = schematicNumericField(node.data.kind);
     if (numeric) {
       setSchematicValueInput(String(node.data.electrical?.[numeric.field] ?? ''));
@@ -2065,7 +2242,7 @@ function LogicDiagramEditor({ relativePath }: Props) {
   const saveSchematicSettings = useCallback(() => {
     if (!schematicSettingsNodeId || readOnly) return;
     const node = nodes.find((candidate) => candidate.id === schematicSettingsNodeId);
-    if (!node || !isElectronicComponentKind(node.data.kind) || node.data.kind === 'ground') return;
+    if (!node || !isElectronicComponentKind(node.data.kind) || node.data.kind === 'ground' || node.data.kind === 'junction') return;
 
     let electrical: SchematicElectricalParameters;
     const numeric = schematicNumericField(node.data.kind);
@@ -2134,7 +2311,7 @@ function LogicDiagramEditor({ relativePath }: Props) {
   const handleNodeDoubleClick = useCallback((node: LogicFlowNode) => {
     if (readOnly) return;
     if (isElectronicComponentKind(node.data.kind)) {
-      if (node.data.kind === 'ground') openRenameNode(node.id);
+      if (node.data.kind === 'ground' || node.data.kind === 'junction') openRenameNode(node.id);
       else openSchematicSettings(node);
       return;
     }
@@ -2174,6 +2351,11 @@ function LogicDiagramEditor({ relativePath }: Props) {
     setEdges((current) => current.filter((edge) => (
       !selectedEdgeIdSet.has(edge.id) && !nodeIds.has(edge.source) && !nodeIds.has(edge.target)
     )));
+    setDiagram((current) => {
+      const probes = current.simulation?.probes.filter((probe) => !nodeIds.has(probe.nodeId)) ?? [];
+      if (probes.length === (current.simulation?.probes.length ?? 0)) return current;
+      return { ...current, simulation: { analysis: 'dc-operating-point', probes } };
+    });
     markChanged();
   }, [edges, markChanged, nodes, readOnly, selectedEdgeIds, selectedNodeIds, setEdges, setNodes]);
 
@@ -2182,6 +2364,83 @@ function LogicDiagramEditor({ relativePath }: Props) {
     setEdges((current) => current.filter((edge) => edge.id !== edgeId));
     markChanged();
   }, [markChanged, readOnly, setEdges]);
+
+  const addVoltageProbe = useCallback((edge: LogicFlowEdge) => {
+    if (readOnly || diagram.diagramMode !== 'schematic') return;
+    const handleId = edge.sourceHandle;
+    const sourceNode = nodes.find((node) => node.id === edge.source);
+    if (!handleId || !sourceNode || !isElectronicComponentKind(sourceNode.data.kind)) {
+      toast.error('This wire is not attached to a valid schematic terminal.');
+      return;
+    }
+    const existing = diagram.simulation?.probes.some((probe) => (
+      probe.kind === 'node-voltage'
+      && probe.nodeId === sourceNode.id
+      && probe.handleId === handleId
+    ));
+    if (existing) {
+      toast.message('That terminal already has a voltage probe.');
+      return;
+    }
+    const index = idCounterRef.current++;
+    const probe: LogicCircuitProbe = {
+      id: `voltage-probe-${Date.now()}-${index}`,
+      kind: 'node-voltage',
+      nodeId: sourceNode.id,
+      handleId,
+      label: typeof edge.label === 'string' && edge.label.trim()
+        ? edge.label.trim()
+        : `${logicNodeLabel({ kind: sourceNode.data.kind, label: sourceNode.data.label })} · ${handleId}`,
+    };
+    setDiagram((current) => ({
+      ...current,
+      simulation: {
+        analysis: 'dc-operating-point',
+        probes: [...(current.simulation?.probes ?? []), probe],
+      },
+    }));
+    markChanged();
+    toast.success('Voltage probe added. Run DC to read it.');
+  }, [diagram.diagramMode, diagram.simulation?.probes, markChanged, nodes, readOnly]);
+
+  const addBranchCurrentProbe = useCallback((node: LogicFlowNode) => {
+    if (readOnly || diagram.diagramMode !== 'schematic' || !isElectronicComponentKind(node.data.kind) || node.data.kind === 'ground' || node.data.kind === 'junction') return;
+    const existing = diagram.simulation?.probes.some((probe) => (
+      probe.kind === 'branch-current' && probe.nodeId === node.id
+    ));
+    if (existing) {
+      toast.message('That component already has a branch-current probe.');
+      return;
+    }
+    const index = idCounterRef.current++;
+    const probe: LogicCircuitProbe = {
+      id: `current-probe-${Date.now()}-${index}`,
+      kind: 'branch-current',
+      nodeId: node.id,
+      label: `${logicNodeLabel({ kind: node.data.kind, label: node.data.label })} current`,
+    };
+    setDiagram((current) => ({
+      ...current,
+      simulation: {
+        analysis: 'dc-operating-point',
+        probes: [...(current.simulation?.probes ?? []), probe],
+      },
+    }));
+    markChanged();
+    toast.success('Branch-current probe added. Run DC to read it.');
+  }, [diagram.diagramMode, diagram.simulation?.probes, markChanged, readOnly]);
+
+  const removeCircuitProbe = useCallback((probeId: string) => {
+    if (readOnly) return;
+    setDiagram((current) => ({
+      ...current,
+      simulation: {
+        analysis: 'dc-operating-point',
+        probes: current.simulation?.probes.filter((probe) => probe.id !== probeId) ?? [],
+      },
+    }));
+    markChanged();
+  }, [markChanged, readOnly]);
 
   const changeSelectedGateKind = useCallback((kind: LogicGateKind) => {
     if (readOnly) return;
@@ -2275,6 +2534,11 @@ function LogicDiagramEditor({ relativePath }: Props) {
     event.preventDefault();
     event.stopPropagation();
     const position = getMenuPosition(event.clientX, event.clientY);
+    const viewportRect = viewportRef.current?.getBoundingClientRect();
+    const pointer = viewportRect
+      ? { x: event.clientX - viewportRect.left, y: event.clientY - viewportRect.top }
+      : { x: event.clientX, y: event.clientY };
+    const projected = closestPointOnSvgPath(event.currentTarget, pointer);
     if (!edge.selected) {
       setNodes((current) => current.map((node) => ({ ...node, selected: false })));
       setEdges((current) => current.map((candidate) => ({
@@ -2286,8 +2550,9 @@ function LogicDiagramEditor({ relativePath }: Props) {
       kind: 'edge',
       ...position,
       edgeId: edge.id,
+      flowPosition: screenToFlow(projected, viewport),
     });
-  }, [getMenuPosition, readOnly, setEdges, setNodes]);
+  }, [getMenuPosition, readOnly, setEdges, setNodes, viewport]);
 
   const handlePanePointerDown = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
     if (event.button !== 0 && event.button !== 1) return;
@@ -2841,7 +3106,7 @@ function LogicDiagramEditor({ relativePath }: Props) {
         <DocumentTopBarIconButton
           title="Rotate selected symbols clockwise"
           onClick={() => rotateSelectedSchematicSymbols()}
-          disabled={readOnly || !nodes.some((node) => node.selected && isElectronicComponentKind(node.data.kind))}
+          disabled={readOnly || !nodes.some((node) => node.selected && isElectronicComponentKind(node.data.kind) && node.data.kind !== 'junction')}
         >
           <RotateCw size={14} />
         </DocumentTopBarIconButton>
@@ -2977,7 +3242,12 @@ function LogicDiagramEditor({ relativePath }: Props) {
           : terminal && sourceNode
           ? `${logicNodeLabel({ kind: sourceNode.data.kind, label: sourceNode.data.label })} · ${terminal.terminal.handleId}`
           : electricalNode;
-        return { electricalNode, label, voltage };
+        const polarity = voltage > ANALOG_ACTIVE_VOLTAGE
+          ? 'positive'
+          : voltage < -ANALOG_ACTIVE_VOLTAGE
+          ? 'negative'
+          : 'reference';
+        return { electricalNode, label, voltage, polarity };
       })
       .sort((left, right) => left.label.localeCompare(right.label));
   }, [circuitResult, nodes]);
@@ -2994,10 +3264,79 @@ function LogicDiagramEditor({ relativePath }: Props) {
             ? `${logicNodeLabel({ kind: sourceNode.data.kind, label: sourceNode.data.label })}${sourceNode.data.kind === 'transistor' ? ' · collector' : ''}`
             : componentId,
           current,
+          direction: current > ANALOG_ACTIVE_VOLTAGE
+            ? 'forward'
+            : current < -ANALOG_ACTIVE_VOLTAGE
+            ? 'reverse'
+            : 'zero',
         };
       })
       .sort((left, right) => left.label.localeCompare(right.label));
   }, [circuitResult, nodes]);
+
+  const circuitPowerRows = useMemo(() => {
+    if (!circuitResult) return [];
+    const nodeById = new Map(nodes.map((node) => [node.id, node]));
+    return Object.entries(circuitResult.operatingPoint.componentPowers ?? {})
+      .map(([componentId, power]) => {
+        const sourceNode = nodeById.get(componentId);
+        return {
+          componentId,
+          label: sourceNode
+            ? logicNodeLabel({ kind: sourceNode.data.kind, label: sourceNode.data.label })
+            : componentId,
+          power,
+          mode: power > ANALOG_ACTIVE_VOLTAGE
+            ? 'absorbed'
+            : power < -ANALOG_ACTIVE_VOLTAGE
+            ? 'supplied'
+            : 'neutral',
+        };
+      })
+      .sort((left, right) => left.label.localeCompare(right.label));
+  }, [circuitResult, nodes]);
+
+  const circuitDiagnosticRows = useMemo(() => {
+    if (!circuitResult) return [];
+    const nodeById = new Map(nodes.map((node) => [node.id, node]));
+    return (circuitResult.operatingPoint.diagnostics ?? []).map((diagnostic) => {
+      const sourceNode = nodeById.get(diagnostic.context.component);
+      return {
+        ...diagnostic,
+        label: sourceNode
+          ? logicNodeLabel({ kind: sourceNode.data.kind, label: sourceNode.data.label })
+          : diagnostic.context.component,
+      };
+    });
+  }, [circuitResult, nodes]);
+
+  const circuitProbeRows = useMemo(() => {
+    if (!circuitResult) return [];
+    const configured = new Map((diagram.simulation?.probes ?? []).map((probe) => [probe.id, probe]));
+    return (circuitResult.probeValues ?? []).map((value) => {
+      const probe = configured.get(value.probeId);
+      const label = value.label || probe?.label || value.probeId;
+      if (value.kind === 'node-voltage') {
+        return {
+          probeId: value.probeId,
+          label,
+          kind: 'Voltage',
+          value: formatEngineering(value.valueVolts, 'V'),
+        };
+      }
+      const direction = value.valueAmps > ANALOG_ACTIVE_VOLTAGE
+        ? 'forward'
+        : value.valueAmps < -ANALOG_ACTIVE_VOLTAGE
+        ? 'reverse'
+        : 'zero';
+      return {
+        probeId: value.probeId,
+        label,
+        kind: `Current · ${direction}`,
+        value: formatEngineering(value.valueAmps, 'A'),
+      };
+    });
+  }, [circuitResult, diagram.simulation?.probes]);
 
   const meta = (
     <div className="flex items-center gap-2">
@@ -3070,13 +3409,60 @@ function LogicDiagramEditor({ relativePath }: Props) {
                     Converged in {circuitResult.operatingPoint.iterations}{' '}
                     {circuitResult.operatingPoint.iterations === 1 ? 'iteration' : 'iterations'}
                   </div>
+                  {circuitDiagnosticRows.map((diagnostic) => (
+                    <div
+                      key={`${diagnostic.code}-${diagnostic.context.component}`}
+                      className="border-l-2 border-amber-500 pl-3 text-amber-700 dark:text-amber-400"
+                    >
+                      <div className="font-semibold">{diagnostic.label} is outside the supported NPN region</div>
+                      <div className="mt-1 leading-relaxed text-foreground/75">
+                        The forward-active approximation is unreliable here ({formatEngineering(diagnostic.context.baseEmitterVoltage, 'V')} VBE,{' '}
+                        {formatEngineering(diagnostic.context.collectorEmitterVoltage, 'V')} VCE).
+                      </div>
+                    </div>
+                  ))}
+                  {circuitProbeRows.length > 0 && (
+                    <section>
+                      <h3 className="mb-1.5 font-semibold text-foreground">Probes</h3>
+                      <div className="divide-y divide-border/50 border-y border-border/50">
+                        {circuitProbeRows.map((row) => (
+                          <div key={row.probeId} className="flex items-center gap-2 py-1.5">
+                            <span className="min-w-0 flex-1">
+                              <span className="block truncate text-foreground" title={row.label}>{row.label}</span>
+                              <span className="text-[10px] uppercase text-muted-foreground">{row.kind}</span>
+                            </span>
+                            <span className="shrink-0 font-mono text-foreground">{row.value}</span>
+                            {!readOnly && (
+                              <button
+                                type="button"
+                                title={`Remove ${row.label} probe`}
+                                aria-label={`Remove ${row.label} probe`}
+                                className="grid size-6 shrink-0 place-items-center rounded text-muted-foreground hover:bg-accent hover:text-accent-foreground"
+                                onClick={() => removeCircuitProbe(row.probeId)}
+                              >
+                                <X size={12} />
+                              </button>
+                            )}
+                          </div>
+                        ))}
+                      </div>
+                    </section>
+                  )}
                   <section>
                     <h3 className="mb-1.5 font-semibold text-foreground">Node voltages</h3>
                     <div className="divide-y divide-border/50 border-y border-border/50">
                       {circuitVoltageRows.map((row) => (
                         <div key={row.electricalNode} className="flex items-center justify-between gap-3 py-1.5">
                           <span className="min-w-0 truncate text-muted-foreground" title={row.label}>{row.label}</span>
-                          <span className="shrink-0 font-mono text-foreground">{formatEngineering(row.voltage, 'V')}</span>
+                          <span className="flex shrink-0 items-center gap-1.5">
+                            <span className={cn(
+                              'text-[10px] font-medium uppercase',
+                              row.polarity === 'positive' && 'text-primary',
+                              row.polarity === 'negative' && 'text-rose-400',
+                              row.polarity === 'reference' && 'text-muted-foreground',
+                            )}>{row.polarity}</span>
+                            <span className="font-mono text-foreground">{formatEngineering(row.voltage, 'V')}</span>
+                          </span>
                         </div>
                       ))}
                     </div>
@@ -3087,7 +3473,27 @@ function LogicDiagramEditor({ relativePath }: Props) {
                       {circuitCurrentRows.map((row) => (
                         <div key={row.componentId} className="flex items-center justify-between gap-3 py-1.5">
                           <span className="min-w-0 truncate text-muted-foreground" title={row.label}>{row.label}</span>
-                          <span className="shrink-0 font-mono text-foreground">{formatEngineering(row.current, 'A')}</span>
+                          <span className="flex shrink-0 items-center gap-1.5">
+                            <span className="text-[10px] font-medium uppercase text-muted-foreground">{row.direction}</span>
+                            <span className="font-mono text-foreground">{formatEngineering(row.current, 'A')}</span>
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+                  </section>
+                  <section>
+                    <h3 className="mb-1.5 font-semibold text-foreground">Component power</h3>
+                    <div className="divide-y divide-border/50 border-y border-border/50">
+                      {circuitPowerRows.map((row) => (
+                        <div key={row.componentId} className="flex items-center justify-between gap-3 py-1.5">
+                          <span className="min-w-0 truncate text-muted-foreground" title={row.label}>{row.label}</span>
+                          <span className="flex shrink-0 items-center gap-1.5">
+                            <span className={cn(
+                              'text-[10px] font-medium uppercase',
+                              row.mode === 'supplied' ? 'text-primary' : 'text-muted-foreground',
+                            )}>{row.mode}</span>
+                            <span className="font-mono text-foreground">{formatEngineering(Math.abs(row.power), 'W')}</span>
+                          </span>
                         </div>
                       ))}
                     </div>
@@ -3157,6 +3563,26 @@ function LogicDiagramEditor({ relativePath }: Props) {
 
               {contextMenu.kind === 'edge' && contextTargetEdge && (
                 <div className="space-y-1">
+                  {diagram.diagramMode === 'schematic' && (
+                    <>
+                      <button
+                        type="button"
+                        className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm outline-none transition-colors hover:bg-accent hover:text-accent-foreground focus-visible:bg-accent"
+                        onClick={() => runContextAction(() => insertJunctionOnEdge(contextTargetEdge, contextMenu.flowPosition))}
+                      >
+                        <Plus size={14} />
+                        Insert junction
+                      </button>
+                      <button
+                        type="button"
+                        className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm outline-none transition-colors hover:bg-accent hover:text-accent-foreground focus-visible:bg-accent"
+                        onClick={() => runContextAction(() => addVoltageProbe(contextTargetEdge))}
+                      >
+                        <Zap size={14} />
+                        Probe wire voltage
+                      </button>
+                    </>
+                  )}
                   <button
                     type="button"
                     className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm outline-none transition-colors hover:bg-accent hover:text-accent-foreground focus-visible:bg-accent"
@@ -3209,24 +3635,36 @@ function LogicDiagramEditor({ relativePath }: Props) {
                   </button>
                   {isElectronicComponentKind(contextTargetNode.data.kind) && (
                     <>
-                      {contextTargetNode.data.kind !== 'ground' && (
+                      {contextTargetNode.data.kind !== 'ground' && contextTargetNode.data.kind !== 'junction' && (
+                        <>
+                          <button
+                            type="button"
+                            className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm outline-none transition-colors hover:bg-accent hover:text-accent-foreground focus-visible:bg-accent"
+                            onClick={() => runContextAction(() => openSchematicSettings(contextTargetNode))}
+                          >
+                            <Zap size={14} />
+                            Edit electrical value
+                          </button>
+                          <button
+                            type="button"
+                            className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm outline-none transition-colors hover:bg-accent hover:text-accent-foreground focus-visible:bg-accent"
+                            onClick={() => runContextAction(() => addBranchCurrentProbe(contextTargetNode))}
+                          >
+                            <CircuitBoard size={14} />
+                            Probe branch current
+                          </button>
+                        </>
+                      )}
+                      {contextTargetNode.data.kind !== 'junction' && (
                         <button
                           type="button"
                           className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm outline-none transition-colors hover:bg-accent hover:text-accent-foreground focus-visible:bg-accent"
-                          onClick={() => runContextAction(() => openSchematicSettings(contextTargetNode))}
+                          onClick={() => runContextAction(() => rotateSelectedSchematicSymbols([contextTargetNode.id]))}
                         >
-                          <Zap size={14} />
-                          Edit electrical value
+                          <RotateCw size={14} />
+                          Rotate clockwise
                         </button>
                       )}
-                      <button
-                        type="button"
-                        className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm outline-none transition-colors hover:bg-accent hover:text-accent-foreground focus-visible:bg-accent"
-                        onClick={() => runContextAction(() => rotateSelectedSchematicSymbols([contextTargetNode.id]))}
-                      >
-                        <RotateCw size={14} />
-                        Rotate clockwise
-                      </button>
                     </>
                   )}
                 </>

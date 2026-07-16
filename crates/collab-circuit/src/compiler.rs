@@ -8,6 +8,10 @@ use thiserror::Error;
 
 use crate::{Circuit, Component, ComponentId, NodeId};
 
+const MAX_SCHEMATIC_COMPONENTS: usize = 512;
+const MAX_SCHEMATIC_WIRES: usize = 4_096;
+const MAX_SCHEMATIC_PROBES: usize = 2_048;
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum DiagramMode {
@@ -26,6 +30,7 @@ pub enum SchematicComponentKind {
     Transistor,
     Switch,
     Ground,
+    Junction,
     VoltageSource,
 }
 
@@ -40,6 +45,7 @@ impl fmt::Display for SchematicComponentKind {
             Self::Transistor => "transistor",
             Self::Switch => "switch",
             Self::Ground => "ground",
+            Self::Junction => "junction",
             Self::VoltageSource => "voltage-source",
         };
         formatter.write_str(value)
@@ -80,12 +86,40 @@ pub struct SchematicWire {
     pub target_handle: Option<String>,
 }
 
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum SchematicProbeKind {
+    NodeVoltage,
+    BranchCurrent,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SchematicProbe {
+    pub id: String,
+    pub kind: SchematicProbeKind,
+    pub node_id: String,
+    #[serde(default)]
+    pub handle_id: Option<String>,
+    #[serde(default)]
+    pub label: Option<String>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SchematicSimulationConfig {
+    #[serde(default)]
+    pub probes: Vec<SchematicProbe>,
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SchematicDocument {
     pub diagram_mode: DiagramMode,
     pub nodes: Vec<SchematicNode>,
     pub wires: Vec<SchematicWire>,
+    #[serde(default)]
+    pub simulation: Option<SchematicSimulationConfig>,
 }
 
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
@@ -119,10 +153,31 @@ pub struct WireNet {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(
+    tag = "kind",
+    rename_all = "kebab-case",
+    rename_all_fields = "camelCase"
+)]
+pub enum ProbeTarget {
+    NodeVoltage { electrical_node: NodeId },
+    BranchCurrent { component: ComponentId },
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProbeMap {
+    pub probe_id: String,
+    pub label: Option<String>,
+    #[serde(flatten)]
+    pub target: ProbeTarget,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SchematicSourceMap {
     pub terminals: Vec<TerminalNet>,
     pub wires: Vec<WireNet>,
+    pub probes: Vec<ProbeMap>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -149,7 +204,12 @@ impl fmt::Display for WireEndpointRole {
 }
 
 #[derive(Clone, Debug, Error, PartialEq, Serialize)]
-#[serde(tag = "code", content = "context", rename_all = "camelCase")]
+#[serde(
+    tag = "code",
+    content = "context",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
 pub enum CompilationError {
     #[error("only schematic logic documents can be compiled as circuits")]
     NotSchematic,
@@ -190,6 +250,49 @@ pub enum CompilationError {
         node_id: String,
         handle_id: String,
     },
+    #[error("probe id '{probe_id}' is duplicated")]
+    DuplicateProbeId { probe_id: String },
+    #[error("probe '{probe_id}' references unknown component '{node_id}'")]
+    UnknownProbeNode { probe_id: String, node_id: String },
+    #[error("voltage probe '{probe_id}' has no terminal handle")]
+    MissingProbeHandle { probe_id: String },
+    #[error("voltage probe '{probe_id}' references unknown terminal '{handle_id}' on component '{node_id}'")]
+    UnknownProbeTerminal {
+        probe_id: String,
+        node_id: String,
+        handle_id: String,
+    },
+    #[error("branch-current probe '{probe_id}' cannot target ground or a junction")]
+    InvalidBranchProbeTarget { probe_id: String },
+    #[error("component '{node_id}' has disconnected terminal '{handle_id}'")]
+    DisconnectedTerminal { node_id: String, handle_id: String },
+    #[error("junction '{node_id}' needs at least two connected wires, found {connections}")]
+    InvalidJunctionDegree { node_id: String, connections: usize },
+    #[error("components {node_ids:?} form a floating DC island without a ground reference path")]
+    FloatingDcIsland { node_ids: Vec<String> },
+    #[error(
+        "ideal voltage source '{node_id}' connects both terminals to the same electrical node"
+    )]
+    InvalidIdealVoltageSource { node_id: String },
+    #[error("ideal voltage sources '{first_node_id}' and '{second_node_id}' impose conflicting voltages on the same nodes")]
+    ConflictingIdealVoltageSources {
+        first_node_id: String,
+        second_node_id: String,
+    },
+    #[error("ideal voltage sources '{first_node_id}' and '{second_node_id}' redundantly constrain the same nodes")]
+    RedundantIdealVoltageSources {
+        first_node_id: String,
+        second_node_id: String,
+    },
+    #[error("schematic exceeds the DC baseline limit ({components} components, {wires} wires, {probes} probes)")]
+    OversizedCircuit {
+        components: usize,
+        wires: usize,
+        probes: usize,
+        max_components: usize,
+        max_wires: usize,
+        max_probes: usize,
+    },
 }
 
 /// Compile a persisted schematic into a deterministic solver circuit.
@@ -201,6 +304,24 @@ pub fn compile_schematic(
 ) -> Result<CompiledCircuit, CompilationError> {
     if document.diagram_mode != DiagramMode::Schematic {
         return Err(CompilationError::NotSchematic);
+    }
+    let probe_count = document
+        .simulation
+        .as_ref()
+        .map(|simulation| simulation.probes.len())
+        .unwrap_or_default();
+    if document.nodes.len() > MAX_SCHEMATIC_COMPONENTS
+        || document.wires.len() > MAX_SCHEMATIC_WIRES
+        || probe_count > MAX_SCHEMATIC_PROBES
+    {
+        return Err(CompilationError::OversizedCircuit {
+            components: document.nodes.len(),
+            wires: document.wires.len(),
+            probes: probe_count,
+            max_components: MAX_SCHEMATIC_COMPONENTS,
+            max_wires: MAX_SCHEMATIC_WIRES,
+            max_probes: MAX_SCHEMATIC_PROBES,
+        });
     }
 
     let mut nodes: Vec<_> = document.nodes.iter().collect();
@@ -235,13 +356,46 @@ pub fn compile_schematic(
     ensure_unique_wire_ids(&wires)?;
 
     let mut wire_terminals = Vec::with_capacity(wires.len());
+    let mut terminal_connections = BTreeMap::<TerminalRef, BTreeSet<String>>::new();
     for wire in &wires {
         let source =
             resolve_wire_terminal(wire, WireEndpointRole::Source, &nodes_by_id, &terminals)?;
         let target =
             resolve_wire_terminal(wire, WireEndpointRole::Target, &nodes_by_id, &terminals)?;
         nets.union(&source, &target);
+        terminal_connections
+            .entry(source.clone())
+            .or_default()
+            .insert(wire.id.clone());
+        terminal_connections
+            .entry(target)
+            .or_default()
+            .insert(wire.id.clone());
         wire_terminals.push((wire.id.clone(), source));
+    }
+    for node in &nodes {
+        if node.kind == SchematicComponentKind::Ground {
+            continue;
+        }
+        for handle_id in terminals_for(node.kind) {
+            let terminal = TerminalRef::new(&node.id, *handle_id);
+            let connections = terminal_connections
+                .get(&terminal)
+                .map(BTreeSet::len)
+                .unwrap_or_default();
+            if node.kind == SchematicComponentKind::Junction && connections < 2 {
+                return Err(CompilationError::InvalidJunctionDegree {
+                    node_id: node.id.clone(),
+                    connections,
+                });
+            }
+            if connections == 0 {
+                return Err(CompilationError::DisconnectedTerminal {
+                    node_id: node.id.clone(),
+                    handle_id: (*handle_id).to_string(),
+                });
+            }
+        }
     }
 
     let ground = nodes
@@ -401,10 +555,11 @@ pub fn compile_schematic(
                     voltage_volts: electrical.voltage_volts.expect("validated voltage"),
                 }
             }
-            SchematicComponentKind::Ground => continue,
+            SchematicComponentKind::Ground | SchematicComponentKind::Junction => continue,
         };
         components.push(component);
     }
+    validate_dc_topology(&components, &NodeId::new("0"))?;
 
     let terminal_nets = terminals
         .iter()
@@ -420,6 +575,17 @@ pub fn compile_schematic(
             electrical_node: node_for_terminal(&mut nets, &terminal),
         })
         .collect();
+    let probe_maps = compile_probes(
+        document
+            .simulation
+            .as_ref()
+            .map(|simulation| simulation.probes.as_slice())
+            .unwrap_or_default(),
+        &nodes_by_id,
+        &terminals,
+        &mut nets,
+        &node_for_terminal,
+    )?;
 
     Ok(CompiledCircuit {
         circuit: Circuit {
@@ -429,8 +595,210 @@ pub fn compile_schematic(
         source_map: SchematicSourceMap {
             terminals: terminal_nets,
             wires: wire_nets,
+            probes: probe_maps,
         },
     })
+}
+
+fn validate_dc_topology(
+    components: &[Component],
+    reference: &NodeId,
+) -> Result<(), CompilationError> {
+    let mut voltage_graph = BTreeMap::<NodeId, Vec<(NodeId, f64, ComponentId)>>::new();
+    for component in components {
+        let Component::VoltageSource {
+            id,
+            positive,
+            negative,
+            voltage_volts,
+        } = component
+        else {
+            continue;
+        };
+        if positive == negative {
+            return Err(CompilationError::InvalidIdealVoltageSource {
+                node_id: id.0.clone(),
+            });
+        }
+        if let Some((implied_voltage, first_id)) =
+            implied_voltage_between(&voltage_graph, positive, negative)
+        {
+            let tolerance = 1.0e-12 * implied_voltage.abs().max(voltage_volts.abs()).max(1.0);
+            if (implied_voltage - voltage_volts).abs() > tolerance {
+                return Err(CompilationError::ConflictingIdealVoltageSources {
+                    first_node_id: first_id.0.clone(),
+                    second_node_id: id.0.clone(),
+                });
+            }
+            return Err(CompilationError::RedundantIdealVoltageSources {
+                first_node_id: first_id.0.clone(),
+                second_node_id: id.0.clone(),
+            });
+        }
+        voltage_graph.entry(positive.clone()).or_default().push((
+            negative.clone(),
+            -*voltage_volts,
+            id.clone(),
+        ));
+        voltage_graph.entry(negative.clone()).or_default().push((
+            positive.clone(),
+            *voltage_volts,
+            id.clone(),
+        ));
+    }
+
+    let mut adjacency = BTreeMap::<NodeId, BTreeSet<NodeId>>::new();
+    for component in components {
+        for node in component.nodes() {
+            adjacency.entry(node.clone()).or_default();
+        }
+        match component {
+            Component::Capacitor { .. } | Component::CurrentSource { .. } => {}
+            Component::BipolarNpn { base, emitter, .. } => {
+                connect_nodes(&mut adjacency, base, emitter)
+            }
+            _ => {
+                let nodes = component.nodes();
+                if let Some(first) = nodes.first() {
+                    for node in nodes.iter().skip(1) {
+                        connect_nodes(&mut adjacency, first, node);
+                    }
+                }
+            }
+        }
+    }
+
+    let mut reachable = BTreeSet::from([reference.clone()]);
+    let mut pending = vec![reference.clone()];
+    while let Some(node) = pending.pop() {
+        for neighbor in adjacency.get(&node).into_iter().flatten() {
+            if reachable.insert(neighbor.clone()) {
+                pending.push(neighbor.clone());
+            }
+        }
+    }
+    let node_ids: Vec<_> = components
+        .iter()
+        .filter(|component| {
+            component
+                .nodes()
+                .iter()
+                .any(|node| !reachable.contains(*node))
+        })
+        .map(|component| component.id().0.clone())
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect();
+    if !node_ids.is_empty() {
+        return Err(CompilationError::FloatingDcIsland { node_ids });
+    }
+    Ok(())
+}
+
+fn implied_voltage_between(
+    graph: &BTreeMap<NodeId, Vec<(NodeId, f64, ComponentId)>>,
+    positive: &NodeId,
+    negative: &NodeId,
+) -> Option<(f64, ComponentId)> {
+    let mut visited = BTreeSet::from([positive.clone()]);
+    let mut pending = vec![(positive.clone(), 0.0, None::<ComponentId>)];
+    while let Some((node, voltage_from_positive, first_source)) = pending.pop() {
+        for (neighbor, neighbor_delta, source_id) in graph.get(&node).into_iter().flatten() {
+            if !visited.insert(neighbor.clone()) {
+                continue;
+            }
+            let voltage_from_positive = voltage_from_positive + neighbor_delta;
+            let first_source = first_source.clone().unwrap_or_else(|| source_id.clone());
+            if neighbor == negative {
+                return Some((-voltage_from_positive, first_source));
+            }
+            pending.push((neighbor.clone(), voltage_from_positive, Some(first_source)));
+        }
+    }
+    None
+}
+
+fn connect_nodes(
+    adjacency: &mut BTreeMap<NodeId, BTreeSet<NodeId>>,
+    left: &NodeId,
+    right: &NodeId,
+) {
+    adjacency
+        .entry(left.clone())
+        .or_default()
+        .insert(right.clone());
+    adjacency
+        .entry(right.clone())
+        .or_default()
+        .insert(left.clone());
+}
+
+fn compile_probes(
+    probes: &[SchematicProbe],
+    nodes: &BTreeMap<&str, &SchematicNode>,
+    terminals: &BTreeSet<TerminalRef>,
+    nets: &mut DisjointSet,
+    node_for_terminal: &impl Fn(&mut DisjointSet, &TerminalRef) -> NodeId,
+) -> Result<Vec<ProbeMap>, CompilationError> {
+    let mut probes: Vec<_> = probes.iter().collect();
+    probes.sort_by(|left, right| left.id.cmp(&right.id));
+    for pair in probes.windows(2) {
+        if pair[0].id == pair[1].id {
+            return Err(CompilationError::DuplicateProbeId {
+                probe_id: pair[0].id.clone(),
+            });
+        }
+    }
+
+    probes
+        .into_iter()
+        .map(|probe| {
+            let node = nodes.get(probe.node_id.as_str()).ok_or_else(|| {
+                CompilationError::UnknownProbeNode {
+                    probe_id: probe.id.clone(),
+                    node_id: probe.node_id.clone(),
+                }
+            })?;
+            let target = match probe.kind {
+                SchematicProbeKind::NodeVoltage => {
+                    let handle_id = probe.handle_id.as_ref().ok_or_else(|| {
+                        CompilationError::MissingProbeHandle {
+                            probe_id: probe.id.clone(),
+                        }
+                    })?;
+                    let terminal = TerminalRef::new(&probe.node_id, handle_id);
+                    if !terminals.contains(&terminal) {
+                        return Err(CompilationError::UnknownProbeTerminal {
+                            probe_id: probe.id.clone(),
+                            node_id: probe.node_id.clone(),
+                            handle_id: handle_id.clone(),
+                        });
+                    }
+                    ProbeTarget::NodeVoltage {
+                        electrical_node: node_for_terminal(nets, &terminal),
+                    }
+                }
+                SchematicProbeKind::BranchCurrent => {
+                    if matches!(
+                        node.kind,
+                        SchematicComponentKind::Ground | SchematicComponentKind::Junction
+                    ) {
+                        return Err(CompilationError::InvalidBranchProbeTarget {
+                            probe_id: probe.id.clone(),
+                        });
+                    }
+                    ProbeTarget::BranchCurrent {
+                        component: ComponentId::new(&probe.node_id),
+                    }
+                }
+            };
+            Ok(ProbeMap {
+                probe_id: probe.id.clone(),
+                label: probe.label.clone(),
+                target,
+            })
+        })
+        .collect()
 }
 
 fn ensure_unique_node_ids(nodes: &[&SchematicNode]) -> Result<(), CompilationError> {
@@ -457,7 +825,7 @@ fn ensure_unique_wire_ids(wires: &[&SchematicWire]) -> Result<(), CompilationErr
 
 fn validate_supported_node(node: &SchematicNode) -> Result<(), CompilationError> {
     match node.kind {
-        SchematicComponentKind::Ground => Ok(()),
+        SchematicComponentKind::Ground | SchematicComponentKind::Junction => Ok(()),
         SchematicComponentKind::Resistor => require_value(node, "resistanceOhms", |value| {
             value.resistance_ohms.is_some()
         }),
@@ -525,7 +893,7 @@ fn terminals_for(kind: SchematicComponentKind) -> &'static [&'static str] {
         | SchematicComponentKind::Switch => &["terminal-a", "terminal-b"],
         SchematicComponentKind::Diode | SchematicComponentKind::Led => &["anode", "cathode"],
         SchematicComponentKind::Transistor => &["base", "collector", "emitter"],
-        SchematicComponentKind::Ground => &["terminal"],
+        SchematicComponentKind::Ground | SchematicComponentKind::Junction => &["terminal"],
         SchematicComponentKind::VoltageSource => &["negative", "positive"],
     }
 }
@@ -679,6 +1047,7 @@ mod tests {
                 wire("w3", "r2", "terminal-b", "ground", "terminal"),
                 wire("w4", "source", "negative", "ground", "terminal"),
             ],
+            simulation: None,
         }
     }
 
@@ -698,6 +1067,82 @@ mod tests {
             5.0
         );
         assert_eq!(compiled.source_map.wires.len(), 4);
+    }
+
+    #[test]
+    fn compiles_voltage_and_branch_current_probes_to_stable_targets() {
+        let mut document = divider();
+        document.simulation = Some(SchematicSimulationConfig {
+            probes: vec![
+                SchematicProbe {
+                    id: "voltage-out".to_string(),
+                    kind: SchematicProbeKind::NodeVoltage,
+                    node_id: "r2".to_string(),
+                    handle_id: Some("terminal-a".to_string()),
+                    label: Some("Output".to_string()),
+                },
+                SchematicProbe {
+                    id: "current-r1".to_string(),
+                    kind: SchematicProbeKind::BranchCurrent,
+                    node_id: "r1".to_string(),
+                    handle_id: None,
+                    label: Some("Load current".to_string()),
+                },
+            ],
+        });
+
+        let compiled = compile_schematic(&document).unwrap();
+        let result = solve_dc(&compiled.circuit).unwrap();
+        assert_eq!(compiled.source_map.probes.len(), 2);
+        assert_eq!(compiled.source_map.probes[0].probe_id, "current-r1");
+        assert!(matches!(
+            &compiled.source_map.probes[0].target,
+            ProbeTarget::BranchCurrent { component } if component == &ComponentId::new("r1")
+        ));
+        let ProbeTarget::NodeVoltage { electrical_node } = &compiled.source_map.probes[1].target
+        else {
+            panic!("expected voltage probe target");
+        };
+        assert_eq!(result.node_voltages[electrical_node], 5.0);
+        assert_eq!(result.component_currents[&ComponentId::new("r1")], 0.005);
+    }
+
+    #[test]
+    fn rejects_stale_and_ambiguous_probe_targets() {
+        let mut document = divider();
+        document.simulation = Some(SchematicSimulationConfig {
+            probes: vec![SchematicProbe {
+                id: "probe".to_string(),
+                kind: SchematicProbeKind::NodeVoltage,
+                node_id: "r2".to_string(),
+                handle_id: None,
+                label: None,
+            }],
+        });
+        assert_eq!(
+            compile_schematic(&document),
+            Err(CompilationError::MissingProbeHandle {
+                probe_id: "probe".to_string(),
+            })
+        );
+
+        document.simulation.as_mut().unwrap().probes[0].handle_id =
+            Some("removed-terminal".to_string());
+        assert!(matches!(
+            compile_schematic(&document),
+            Err(CompilationError::UnknownProbeTerminal { .. })
+        ));
+
+        let probe = &mut document.simulation.as_mut().unwrap().probes[0];
+        probe.kind = SchematicProbeKind::BranchCurrent;
+        probe.node_id = "ground".to_string();
+        probe.handle_id = None;
+        assert_eq!(
+            compile_schematic(&document),
+            Err(CompilationError::InvalidBranchProbeTarget {
+                probe_id: "probe".to_string(),
+            })
+        );
     }
 
     #[test]
@@ -735,6 +1180,7 @@ mod tests {
                 wire("r1-ground", "r1", "terminal-b", "ground", "terminal"),
                 wire("r2-ground", "r2", "terminal-b", "ground", "terminal"),
             ],
+            simulation: None,
         };
 
         let compiled = compile_schematic(&document).unwrap();
@@ -750,6 +1196,151 @@ mod tests {
             .map(|mapping| mapping.electrical_node.clone())
             .collect();
         assert_eq!(positive_wire_nodes.len(), 1);
+    }
+
+    #[test]
+    fn explicit_junction_connects_every_attached_wire() {
+        let document = SchematicDocument {
+            diagram_mode: DiagramMode::Schematic,
+            nodes: vec![
+                node(
+                    "source",
+                    SchematicComponentKind::VoltageSource,
+                    Some(electrical(None, Some(5.0))),
+                ),
+                node(
+                    "r1",
+                    SchematicComponentKind::Resistor,
+                    Some(electrical(Some(1_000.0), None)),
+                ),
+                node(
+                    "r2",
+                    SchematicComponentKind::Resistor,
+                    Some(electrical(Some(2_000.0), None)),
+                ),
+                node("junction", SchematicComponentKind::Junction, None),
+                node("ground", SchematicComponentKind::Ground, None),
+            ],
+            wires: vec![
+                wire(
+                    "source-junction",
+                    "source",
+                    "positive",
+                    "junction",
+                    "terminal",
+                ),
+                wire("junction-r1", "junction", "terminal", "r1", "terminal-a"),
+                wire("junction-r2", "junction", "terminal", "r2", "terminal-a"),
+                wire("source-ground", "source", "negative", "ground", "terminal"),
+                wire("r1-ground", "r1", "terminal-b", "ground", "terminal"),
+                wire("r2-ground", "r2", "terminal-b", "ground", "terminal"),
+            ],
+            simulation: None,
+        };
+
+        let compiled = compile_schematic(&document).unwrap();
+        let result = solve_dc(&compiled.circuit).unwrap();
+        let junction_wire_nodes: BTreeSet<_> = compiled
+            .source_map
+            .wires
+            .iter()
+            .filter(|mapping| mapping.wire_id.contains("junction"))
+            .map(|mapping| mapping.electrical_node.clone())
+            .collect();
+
+        assert_eq!(junction_wire_nodes.len(), 1);
+        assert_eq!(result.component_currents[&ComponentId::new("r1")], 0.005);
+        assert_eq!(result.component_currents[&ComponentId::new("r2")], 0.0025);
+        assert!(!compiled
+            .circuit
+            .components
+            .iter()
+            .any(|component| component.id() == &ComponentId::new("junction")));
+    }
+
+    #[test]
+    fn independent_wires_do_not_connect_without_a_junction() {
+        let document = SchematicDocument {
+            diagram_mode: DiagramMode::Schematic,
+            nodes: vec![
+                node(
+                    "source-a",
+                    SchematicComponentKind::VoltageSource,
+                    Some(electrical(None, Some(5.0))),
+                ),
+                node(
+                    "source-b",
+                    SchematicComponentKind::VoltageSource,
+                    Some(electrical(None, Some(3.0))),
+                ),
+                node(
+                    "r1",
+                    SchematicComponentKind::Resistor,
+                    Some(electrical(Some(1_000.0), None)),
+                ),
+                node(
+                    "r2",
+                    SchematicComponentKind::Resistor,
+                    Some(electrical(Some(1_000.0), None)),
+                ),
+                node("ground", SchematicComponentKind::Ground, None),
+            ],
+            wires: vec![
+                wire("crossing-a", "source-a", "positive", "r1", "terminal-a"),
+                wire("crossing-b", "source-b", "positive", "r2", "terminal-a"),
+                wire(
+                    "source-a-ground",
+                    "source-a",
+                    "negative",
+                    "ground",
+                    "terminal",
+                ),
+                wire(
+                    "source-b-ground",
+                    "source-b",
+                    "negative",
+                    "ground",
+                    "terminal",
+                ),
+                wire("r1-ground", "r1", "terminal-b", "ground", "terminal"),
+                wire("r2-ground", "r2", "terminal-b", "ground", "terminal"),
+            ],
+            simulation: None,
+        };
+
+        let compiled = compile_schematic(&document).unwrap();
+        let crossing_nodes: BTreeMap<_, _> = compiled
+            .source_map
+            .wires
+            .iter()
+            .filter(|mapping| mapping.wire_id.starts_with("crossing"))
+            .map(|mapping| (mapping.wire_id.as_str(), mapping.electrical_node.clone()))
+            .collect();
+
+        assert_ne!(crossing_nodes["crossing-a"], crossing_nodes["crossing-b"]);
+    }
+
+    #[test]
+    fn rejects_a_junction_with_fewer_than_two_wires() {
+        let mut document = divider();
+        document
+            .nodes
+            .push(node("junction", SchematicComponentKind::Junction, None));
+        document.wires.push(wire(
+            "dangling-junction",
+            "source",
+            "positive",
+            "junction",
+            "terminal",
+        ));
+
+        assert_eq!(
+            compile_schematic(&document),
+            Err(CompilationError::InvalidJunctionDegree {
+                node_id: "junction".to_string(),
+                connections: 1,
+            })
+        );
     }
 
     #[test]
@@ -774,6 +1365,7 @@ mod tests {
                 node("ground", SchematicComponentKind::Ground, None),
             ],
             wires: vec![],
+            simulation: None,
         };
         assert_eq!(
             compile_schematic(&missing_value),
@@ -789,6 +1381,170 @@ mod tests {
             compile_schematic(&invalid_wire),
             Err(CompilationError::UnknownTerminal { .. })
         ));
+    }
+
+    #[test]
+    fn reports_disconnected_terminals_and_floating_dc_islands() {
+        let mut disconnected = divider();
+        disconnected.wires.retain(|wire| wire.id != "w2");
+        assert_eq!(
+            compile_schematic(&disconnected),
+            Err(CompilationError::DisconnectedTerminal {
+                node_id: "r1".to_string(),
+                handle_id: "terminal-b".to_string(),
+            })
+        );
+
+        let mut floating = divider();
+        floating.nodes.push(node(
+            "isolated",
+            SchematicComponentKind::Resistor,
+            Some(electrical(Some(1_000.0), None)),
+        ));
+        floating.wires.push(wire(
+            "isolated-loop",
+            "isolated",
+            "terminal-a",
+            "isolated",
+            "terminal-b",
+        ));
+        assert_eq!(
+            compile_schematic(&floating),
+            Err(CompilationError::FloatingDcIsland {
+                node_ids: vec!["isolated".to_string()],
+            })
+        );
+    }
+
+    #[test]
+    fn rejects_invalid_parallel_ideal_voltage_sources() {
+        let mut invalid = divider();
+        invalid.wires.push(wire(
+            "source-short",
+            "source",
+            "positive",
+            "ground",
+            "terminal",
+        ));
+        assert_eq!(
+            compile_schematic(&invalid),
+            Err(CompilationError::InvalidIdealVoltageSource {
+                node_id: "source".to_string(),
+            })
+        );
+
+        let mut parallel = divider();
+        parallel.nodes.push(node(
+            "source2",
+            SchematicComponentKind::VoltageSource,
+            Some(electrical(None, Some(5.0))),
+        ));
+        parallel.wires.extend([
+            wire(
+                "source2-positive",
+                "source2",
+                "positive",
+                "r1",
+                "terminal-a",
+            ),
+            wire(
+                "source2-negative",
+                "source2",
+                "negative",
+                "ground",
+                "terminal",
+            ),
+        ]);
+        assert_eq!(
+            compile_schematic(&parallel),
+            Err(CompilationError::ConflictingIdealVoltageSources {
+                first_node_id: "source".to_string(),
+                second_node_id: "source2".to_string(),
+            })
+        );
+
+        parallel.nodes.last_mut().unwrap().electrical = Some(electrical(None, Some(10.0)));
+        assert_eq!(
+            compile_schematic(&parallel),
+            Err(CompilationError::RedundantIdealVoltageSources {
+                first_node_id: "source".to_string(),
+                second_node_id: "source2".to_string(),
+            })
+        );
+
+        let mut looped = SchematicDocument {
+            diagram_mode: DiagramMode::Schematic,
+            nodes: vec![
+                node(
+                    "s1",
+                    SchematicComponentKind::VoltageSource,
+                    Some(electrical(None, Some(10.0))),
+                ),
+                node(
+                    "s2",
+                    SchematicComponentKind::VoltageSource,
+                    Some(electrical(None, Some(4.0))),
+                ),
+                node(
+                    "s3",
+                    SchematicComponentKind::VoltageSource,
+                    Some(electrical(None, Some(5.0))),
+                ),
+                node("ground", SchematicComponentKind::Ground, None),
+            ],
+            wires: vec![
+                wire("net-a", "s1", "positive", "s2", "positive"),
+                wire("net-b", "s2", "negative", "s3", "positive"),
+                wire("s1-ground", "s1", "negative", "ground", "terminal"),
+                wire("s3-ground", "s3", "negative", "ground", "terminal"),
+            ],
+            simulation: None,
+        };
+        assert_eq!(
+            compile_schematic(&looped),
+            Err(CompilationError::ConflictingIdealVoltageSources {
+                first_node_id: "s2".to_string(),
+                second_node_id: "s3".to_string(),
+            })
+        );
+
+        looped.nodes[2].electrical = Some(electrical(None, Some(6.0)));
+        assert_eq!(
+            compile_schematic(&looped),
+            Err(CompilationError::RedundantIdealVoltageSources {
+                first_node_id: "s2".to_string(),
+                second_node_id: "s3".to_string(),
+            })
+        );
+    }
+
+    #[test]
+    fn rejects_schematics_above_the_bounded_dc_baseline() {
+        let document = SchematicDocument {
+            diagram_mode: DiagramMode::Schematic,
+            nodes: (0..=MAX_SCHEMATIC_COMPONENTS)
+                .map(|index| {
+                    node(
+                        &format!("ground-{index}"),
+                        SchematicComponentKind::Ground,
+                        None,
+                    )
+                })
+                .collect(),
+            wires: vec![],
+            simulation: None,
+        };
+        assert_eq!(
+            compile_schematic(&document),
+            Err(CompilationError::OversizedCircuit {
+                components: MAX_SCHEMATIC_COMPONENTS + 1,
+                wires: 0,
+                probes: 0,
+                max_components: MAX_SCHEMATIC_COMPONENTS,
+                max_wires: MAX_SCHEMATIC_WIRES,
+                max_probes: MAX_SCHEMATIC_PROBES,
+            })
+        );
     }
 
     #[test]
@@ -846,7 +1602,22 @@ mod tests {
                 ),
                 node("ground", SchematicComponentKind::Ground, None),
             ],
-            wires: vec![],
+            wires: vec![
+                wire("c1-a", "c1", "terminal-a", "ground", "terminal"),
+                wire("c1-b", "c1", "terminal-b", "ground", "terminal"),
+                wire("l1-a", "l1", "terminal-a", "ground", "terminal"),
+                wire("l1-b", "l1", "terminal-b", "ground", "terminal"),
+                wire("s1-a", "s1", "terminal-a", "ground", "terminal"),
+                wire("s1-b", "s1", "terminal-b", "ground", "terminal"),
+                wire("d1-a", "d1", "anode", "ground", "terminal"),
+                wire("d1-c", "d1", "cathode", "ground", "terminal"),
+                wire("led1-a", "led1", "anode", "ground", "terminal"),
+                wire("led1-c", "led1", "cathode", "ground", "terminal"),
+                wire("q1-b", "q1", "base", "ground", "terminal"),
+                wire("q1-c", "q1", "collector", "ground", "terminal"),
+                wire("q1-e", "q1", "emitter", "ground", "terminal"),
+            ],
+            simulation: None,
         };
 
         let compiled = compile_schematic(&document).unwrap();
@@ -892,6 +1663,7 @@ mod tests {
                 node("ground", SchematicComponentKind::Ground, None),
             ],
             wires: vec![],
+            simulation: None,
         };
         assert!(matches!(
             compile_schematic(&unsupported_model),
@@ -905,6 +1677,7 @@ mod tests {
                 node("ground-b", SchematicComponentKind::Ground, None),
             ],
             wires: vec![],
+            simulation: None,
         };
         assert_eq!(
             compile_schematic(&multiple_grounds),

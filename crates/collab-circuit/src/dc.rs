@@ -9,14 +9,38 @@ use crate::{Circuit, Component, ComponentId, NodeId};
 #[serde(rename_all = "camelCase")]
 pub struct DcOperatingPoint {
     pub node_voltages: BTreeMap<NodeId, f64>,
-    /// Conventional current from each component's positive terminal to its
-    /// negative terminal.
+    /// Conventional primary branch current. For an NPN transistor this is the
+    /// collector-to-emitter current.
     pub component_currents: BTreeMap<ComponentId, f64>,
+    /// Passive-sign-convention power: positive values absorb power and
+    /// negative values deliver power.
+    pub component_powers: BTreeMap<ComponentId, f64>,
+    pub diagnostics: Vec<DcDiagnostic>,
     pub iterations: usize,
 }
 
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(
+    tag = "code",
+    content = "context",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
+pub enum DcDiagnostic {
+    NpnOutsideForwardActive {
+        component: ComponentId,
+        base_emitter_voltage: f64,
+        collector_emitter_voltage: f64,
+    },
+}
+
 #[derive(Clone, Debug, Error, PartialEq, Serialize)]
-#[serde(tag = "code", content = "context", rename_all = "camelCase")]
+#[serde(
+    tag = "code",
+    content = "context",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
 pub enum SimulationError {
     #[error("the circuit reference node is empty")]
     EmptyReference,
@@ -146,6 +170,8 @@ pub fn solve_dc(circuit: &Circuit) -> Result<DcOperatingPoint, SimulationError> 
 
     let voltage_at = |node: &NodeId| node_voltages.get(node).copied().unwrap_or(0.0);
     let mut component_currents = BTreeMap::new();
+    let mut component_powers = BTreeMap::new();
+    let mut diagnostics = Vec::new();
     for component in &components {
         let current = match component {
             Component::Resistor {
@@ -205,11 +231,66 @@ pub fn solve_dc(circuit: &Circuit) -> Result<DcOperatingPoint, SimulationError> 
             Component::VoltageSource { id, .. } => solution[branch_indices[id]],
         };
         component_currents.insert(component.id().clone(), current);
+
+        let power = match component {
+            Component::Resistor {
+                positive, negative, ..
+            }
+            | Component::Capacitor {
+                positive, negative, ..
+            }
+            | Component::Inductor {
+                positive, negative, ..
+            }
+            | Component::Switch {
+                positive, negative, ..
+            }
+            | Component::CurrentSource {
+                positive, negative, ..
+            }
+            | Component::VoltageSource {
+                positive, negative, ..
+            } => (voltage_at(positive) - voltage_at(negative)) * current,
+            Component::Diode { anode, cathode, .. } => {
+                (voltage_at(anode) - voltage_at(cathode)) * current
+            }
+            Component::BipolarNpn {
+                base,
+                collector,
+                emitter,
+                saturation_current_amps,
+                emission_coefficient,
+                thermal_voltage_volts,
+                ..
+            } => {
+                let base_emitter_voltage = voltage_at(base) - voltage_at(emitter);
+                let collector_emitter_voltage = voltage_at(collector) - voltage_at(emitter);
+                let base_current = diode_current(
+                    base_emitter_voltage,
+                    *saturation_current_amps,
+                    *emission_coefficient,
+                    *thermal_voltage_volts,
+                );
+                if collector_emitter_voltage < 0.0
+                    || (base_emitter_voltage > 0.4 && voltage_at(collector) <= voltage_at(base))
+                {
+                    diagnostics.push(DcDiagnostic::NpnOutsideForwardActive {
+                        component: component.id().clone(),
+                        base_emitter_voltage,
+                        collector_emitter_voltage,
+                    });
+                }
+                collector_emitter_voltage * current + base_emitter_voltage * base_current
+            }
+        };
+        component_powers.insert(component.id().clone(), power);
     }
 
     Ok(DcOperatingPoint {
         node_voltages,
         component_currents,
+        component_powers,
+        diagnostics,
         iterations,
     })
 }
@@ -692,6 +773,10 @@ mod tests {
         assert_close(result.component_currents[&component("R1")], 0.005);
         assert_close(result.component_currents[&component("R2")], 0.005);
         assert_close(result.component_currents[&component("V1")], -0.005);
+        assert_close(result.component_powers[&component("R1")], 0.025);
+        assert_close(result.component_powers[&component("R2")], 0.025);
+        assert_close(result.component_powers[&component("V1")], -0.05);
+        assert!(result.diagnostics.is_empty());
     }
 
     #[test]
@@ -1029,5 +1114,46 @@ mod tests {
             result.node_voltages[&node("collector")]
         );
         assert!(result.iterations > 1);
+        assert!(result.diagnostics.is_empty());
+        assert!(result.component_powers[&component("Q1")] > 0.0);
+    }
+
+    #[test]
+    fn warns_when_the_npn_leaves_the_supported_forward_active_region() {
+        let circuit = Circuit {
+            reference: node("0"),
+            components: vec![
+                Component::VoltageSource {
+                    id: component("VC"),
+                    positive: node("collector"),
+                    negative: node("0"),
+                    voltage_volts: 0.2,
+                },
+                Component::VoltageSource {
+                    id: component("VB"),
+                    positive: node("base"),
+                    negative: node("0"),
+                    voltage_volts: 0.7,
+                },
+                Component::BipolarNpn {
+                    id: component("Q1"),
+                    base: node("base"),
+                    collector: node("collector"),
+                    emitter: node("0"),
+                    saturation_current_amps: 1.0e-15,
+                    forward_beta: 100.0,
+                    emission_coefficient: 1.0,
+                    thermal_voltage_volts: 0.025_852,
+                },
+            ],
+        };
+
+        let result = solve_dc(&circuit).unwrap();
+        assert_eq!(result.diagnostics.len(), 1);
+        assert!(matches!(
+            result.diagnostics[0],
+            DcDiagnostic::NpnOutsideForwardActive { ref component, .. }
+                if component == &ComponentId::new("Q1")
+        ));
     }
 }

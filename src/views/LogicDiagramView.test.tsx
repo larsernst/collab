@@ -30,6 +30,10 @@ const liveJsonMocks = vi.hoisted(() => ({
   writeJson: vi.fn(),
 }));
 
+const flowMocks = vi.hoisted(() => ({
+  getSmoothStepPath: vi.fn(() => ['', 0, 0]),
+}));
+
 vi.mock('@tauri-apps/api/event', () => ({
   listen: vi.fn(async (eventName: string, handler: (event: { payload: { path: string } }) => void | Promise<void>) => {
     if (eventName === 'vault:file-modified') logicEvents.fileModifiedHandler = handler;
@@ -97,7 +101,7 @@ vi.mock('@xyflow/react', async () => {
     Position: { Left: 'left', Right: 'right' },
     ConnectionMode: { Loose: 'loose' },
     BackgroundVariant: { Dots: 'dots' },
-    getSmoothStepPath: () => ['', 0, 0],
+    getSmoothStepPath: flowMocks.getSmoothStepPath,
     addEdge: vi.fn((edge, edges) => [...edges, edge]),
     useNodesState: (initial: unknown[]) => {
       const [nodes, setNodes] = react.useState(initial);
@@ -368,6 +372,8 @@ describe('LogicDiagramView safe reload policy', () => {
       operatingPoint: {
         nodeVoltages: { 0: 0, hotNet: 5 },
         componentCurrents: { source: -0.005, r1: 0.005 },
+        componentPowers: { source: -0.025, r1: 0.025 },
+        diagnostics: [],
         iterations: 1,
       },
       sourceMap: {
@@ -380,29 +386,194 @@ describe('LogicDiagramView safe reload policy', () => {
           { wireId: 'return', electricalNode: '0' },
           { wireId: 'reference', electricalNode: '0' },
         ],
+        probes: [],
       },
+      probeValues: [{ kind: 'branch-current', probeId: 'current-result', label: 'Measured load current', valueAmps: 0.005 }],
     });
 
     const { container } = render(<LogicDiagramView relativePath={PATH} />);
     expect(await screen.findByText(/3 symbols/)).toBeTruthy();
+    const loadHandle = screen.getByRole('button', { name: /Load terminal terminal-a/i });
+    const loadNode = loadHandle.closest('[data-logic-node]');
+    if (!(loadNode?.firstElementChild instanceof HTMLElement)) throw new Error('Expected load surface.');
+    fireEvent.contextMenu(loadNode.firstElementChild);
+    fireEvent.click(screen.getByRole('button', { name: 'Probe branch current' }));
+
+    const hotEdge = container.querySelector('[data-logic-edge]');
+    if (!hotEdge) throw new Error('Expected schematic wire.');
+    fireEvent.contextMenu(hotEdge);
+    fireEvent.click(screen.getByRole('button', { name: 'Probe wire voltage' }));
     fireEvent.click(screen.getByRole('button', { name: 'Run DC' }));
 
     expect(await screen.findByText('Node voltages')).toBeTruthy();
     expect(screen.getByText('Converged in 1 iteration')).toBeTruthy();
     expect(screen.getByText('5 V')).toBeTruthy();
     expect(screen.getAllByText(/5 mA/).length).toBeGreaterThan(0);
+    expect(screen.getByText('Component power')).toBeTruthy();
+    expect(screen.getAllByText('25 mW')).toHaveLength(2);
+    expect(screen.getByText('supplied')).toBeTruthy();
+    expect(screen.getByText('absorbed')).toBeTruthy();
+    expect(screen.getByText('reverse')).toBeTruthy();
+    expect(screen.getByText('forward')).toBeTruthy();
+    expect(screen.getByText('Probes')).toBeTruthy();
+    expect(screen.getByText('Measured load current')).toBeTruthy();
     expect(container.querySelectorAll('[data-schematic-live="true"]')).toHaveLength(1);
-    expect(tauriMocks.circuitSolveDc).toHaveBeenCalledWith(expect.objectContaining({ schemaVersion: 6 }));
+    expect(container.querySelector('[data-schematic-polarity="positive"]')).toBeTruthy();
+    expect(tauriMocks.circuitSolveDc).toHaveBeenCalledWith(expect.objectContaining({
+      schemaVersion: 6,
+      simulation: expect.objectContaining({
+        analysis: 'dc-operating-point',
+        probes: expect.arrayContaining([
+          expect.objectContaining({ kind: 'branch-current', nodeId: 'r1' }),
+          expect.objectContaining({ kind: 'node-voltage', nodeId: 'source', handleId: 'positive' }),
+        ]),
+      }),
+    }));
 
-    const loadHandle = screen.getByRole('button', { name: /Load terminal terminal-a/i });
-    const loadNode = loadHandle.closest('[data-logic-node]');
-    if (!(loadNode?.firstElementChild instanceof HTMLElement)) throw new Error('Expected load surface.');
     fireEvent.doubleClick(loadNode.firstElementChild);
     fireEvent.change(await screen.findByLabelText(/Resistance/), { target: { value: '2000' } });
     fireEvent.click(screen.getByRole('button', { name: 'Apply' }));
 
     expect(await screen.findByText(/Results are stale/)).toBeTruthy();
     expect(container.querySelectorAll('[data-schematic-live="true"]')).toHaveLength(0);
+  });
+
+  it('splits a schematic wire through an explicit junction', async () => {
+    tauriMocks.readNote.mockResolvedValueOnce({
+      content: JSON.stringify({
+        schemaVersion: 6,
+        kind: 'logic-diagram',
+        diagramMode: 'schematic',
+        nodes: [
+          { id: 'source', kind: 'voltage-source', position: { x: 0, y: 0 }, electrical: { voltageVolts: 5 } },
+          { id: 'r1', kind: 'resistor', position: { x: 240, y: 0 }, electrical: { resistanceOhms: 1000 } },
+          { id: 'ground', kind: 'ground', position: { x: 480, y: 0 } },
+        ],
+        wires: [
+          { id: 'hot', source: 'source', sourceHandle: 'positive', target: 'r1', targetHandle: 'terminal-a', label: 'supply' },
+          { id: 'return', source: 'r1', sourceHandle: 'terminal-b', target: 'ground', targetHandle: 'terminal' },
+          { id: 'reference', source: 'source', sourceHandle: 'negative', target: 'ground', targetHandle: 'terminal' },
+        ],
+        viewport: { x: 0, y: 0, zoom: 1 },
+      }),
+      hash: 'v1',
+      modifiedAt: 1,
+    });
+    tauriMocks.circuitSolveDc.mockResolvedValueOnce({
+      operatingPoint: {
+        nodeVoltages: { 0: 0 },
+        componentCurrents: {},
+        componentPowers: {},
+        diagnostics: [],
+        iterations: 1,
+      },
+      sourceMap: { terminals: [], wires: [], probes: [] },
+      probeValues: [],
+    });
+
+    const { container } = render(<LogicDiagramView relativePath={PATH} />);
+    expect(await screen.findByText(/3 symbols/)).toBeTruthy();
+    const hotEdge = container.querySelector('[data-logic-edge]');
+    if (!hotEdge) throw new Error('Expected schematic wire.');
+    Object.defineProperties(hotEdge, {
+      getTotalLength: { value: () => 120 },
+      getPointAtLength: { value: (length: number) => ({ x: 120 + length, y: 40 }) },
+    });
+
+    fireEvent.contextMenu(hotEdge, { clientX: 180, clientY: 56 });
+    fireEvent.click(screen.getByRole('button', { name: 'Insert junction' }));
+    expect(await screen.findByText(/4 symbols/)).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Run DC' }));
+
+    await waitFor(() => expect(tauriMocks.circuitSolveDc).toHaveBeenCalledOnce());
+    const solvedDocument = tauriMocks.circuitSolveDc.mock.calls[0][0];
+    const junction = solvedDocument.nodes.find((node: { kind: string }) => node.kind === 'junction');
+    expect(junction).toMatchObject({
+      kind: 'junction',
+      position: { x: 168, y: 28 },
+      electrical: undefined,
+    });
+    expect(flowMocks.getSmoothStepPath).toHaveBeenCalledWith(expect.objectContaining({
+      targetX: 180,
+      targetY: 40,
+      targetPosition: 'left',
+    }));
+    expect(flowMocks.getSmoothStepPath).toHaveBeenCalledWith(expect.objectContaining({
+      sourceX: 180,
+      sourceY: 40,
+      sourcePosition: 'right',
+    }));
+    expect(solvedDocument.wires).toHaveLength(4);
+    expect(solvedDocument.wires).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        id: 'hot',
+        source: 'source',
+        target: junction.id,
+        targetHandle: 'terminal',
+        label: 'supply',
+      }),
+      expect.objectContaining({
+        source: junction.id,
+        sourceHandle: 'terminal',
+        target: 'r1',
+        targetHandle: 'terminal-a',
+      }),
+    ]));
+  });
+
+  it('shows signed wire polarity and NPN operating-region diagnostics', async () => {
+    tauriMocks.readNote.mockResolvedValueOnce({
+      content: JSON.stringify({
+        schemaVersion: 6,
+        kind: 'logic-diagram',
+        diagramMode: 'schematic',
+        nodes: [
+          { id: 'q1', kind: 'transistor', label: 'Q1', position: { x: 0, y: 0 } },
+          { id: 'ground', kind: 'ground', position: { x: 240, y: 0 } },
+        ],
+        wires: [
+          { id: 'collector-wire', source: 'q1', sourceHandle: 'collector', target: 'ground', targetHandle: 'terminal' },
+        ],
+        viewport: { x: 0, y: 0, zoom: 1 },
+      }),
+      hash: 'v1',
+      modifiedAt: 1,
+    });
+    tauriMocks.circuitSolveDc.mockResolvedValueOnce({
+      operatingPoint: {
+        nodeVoltages: { 0: 0, collectorNet: -0.2 },
+        componentCurrents: { q1: 0.001 },
+        componentPowers: { q1: 0.00084 },
+        diagnostics: [{
+          code: 'npnOutsideForwardActive',
+          context: {
+            component: 'q1',
+            baseEmitterVoltage: 0.7,
+            collectorEmitterVoltage: 0.2,
+          },
+        }],
+        iterations: 4,
+      },
+      sourceMap: {
+        terminals: [
+          { terminal: { nodeId: 'q1', handleId: 'collector' }, electricalNode: 'collectorNet' },
+          { terminal: { nodeId: 'ground', handleId: 'terminal' }, electricalNode: '0' },
+        ],
+        wires: [{ wireId: 'collector-wire', electricalNode: 'collectorNet' }],
+        probes: [],
+      },
+      probeValues: [],
+    });
+
+    const { container } = render(<LogicDiagramView relativePath={PATH} />);
+    expect(await screen.findByText(/2 symbols/)).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Run DC' }));
+
+    expect(await screen.findByText('Q1 is outside the supported NPN region')).toBeTruthy();
+    expect(screen.getByText(/700 mV VBE/)).toBeTruthy();
+    expect(screen.getByText(/200 mV VCE/)).toBeTruthy();
+    expect(screen.getByText('negative')).toBeTruthy();
+    expect(container.querySelector('[data-schematic-polarity="negative"]')).toBeTruthy();
   });
 
   it('shows actionable structured circuit compilation errors', async () => {
@@ -420,14 +591,14 @@ describe('LogicDiagramView safe reload policy', () => {
     });
     tauriMocks.circuitSolveDc.mockRejectedValueOnce({
       stage: 'compilation',
-      detail: { code: 'missingGround' },
+      detail: { code: 'disconnectedTerminal', context: { nodeId: 'r1', handleId: 'terminal-b' } },
     });
 
     render(<LogicDiagramView relativePath={PATH} />);
     expect(await screen.findByText(/1 symbols/)).toBeTruthy();
     fireEvent.click(screen.getByRole('button', { name: 'Run DC' }));
 
-    expect(await screen.findByText(/Add one ground reference/)).toBeTruthy();
+    expect(await screen.findByText(/Connect r1's terminal-b before running DC/)).toBeTruthy();
   });
 
   it('exports the current diagram SVG and appends it to an open note', async () => {

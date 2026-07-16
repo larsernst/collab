@@ -9,9 +9,10 @@ mod dc;
 mod model;
 
 pub use compiler::{
-    compile_schematic, CompilationError, CompiledCircuit, DiagramMode, SchematicComponentKind,
-    SchematicDocument, SchematicElectricalParameters, SchematicNode, SchematicSourceMap,
+    compile_schematic, CompilationError, CompiledCircuit, DiagramMode, ProbeMap, ProbeTarget,
+    SchematicComponentKind, SchematicDocument, SchematicElectricalParameters, SchematicNode,
+    SchematicProbe, SchematicProbeKind, SchematicSimulationConfig, SchematicSourceMap,
     SchematicWire, TerminalNet, TerminalRef, WireEndpointRole, WireNet,
 };
-pub use dc::{solve_dc, DcOperatingPoint, SimulationError};
+pub use dc::{solve_dc, DcDiagnostic, DcOperatingPoint, SimulationError};
 pub use model::{Circuit, Component, ComponentId, NodeId};

@@ -109,6 +109,7 @@ describe('logic diagram document helpers', () => {
         { id: 'r2', kind: 'resistor', position: { x: 0, y: 0 }, electrical: { resistanceOhms: -1 } },
         { id: 'v1', kind: 'voltage-source', position: { x: 0, y: 0 }, electrical: { voltageVolts: -5 } },
         { id: 'legacy', kind: 'capacitor', position: { x: 0, y: 0 } },
+        { id: 'join', kind: 'junction', position: { x: 0, y: 0 }, electrical: { resistanceOhms: 1 } },
       ],
       wires: [],
     });
@@ -119,6 +120,7 @@ describe('logic diagram document helpers', () => {
       { id: 'r2', electrical: undefined },
       { id: 'v1', electrical: { voltageVolts: -5 } },
       { id: 'legacy', electrical: undefined },
+      { id: 'join', kind: 'junction', electrical: undefined },
     ]);
   });
 
@@ -147,6 +149,7 @@ describe('logic diagram document helpers', () => {
     expect(defaultSchematicElectricalParameters('resistor')).toEqual({ resistanceOhms: 1000 });
     expect(defaultSchematicElectricalParameters('voltage-source')).toEqual({ voltageVolts: 5 });
     expect(defaultSchematicElectricalParameters('ground')).toBeUndefined();
+    expect(defaultSchematicElectricalParameters('junction')).toBeUndefined();
   });
 
   it('parses valid .logic JSON and rejects unsupported shapes', () => {
