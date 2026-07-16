@@ -13,6 +13,7 @@ export interface LogicFlowNodeData extends Record<string, unknown> {
   kind: LogicDiagramNode['kind'];
   label?: string;
   value?: boolean;
+  clock?: LogicDiagramNode['clock'];
   evaluatedValue?: boolean;
   inputSignals?: Record<string, boolean | undefined>;
   component?: LogicComponentInstance;
@@ -29,6 +30,7 @@ export function logicNodeLabel(node: Pick<LogicDiagramNode, 'kind' | 'label'>) {
   if (node.label?.trim()) return node.label.trim();
   switch (node.kind) {
     case 'input': return 'Input';
+    case 'clock': return 'Clock';
     case 'output': return 'Output';
     case 'group': return 'Group';
     case 'and': return 'AND';
@@ -66,6 +68,7 @@ function toFlowNode(node: LogicDiagramNode, parent?: LogicDiagramNode): LogicFlo
       kind: node.kind,
       label: node.label,
       value: node.value,
+      clock: node.clock,
       component: node.component,
     },
     parentId: node.parentId,
@@ -92,6 +95,7 @@ function fromFlowNode(node: LogicFlowNode, parent?: LogicFlowNode): LogicDiagram
       : node.position,
     label: typeof node.data.label === 'string' ? node.data.label : undefined,
     value: typeof node.data.value === 'boolean' ? node.data.value : undefined,
+    clock: node.data.kind === 'clock' ? node.data.clock : undefined,
     parentId: typeof node.parentId === 'string' ? node.parentId : undefined,
     // Only groups carry an explicit size; gate nodes are intrinsically sized, so
     // persisting their measured pixel dimensions would make the serialized

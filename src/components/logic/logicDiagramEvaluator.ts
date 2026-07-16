@@ -1,4 +1,5 @@
 import type {
+  LogicClockConfig,
   LogicComponentDefinition,
   LogicComponentInstance,
   LogicDiagramNode,
@@ -25,6 +26,15 @@ export interface LogicEvaluationResult {
 
 export interface LogicEvaluationOptions {
   components?: LogicComponentDefinition[];
+  clockElapsedMs?: number;
+}
+
+export function clockSignalAt(clock: LogicClockConfig | undefined, elapsedMs: number) {
+  const periodMs = Math.max(100, clock?.periodMs ?? 1000);
+  const dutyCycle = Math.min(0.95, Math.max(0.05, clock?.dutyCycle ?? 0.5));
+  const phaseMs = Math.max(0, clock?.phaseMs ?? 0);
+  const position = ((elapsedMs + phaseMs) % periodMs + periodMs) % periodMs;
+  return position < periodMs * dutyCycle;
 }
 
 export function componentInputHandle(portId: string) {
@@ -42,7 +52,7 @@ export function getLogicInputHandles(kind: LogicDiagramNode['kind'], component?:
       .filter((port) => port.direction === 'input')
       .map((port) => componentInputHandle(port.id)) ?? [];
   }
-  if (!isLogicGateKind(kind) || kind === 'input' || kind === 'group') return [];
+  if (!isLogicGateKind(kind) || kind === 'input' || kind === 'clock' || kind === 'group') return [];
   if (kind === 'not' || kind === 'output') return ['in'];
   return ['in-a', 'in-b'];
 }
@@ -96,6 +106,7 @@ function evaluateGate(kind: LogicGateKind, inputs: LogicSignal[]) {
     case 'xnor':
       return inputs[0] === inputs[1];
     case 'input':
+    case 'clock':
     case 'group':
       return undefined;
   }
@@ -150,8 +161,12 @@ export function evaluateLogicDiagram(
 
     visiting.add(nodeId);
 
-    if (node.kind === 'input') {
-      const value = typeof node.value === 'boolean' ? node.value : undefined;
+    if (node.kind === 'input' || node.kind === 'clock') {
+      const value = typeof node.value === 'boolean'
+        ? node.value
+        : node.kind === 'clock'
+          ? clockSignalAt(node.clock, options.clockElapsedMs ?? 0)
+          : undefined;
       nodeValues[node.id] = value;
       nodeOutputs[node.id] = { out: value };
     } else if (node.kind === 'component') {

@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import type { LogicComponentDefinition, LogicDiagramNode, LogicDiagramWire } from '../../types/logicDiagram';
-import { evaluateLogicDiagram, componentInputHandle, componentOutputHandle } from './logicDiagramEvaluator';
+import { clockSignalAt, evaluateLogicDiagram, componentInputHandle, componentOutputHandle } from './logicDiagramEvaluator';
 
 function input(id: string, value: boolean): LogicDiagramNode {
   return { id, kind: 'input', position: { x: 0, y: 0 }, value };
@@ -44,6 +44,18 @@ function halfAdderComponent(version = 1): LogicComponentDefinition {
 }
 
 describe('logic diagram evaluator', () => {
+  it('evaluates a clock from its period, duty cycle, and phase', () => {
+    const clock = { periodMs: 1000, dutyCycle: 0.5, phaseMs: 0 };
+    expect(clockSignalAt(clock, 0)).toBe(true);
+    expect(clockSignalAt(clock, 499)).toBe(true);
+    expect(clockSignalAt(clock, 500)).toBe(false);
+    expect(clockSignalAt(clock, 1000)).toBe(true);
+
+    const result = evaluateLogicDiagram([
+      { id: 'clock', kind: 'clock', position: { x: 0, y: 0 }, clock },
+    ], [], { clockElapsedMs: 750 });
+    expect(result.nodeValues.clock).toBe(false);
+  });
   it('evaluates basic supported gates', () => {
     const nodes: LogicDiagramNode[] = [
       input('a', true),

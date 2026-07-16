@@ -8,12 +8,15 @@ import {
   Maximize2,
   Minus,
   Pencil,
+  Pause,
+  Play,
   Plus,
   Plus as PlusIcon,
   Power,
   RotateCcw,
   Save,
   Shapes,
+  Table2,
   Trash2,
   Ungroup,
 } from 'lucide-react';
@@ -56,6 +59,10 @@ import {
   getLogicInputHandles,
   getLogicOutputHandles,
 } from '../components/logic/logicDiagramEvaluator';
+import {
+  generateComponentTruthTable,
+  generateLogicTruthTable,
+} from '../components/logic/logicTruthTable';
 import {
   captureLogicComponent,
   instantiateLogicComponentNode,
@@ -116,6 +123,7 @@ interface Props {
 
 const GATE_CHOICES: Array<{ kind: LogicGateKind; label: string }> = [
   { kind: 'input', label: 'Input' },
+  { kind: 'clock', label: 'Clock' },
   { kind: 'output', label: 'Output' },
   { kind: 'and', label: 'AND' },
   { kind: 'or', label: 'OR' },
@@ -344,7 +352,7 @@ function liveLogicStatePreservesCanonicalEntities(
 
 function logicNodeActiveOverlay(kind: LogicNodeKind, data: LogicFlowNode['data']): CSSProperties | undefined {
   if (kind === 'group') return undefined;
-  if (data.evaluatedValue === true || (kind === 'input' && data.value === true)) {
+  if (data.evaluatedValue === true || ((kind === 'input' || kind === 'clock') && data.value === true)) {
     return {
       background: LOGIC_NODE_ACTIVE_WASH,
     };
@@ -428,7 +436,7 @@ function SharpLogicNode({
   const inputHandles = getLogicInputHandles(kind, data.component);
   const outputHandles = getLogicOutputHandles(kind, data.component);
   const isInversion = kind === 'not' || kind === 'nand' || kind === 'nor' || kind === 'xnor';
-  const displayValue = kind === 'output' ? data.evaluatedValue : data.value;
+  const displayValue = kind === 'output' || kind === 'clock' ? data.evaluatedValue : data.value;
   const activeOverlay = logicNodeActiveOverlay(kind, data);
   const componentPorts = data.component?.definition.ports ?? [];
   const componentInputs = componentPorts.filter((port) => port.direction === 'input');
@@ -570,9 +578,10 @@ function SharpLogicNode({
             <span className="truncate text-right">{componentOutputs.map((port) => port.label).join(', ')}</span>
           </div>
         )}
-        {(kind === 'input' || kind === 'output') && (
+        {(kind === 'input' || kind === 'clock' || kind === 'output') && (
           <div className="text-muted-foreground" style={{ marginTop: 4 * zoom, fontSize: 10 * zoom, lineHeight: 1.2 }}>
             {typeof displayValue === 'boolean' ? (displayValue ? '1' : '0') : 'unset'}
+            {kind === 'clock' ? ` · ${Math.round(data.clock?.periodMs ?? 1000)} ms` : ''}
           </div>
         )}
       </div>
@@ -739,6 +748,15 @@ function LogicDiagramEditor({ relativePath }: Props) {
   const [componentName, setComponentName] = useState('');
   const [componentDescription, setComponentDescription] = useState('');
   const [componentInsertMode, setComponentInsertMode] = useState<LogicComponentInstanceMode>('snapshot');
+  const [truthTableOpen, setTruthTableOpen] = useState(false);
+  const [truthTableScope, setTruthTableScope] = useState('document');
+  const [clockSettingsNodeId, setClockSettingsNodeId] = useState<string | null>(null);
+  const [clockPeriodValue, setClockPeriodValue] = useState('1000');
+  const [clockDutyValue, setClockDutyValue] = useState('50');
+  const [clockPhaseValue, setClockPhaseValue] = useState('0');
+  const [clockRunning, setClockRunning] = useState(false);
+  const [clockElapsedMs, setClockElapsedMs] = useState(0);
+  const clockStartedAtRef = useRef(Date.now());
   const [logicComponents, setLogicComponents] = useState<LogicComponentDefinition[]>([]);
   const [loadingComponents, setLoadingComponents] = useState(false);
   const [viewport, setViewportState] = useState<Viewport>(DEFAULT_VIEWPORT);
@@ -795,6 +813,7 @@ function LogicDiagramEditor({ relativePath }: Props) {
         kind: node.data.kind,
         label: node.data.label ?? null,
         value: node.data.value ?? null,
+        clock: node.data.clock ?? null,
         component: node.data.component ?? null,
         parentId: node.parentId ?? null,
         x: node.position.x,
@@ -817,6 +836,15 @@ function LogicDiagramEditor({ relativePath }: Props) {
     [nodes],
   );
   const logicComponentsCapability = client?.runtime.logicComponents ?? null;
+  const availableComponents = useMemo(() => {
+    const byId = new Map<string, LogicComponentDefinition>();
+    for (const component of [...(diagram.components ?? []), ...logicComponents]) byId.set(component.id, component);
+    for (const node of nodes) {
+      const definition = node.data.component?.definition;
+      if (definition && !byId.has(definition.id)) byId.set(definition.id, definition);
+    }
+    return [...byId.values()].sort((a, b) => a.name.localeCompare(b.name));
+  }, [diagram.components, logicComponents, nodes]);
   const selectedEdgeIds = useMemo(
     () => edges.filter((edge) => edge.selected).map((edge) => edge.id),
     [edges],
@@ -826,8 +854,35 @@ function LogicDiagramEditor({ relativePath }: Props) {
       return { nodeValues: {}, wireValues: {}, warnings: [] };
     }
     const graph = fromFlowGraph(diagram, nodes, edges, diagram.viewport);
-    return evaluateLogicDiagram(graph.nodes, graph.wires, { components: [...(diagram.components ?? []), ...logicComponents] });
-  }, [diagram, edges, logicComponents, nodes]);
+    return evaluateLogicDiagram(graph.nodes, graph.wires, {
+      components: availableComponents,
+      clockElapsedMs,
+    });
+  }, [availableComponents, clockElapsedMs, diagram, edges, nodes]);
+
+  const truthTable = useMemo(() => {
+    if (!truthTableOpen) return { inputs: [], outputs: [], rows: [] };
+    const component = truthTableScope === 'document'
+      ? null
+      : availableComponents.find((candidate) => candidate.id === truthTableScope);
+    if (component) return generateComponentTruthTable(component, availableComponents);
+    const graph = fromFlowGraph(diagram, nodes, edges, diagram.viewport);
+    return generateLogicTruthTable(graph.nodes, graph.wires, { components: availableComponents });
+  }, [availableComponents, diagram, edges, nodes, truthTableOpen, truthTableScope]);
+
+  const clockCount = useMemo(() => nodes.filter((node) => node.data.kind === 'clock').length, [nodes]);
+
+  useEffect(() => {
+    if (!clockRunning || clockCount === 0) return;
+    const timer = window.setInterval(() => {
+      setClockElapsedMs(Date.now() - clockStartedAtRef.current);
+    }, 40);
+    return () => window.clearInterval(timer);
+  }, [clockCount, clockRunning]);
+
+  useEffect(() => {
+    if (clockCount === 0) setClockRunning(false);
+  }, [clockCount]);
   const inputSignalsByNode = useMemo(() => {
     const nodeById = new Map(nodes.map((node) => [node.id, node]));
     const signals = new Map<string, Record<string, boolean | undefined>>();
@@ -1455,7 +1510,11 @@ function LogicDiagramEditor({ relativePath }: Props) {
         type: 'logicGate',
         position: snapPosition(position),
         zIndex: 1,
-        data: { kind, value: kind === 'input' ? false : undefined },
+        data: {
+          kind,
+          value: kind === 'input' ? false : undefined,
+          clock: kind === 'clock' ? { periodMs: 1000, dutyCycle: 0.5, phaseMs: 0 } : undefined,
+        },
       },
     ]);
     markChanged();
@@ -1635,10 +1694,44 @@ function LogicDiagramEditor({ relativePath }: Props) {
     if (changed) markChanged();
   }, [markChanged, readOnly, setNodes]);
 
+  const openClockSettings = useCallback((node: LogicFlowNode) => {
+    if (node.data.kind !== 'clock') return;
+    setClockSettingsNodeId(node.id);
+    setClockPeriodValue(String(Math.round(node.data.clock?.periodMs ?? 1000)));
+    setClockDutyValue(String(Math.round((node.data.clock?.dutyCycle ?? 0.5) * 100)));
+    setClockPhaseValue(String(Math.round(node.data.clock?.phaseMs ?? 0)));
+  }, []);
+
+  const saveClockSettings = useCallback(() => {
+    if (!clockSettingsNodeId || readOnly) return;
+    const periodMs = Math.max(100, Number(clockPeriodValue) || 1000);
+    const dutyCycle = Math.min(95, Math.max(5, Number(clockDutyValue) || 50)) / 100;
+    const phaseMs = Math.max(0, Number(clockPhaseValue) || 0);
+    setNodes((current) => current.map((node) => node.id === clockSettingsNodeId
+      ? { ...node, data: { ...node.data, clock: { periodMs, dutyCycle, phaseMs } } }
+      : node));
+    setClockSettingsNodeId(null);
+    markChanged();
+  }, [clockDutyValue, clockPeriodValue, clockPhaseValue, clockSettingsNodeId, markChanged, readOnly, setNodes]);
+
+  const startClocks = useCallback(() => {
+    clockStartedAtRef.current = Date.now() - clockElapsedMs;
+    setClockRunning(true);
+  }, [clockElapsedMs]);
+
+  const resetClocks = useCallback(() => {
+    clockStartedAtRef.current = Date.now();
+    setClockElapsedMs(0);
+  }, []);
+
   const handleNodeDoubleClick = useCallback((node: LogicFlowNode) => {
     if (readOnly) return;
     if (node.data.kind === 'input') {
       toggleInputNodes([node.id]);
+      return;
+    }
+    if (node.data.kind === 'clock') {
+      openClockSettings(node);
       return;
     }
     if (node.data.kind === 'group' || node.data.kind === 'output') {
@@ -1647,7 +1740,7 @@ function LogicDiagramEditor({ relativePath }: Props) {
     }
     // Logic gates (and/or/not/xor/...) — open label editor
     openRenameNode(node.id);
-  }, [openRenameNode, readOnly, toggleInputNodes]);
+  }, [openClockSettings, openRenameNode, readOnly, toggleInputNodes]);
 
   const deleteSelection = useCallback(() => {
     if (readOnly) return;
@@ -2276,6 +2369,28 @@ function LogicDiagramEditor({ relativePath }: Props) {
           <Save size={14} />
           Save component
         </DocumentTopBarButton>
+        <DocumentTopBarButton
+          onClick={() => {
+            const selectedComponent = selectedComponentNodes[0]?.data.component?.definition;
+            setTruthTableScope(selectedComponent?.id ?? 'document');
+            setTruthTableOpen(true);
+          }}
+          disabled={nodes.length === 0}
+          title="Calculate a truth table for this diagram or a reusable component"
+        >
+          <Table2 size={14} />
+          Value table
+        </DocumentTopBarButton>
+        <DocumentTopBarIconButton
+          title={clockRunning ? 'Pause clocks' : 'Run clocks'}
+          onClick={() => clockRunning ? setClockRunning(false) : startClocks()}
+          disabled={clockCount === 0}
+        >
+          {clockRunning ? <Pause size={14} /> : <Play size={14} />}
+        </DocumentTopBarIconButton>
+        <DocumentTopBarIconButton title="Reset clock sequence" onClick={resetClocks} disabled={clockCount === 0}>
+          <RotateCcw size={14} />
+        </DocumentTopBarIconButton>
       </div>
       ) : (
       <div className={documentTopBarGroupClass}>
@@ -2898,6 +3013,115 @@ function LogicDiagramEditor({ relativePath }: Props) {
                 Cancel
               </Button>
               <Button type="submit">Save component</Button>
+            </DialogFooter>
+          </form>
+        </DialogContent>
+      </Dialog>
+      <Dialog open={truthTableOpen} onOpenChange={setTruthTableOpen}>
+        <DialogContent className="max-w-[min(92vw,960px)] sm:max-w-4xl">
+          <DialogHeader>
+            <DialogTitle>Logic value table</DialogTitle>
+            <DialogDescription>
+              Every input combination is evaluated against the current circuit. Clock sources are treated as input columns here.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="flex items-center gap-2">
+            <span className="text-xs font-medium text-muted-foreground">Scope</span>
+            <Select value={truthTableScope} onValueChange={setTruthTableScope}>
+              <SelectTrigger size="sm" className="h-8 min-w-48">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="document">Entire logic file</SelectItem>
+                {availableComponents.map((component) => (
+                  <SelectItem key={component.id} value={component.id}>{component.name}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            <span className="text-xs text-muted-foreground">
+              {truthTable.inputs.length} inputs · {truthTable.outputs.length} outputs · {truthTable.rows.length} rows
+            </span>
+          </div>
+          {truthTable.error ? (
+            <div className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+              {truthTable.error}
+            </div>
+          ) : truthTable.outputs.length === 0 ? (
+            <div className="rounded-md border border-dashed border-border/70 px-3 py-8 text-center text-sm text-muted-foreground">
+              Add at least one output node to calculate a value table.
+            </div>
+          ) : (
+            <div className="max-h-[60vh] overflow-auto rounded-md border border-border/70">
+              <table className="w-full min-w-max border-collapse text-center text-xs tabular-nums">
+                <thead className="sticky top-0 z-10 bg-muted/95 backdrop-blur">
+                  <tr className="border-b border-border/70">
+                    {truthTable.inputs.length > 0 && (
+                      <th colSpan={truthTable.inputs.length} className="border-r border-border/70 px-3 py-1.5 text-[10px] font-semibold uppercase text-muted-foreground">Inputs</th>
+                    )}
+                    <th colSpan={truthTable.outputs.length} className="px-3 py-1.5 text-[10px] font-semibold uppercase text-muted-foreground">Outputs</th>
+                  </tr>
+                  <tr className="border-b border-border/70">
+                    {truthTable.inputs.map((column, index) => (
+                      <th key={column.id} className={cn('px-4 py-2 font-semibold', index === truthTable.inputs.length - 1 && 'border-r border-border/70')}>
+                        {column.label}
+                      </th>
+                    ))}
+                    {truthTable.outputs.map((column) => (
+                      <th key={column.id} className="px-4 py-2 font-semibold text-primary">{column.label}</th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {truthTable.rows.map((row, rowIndex) => (
+                    <tr key={rowIndex} className="border-b border-border/40 last:border-0 odd:bg-muted/20">
+                      {truthTable.inputs.map((column, index) => (
+                        <td key={column.id} className={cn('px-4 py-2 text-muted-foreground', index === truthTable.inputs.length - 1 && 'border-r border-border/70')}>
+                          {row.inputs[column.id] ? '1' : '0'}
+                        </td>
+                      ))}
+                      {truthTable.outputs.map((column) => (
+                        <td key={column.id} className="px-4 py-2 font-semibold text-foreground">
+                          {typeof row.outputs[column.id] === 'boolean' ? (row.outputs[column.id] ? '1' : '0') : '–'}
+                        </td>
+                      ))}
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </DialogContent>
+      </Dialog>
+      <Dialog open={clockSettingsNodeId !== null} onOpenChange={(open) => !open && setClockSettingsNodeId(null)}>
+        <DialogContent className="sm:max-w-sm">
+          <DialogHeader>
+            <DialogTitle>Clock sequence</DialogTitle>
+            <DialogDescription>Configure the repeating digital signal. The clock starts high at phase zero.</DialogDescription>
+          </DialogHeader>
+          <form
+            className="space-y-4"
+            onSubmit={(event) => {
+              event.preventDefault();
+              saveClockSettings();
+            }}
+          >
+            <div className="grid grid-cols-2 gap-3">
+              <label className="space-y-1.5 text-xs font-medium text-muted-foreground">
+                Period (ms)
+                <Input type="number" min={100} step={50} value={clockPeriodValue} onChange={(event) => setClockPeriodValue(event.target.value)} />
+              </label>
+              <label className="space-y-1.5 text-xs font-medium text-muted-foreground">
+                High time (%)
+                <Input type="number" min={5} max={95} step={5} value={clockDutyValue} onChange={(event) => setClockDutyValue(event.target.value)} />
+              </label>
+            </div>
+            <label className="block space-y-1.5 text-xs font-medium text-muted-foreground">
+              Phase offset (ms)
+              <Input type="number" min={0} step={50} value={clockPhaseValue} onChange={(event) => setClockPhaseValue(event.target.value)} />
+            </label>
+            <DialogFooter className="border-none bg-transparent -mx-0 -mb-0 px-0 pb-0">
+              <Button type="button" variant="outline" onClick={() => setClockSettingsNodeId(null)}>Cancel</Button>
+              <Button type="submit" disabled={readOnly}>Apply</Button>
             </DialogFooter>
           </form>
         </DialogContent>

@@ -1,10 +1,11 @@
 export const LOGIC_DIAGRAM_EXTENSION = 'logic';
-export const LOGIC_DIAGRAM_SCHEMA_VERSION = 3;
+export const LOGIC_DIAGRAM_SCHEMA_VERSION = 4;
 
 export type LogicDiagramMode = 'logic' | 'schematic';
 
 export type LogicGateKind =
   | 'input'
+  | 'clock'
   | 'output'
   | 'group'
   | 'and'
@@ -29,6 +30,12 @@ export type ElectronicComponentKind =
 export type LogicNodeKind = LogicGateKind | 'component' | ElectronicComponentKind;
 export type LogicComponentInstanceMode = 'snapshot' | 'linked';
 export type LogicComponentPortDirection = 'input' | 'output';
+
+export interface LogicClockConfig {
+  periodMs: number;
+  dutyCycle: number;
+  phaseMs: number;
+}
 
 export interface LogicComponentPort {
   id: string;
@@ -61,6 +68,7 @@ export interface LogicDiagramNode {
   position: { x: number; y: number };
   label?: string;
   value?: boolean;
+  clock?: LogicClockConfig;
   parentId?: string;
   width?: number;
   height?: number;
@@ -89,6 +97,7 @@ export interface LogicDiagramDocument {
 
 const LOGIC_GATE_KINDS = new Set<LogicGateKind>([
   'input',
+  'clock',
   'output',
   'group',
   'and',
@@ -221,6 +230,7 @@ function normalizeNode(value: unknown): LogicDiagramNode | null {
     return null;
   }
   const position = asRecord(record.position);
+  const clock = asRecord(record.clock);
   return {
     id: record.id,
     kind: record.kind as LogicNodeKind,
@@ -230,6 +240,13 @@ function normalizeNode(value: unknown): LogicDiagramNode | null {
     },
     label: optionalString(record.label),
     value: typeof record.value === 'boolean' ? record.value : undefined,
+    clock: record.kind === 'clock'
+      ? {
+          periodMs: Math.max(100, finiteNumber(clock?.periodMs, 1000)),
+          dutyCycle: Math.min(0.95, Math.max(0.05, finiteNumber(clock?.dutyCycle, 0.5))),
+          phaseMs: Math.max(0, finiteNumber(clock?.phaseMs, 0)),
+        }
+      : undefined,
     parentId: optionalString(record.parentId),
     width: typeof record.width === 'number' && Number.isFinite(record.width) ? record.width : undefined,
     height: typeof record.height === 'number' && Number.isFinite(record.height) ? record.height : undefined,

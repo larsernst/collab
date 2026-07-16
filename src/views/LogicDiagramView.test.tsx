@@ -119,7 +119,7 @@ function logicDoc(kinds: string[]) {
 
 function schematicDoc(kinds: string[]) {
   return JSON.stringify({
-    schemaVersion: 3,
+    schemaVersion: 4,
     kind: 'logic-diagram',
     diagramMode: 'schematic',
     title: 'test',
@@ -575,5 +575,33 @@ describe('LogicDiagramView safe reload policy', () => {
 
     expect(screen.getByText(/0 gates/)).toBeTruthy();
     expect(tauriMocks.writeNote).not.toHaveBeenCalled();
+  });
+
+  it('opens a dynamic value table for the current logic file', async () => {
+    tauriMocks.readNote.mockResolvedValueOnce({
+      content: JSON.stringify({
+        schemaVersion: 4,
+        kind: 'logic-diagram',
+        diagramMode: 'logic',
+        nodes: [
+          { id: 'a', kind: 'input', label: 'A', position: { x: 0, y: 0 }, value: false },
+          { id: 'out', kind: 'output', label: 'Result', position: { x: 200, y: 0 } },
+        ],
+        wires: [{ id: 'a-out', source: 'a', target: 'out', sourceHandle: 'out', targetHandle: 'in' }],
+        viewport: { x: 0, y: 0, zoom: 1 },
+      }),
+      hash: 'v1',
+      modifiedAt: 1,
+    });
+
+    render(<LogicDiagramView relativePath={PATH} />);
+    expect(await screen.findByText(/2 gates/)).toBeTruthy();
+
+    fireEvent.click(screen.getByRole('button', { name: /value table/i }));
+
+    expect(await screen.findByRole('heading', { name: 'Logic value table' })).toBeTruthy();
+    expect(screen.getByText('1 inputs · 1 outputs · 2 rows')).toBeTruthy();
+    expect(screen.getByRole('columnheader', { name: 'A' })).toBeTruthy();
+    expect(screen.getByRole('columnheader', { name: 'Result' })).toBeTruthy();
   });
 });

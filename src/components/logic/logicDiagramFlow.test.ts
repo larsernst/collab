@@ -79,7 +79,24 @@ describe('logic diagram flow helpers', () => {
 
   it('uses readable default labels for gate kinds', () => {
     expect(logicNodeLabel({ kind: 'nand' })).toBe('NAND');
+    expect(logicNodeLabel({ kind: 'clock' })).toBe('Clock');
     expect(logicNodeLabel({ kind: 'group' })).toBe('Group');
     expect(logicNodeLabel({ kind: 'input', label: 'Clock' })).toBe('Clock');
+  });
+
+  it('round-trips persisted clock timing', () => {
+    const diagram = {
+      ...createEmptyLogicDiagram('Clocked'),
+      nodes: [{
+        id: 'clock',
+        kind: 'clock' as const,
+        position: { x: 10, y: 20 },
+        clock: { periodMs: 500, dutyCycle: 0.25, phaseMs: 50 },
+      }],
+    };
+
+    const graph = toFlowGraph(diagram);
+    expect(graph.nodes[0].data.clock).toEqual({ periodMs: 500, dutyCycle: 0.25, phaseMs: 50 });
+    expect(fromFlowGraph(diagram, graph.nodes, graph.edges, graph.viewport)).toEqual(diagram);
   });
 });

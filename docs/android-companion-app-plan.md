@@ -134,7 +134,7 @@ Do not reuse directly:
 | 3. Offline replica read path | Complete | Seed, cache, open, and browse hosted vault offline copies on Android. |
 | 4. Notes MVP | Complete | View, edit, save, queue offline, and sync markdown notes. |
 | 5. Kanban MVP | Complete | View and edit boards/cards through a mobile-first Kanban workflow. |
-| 6. Viewer-only rich files | In progress | Add PDF, image, canvas, and logic diagram viewers without edit affordances. |
+| 6. Viewer-only rich files | Complete | Add PDF, image, canvas, and logic diagram viewers without edit affordances. |
 | 7. Android hardening and release prep | In progress | Device QA, lifecycle handling, signing, release packaging, and operational docs. |
 | 8. Later expansion | Deferred | Decide whether to add push/background sync, iOS, richer viewers, or mobile capture flows. |
 

@@ -7,9 +7,9 @@ import {
 } from './logicDiagram';
 
 describe('logic diagram document helpers', () => {
-  it('creates an empty v3 logic diagram document', () => {
+  it('creates an empty v4 logic diagram document', () => {
     expect(createEmptyLogicDiagram('Adder')).toEqual({
-      schemaVersion: 3,
+      schemaVersion: 4,
       kind: 'logic-diagram',
       diagramMode: 'logic',
       title: 'Adder',
@@ -18,6 +18,21 @@ describe('logic diagram document helpers', () => {
       components: [],
       viewport: { x: 0, y: 0, zoom: 1 },
     });
+  });
+
+  it('normalizes clock timing and clamps unsafe values', () => {
+    const document = normalizeLogicDiagramDocument({
+      kind: 'logic-diagram',
+      nodes: [{
+        id: 'clock',
+        kind: 'clock',
+        position: { x: 1, y: 2 },
+        clock: { periodMs: 20, dutyCycle: 2, phaseMs: -10 },
+      }],
+      wires: [],
+    });
+
+    expect(document.nodes[0].clock).toEqual({ periodMs: 100, dutyCycle: 0.95, phaseMs: 0 });
   });
 
   it('normalizes unknown input into a safe diagram shape', () => {
@@ -38,7 +53,7 @@ describe('logic diagram document helpers', () => {
     });
 
     expect(normalized).toMatchObject({
-      schemaVersion: 3,
+      schemaVersion: 4,
       kind: 'logic-diagram',
       diagramMode: 'logic',
       components: [],

@@ -14,6 +14,7 @@ Add a phased diagramming feature for university-oriented logic-gate overviews fi
 | 3. Note insertion/export | Complete | Export editable-source-linked graphics into notes. |
 | 4. Diagram polish and reuse | Complete | Add templates, library improvements, and better authoring flow. |
 | 5. Electronic component diagrams | Complete | Add static resistor/transistor/etc. schematic symbols. |
+| 5.1 Digital simulation tools | Complete | Add sequenced clock sources and dynamic value tables. |
 | 6. Circuit simulation research | Deferred | Decide whether real electronics simulation is worth integrating. |
 
 ## Phase Details
@@ -38,7 +39,7 @@ Groundwork completed:
 - `.logic` imports are validated before document creation.
 - Local vault file allow-lists and encryption handling include `.logic`.
 - Hosted `.logic` support remains a Phase 1 implementation item because hosted document typing currently recognizes note, kanban, and canvas only.
-- The current schema is v3 and adds a persisted `diagramMode` plus static electronic symbol node kinds; older documents normalize to digital logic mode.
+- The current schema is v4 and adds persisted clock timing on top of the v3 `diagramMode` and static electronic symbol node kinds; older documents normalize safely to digital logic mode.
 
 ### Phase 1: Static Logic Diagram Editor
 
@@ -163,6 +164,29 @@ Implementation notes:
 - The mode selector locks after the first element is added, preventing mixed digital/electronic documents and ambiguous evaluator behavior.
 - SVG note exports render the actual schematic symbols and preserve the same source metadata used to reopen the editable `.logic` document.
 - No analog values or simulation controls are exposed; Phase 6 remains a separate research decision.
+
+### Phase 5.1: Digital Simulation Tools
+
+- Add a clock source with a configurable period, duty cycle, and phase offset.
+- Keep clock play/pause/reset state local to the open editor; only timing configuration is persisted.
+- Generate exhaustive value tables for the whole logic file from its input and output nodes.
+- Generate the same tables for reusable component definitions using their named ports.
+- Treat clock sources as regular input columns in exhaustive tables so the table remains deterministic and independent of wall-clock timing.
+- Limit generated tables to ten inputs (1,024 rows) to prevent exponential work from locking the editor.
+
+Acceptance criteria:
+
+- A clock can drive gates and outputs while the simulation is running, pause without changing the document, and restart from phase zero.
+- A file with three inputs and two outputs produces eight rows containing every input state and both calculated outputs.
+- Snapshot and linked reusable components can be selected as the table scope.
+- Floating or invalid outputs render as unknown rather than failing table generation.
+
+Implementation notes:
+
+- `.logic` schema v4 adds optional `clock` timing to logic nodes while preserving migration of older files.
+- The pure evaluator accepts elapsed clock time and recursively applies it inside reusable components.
+- `logicTruthTable.ts` reuses the normal evaluator for each input permutation instead of maintaining a second simulation implementation.
+- The editor exposes clock configuration on double-click and run, pause, reset, and value-table controls in the shared document toolbar.
 
 ### Phase 6: Circuit Simulation Research
 
