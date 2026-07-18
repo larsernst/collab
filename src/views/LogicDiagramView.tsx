@@ -104,7 +104,9 @@ import { useLiveDocumentStatus } from '../lib/useLiveDocumentStatus';
 import { getMarkdownImageTarget } from '../lib/noteAssets';
 import { buildLogicDiagramSvg } from '../lib/logicDiagramExport';
 import { flattenVaultFiles } from '../lib/vaultLinks';
-import { tauriCommands, type CircuitDcResult } from '../lib/tauri';
+import { tauriCommands, type CircuitDcResult, type CircuitJobStatus } from '../lib/tauri';
+import { runCircuitJob, type CircuitJobClient } from '../lib/circuitJobRunner';
+import { circuitErrorText } from '../lib/circuitErrorText';
 import {
   createEmptyLogicDiagram,
   defaultSchematicElectricalParameters,
@@ -164,6 +166,11 @@ const LOGIC_CONNECTION_SNAP_RADIUS = 28;
 const DEFAULT_VIEWPORT: Viewport = { x: 0, y: 0, zoom: 1 };
 const CONTEXT_MENU_WIDTH = 280;
 const CONTEXT_MENU_HEIGHT = 420;
+const DESKTOP_CIRCUIT_JOB_CLIENT: CircuitJobClient = {
+  start: tauriCommands.circuitStartDc,
+  status: tauriCommands.circuitJobStatus,
+  takeResult: tauriCommands.circuitTakeJobResult,
+};
 const LOGIC_SIGNAL_ON = 'color-mix(in oklch, var(--primary) 82%, white 18%)';
 const LOGIC_SIGNAL_OFF = 'color-mix(in oklch, var(--muted-foreground) 72%, transparent)';
 const LOGIC_SIGNAL_UNKNOWN = 'color-mix(in oklch, var(--border) 88%, white 12%)';
@@ -499,77 +506,6 @@ function schematicValueLabel(kind: ElectronicComponentKind, electrical?: Schemat
   if (kind === 'ground') return 'Reference';
   if (kind === 'junction') return 'Connection';
   return electrical?.modelRef?.replace(/^builtin:/, '') ?? 'Model required';
-}
-
-function circuitErrorText(error: unknown) {
-  if (typeof error === 'string') {
-    try {
-      const parsed = JSON.parse(error) as unknown;
-      if (parsed !== error) return circuitErrorText(parsed);
-    } catch {
-      return error;
-    }
-  }
-  if (!error || typeof error !== 'object') return String(error);
-  const record = error as Record<string, unknown>;
-  const detail = record.detail && typeof record.detail === 'object'
-    ? record.detail as Record<string, unknown>
-    : record;
-  const code = typeof detail.code === 'string' ? detail.code : '';
-  const context = detail.context && typeof detail.context === 'object'
-    ? detail.context as Record<string, unknown>
-    : {};
-  switch (code) {
-    case 'missingGround': return 'Add one ground reference before running the simulation.';
-    case 'multipleGrounds': return 'This baseline currently requires exactly one ground symbol.';
-    case 'unsupportedComponent':
-      return `${String(context.kind ?? 'This component')} is not supported by the current DC solver.`;
-    case 'unsupportedModel':
-      return `${String(context.modelRef ?? 'This model')} is not supported for ${String(context.nodeId ?? 'the component')}.`;
-    case 'missingElectricalValue':
-      return `Configure ${String(context.field ?? 'the electrical value')} for ${String(context.nodeId ?? 'the component')}.`;
-    case 'missingWireHandle': return 'A wire is not attached to a valid component terminal.';
-    case 'unknownWireNode':
-    case 'unknownTerminal': return 'A wire references a component or terminal that no longer exists.';
-    case 'duplicateProbeId': return 'Two circuit probes use the same ID. Remove and recreate one of them.';
-    case 'unknownProbeNode': return 'A circuit probe references a component that no longer exists.';
-    case 'missingProbeHandle': return 'A voltage probe is not attached to a component terminal.';
-    case 'unknownProbeTerminal': return 'A voltage probe references a terminal that no longer exists.';
-    case 'invalidBranchProbeTarget': return 'Branch-current probes cannot target the ground reference or a junction.';
-    case 'invalidJunctionDegree':
-      return `Junction ${String(context.nodeId ?? '')} needs at least two connected wires.`.trim();
-    case 'disconnectedTerminal':
-      return `Connect ${String(context.nodeId ?? 'the component')}'s ${String(context.handleId ?? 'terminal')} before running DC.`;
-    case 'floatingDcIsland': {
-      const nodeIds = Array.isArray(context.nodeIds) ? context.nodeIds.join(', ') : 'part of the circuit';
-      return `${nodeIds} has no DC path to the ground reference.`;
-    }
-    case 'invalidIdealVoltageSource':
-      return `${String(context.nodeId ?? 'A voltage source')} has both terminals connected to the same electrical node.`;
-    case 'conflictingIdealVoltageSources':
-      return `${String(context.firstNodeId ?? 'One voltage source')} and ${String(context.secondNodeId ?? 'another voltage source')} impose conflicting voltages on the same nodes.`;
-    case 'redundantIdealVoltageSources':
-      return `${String(context.firstNodeId ?? 'One voltage source')} and ${String(context.secondNodeId ?? 'another voltage source')} redundantly constrain the same nodes.`;
-    case 'oversizedCircuit':
-      return `This schematic exceeds the bounded DC baseline (${String(context.components ?? '?')} components, ${String(context.wires ?? '?')} wires, ${String(context.probes ?? '?')} probes).`;
-    case 'singularSystem': return 'The circuit is floating, underconstrained, or contains conflicting ideal sources.';
-    case 'invalidResistance': return 'Every resistor must have resistance greater than zero.';
-    case 'invalidCapacitance': return 'Every capacitor must have capacitance greater than zero.';
-    case 'invalidInductance': return 'Every inductor must have inductance greater than zero.';
-    case 'invalidSwitchResistance': return 'The switch model contains an invalid resistance.';
-    case 'invalidDiodeModel': return 'The diode model contains invalid parameters.';
-    case 'invalidBipolarModel': return 'The transistor model contains invalid parameters.';
-    case 'convergenceFailed':
-      return `The nonlinear DC solution did not converge after ${String(context.iterations ?? 'the maximum number of')} iterations.`;
-    case 'nonFiniteValue': return 'A component contains an invalid numerical value.';
-    default:
-      if (typeof record.message === 'string') return record.message;
-      try {
-        return JSON.stringify(error);
-      } catch {
-        return 'The circuit could not be simulated.';
-      }
-  }
 }
 
 function logicNodeActiveOverlay(kind: LogicNodeKind, data: LogicFlowNode['data']): CSSProperties | undefined {
@@ -1051,6 +987,11 @@ function LogicDiagramEditor({ relativePath }: Props) {
   const [schematicValueInput, setSchematicValueInput] = useState('');
   const [schematicSwitchClosed, setSchematicSwitchClosed] = useState(false);
   const [circuitRunning, setCircuitRunning] = useState(false);
+  const [circuitJobId, setCircuitJobId] = useState<string | null>(null);
+  const [circuitJobStatus, setCircuitJobStatus] = useState<CircuitJobStatus | null>(null);
+  const circuitJobIdRef = useRef<string | null>(null);
+  const circuitRunSequenceRef = useRef(0);
+  const circuitMountedRef = useRef(true);
   const [circuitResult, setCircuitResult] = useState<CircuitDcResult | null>(null);
   const [circuitError, setCircuitError] = useState<string | null>(null);
   const [circuitResultSignature, setCircuitResultSignature] = useState<string | null>(null);
@@ -1514,6 +1455,16 @@ function LogicDiagramEditor({ relativePath }: Props) {
 
   useEffect(() => () => {
     if (refreshPulseTimerRef.current !== null) window.clearTimeout(refreshPulseTimerRef.current);
+  }, []);
+
+  useEffect(() => {
+    circuitMountedRef.current = true;
+    return () => {
+      circuitMountedRef.current = false;
+      circuitRunSequenceRef.current += 1;
+      const activeJobId = circuitJobIdRef.current;
+      if (activeJobId) void tauriCommands.circuitCancelJob(activeJobId).catch(() => undefined);
+    };
   }, []);
 
   const handleSave = useCallback(async () => {
@@ -2274,22 +2225,63 @@ function LogicDiagramEditor({ relativePath }: Props) {
 
   const runDcSimulation = useCallback(async () => {
     if (diagram.diagramMode !== 'schematic' || circuitRunning) return;
+    const runSequence = ++circuitRunSequenceRef.current;
     const document = fromFlowGraph(diagram, nodes, edges, viewport);
     setCircuitRunning(true);
     setCircuitError(null);
     setCircuitResultsOpen(true);
     try {
-      const result = await tauriCommands.circuitSolveDc(document);
-      setCircuitResult(result);
-      setCircuitResultSignature(circuitInputSignature);
+      const outcome = await runCircuitJob(DESKTOP_CIRCUIT_JOB_CLIENT, document, {
+        onStarted: (jobId) => {
+          circuitJobIdRef.current = jobId;
+          if (circuitMountedRef.current && circuitRunSequenceRef.current === runSequence) {
+            setCircuitJobId(jobId);
+            setCircuitJobStatus({ phase: 'queued', stage: 'queued', elapsedMillis: 0 });
+          } else {
+            void tauriCommands.circuitCancelJob(jobId).catch(() => undefined);
+          }
+        },
+        onStatus: (status) => {
+          if (circuitMountedRef.current && circuitRunSequenceRef.current === runSequence) {
+            setCircuitJobStatus(status);
+          }
+        },
+      });
+      if (!circuitMountedRef.current || circuitRunSequenceRef.current !== runSequence) return;
+      if (outcome.state === 'completed') {
+        setCircuitResult(outcome.result);
+        setCircuitResultSignature(circuitInputSignature);
+      } else if (outcome.state === 'failed') {
+        throw outcome.error;
+      }
     } catch (error) {
-      setCircuitResult(null);
-      setCircuitResultSignature(null);
-      setCircuitError(circuitErrorText(error));
+      if (circuitMountedRef.current && circuitRunSequenceRef.current === runSequence) {
+        setCircuitResult(null);
+        setCircuitResultSignature(null);
+        setCircuitError(circuitErrorText(error));
+      }
     } finally {
-      setCircuitRunning(false);
+      if (circuitJobIdRef.current) circuitJobIdRef.current = null;
+      if (circuitMountedRef.current && circuitRunSequenceRef.current === runSequence) {
+        setCircuitJobId(null);
+        setCircuitJobStatus(null);
+        setCircuitRunning(false);
+      }
     }
   }, [circuitInputSignature, circuitRunning, diagram, edges, nodes, viewport]);
+
+  const cancelDcSimulation = useCallback(async () => {
+    const activeJobId = circuitJobIdRef.current;
+    if (!activeJobId) return;
+    try {
+      const phase = await tauriCommands.circuitCancelJob(activeJobId);
+      if (circuitMountedRef.current) {
+        setCircuitJobStatus((current) => current ? { ...current, phase } : current);
+      }
+    } catch (error) {
+      if (circuitMountedRef.current) setCircuitError(circuitErrorText(error));
+    }
+  }, []);
 
   const resetCircuitResults = useCallback(() => {
     setCircuitResult(null);
@@ -3111,12 +3103,21 @@ function LogicDiagramEditor({ relativePath }: Props) {
           <RotateCw size={14} />
         </DocumentTopBarIconButton>
         <DocumentTopBarButton
-          onClick={() => void runDcSimulation()}
-          disabled={loading || circuitRunning || nodes.length === 0}
-          title="Compile and solve the DC operating point locally"
+          onClick={() => circuitRunning ? void cancelDcSimulation() : void runDcSimulation()}
+          disabled={loading || (!circuitRunning && nodes.length === 0) || (circuitRunning && (!circuitJobId || circuitJobStatus?.phase === 'cancelling'))}
+          title={circuitRunning ? 'Cancel the active circuit simulation' : 'Compile and solve the DC operating point locally'}
+          className="min-w-[132px]"
         >
-          {circuitRunning ? <Loader2 size={14} className="animate-spin" /> : <Play size={14} />}
-          Run DC
+          {circuitRunning && (!circuitJobId || circuitJobStatus?.phase === 'cancelling')
+            ? <Loader2 size={14} className="animate-spin" />
+            : circuitRunning ? <X size={14} /> : <Play size={14} />}
+          {circuitRunning
+            ? circuitJobStatus?.phase === 'cancelling'
+              ? 'Cancelling'
+              : circuitJobStatus?.stage
+                ? `Cancel: ${circuitJobStatus.stage[0].toUpperCase()}${circuitJobStatus.stage.slice(1)}`
+                : 'Starting'
+            : 'Run DC'}
         </DocumentTopBarButton>
         <DocumentTopBarIconButton
           title={circuitResultsOpen ? 'Hide DC results' : 'Show DC results'}
@@ -3414,9 +3415,9 @@ function LogicDiagramEditor({ relativePath }: Props) {
                       key={`${diagnostic.code}-${diagnostic.context.component}`}
                       className="border-l-2 border-amber-500 pl-3 text-amber-700 dark:text-amber-400"
                     >
-                      <div className="font-semibold">{diagnostic.label} is outside the supported NPN region</div>
+                      <div className="font-semibold">{diagnostic.label} entered unsupported reverse-active operation</div>
                       <div className="mt-1 leading-relaxed text-foreground/75">
-                        The forward-active approximation is unreliable here ({formatEngineering(diagnostic.context.baseEmitterVoltage, 'V')} VBE,{' '}
+                        The built-in NPN model does not cover this reverse bias ({formatEngineering(diagnostic.context.baseEmitterVoltage, 'V')} VBE,{' '}
                         {formatEngineering(diagnostic.context.collectorEmitterVoltage, 'V')} VCE).
                       </div>
                     </div>

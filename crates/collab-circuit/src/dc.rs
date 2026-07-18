@@ -1,4 +1,7 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    time::{Duration, Instant},
+};
 
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -71,6 +74,18 @@ pub enum SimulationError {
     SingularSystem { index: usize },
     #[error("the nonlinear DC solution did not converge after {iterations} iterations")]
     ConvergenceFailed { iterations: usize },
+    #[error("the circuit simulation was cancelled")]
+    Cancelled,
+    #[error("the circuit simulation exceeded its {limit_millis} ms execution limit")]
+    TimeLimitExceeded { limit_millis: u64 },
+    #[error(
+        "the dense DC system for {unknowns} unknowns requires {required_bytes} bytes, exceeding the {max_bytes} byte limit"
+    )]
+    MatrixMemoryLimitExceeded {
+        unknowns: usize,
+        required_bytes: usize,
+        max_bytes: usize,
+    },
 }
 
 const MAX_NEWTON_ITERATIONS: usize = 100;
@@ -79,6 +94,27 @@ const ABSOLUTE_TOLERANCE: f64 = 1.0e-9;
 const RELATIVE_TOLERANCE: f64 = 1.0e-6;
 const MIN_EXPONENT: f64 = -40.0;
 const MAX_EXPONENT: f64 = 40.0;
+// The persisted baseline exposes only forward beta. A conservative fixed
+// reverse beta closes the Ebers-Moll-style saturation path without pretending
+// to provide a configurable reverse-active transistor model.
+const NPN_REVERSE_BETA: f64 = 1.0;
+const DEFAULT_MAX_DC_DURATION: Duration = Duration::from_secs(10);
+const DEFAULT_MAX_DENSE_MATRIX_BYTES: usize = 32 * 1024 * 1024;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct DcSolveLimits {
+    pub max_duration: Duration,
+    pub max_matrix_bytes: usize,
+}
+
+impl Default for DcSolveLimits {
+    fn default() -> Self {
+        Self {
+            max_duration: DEFAULT_MAX_DC_DURATION,
+            max_matrix_bytes: DEFAULT_MAX_DENSE_MATRIX_BYTES,
+        }
+    }
+}
 
 /// Solve the DC operating point using modified nodal analysis.
 ///
@@ -86,6 +122,25 @@ const MAX_EXPONENT: f64 = 40.0;
 /// is backend-independent so a sparse solver can replace it without changing
 /// callers.
 pub fn solve_dc(circuit: &Circuit) -> Result<DcOperatingPoint, SimulationError> {
+    solve_dc_with_control(circuit, || false)
+}
+
+/// Solve a DC operating point while periodically consulting a cancellation
+/// callback. This keeps the numerical crate independent of any async runtime.
+pub fn solve_dc_with_control(
+    circuit: &Circuit,
+    should_cancel: impl FnMut() -> bool,
+) -> Result<DcOperatingPoint, SimulationError> {
+    solve_dc_with_limits(circuit, DcSolveLimits::default(), should_cancel)
+}
+
+pub fn solve_dc_with_limits(
+    circuit: &Circuit,
+    limits: DcSolveLimits,
+    mut should_cancel: impl FnMut() -> bool,
+) -> Result<DcOperatingPoint, SimulationError> {
+    let started_at = Instant::now();
+    check_execution_control(&mut should_cancel, started_at, limits)?;
     validate(circuit)?;
 
     let mut components: Vec<_> = circuit.components.iter().collect();
@@ -126,6 +181,14 @@ pub fn solve_dc(circuit: &Circuit) -> Result<DcOperatingPoint, SimulationError> 
         .collect();
 
     let unknown_count = nodes.len() + branch_components.len();
+    let required_matrix_bytes = dense_working_set_bytes(unknown_count).unwrap_or(usize::MAX);
+    if required_matrix_bytes > limits.max_matrix_bytes {
+        return Err(SimulationError::MatrixMemoryLimitExceeded {
+            unknowns: unknown_count,
+            required_bytes: required_matrix_bytes,
+            max_bytes: limits.max_matrix_bytes,
+        });
+    }
     let nonlinear = components.iter().any(|component| {
         matches!(
             component,
@@ -137,6 +200,7 @@ pub fn solve_dc(circuit: &Circuit) -> Result<DcOperatingPoint, SimulationError> 
     let mut iterations = 0;
 
     for iteration in 1..=if nonlinear { MAX_NEWTON_ITERATIONS } else { 1 } {
+        check_execution_control(&mut should_cancel, started_at, limits)?;
         iterations = iteration;
         let (matrix, rhs) = assemble_system(
             &components,
@@ -148,7 +212,7 @@ pub fn solve_dc(circuit: &Circuit) -> Result<DcOperatingPoint, SimulationError> 
         let candidate = if unknown_count == 0 {
             Vec::new()
         } else {
-            solve_linear_system(matrix, rhs)?
+            solve_linear_system(matrix, rhs, &mut should_cancel, started_at, limits)?
         };
 
         if !nonlinear || has_converged(&guess, &candidate) {
@@ -173,6 +237,7 @@ pub fn solve_dc(circuit: &Circuit) -> Result<DcOperatingPoint, SimulationError> 
     let mut component_powers = BTreeMap::new();
     let mut diagnostics = Vec::new();
     for component in &components {
+        check_execution_control(&mut should_cancel, started_at, limits)?;
         let current = match component {
             Component::Resistor {
                 positive,
@@ -212,6 +277,7 @@ pub fn solve_dc(circuit: &Circuit) -> Result<DcOperatingPoint, SimulationError> 
             ),
             Component::BipolarNpn {
                 base,
+                collector,
                 emitter,
                 saturation_current_amps,
                 forward_beta,
@@ -225,7 +291,15 @@ pub fn solve_dc(circuit: &Circuit) -> Result<DcOperatingPoint, SimulationError> 
                     *emission_coefficient,
                     *thermal_voltage_volts,
                 );
-                *forward_beta * base_current
+                let reverse_saturation =
+                    npn_reverse_saturation(*saturation_current_amps, *forward_beta);
+                let base_collector_current = diode_current(
+                    voltage_at(base) - voltage_at(collector),
+                    reverse_saturation,
+                    *emission_coefficient,
+                    *thermal_voltage_volts,
+                );
+                *forward_beta * base_current - (NPN_REVERSE_BETA + 1.0) * base_collector_current
             }
             Component::CurrentSource { current_amps, .. } => *current_amps,
             Component::VoltageSource { id, .. } => solution[branch_indices[id]],
@@ -259,6 +333,7 @@ pub fn solve_dc(circuit: &Circuit) -> Result<DcOperatingPoint, SimulationError> 
                 collector,
                 emitter,
                 saturation_current_amps,
+                forward_beta,
                 emission_coefficient,
                 thermal_voltage_volts,
                 ..
@@ -271,16 +346,21 @@ pub fn solve_dc(circuit: &Circuit) -> Result<DcOperatingPoint, SimulationError> 
                     *emission_coefficient,
                     *thermal_voltage_volts,
                 );
-                if collector_emitter_voltage < 0.0
-                    || (base_emitter_voltage > 0.4 && voltage_at(collector) <= voltage_at(base))
-                {
+                let base_collector_current = diode_current(
+                    voltage_at(base) - voltage_at(collector),
+                    npn_reverse_saturation(*saturation_current_amps, *forward_beta),
+                    *emission_coefficient,
+                    *thermal_voltage_volts,
+                );
+                if collector_emitter_voltage < 0.0 {
                     diagnostics.push(DcDiagnostic::NpnOutsideForwardActive {
                         component: component.id().clone(),
                         base_emitter_voltage,
                         collector_emitter_voltage,
                     });
                 }
-                collector_emitter_voltage * current + base_emitter_voltage * base_current
+                let terminal_base_current = base_current + base_collector_current;
+                collector_emitter_voltage * current + base_emitter_voltage * terminal_base_current
             }
         };
         component_powers.insert(component.id().clone(), power);
@@ -293,6 +373,33 @@ pub fn solve_dc(circuit: &Circuit) -> Result<DcOperatingPoint, SimulationError> 
         diagnostics,
         iterations,
     })
+}
+
+fn dense_working_set_bytes(unknown_count: usize) -> Option<usize> {
+    let numeric_bytes = unknown_count
+        .checked_mul(unknown_count)?
+        .checked_add(unknown_count.checked_mul(3)?)?
+        .checked_mul(std::mem::size_of::<f64>())?;
+    let row_headers = unknown_count.checked_mul(std::mem::size_of::<Vec<f64>>())?;
+    numeric_bytes
+        .checked_add(row_headers)?
+        .checked_add(std::mem::size_of::<Vec<Vec<f64>>>())
+}
+
+fn check_execution_control(
+    should_cancel: &mut impl FnMut() -> bool,
+    started_at: Instant,
+    limits: DcSolveLimits,
+) -> Result<(), SimulationError> {
+    if should_cancel() {
+        return Err(SimulationError::Cancelled);
+    }
+    if started_at.elapsed() >= limits.max_duration {
+        return Err(SimulationError::TimeLimitExceeded {
+            limit_millis: limits.max_duration.as_millis().min(u64::MAX as u128) as u64,
+        });
+    }
+    Ok(())
 }
 
 fn assemble_system(
@@ -405,6 +512,37 @@ fn assemble_system(
                     *forward_beta * base_conductance,
                     *forward_beta * base_equivalent_current,
                 );
+
+                let base_collector_voltage =
+                    value_at(guess, base_index) - value_at(guess, collector_index);
+                let (reverse_conductance, reverse_equivalent_current) = diode_linearization(
+                    base_collector_voltage,
+                    npn_reverse_saturation(*saturation_current_amps, *forward_beta),
+                    *emission_coefficient,
+                    *thermal_voltage_volts,
+                );
+                stamp_conductance(
+                    &mut matrix,
+                    base_index,
+                    collector_index,
+                    reverse_conductance,
+                );
+                stamp_current_source(
+                    &mut rhs,
+                    base_index,
+                    collector_index,
+                    reverse_equivalent_current,
+                );
+                stamp_voltage_controlled_current_source(
+                    &mut matrix,
+                    &mut rhs,
+                    emitter_index,
+                    collector_index,
+                    base_index,
+                    collector_index,
+                    NPN_REVERSE_BETA * reverse_conductance,
+                    NPN_REVERSE_BETA * reverse_equivalent_current,
+                );
             }
             Component::CurrentSource {
                 positive,
@@ -451,6 +589,10 @@ fn diode_linearization(voltage: f64, saturation: f64, emission: f64, thermal: f6
 fn diode_current(voltage: f64, saturation: f64, emission: f64, thermal: f64) -> f64 {
     let exponent = (voltage / (emission * thermal)).clamp(MIN_EXPONENT, MAX_EXPONENT);
     saturation * (exponent.exp() - 1.0)
+}
+
+fn npn_reverse_saturation(saturation: f64, forward_beta: f64) -> f64 {
+    saturation * forward_beta / NPN_REVERSE_BETA
 }
 
 fn has_converged(previous: &[f64], next: &[f64]) -> bool {
@@ -689,9 +831,13 @@ fn stamp_voltage_source(
 fn solve_linear_system(
     mut matrix: Vec<Vec<f64>>,
     mut rhs: Vec<f64>,
+    should_cancel: &mut impl FnMut() -> bool,
+    started_at: Instant,
+    limits: DcSolveLimits,
 ) -> Result<Vec<f64>, SimulationError> {
     let size = rhs.len();
     for column in 0..size {
+        check_execution_control(should_cancel, started_at, limits)?;
         let pivot = (column..size)
             .max_by(|left, right| {
                 matrix[*left][column]
@@ -717,6 +863,7 @@ fn solve_linear_system(
 
     let mut solution = vec![0.0; size];
     for row in (0..size).rev() {
+        check_execution_control(should_cancel, started_at, limits)?;
         let remainder: f64 = ((row + 1)..size)
             .map(|column| matrix[row][column] * solution[column])
             .sum();
@@ -739,6 +886,79 @@ mod tests {
 
     fn assert_close(actual: f64, expected: f64) {
         assert!((actual - expected).abs() < 1.0e-9, "{actual} != {expected}");
+    }
+
+    #[test]
+    fn cancellation_is_checked_before_and_during_dense_solving() {
+        let empty = Circuit {
+            reference: node("0"),
+            components: vec![],
+        };
+        assert_eq!(
+            solve_dc_with_control(&empty, || true),
+            Err(SimulationError::Cancelled)
+        );
+
+        let circuit = Circuit {
+            reference: node("0"),
+            components: (0..64)
+                .map(|index| Component::Resistor {
+                    id: component(&format!("R{index:02}")),
+                    positive: node(&format!("n{index:02}")),
+                    negative: node("0"),
+                    resistance_ohms: 1_000.0 + index as f64,
+                })
+                .collect(),
+        };
+        let mut checks = 0;
+        assert_eq!(
+            solve_dc_with_control(&circuit, || {
+                checks += 1;
+                checks > 8
+            }),
+            Err(SimulationError::Cancelled)
+        );
+        assert!(checks > 8);
+    }
+
+    #[test]
+    fn execution_limits_reject_expired_and_oversized_dc_jobs() {
+        let circuit = Circuit {
+            reference: node("0"),
+            components: vec![Component::Resistor {
+                id: component("R1"),
+                positive: node("out"),
+                negative: node("0"),
+                resistance_ohms: 1_000.0,
+            }],
+        };
+
+        assert_eq!(
+            solve_dc_with_limits(
+                &circuit,
+                DcSolveLimits {
+                    max_duration: Duration::ZERO,
+                    ..DcSolveLimits::default()
+                },
+                || false,
+            ),
+            Err(SimulationError::TimeLimitExceeded { limit_millis: 0 })
+        );
+        assert_eq!(
+            solve_dc_with_limits(
+                &circuit,
+                DcSolveLimits {
+                    max_matrix_bytes: 79,
+                    ..DcSolveLimits::default()
+                },
+                || false,
+            ),
+            Err(SimulationError::MatrixMemoryLimitExceeded {
+                unknowns: 1,
+                required_bytes: 80,
+                max_bytes: 79,
+            })
+        );
     }
 
     #[test]
@@ -1119,7 +1339,58 @@ mod tests {
     }
 
     #[test]
-    fn warns_when_the_npn_leaves_the_supported_forward_active_region() {
+    fn solves_a_strongly_driven_npn_in_saturation_without_negative_collector_voltage() {
+        let circuit = Circuit {
+            reference: node("0"),
+            components: vec![
+                Component::VoltageSource {
+                    id: component("VCC"),
+                    positive: node("vcc"),
+                    negative: node("0"),
+                    voltage_volts: 5.0,
+                },
+                Component::VoltageSource {
+                    id: component("VB"),
+                    positive: node("base"),
+                    negative: node("0"),
+                    voltage_volts: 0.72,
+                },
+                Component::Resistor {
+                    id: component("RC"),
+                    positive: node("vcc"),
+                    negative: node("collector"),
+                    resistance_ohms: 1_000.0,
+                },
+                Component::BipolarNpn {
+                    id: component("Q1"),
+                    base: node("base"),
+                    collector: node("collector"),
+                    emitter: node("0"),
+                    saturation_current_amps: 1.0e-15,
+                    forward_beta: 100.0,
+                    emission_coefficient: 1.0,
+                    thermal_voltage_volts: 0.025_852,
+                },
+            ],
+        };
+
+        let result = solve_dc(&circuit).unwrap();
+        let collector_voltage = result.node_voltages[&node("collector")];
+        let collector_current = result.component_currents[&component("Q1")];
+        assert!(
+            (0.0..0.15).contains(&collector_voltage),
+            "unexpected saturated collector voltage {collector_voltage}"
+        );
+        assert!(
+            (0.0048..0.0051).contains(&collector_current),
+            "unexpected saturated collector current {collector_current}"
+        );
+        assert!(result.iterations > 10);
+        assert!(result.diagnostics.is_empty());
+    }
+
+    #[test]
+    fn warns_when_the_npn_enters_unsupported_reverse_active_operation() {
         let circuit = Circuit {
             reference: node("0"),
             components: vec![
@@ -1127,7 +1398,7 @@ mod tests {
                     id: component("VC"),
                     positive: node("collector"),
                     negative: node("0"),
-                    voltage_volts: 0.2,
+                    voltage_volts: -0.2,
                 },
                 Component::VoltageSource {
                     id: component("VB"),

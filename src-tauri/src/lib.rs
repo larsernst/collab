@@ -225,6 +225,10 @@ pub fn run() {
             commands::collab::restore_snapshot,
             // first-party circuit simulation
             commands::circuit::circuit_solve_dc,
+            commands::circuit::circuit_start_dc,
+            commands::circuit::circuit_job_status,
+            commands::circuit::circuit_cancel_job,
+            commands::circuit::circuit_take_job_result,
             // ui
             commands::ui::set_ui_zoom,
             commands::ui::host_os,

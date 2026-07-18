@@ -1138,6 +1138,19 @@ p {
   stroke-dasharray: none;
   opacity: 0.9;
 }
+.mobile-logic-wire.schematic.positive {
+  stroke: color-mix(in oklch, var(--primary) 90%, white 10%);
+  filter: drop-shadow(0 0 4px color-mix(in oklch, var(--primary) 72%, transparent));
+  opacity: 1;
+}
+.mobile-logic-wire.schematic.negative {
+  stroke: oklch(0.7 0.18 20);
+  filter: drop-shadow(0 0 4px oklch(0.7 0.18 20 / 58%));
+  opacity: 1;
+}
+.mobile-logic-wire.schematic.reference {
+  stroke: color-mix(in oklch, var(--muted-foreground) 72%, transparent);
+}
 .logic-sim-toolbar {
   position: absolute;
   top: 10px;
@@ -1146,13 +1159,14 @@ p {
   display: inline-flex;
   gap: 6px;
   max-width: calc(100% - 20px);
+  overflow-x: auto;
   padding: 4px;
   border: 1px solid var(--border);
   border-radius: 999px;
   background: color-mix(in oklch, var(--card) 90%, transparent);
   box-shadow: 0 10px 28px rgb(0 0 0 / 24%);
 }
-.logic-sim-toolbar span {
+.logic-sim-toolbar > .logic-stat {
   min-height: 26px;
   padding: 5px 9px;
   border-radius: 999px;
@@ -1161,6 +1175,141 @@ p {
   font-size: 0.68rem;
   font-weight: 800;
   white-space: nowrap;
+}
+.logic-circuit-action,
+.logic-circuit-result-button {
+  display: inline-flex;
+  min-height: 30px;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  border: 1px solid color-mix(in oklch, var(--primary) 45%, var(--border));
+  border-radius: var(--radius-sm);
+  background: color-mix(in oklch, var(--primary) 16%, var(--surface));
+  color: var(--foreground);
+  font-size: 0.7rem;
+  font-weight: 800;
+}
+.logic-circuit-action {
+  min-width: 88px;
+  padding: 0 10px;
+}
+.logic-circuit-result-button {
+  width: 30px;
+  padding: 0;
+}
+.logic-circuit-action:disabled {
+  opacity: 0.66;
+}
+.mobile-circuit-results {
+  position: absolute;
+  right: 10px;
+  bottom: 10px;
+  left: 10px;
+  z-index: 7;
+  display: flex;
+  max-height: min(54%, 430px);
+  flex-direction: column;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: color-mix(in oklch, var(--card) 96%, transparent);
+  box-shadow: 0 16px 42px rgb(0 0 0 / 36%);
+  backdrop-filter: blur(12px);
+}
+.mobile-circuit-results > header {
+  display: flex;
+  min-height: 42px;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 6px 4px 12px;
+  border-bottom: 1px solid var(--border);
+}
+.mobile-circuit-results > header strong {
+  min-width: 0;
+  flex: 1;
+  font-size: 0.82rem;
+}
+.mobile-circuit-results > header .icon-button {
+  width: 32px;
+  height: 32px;
+}
+.mobile-circuit-results-body {
+  min-height: 0;
+  overflow-y: auto;
+  padding: 10px 12px 14px;
+}
+.mobile-circuit-status {
+  display: flex;
+  min-height: 52px;
+  align-items: center;
+  gap: 8px;
+  color: var(--muted-foreground);
+  font-size: 0.78rem;
+  font-weight: 700;
+}
+.mobile-circuit-status small {
+  margin-left: auto;
+  font-variant-numeric: tabular-nums;
+}
+.mobile-circuit-error,
+.mobile-circuit-warning {
+  display: grid;
+  gap: 4px;
+  padding-left: 10px;
+  border-left: 2px solid oklch(0.65 0.2 25);
+  font-size: 0.76rem;
+  line-height: 1.45;
+}
+.mobile-circuit-warning {
+  margin-bottom: 10px;
+  border-left-color: oklch(0.78 0.17 86);
+  color: oklch(0.82 0.15 86);
+}
+.mobile-circuit-summary {
+  margin: 0 0 10px;
+  color: var(--muted-foreground);
+  font-size: 0.72rem;
+}
+.mobile-circuit-results section + section {
+  margin-top: 12px;
+}
+.mobile-circuit-results h3 {
+  margin: 0 0 5px;
+  color: var(--muted-foreground);
+  font-size: 0.68rem;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+.mobile-circuit-table {
+  border-top: 1px solid var(--border);
+  border-bottom: 1px solid var(--border);
+}
+.mobile-circuit-table > div {
+  display: flex;
+  min-height: 34px;
+  align-items: center;
+  gap: 12px;
+}
+.mobile-circuit-table > div + div {
+  border-top: 1px solid color-mix(in oklch, var(--border) 62%, transparent);
+}
+.mobile-circuit-table span {
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  color: var(--muted-foreground);
+  font-size: 0.72rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.mobile-circuit-table code {
+  flex: 0 0 auto;
+  color: var(--foreground);
+  font-size: 0.72rem;
+  font-variant-numeric: tabular-nums;
 }
 .mobile-logic-node {
   position: absolute;

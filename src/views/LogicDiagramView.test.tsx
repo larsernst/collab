@@ -23,6 +23,10 @@ const tauriMocks = vi.hoisted(() => ({
   replicaReadLogicComponents: vi.fn(),
   replicaWriteLogicComponents: vi.fn(),
   circuitSolveDc: vi.fn(),
+  circuitStartDc: vi.fn(),
+  circuitJobStatus: vi.fn(),
+  circuitCancelJob: vi.fn(),
+  circuitTakeJobResult: vi.fn(),
 }));
 
 const liveJsonMocks = vi.hoisted(() => ({
@@ -56,6 +60,10 @@ vi.mock('../lib/tauri', () => ({
     replicaReadLogicComponents: tauriMocks.replicaReadLogicComponents,
     replicaWriteLogicComponents: tauriMocks.replicaWriteLogicComponents,
     circuitSolveDc: tauriMocks.circuitSolveDc,
+    circuitStartDc: tauriMocks.circuitStartDc,
+    circuitJobStatus: tauriMocks.circuitJobStatus,
+    circuitCancelJob: tauriMocks.circuitCancelJob,
+    circuitTakeJobResult: tauriMocks.circuitTakeJobResult,
   },
 }));
 
@@ -172,6 +180,16 @@ describe('LogicDiagramView safe reload policy', () => {
     tauriMocks.replicaReadLogicComponents.mockResolvedValue([]);
     tauriMocks.replicaWriteLogicComponents.mockResolvedValue(undefined);
     tauriMocks.circuitSolveDc.mockReset();
+    tauriMocks.circuitStartDc.mockResolvedValue('circuit-job-1');
+    tauriMocks.circuitJobStatus.mockResolvedValue({ phase: 'completed', stage: null, elapsedMillis: 1 });
+    tauriMocks.circuitCancelJob.mockResolvedValue('cancelling');
+    tauriMocks.circuitTakeJobResult.mockImplementation(async () => {
+      try {
+        return { state: 'completed', result: await tauriMocks.circuitSolveDc() };
+      } catch (error) {
+        return { state: 'failed', error };
+      }
+    });
     useUiStore.setState({ schematicSymbolSet: 'ansi' });
   });
 
@@ -419,7 +437,7 @@ describe('LogicDiagramView safe reload policy', () => {
     expect(screen.getByText('Measured load current')).toBeTruthy();
     expect(container.querySelectorAll('[data-schematic-live="true"]')).toHaveLength(1);
     expect(container.querySelector('[data-schematic-polarity="positive"]')).toBeTruthy();
-    expect(tauriMocks.circuitSolveDc).toHaveBeenCalledWith(expect.objectContaining({
+    expect(tauriMocks.circuitStartDc).toHaveBeenCalledWith(expect.objectContaining({
       schemaVersion: 6,
       simulation: expect.objectContaining({
         analysis: 'dc-operating-point',
@@ -485,8 +503,8 @@ describe('LogicDiagramView safe reload policy', () => {
     expect(await screen.findByText(/4 symbols/)).toBeTruthy();
     fireEvent.click(screen.getByRole('button', { name: 'Run DC' }));
 
-    await waitFor(() => expect(tauriMocks.circuitSolveDc).toHaveBeenCalledOnce());
-    const solvedDocument = tauriMocks.circuitSolveDc.mock.calls[0][0];
+    await waitFor(() => expect(tauriMocks.circuitStartDc).toHaveBeenCalledOnce());
+    const solvedDocument = tauriMocks.circuitStartDc.mock.calls[0][0];
     const junction = solvedDocument.nodes.find((node: { kind: string }) => node.kind === 'junction');
     expect(junction).toMatchObject({
       kind: 'junction',
@@ -549,7 +567,7 @@ describe('LogicDiagramView safe reload policy', () => {
           context: {
             component: 'q1',
             baseEmitterVoltage: 0.7,
-            collectorEmitterVoltage: 0.2,
+            collectorEmitterVoltage: -0.2,
           },
         }],
         iterations: 4,
@@ -569,7 +587,7 @@ describe('LogicDiagramView safe reload policy', () => {
     expect(await screen.findByText(/2 symbols/)).toBeTruthy();
     fireEvent.click(screen.getByRole('button', { name: 'Run DC' }));
 
-    expect(await screen.findByText('Q1 is outside the supported NPN region')).toBeTruthy();
+    expect(await screen.findByText('Q1 entered unsupported reverse-active operation')).toBeTruthy();
     expect(screen.getByText(/700 mV VBE/)).toBeTruthy();
     expect(screen.getByText(/200 mV VCE/)).toBeTruthy();
     expect(screen.getByText('negative')).toBeTruthy();
@@ -599,6 +617,36 @@ describe('LogicDiagramView safe reload policy', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Run DC' }));
 
     expect(await screen.findByText(/Connect r1's terminal-b before running DC/)).toBeTruthy();
+  });
+
+  it('cancels an active native circuit job without showing a failure', async () => {
+    tauriMocks.readNote.mockResolvedValueOnce({
+      content: JSON.stringify({
+        schemaVersion: 6,
+        kind: 'logic-diagram',
+        diagramMode: 'schematic',
+        nodes: [{ id: 'ground', kind: 'ground', position: { x: 0, y: 0 } }],
+        wires: [],
+        viewport: { x: 0, y: 0, zoom: 1 },
+      }),
+      hash: 'v1',
+      modifiedAt: 1,
+    });
+    tauriMocks.circuitJobStatus.mockImplementation(async () => (
+      tauriMocks.circuitCancelJob.mock.calls.length > 0
+        ? { phase: 'cancelled', stage: null, elapsedMillis: 2 }
+        : { phase: 'running', stage: 'solving', elapsedMillis: 1 }
+    ));
+    tauriMocks.circuitTakeJobResult.mockResolvedValueOnce({ state: 'cancelled' });
+
+    render(<LogicDiagramView relativePath={PATH} />);
+    expect(await screen.findByText(/1 symbols/)).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Run DC' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Cancel: Solving' }));
+
+    await waitFor(() => expect(tauriMocks.circuitCancelJob).toHaveBeenCalledWith('circuit-job-1'));
+    expect(await screen.findByRole('button', { name: 'Run DC' })).toBeTruthy();
+    expect(screen.queryByText('Simulation failed')).toBeNull();
   });
 
   it('exports the current diagram SVG and appends it to an open note', async () => {

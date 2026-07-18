@@ -72,9 +72,9 @@ Implemented baseline:
 - Persisted voltage and branch-current probes compile to stable electrical-node/component targets. Stale component references, removed terminals, duplicate probe IDs, and invalid ground-current probes fail with source-mapped compilation diagnostics.
 - Before matrix assembly, the bounded compiler rejects disconnected component terminals, DC-floating islands, self-connected ideal voltage sources, conflicting or redundant ideal-voltage loops, and jobs above 512 components, 4,096 wires, or 2,048 probes. Capacitors and current-source branches do not falsely establish a DC reference path.
 - Schema v6 persists normalized SI electrical parameters plus DC analysis/probe configuration. Migrated documents do not receive invented values; newly inserted symbols receive explicit editable defaults.
-- `circuit_solve_dc` compiles and solves resistor, capacitor, inductor, switch, independent-voltage-source, diode, LED, and built-in NPN schematics through a typed frontend wrapper. Unsupported model references and malformed connectivity return structured diagnostics.
+- The compatibility `circuit_solve_dc` command and the job-based DC runtime compile and solve resistor, capacitor, inductor, switch, independent-voltage-source, diode, LED, and built-in NPN schematics through typed frontend wrappers. Unsupported model references and malformed connectivity return structured diagnostics.
 - The desktop editor can edit persisted SI values, run the local DC solver, inspect node voltage polarity, component current direction, and component power, and highlight mapped wires using positive/negative solved-voltage colors. Electrically relevant edits mark displayed results stale and remove their glow until rerun.
-- The bounded solver now uses damped Newton-Raphson for the built-in diode and LED models, reports iteration counts and convergence failures, treats capacitors as DC-open and inductors as DC-shorts, and keeps deterministic ordering. It remains a single native invocation; cancellation and streamed progress remain Phase 6.4 work before larger jobs are enabled.
+- The bounded solver now uses damped Newton-Raphson for the built-in diode and LED models, reports iteration counts and convergence failures, treats capacitors as DC-open and inductors as DC-shorts, and keeps deterministic ordering. The desktop editor runs it through the cancellable Phase 6.4 worker API; streamed progress remains future work before larger analyses are enabled.
 
 The dense solver is a correctness baseline, not the final large-circuit implementation. Its public model and result types must remain usable when the matrix backend is replaced with a sparse implementation.
 
@@ -146,14 +146,15 @@ Implemented slice:
 
 - Damped Newton-Raphson with bounded iterations, absolute/relative convergence checks, voltage-step limiting, and typed non-convergence diagnostics.
 - Built-in Shockley diode and LED models selected through stable `modelRef` values.
-- A deliberately scoped `builtin:npn` forward-active model with exponential base-emitter current and fixed current gain. Saturation, reverse-active behavior, breakdown, capacitances, Early effect, and temperature variation remain explicitly unsupported.
+- A deliberately scoped `builtin:npn` two-junction model with exponential base-emitter/base-collector currents, fixed forward gain, and bounded saturation behavior. Reverse-active behavior, breakdown, capacitances, Early effect, high-level injection, and temperature variation remain explicitly unsupported.
 - DC operating-point behavior for capacitors (open), inductors (ideal short with branch current), and resistive open/closed switches.
 - Passive-sign-convention component power, explicit component current direction, signed node/wire polarity, and iteration metadata in the typed Tauri result and desktop results panel.
-- Typed NPN operating-region diagnostics when a solved bias point leaves the supported forward-active approximation. The UI identifies the source component and reports its solved VBE/VCE values instead of silently presenting the approximation as a complete transistor model.
+- Typed NPN operating-region diagnostics when a solved bias point enters unsupported reverse-active operation. The UI identifies the source component and reports its solved VBE/VCE values instead of silently presenting the approximation as a complete transistor model.
+- Strong-base-drive and saturation fixtures verify that the nonlinear solve remains bounded, respects the collector load limit, and no longer forces an impossible negative collector voltage.
 - Current direction is reported per component and through explicit branch probes. A branched electrical net does not have one well-defined wire current, so wire overlays remain voltage/polarity indicators.
 - Schematic context actions create persisted voltage probes from wires and branch-current probes from components. `circuit_solve_dc` returns typed probe values, and the results panel renders those focused readings separately from the complete operating-point tables.
 
-Remaining before Phase 6.3 is complete: difficult convergence fixtures, fuller NPN saturation handling, digital bridge states, and sparse-backend evaluation.
+Remaining before Phase 6.3 is complete: broader difficult-convergence fixtures, digital bridge states, and sparse-backend evaluation.
 
 ## Phase 6.4: Runtime Integration
 
@@ -163,6 +164,23 @@ Remaining before Phase 6.3 is complete: difficult convergence fixtures, fuller N
 - Stream progress and result chunks through Tauri channels rather than large JSON responses.
 - Use the same Rust crate on desktop and Android; platform code should only provide scheduling and IPC.
 - A panic or failed solve must become a diagnostic and must never dirty or corrupt the document.
+
+Implemented slice:
+
+- `AppState` owns a bounded native job registry with at most four active jobs and 32 retained entries. DC jobs run on named Rust worker threads instead of the webview or async runtime thread.
+- Typed Tauri commands start a job, poll its compact phase, request cancellation, and consume a terminal result exactly once. The original synchronous DC command remains available as a compatibility boundary, but the desktop editor no longer uses it.
+- Cancellation is checked before validation, throughout Newton iterations and dense elimination/back-substitution, and while assembling the result. Closing the editor requests cancellation while its poller drains the terminal result.
+- The shared DC solver enforces a 10-second wall-clock limit and a 32 MiB estimated dense working-set limit. Limit failures use typed simulation errors, and user cancellation takes priority when both conditions are observed.
+- Compact status polling reports phase, elapsed time, and queued/compiling/solving/finalizing stages. Desktop and Android share the pure TypeScript polling runner and structured-error formatter while keeping their platform controls separate.
+- Worker panics and solver failures become typed job failures. Cancelled and failed jobs never mutate the `.logic` source; failures clear the displayed operating point instead of leaving it looking current.
+- Desktop and Android expose Run DC and Cancel states and keep their UI responsive while native work is active. The Android viewer also renders solved wire polarity plus a read-only operating-point sheet for probes, voltages, currents, power, and model diagnostics.
+
+Remaining in Phase 6.4:
+
+- Add progress channels and bounded result streaming when transient and sweep analyses produce data large enough to justify them; DC currently needs only compact stage polling and one bounded result.
+- Add sample-count and result-buffer budgets with transient and sweep analyses. DC already has component, wire, probe, matrix-memory, nonlinear-iteration, and wall-clock bounds.
+
+The bounded DC portion of Phase 6.4 is complete on desktop and Android. The two remaining streaming/buffer items are activated by the larger result sets introduced in Phase 6.5 rather than adding unused channel machinery to a small DC operating point.
 
 ## Phase 6.5: Transient And DC Sweep
 
@@ -222,6 +240,6 @@ Release gate:
 2. Land schema v6 and the schematic-to-circuit compiler together.
 3. Expose validation and DC operating point as the first user-testable slice.
 4. Add nonlinear diode/LED solving before transient analysis.
-5. Add runtime cancellation and Android parity before enabling larger jobs.
+5. Finish runtime progress/resource budgets and Android parity before enabling larger jobs.
 6. Add transient/DC sweep, then AC analysis.
 7. Add mixed-signal scheduling only after both analog and digital boundaries are deterministic.

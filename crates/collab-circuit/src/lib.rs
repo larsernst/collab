@@ -14,5 +14,8 @@ pub use compiler::{
     SchematicProbe, SchematicProbeKind, SchematicSimulationConfig, SchematicSourceMap,
     SchematicWire, TerminalNet, TerminalRef, WireEndpointRole, WireNet,
 };
-pub use dc::{solve_dc, DcDiagnostic, DcOperatingPoint, SimulationError};
+pub use dc::{
+    solve_dc, solve_dc_with_control, solve_dc_with_limits, DcDiagnostic, DcOperatingPoint,
+    DcSolveLimits, SimulationError,
+};
 pub use model::{Circuit, Component, ComponentId, NodeId};

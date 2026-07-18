@@ -44,6 +44,8 @@ pub struct AppState {
     /// socket through Rust lets it reuse the session TLS config (including the
     /// untrusted-certificate opt-in), which the webview's own `WebSocket` cannot.
     pub live_ws: crate::commands::live_ws::LiveWsRegistry,
+    /// Bounded native circuit workers and their unconsumed terminal results.
+    pub circuit_jobs: crate::commands::circuit::CircuitJobRegistry,
 }
 
 impl AppState {
@@ -57,6 +59,7 @@ impl AppState {
             refresh_token_cache: RwLock::new(HashMap::new()),
             server_refresh_lock: tokio::sync::Mutex::new(()),
             live_ws: crate::commands::live_ws::LiveWsRegistry::default(),
+            circuit_jobs: crate::commands::circuit::CircuitJobRegistry::default(),
         }
     }
 }

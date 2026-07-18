@@ -17,11 +17,14 @@ import {
   Milestone,
   Minus,
   PencilLine,
+  Play,
   Plus,
   Route,
   RotateCcw,
   SquareDashedKanban,
   Users,
+  X,
+  Zap,
 } from 'lucide-react';
 import {
   useCallback,
@@ -36,6 +39,7 @@ import {
   type TouchEvent,
   type WheelEvent,
 } from 'react';
+import { getSmoothStepPath } from '@xyflow/react';
 import { getDocument, GlobalWorkerOptions, type PDFDocumentProxy, type RenderTask } from 'pdfjs-dist/legacy/build/pdf.mjs';
 
 import { Banner, EmptyState, Spinner } from '../components/ui';
@@ -66,12 +70,29 @@ import {
   schematicSymbolTransform,
   schematicSymbolViewBox,
   schematicTerminalPoint,
+  schematicTerminalSide,
 } from '../../../../src/components/logic/schematicSymbols';
 import type { HostedFileEntry } from '../mobileTauri';
+import {
+  circuitCancelJob,
+  circuitJobStatus,
+  circuitStartDc,
+  circuitTakeJobResult,
+  type CircuitDcResult,
+  type CircuitJobStatus,
+} from '../mobileTauri';
 import { useMobileStore } from '../state/store';
+import { runCircuitJob, type CircuitJobClient } from '../../../../src/lib/circuitJobRunner';
+import { circuitErrorText } from '../../../../src/lib/circuitErrorText';
 
 const workerUrl = new URL('pdfjs-dist/legacy/build/pdf.worker.mjs', import.meta.url).toString();
 GlobalWorkerOptions.workerSrc = workerUrl;
+const MOBILE_CIRCUIT_JOB_CLIENT: CircuitJobClient = {
+  start: circuitStartDc,
+  status: circuitJobStatus,
+  takeResult: circuitTakeJobResult,
+};
+const ANALOG_ACTIVE_VOLTAGE = 1e-9;
 
 type LoadState =
   | { status: 'loading' }
@@ -1537,39 +1558,87 @@ function logicSignalLabel(signal: LogicSignal): string {
   return 'unset';
 }
 
-function logicEdgePath(source: TouchPoint, target: TouchPoint): string {
-  const lane = Math.max(28, Math.min(72, Math.abs(target.x - source.x) * 0.25));
-  const sourceLaneX = source.x + lane;
-  const targetLaneX = target.x - lane;
-  const midX = sourceLaneX <= targetLaneX
-    ? (sourceLaneX + targetLaneX) / 2
-    : Math.max(source.x, target.x) + lane;
-  const radius = Math.min(16, Math.abs(midX - sourceLaneX) / 2, Math.abs(targetLaneX - midX) / 2, Math.abs(target.y - source.y) / 2);
-  if (radius <= 0.5) {
-    return [
-      `M ${source.x} ${source.y}`,
-      `L ${sourceLaneX} ${source.y}`,
-      `L ${midX} ${source.y}`,
-      `L ${midX} ${target.y}`,
-      `L ${targetLaneX} ${target.y}`,
-      `L ${target.x} ${target.y}`,
-    ].join(' ');
-  }
-  const sourceTurnY = source.y + Math.sign(target.y - source.y) * radius;
-  const targetTurnY = target.y - Math.sign(target.y - source.y) * radius;
-  return [
-    `M ${source.x} ${source.y}`,
-    `L ${sourceLaneX} ${source.y}`,
-    `L ${midX - radius} ${source.y}`,
-    `Q ${midX} ${source.y} ${midX} ${sourceTurnY}`,
-    `L ${midX} ${targetTurnY}`,
-    `Q ${midX} ${target.y} ${midX + radius} ${target.y}`,
-    `L ${targetLaneX} ${target.y}`,
-    `L ${target.x} ${target.y}`,
-  ].join(' ');
+function formatCircuitMeasurement(value: number, unit: string): string {
+  if (!Number.isFinite(value)) return `? ${unit}`;
+  const magnitude = Math.abs(value);
+  const prefixes = [
+    { threshold: 1e9, scale: 1e9, prefix: 'G' },
+    { threshold: 1e6, scale: 1e6, prefix: 'M' },
+    { threshold: 1e3, scale: 1e3, prefix: 'k' },
+    { threshold: 1, scale: 1, prefix: '' },
+    { threshold: 1e-3, scale: 1e-3, prefix: 'm' },
+    { threshold: 1e-6, scale: 1e-6, prefix: 'u' },
+    { threshold: 1e-9, scale: 1e-9, prefix: 'n' },
+    { threshold: 0, scale: 1e-12, prefix: 'p' },
+  ];
+  const selected = prefixes.find((candidate) => magnitude >= candidate.threshold) ?? prefixes[prefixes.length - 1];
+  return `${Number((value / selected.scale).toPrecision(4))} ${selected.prefix}${unit}`;
 }
 
-function LogicMobileViewer({
+function circuitStageLabel(status: CircuitJobStatus | null): string {
+  if (status?.phase === 'cancelling') return 'Cancelling';
+  if (!status?.stage) return 'Starting';
+  return status.stage[0].toUpperCase() + status.stage.slice(1);
+}
+
+type LogicConnectionSide = 'left' | 'right' | 'top' | 'bottom';
+
+function connectionSideToward(origin: TouchPoint, destination: TouchPoint): LogicConnectionSide {
+  const dx = destination.x - origin.x;
+  const dy = destination.y - origin.y;
+  if (Math.abs(dx) >= Math.abs(dy)) return dx < 0 ? 'left' : 'right';
+  return dy < 0 ? 'top' : 'bottom';
+}
+
+function validLogicHandle(
+  node: LogicDiagramNode,
+  handleId: string | undefined,
+  type: 'source' | 'target',
+): string | undefined {
+  const handles = isElectronicComponentKind(node.kind)
+    ? getSchematicTerminals(node.kind)
+    : type === 'source'
+      ? getLogicOutputHandles(node.kind, node.component)
+      : getLogicInputHandles(node.kind, node.component);
+  return handleId && handles.includes(handleId) ? handleId : handles[0];
+}
+
+function logicWireGeometry(
+  sourceNode: LogicDiagramNode,
+  targetNode: LogicDiagramNode,
+  sourceHandleId: string | undefined,
+  targetHandleId: string | undefined,
+  nodeById: Map<string, LogicDiagramNode>,
+): { path: string; source: TouchPoint; target: TouchPoint } | null {
+  const sourceHandle = validLogicHandle(sourceNode, sourceHandleId, 'source');
+  const targetHandle = validLogicHandle(targetNode, targetHandleId, 'target');
+  if (!sourceHandle || !targetHandle) return null;
+
+  const source = logicHandleAnchor(sourceNode, sourceHandle, 'source', nodeById);
+  const target = logicHandleAnchor(targetNode, targetHandle, 'target', nodeById);
+  const sourceSide = sourceNode.kind === 'junction'
+    ? connectionSideToward(source, target)
+    : isElectronicComponentKind(sourceNode.kind)
+      ? schematicTerminalSide(sourceNode.kind, sourceHandle, sourceNode.rotation ?? 0)
+      : 'right';
+  const targetSide = targetNode.kind === 'junction'
+    ? connectionSideToward(target, source)
+    : isElectronicComponentKind(targetNode.kind)
+      ? schematicTerminalSide(targetNode.kind, targetHandle, targetNode.rotation ?? 0)
+      : 'left';
+  const [path] = getSmoothStepPath({
+    sourceX: source.x,
+    sourceY: source.y,
+    sourcePosition: sourceSide as never,
+    targetX: target.x,
+    targetY: target.y,
+    targetPosition: targetSide as never,
+    borderRadius: 12,
+  });
+  return { path, source, target };
+}
+
+export function LogicMobileViewer({
   logic,
   zoom,
   setZoom,
@@ -1589,6 +1658,14 @@ function LogicMobileViewer({
   const pinchRef = useRef<{ distance: number; center: TouchPoint; zoom: number; pan: TouchPoint } | null>(null);
   const [pan, setPan] = useState<TouchPoint>({ x: 0, y: 0 });
   const [inputValues, setInputValues] = useState<Record<string, boolean>>({});
+  const [circuitRunning, setCircuitRunning] = useState(false);
+  const [circuitStatus, setCircuitStatus] = useState<CircuitJobStatus | null>(null);
+  const [circuitResult, setCircuitResult] = useState<CircuitDcResult | null>(null);
+  const [circuitError, setCircuitError] = useState<string | null>(null);
+  const [circuitResultsOpen, setCircuitResultsOpen] = useState(false);
+  const circuitJobIdRef = useRef<string | null>(null);
+  const circuitRunSequenceRef = useRef(0);
+  const circuitMountedRef = useRef(true);
   const [stageWidth, stageHeight] = useElementSize(stageRef);
   const lastFitKeyRef = useRef<string | null>(null);
 
@@ -1604,6 +1681,21 @@ function LogicMobileViewer({
     setInputValues(baseInputs);
   }, [baseInputs]);
 
+  useEffect(() => {
+    circuitMountedRef.current = true;
+    setCircuitRunning(false);
+    setCircuitStatus(null);
+    setCircuitResult(null);
+    setCircuitError(null);
+    setCircuitResultsOpen(false);
+    return () => {
+      circuitMountedRef.current = false;
+      circuitRunSequenceRef.current += 1;
+      const activeJobId = circuitJobIdRef.current;
+      if (activeJobId) void circuitCancelJob(activeJobId).catch(() => undefined);
+    };
+  }, [logic]);
+
   const simulatedNodes = useMemo(() => logic.nodes.map((node) => (
     node.kind === 'input' ? { ...node, value: inputValues[node.id] ?? node.value ?? false } : node
   )), [inputValues, logic.nodes]);
@@ -1612,6 +1704,81 @@ function LogicMobileViewer({
   const evaluation = useMemo(() => evaluateLogicDiagram(simulatedNodes, logic.wires, { components: logic.components }), [logic.components, logic.wires, simulatedNodes]);
   const inputNodes = useMemo(() => simulatedNodes.filter((node) => node.kind === 'input'), [simulatedNodes]);
   const outputNodes = useMemo(() => simulatedNodes.filter((node) => node.kind === 'output'), [simulatedNodes]);
+  const circuitWirePolarities = useMemo(() => {
+    const polarities = new Map<string, 'positive' | 'negative' | 'reference'>();
+    if (!circuitResult) return polarities;
+    for (const mapping of circuitResult.sourceMap.wires) {
+      const voltage = circuitResult.operatingPoint.nodeVoltages[mapping.electricalNode];
+      if (typeof voltage !== 'number') continue;
+      polarities.set(
+        mapping.wireId,
+        voltage > ANALOG_ACTIVE_VOLTAGE
+          ? 'positive'
+          : voltage < -ANALOG_ACTIVE_VOLTAGE
+            ? 'negative'
+            : 'reference',
+      );
+    }
+    return polarities;
+  }, [circuitResult]);
+
+  const runDcSimulation = useCallback(async () => {
+    if (logic.diagramMode !== 'schematic' || circuitRunning) return;
+    const runSequence = ++circuitRunSequenceRef.current;
+    let startedJobId: string | null = null;
+    setCircuitRunning(true);
+    setCircuitStatus(null);
+    setCircuitResult(null);
+    setCircuitError(null);
+    setCircuitResultsOpen(true);
+    try {
+      const outcome = await runCircuitJob(MOBILE_CIRCUIT_JOB_CLIENT, logic, {
+        onStarted: (jobId) => {
+          startedJobId = jobId;
+          circuitJobIdRef.current = jobId;
+          if (circuitMountedRef.current && circuitRunSequenceRef.current === runSequence) {
+            setCircuitStatus({ phase: 'queued', stage: 'queued', elapsedMillis: 0 });
+          } else {
+            void circuitCancelJob(jobId).catch(() => undefined);
+          }
+        },
+        onStatus: (status) => {
+          if (circuitMountedRef.current && circuitRunSequenceRef.current === runSequence) {
+            setCircuitStatus(status);
+          }
+        },
+      });
+      if (!circuitMountedRef.current || circuitRunSequenceRef.current !== runSequence) return;
+      if (outcome.state === 'completed') {
+        setCircuitResult(outcome.result);
+      } else if (outcome.state === 'failed') {
+        throw outcome.error;
+      }
+    } catch (error) {
+      if (circuitMountedRef.current && circuitRunSequenceRef.current === runSequence) {
+        setCircuitError(circuitErrorText(error));
+      }
+    } finally {
+      if (startedJobId && circuitJobIdRef.current === startedJobId) circuitJobIdRef.current = null;
+      if (circuitMountedRef.current && circuitRunSequenceRef.current === runSequence) {
+        setCircuitStatus(null);
+        setCircuitRunning(false);
+      }
+    }
+  }, [circuitRunning, logic]);
+
+  const cancelDcSimulation = useCallback(async () => {
+    const activeJobId = circuitJobIdRef.current;
+    if (!activeJobId) return;
+    try {
+      const phase = await circuitCancelJob(activeJobId);
+      if (circuitMountedRef.current) {
+        setCircuitStatus((current) => current ? { ...current, phase } : current);
+      }
+    } catch (error) {
+      if (circuitMountedRef.current) setCircuitError(circuitErrorText(error));
+    }
+  }, []);
 
   function fitToStage() {
     const stage = stageRef.current;
@@ -1742,9 +1909,42 @@ function LogicMobileViewer({
       ) : (
         <>
           <div className="logic-sim-toolbar">
-            <span>{inputNodes.length} inputs</span>
-            <span>{outputNodes.length} outputs</span>
-            {evaluation.warnings.length > 0 ? <span>{evaluation.warnings.length} warnings</span> : null}
+            {logic.diagramMode === 'schematic' ? (
+              <>
+                <span className="logic-stat">{simulatedNodes.length} symbols</span>
+                <span className="logic-stat">{logic.wires.length} wires</span>
+                <button
+                  type="button"
+                  className="logic-circuit-action"
+                  aria-label={circuitRunning ? 'Cancel DC simulation' : 'Run DC simulation'}
+                  disabled={circuitRunning && (!circuitStatus || circuitStatus.phase === 'cancelling')}
+                  onTouchStart={(event) => event.stopPropagation()}
+                  onClick={() => circuitRunning ? void cancelDcSimulation() : void runDcSimulation()}
+                >
+                  {circuitRunning && (!circuitStatus || circuitStatus.phase === 'cancelling')
+                    ? <Spinner size={14} />
+                    : circuitRunning ? <X size={14} aria-hidden /> : <Play size={14} aria-hidden />}
+                  <span>{circuitRunning ? circuitStageLabel(circuitStatus) : 'Run DC'}</span>
+                </button>
+                {!circuitResultsOpen && (circuitResult || circuitError) ? (
+                  <button
+                    type="button"
+                    className="logic-circuit-result-button"
+                    aria-label="Show DC results"
+                    onTouchStart={(event) => event.stopPropagation()}
+                    onClick={() => setCircuitResultsOpen(true)}
+                  >
+                    <Zap size={14} aria-hidden />
+                  </button>
+                ) : null}
+              </>
+            ) : (
+              <>
+                <span className="logic-stat">{inputNodes.length} inputs</span>
+                <span className="logic-stat">{outputNodes.length} outputs</span>
+                {evaluation.warnings.length > 0 ? <span className="logic-stat">{evaluation.warnings.length} warnings</span> : null}
+              </>
+            )}
           </div>
           <div className="mobile-canvas-camera mobile-logic-camera" style={cameraStyle}>
             <div className="mobile-canvas-grid mobile-logic-grid" style={gridStyle} aria-hidden />
@@ -1777,14 +1977,25 @@ function LogicMobileViewer({
                 const sourceNode = nodeById.get(wire.source);
                 const targetNode = nodeById.get(wire.target);
                 if (!sourceNode || !targetNode) return null;
-                const source = logicHandleAnchor(sourceNode, wire.sourceHandle, 'source', nodeById);
-                const target = logicHandleAnchor(targetNode, wire.targetHandle, 'target', nodeById);
+                const geometry = logicWireGeometry(
+                  sourceNode,
+                  targetNode,
+                  wire.sourceHandle,
+                  wire.targetHandle,
+                  nodeById,
+                );
+                if (!geometry) return null;
+                const circuitPolarity = logic.diagramMode === 'schematic'
+                  ? circuitWirePolarities.get(wire.id) ?? null
+                  : null;
                 return (
                   <path
                     key={wire.id}
-                    className={`mobile-logic-wire ${logic.diagramMode === 'schematic' ? 'schematic' : logicSignalClass(evaluation.wireValues[wire.id])}`}
-                    d={logicEdgePath(source, target)}
+                    className={`mobile-logic-wire ${logic.diagramMode === 'schematic' ? `schematic ${circuitPolarity ?? ''}` : logicSignalClass(evaluation.wireValues[wire.id])}`}
+                    d={geometry.path}
                     markerEnd={logic.diagramMode === 'schematic' ? undefined : 'url(#mobile-logic-arrow)'}
+                    data-logic-wire-id={wire.id}
+                    data-circuit-polarity={circuitPolarity ?? undefined}
                   />
                 );
               })}
@@ -1802,16 +2013,172 @@ function LogicMobileViewer({
               />
             ))}
           </div>
-          {evaluation.warnings.length > 0 ? (
+          {logic.diagramMode !== 'schematic' && evaluation.warnings.length > 0 ? (
             <div className="logic-warning-strip">
               {evaluation.warnings.slice(0, 2).map((warning) => (
                 <span key={`${warning.code}-${warning.nodeId}-${warning.message}`}>{warning.message}</span>
               ))}
             </div>
           ) : null}
+          {logic.diagramMode === 'schematic' && circuitResultsOpen ? (
+            <MobileCircuitResults
+              logic={logic}
+              result={circuitResult}
+              error={circuitError}
+              running={circuitRunning}
+              status={circuitStatus}
+              onClose={() => setCircuitResultsOpen(false)}
+            />
+          ) : null}
         </>
       )}
     </section>
+  );
+}
+
+function MobileCircuitResults({
+  logic,
+  result,
+  error,
+  running,
+  status,
+  onClose,
+}: {
+  logic: LogicDiagramDocument;
+  result: CircuitDcResult | null;
+  error: string | null;
+  running: boolean;
+  status: CircuitJobStatus | null;
+  onClose: () => void;
+}) {
+  const nodeById = new Map(logic.nodes.map((node) => [node.id, node]));
+  const terminalsByNet = new Map<string, CircuitDcResult['sourceMap']['terminals']>();
+  for (const terminal of result?.sourceMap.terminals ?? []) {
+    const terminals = terminalsByNet.get(terminal.electricalNode) ?? [];
+    terminals.push(terminal);
+    terminalsByNet.set(terminal.electricalNode, terminals);
+  }
+  const voltageRows = Object.entries(result?.operatingPoint.nodeVoltages ?? {})
+    .map(([electricalNode, voltage]) => {
+      const terminal = terminalsByNet.get(electricalNode)?.[0];
+      const node = terminal ? nodeById.get(terminal.terminal.nodeId) : null;
+      const label = electricalNode === '0'
+        ? 'Ground'
+        : node && terminal
+          ? `${logicNodeLabel(node)} - ${terminal.terminal.handleId}`
+          : electricalNode;
+      return { electricalNode, label, voltage };
+    })
+    .sort((left, right) => left.label.localeCompare(right.label));
+  const currentRows = Object.entries(result?.operatingPoint.componentCurrents ?? {})
+    .map(([componentId, current]) => ({
+      componentId,
+      label: nodeById.has(componentId) ? logicNodeLabel(nodeById.get(componentId)!) : componentId,
+      current,
+    }))
+    .sort((left, right) => left.label.localeCompare(right.label));
+  const powerRows = Object.entries(result?.operatingPoint.componentPowers ?? {})
+    .map(([componentId, power]) => ({
+      componentId,
+      label: nodeById.has(componentId) ? logicNodeLabel(nodeById.get(componentId)!) : componentId,
+      power,
+    }))
+    .sort((left, right) => left.label.localeCompare(right.label));
+
+  return (
+    <aside
+      className="mobile-circuit-results"
+      role="dialog"
+      aria-label="DC operating point"
+      onTouchStart={(event) => event.stopPropagation()}
+      onTouchMove={(event) => event.stopPropagation()}
+    >
+      <header>
+        {running ? <Spinner size={16} /> : <Zap size={16} aria-hidden />}
+        <strong>DC operating point</strong>
+        <button type="button" className="icon-button" aria-label="Close DC results" onClick={onClose}>
+          <X size={15} aria-hidden />
+        </button>
+      </header>
+      <div className="mobile-circuit-results-body">
+        {running ? (
+          <div className="mobile-circuit-status">
+            <Spinner size={15} />
+            <span>{circuitStageLabel(status)}</span>
+            {status ? <small>{status.elapsedMillis} ms</small> : null}
+          </div>
+        ) : null}
+        {error && !running ? (
+          <div className="mobile-circuit-error">
+            <strong>Simulation failed</strong>
+            <span>{error}</span>
+          </div>
+        ) : null}
+        {result && !running ? (
+          <>
+            <p className="mobile-circuit-summary">
+              Converged in {result.operatingPoint.iterations} {result.operatingPoint.iterations === 1 ? 'iteration' : 'iterations'}
+            </p>
+            {result.operatingPoint.diagnostics.map((diagnostic) => (
+              <div className="mobile-circuit-warning" key={`${diagnostic.code}-${diagnostic.context.component}`}>
+                {nodeById.has(diagnostic.context.component)
+                  ? logicNodeLabel(nodeById.get(diagnostic.context.component)!)
+                  : diagnostic.context.component}{' '}
+                entered unsupported reverse-active operation.
+              </div>
+            ))}
+            {result.probeValues.length > 0 ? (
+              <section>
+                <h3>Probes</h3>
+                <div className="mobile-circuit-table">
+                  {result.probeValues.map((probe) => (
+                    <div key={probe.probeId}>
+                      <span>{probe.label || probe.probeId}</span>
+                      <code>{probe.kind === 'node-voltage'
+                        ? formatCircuitMeasurement(probe.valueVolts, 'V')
+                        : formatCircuitMeasurement(probe.valueAmps, 'A')}</code>
+                    </div>
+                  ))}
+                </div>
+              </section>
+            ) : null}
+            <section>
+              <h3>Node voltages</h3>
+              <div className="mobile-circuit-table">
+                {voltageRows.map((row) => (
+                  <div key={row.electricalNode}>
+                    <span>{row.label}</span>
+                    <code>{formatCircuitMeasurement(row.voltage, 'V')}</code>
+                  </div>
+                ))}
+              </div>
+            </section>
+            <section>
+              <h3>Component currents</h3>
+              <div className="mobile-circuit-table">
+                {currentRows.map((row) => (
+                  <div key={row.componentId}>
+                    <span>{row.label}</span>
+                    <code>{formatCircuitMeasurement(row.current, 'A')}</code>
+                  </div>
+                ))}
+              </div>
+            </section>
+            <section>
+              <h3>Component power</h3>
+              <div className="mobile-circuit-table">
+                {powerRows.map((row) => (
+                  <div key={row.componentId}>
+                    <span>{row.label}</span>
+                    <code>{formatCircuitMeasurement(row.power, 'W')}</code>
+                  </div>
+                ))}
+              </div>
+            </section>
+          </>
+        ) : null}
+      </div>
+    </aside>
   );
 }
 

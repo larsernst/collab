@@ -1,4 +1,11 @@
 import { Channel, invoke } from '@tauri-apps/api/core';
+import type { LogicDiagramDocument } from '../../../src/types/logicDiagram';
+import type {
+  CircuitDcResult,
+  CircuitJobOutcome,
+  CircuitJobPhase,
+  CircuitJobStatus,
+} from '../../../src/types/circuitRuntime';
 
 export interface ServerHealthStatus {
   ok: boolean;
@@ -160,6 +167,24 @@ export function serverHasSavedSession(serverUrl: string): Promise<boolean> {
 export function mobileExitApp(): Promise<void> {
   return invoke('mobile_exit_app');
 }
+
+export function circuitStartDc(document: LogicDiagramDocument): Promise<string> {
+  return invoke('circuit_start_dc', { document });
+}
+
+export function circuitJobStatus(jobId: string): Promise<CircuitJobStatus> {
+  return invoke('circuit_job_status', { jobId });
+}
+
+export function circuitCancelJob(jobId: string): Promise<CircuitJobPhase> {
+  return invoke('circuit_cancel_job', { jobId });
+}
+
+export function circuitTakeJobResult(jobId: string): Promise<CircuitJobOutcome | null> {
+  return invoke('circuit_take_job_result', { jobId });
+}
+
+export type { CircuitDcResult, CircuitJobOutcome, CircuitJobPhase, CircuitJobStatus };
 
 function asRecord(value: unknown, message: string): Record<string, unknown> {
   if (!value || typeof value !== 'object') throw new Error(message);

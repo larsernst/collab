@@ -1,0 +1,152 @@
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+
+import type { LogicDiagramDocument } from '../../../../src/types/logicDiagram';
+
+const circuitMocks = vi.hoisted(() => ({
+  start: vi.fn(),
+  status: vi.fn(),
+  cancel: vi.fn(),
+  take: vi.fn(),
+}));
+
+vi.mock('../mobileTauri', () => ({
+  circuitStartDc: circuitMocks.start,
+  circuitJobStatus: circuitMocks.status,
+  circuitCancelJob: circuitMocks.cancel,
+  circuitTakeJobResult: circuitMocks.take,
+}));
+
+vi.mock('pdfjs-dist/legacy/build/pdf.mjs', () => ({
+  GlobalWorkerOptions: {},
+  getDocument: vi.fn(),
+}));
+
+import { LogicMobileViewer } from './RichFileViewerScreen';
+
+class ResizeObserverMock {
+  observe() {}
+  disconnect() {}
+}
+
+Object.defineProperty(globalThis, 'ResizeObserver', {
+  configurable: true,
+  value: ResizeObserverMock,
+});
+
+const LOGIC: LogicDiagramDocument = {
+  schemaVersion: 6,
+  kind: 'logic-diagram',
+  diagramMode: 'schematic',
+  nodes: [
+    {
+      id: 'v1',
+      kind: 'voltage-source',
+      position: { x: 0, y: 0 },
+      rotation: 90,
+      electrical: { voltageVolts: 5 },
+    },
+    { id: 'ground', kind: 'ground', position: { x: 240, y: 0 } },
+  ],
+  wires: [{
+    id: 'wire-1',
+    source: 'v1',
+    target: 'ground',
+    sourceHandle: 'positive',
+    targetHandle: 'terminal',
+  }],
+  viewport: { x: 0, y: 0, zoom: 1 },
+};
+
+const RESULT = {
+  operatingPoint: {
+    nodeVoltages: { 0: 0, net1: 5 },
+    componentCurrents: { v1: -0.005 },
+    componentPowers: { v1: -0.025 },
+    diagnostics: [],
+    iterations: 1,
+  },
+  sourceMap: {
+    terminals: [
+      { terminal: { nodeId: 'v1', handleId: 'terminal-a' }, electricalNode: 'net1' },
+      { terminal: { nodeId: 'ground', handleId: 'terminal' }, electricalNode: '0' },
+    ],
+    wires: [{ wireId: 'wire-1', electricalNode: 'net1' }],
+    probes: [],
+  },
+  probeValues: [],
+};
+
+describe('mobile schematic simulation', () => {
+  beforeEach(() => {
+    circuitMocks.start.mockResolvedValue('job-1');
+    circuitMocks.status.mockResolvedValue({ phase: 'completed', stage: null, elapsedMillis: 2 });
+    circuitMocks.cancel.mockResolvedValue('cancelling');
+    circuitMocks.take.mockResolvedValue({ state: 'completed', result: RESULT });
+  });
+
+  it('runs DC, renders the result sheet, and highlights solved wires', async () => {
+    const { container } = render(
+      <LogicMobileViewer
+        logic={LOGIC}
+        zoom={1}
+        setZoom={vi.fn()}
+        resetToken={0}
+        onWheel={vi.fn()}
+        schematicSymbolSet="ansi"
+      />,
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: 'Run DC simulation' }));
+
+    expect(await screen.findByText('Converged in 1 iteration')).toBeTruthy();
+    expect(screen.getByText('5 V')).toBeTruthy();
+    expect(container.querySelector('[data-circuit-polarity="positive"]')).toBeTruthy();
+    expect(circuitMocks.start).toHaveBeenCalledWith(LOGIC);
+    expect(circuitMocks.take).toHaveBeenCalledWith('job-1');
+  });
+
+  it('routes schematic wires from the actual rotated terminal sides', () => {
+    const { container } = render(
+      <LogicMobileViewer
+        logic={LOGIC}
+        zoom={1}
+        setZoom={vi.fn()}
+        resetToken={0}
+        onWheel={vi.fn()}
+        schematicSymbolSet="ansi"
+      />,
+    );
+
+    const wire = container.querySelector('[data-logic-wire-id="wire-1"]');
+    const path = wire?.getAttribute('d') ?? '';
+    expect(path).toMatch(/^M40 120L 40,/);
+    expect(path).toMatch(/L240 36$/);
+  });
+
+  it('keeps the cancel control active until the native job acknowledges cancellation', async () => {
+    circuitMocks.status.mockImplementation(async () => (
+      circuitMocks.cancel.mock.calls.length > 0
+        ? { phase: 'cancelled', stage: null, elapsedMillis: 4 }
+        : { phase: 'running', stage: 'solving', elapsedMillis: 2 }
+    ));
+    circuitMocks.take.mockResolvedValue({ state: 'cancelled' });
+
+    render(
+      <LogicMobileViewer
+        logic={LOGIC}
+        zoom={1}
+        setZoom={vi.fn()}
+        resetToken={0}
+        onWheel={vi.fn()}
+        schematicSymbolSet="ansi"
+      />,
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Run DC simulation' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Cancel DC simulation' }));
+
+    await waitFor(() => expect(circuitMocks.cancel).toHaveBeenCalledWith('job-1'));
+    expect(await screen.findByRole('button', { name: 'Run DC simulation' })).toBeTruthy();
+    expect(screen.queryByText('Simulation failed')).toBeNull();
+  });
+});

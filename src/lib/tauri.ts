@@ -24,6 +24,7 @@ import type { NoteSnippet, NoteSnippetDraft, NoteSnippetScope } from '../types/n
 import type { PdfSidecarState } from '../types/pdf';
 import type { UpdateInfo } from '../store/updateStore';
 import type { LogicDiagramDocument } from '../types/logicDiagram';
+import type { CircuitDcResult, CircuitJobOutcome, CircuitJobPhase, CircuitJobStatus } from '../types/circuitRuntime';
 import type {
   CacheCleanupReport,
   CachedContentStatus,
@@ -37,6 +38,17 @@ import type {
 } from './vaultReplica';
 
 export { Channel };
+export type {
+  CircuitDcDiagnostic,
+  CircuitDcResult,
+  CircuitJobOutcome,
+  CircuitJobPhase,
+  CircuitJobStage,
+  CircuitJobStatus,
+  CircuitProbeValue,
+  CircuitTerminalNet,
+  CircuitWireNet,
+} from '../types/circuitRuntime';
 
 /** Inbound frame from a backend-proxied live-collaboration WebSocket. */
 export type LiveWsEvent =
@@ -97,51 +109,6 @@ export interface NativeOcrWord {
 export interface NativeOcrResult {
   text: string;
   words: NativeOcrWord[];
-}
-
-export interface CircuitTerminalNet {
-  terminal: { nodeId: string; handleId: string };
-  electricalNode: string;
-}
-
-export interface CircuitWireNet {
-  wireId: string;
-  electricalNode: string;
-}
-
-export type CircuitDcDiagnostic = {
-  code: 'npnOutsideForwardActive';
-  context: {
-    component: string;
-    baseEmitterVoltage: number;
-    collectorEmitterVoltage: number;
-  };
-};
-
-export type CircuitProbeValue =
-  | { kind: 'node-voltage'; probeId: string; label: string | null; valueVolts: number }
-  | { kind: 'branch-current'; probeId: string; label: string | null; valueAmps: number };
-
-export interface CircuitDcResult {
-  operatingPoint: {
-    nodeVoltages: Record<string, number>;
-    componentCurrents: Record<string, number>;
-    componentPowers: Record<string, number>;
-    diagnostics: CircuitDcDiagnostic[];
-    iterations: number;
-  };
-  sourceMap: {
-    terminals: CircuitTerminalNet[];
-    wires: CircuitWireNet[];
-    probes: Array<{
-      probeId: string;
-      label: string | null;
-      kind: 'node-voltage' | 'branch-current';
-      electricalNode?: string;
-      component?: string;
-    }>;
-  };
-  probeValues: CircuitProbeValue[];
 }
 
 export const tauriCommands = {
@@ -407,6 +374,14 @@ export const tauriCommands = {
   // First-party circuit simulation
   circuitSolveDc: (document: LogicDiagramDocument) =>
     invoke<CircuitDcResult>('circuit_solve_dc', { document }),
+  circuitStartDc: (document: LogicDiagramDocument) =>
+    invoke<string>('circuit_start_dc', { document }),
+  circuitJobStatus: (jobId: string) =>
+    invoke<CircuitJobStatus>('circuit_job_status', { jobId }),
+  circuitCancelJob: (jobId: string) =>
+    invoke<CircuitJobPhase>('circuit_cancel_job', { jobId }),
+  circuitTakeJobResult: (jobId: string) =>
+    invoke<CircuitJobOutcome | null>('circuit_take_job_result', { jobId }),
 
   // UI
   setUiZoom: (zoom: number) => invoke<void>('set_ui_zoom', { zoom }),
