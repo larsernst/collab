@@ -81,6 +81,11 @@ README, and license directly into the package image. `--no-bundle` skips the
 throwaway installer/bundler step and just produces the release binary (Tauri's
 `-b` only accepts `deb`/`rpm`/`appimage`, so there is no `-b none`).
 
+The offline `pnpm install` deliberately disables pnpm's optimistic repeat
+shortcut after `pnpm fetch`. This converts the fetch-only virtual store into
+complete project dependency links and repairs reused `makepkg` trees that would
+otherwise report an incomplete `node_modules` directory as already up to date.
+
 ## Testing locally
 
 Because the source is a live clone, a plain `makepkg` builds the current `main`:

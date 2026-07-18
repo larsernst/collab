@@ -54,7 +54,9 @@ build() {
   export PNPM_HOME="${srcdir}/pnpm-home"
   export TAURI_SIGNING_PRIVATE_KEY=
 
-  pnpm install --frozen-lockfile --offline
+  # pnpm fetch creates a virtual-store-only modules state. Disable pnpm 11's
+  # optimistic repeat shortcut so the offline install materializes root links.
+  pnpm install --frozen-lockfile --offline --no-optimistic-repeat-install
   pnpm tauri build --no-bundle
 }
 

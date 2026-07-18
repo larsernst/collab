@@ -111,6 +111,11 @@ package transparent and source-based. If build time becomes too painful, a
 separate binary-style package can be prepared later, but it should use a distinct
 name such as `collab-bin`.
 
+The offline `pnpm install` deliberately disables pnpm's optimistic repeat
+shortcut after `pnpm fetch`. This converts the fetch-only virtual store into
+complete project dependency links and repairs reused `makepkg` trees that would
+otherwise report an incomplete `node_modules` directory as already up to date.
+
 ## Publishing later
 
 Once AUR account registration is available:
