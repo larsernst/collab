@@ -1,6 +1,7 @@
 import type { VaultClient } from './vaultClient';
 import { tauriCommands } from './tauri';
 import { parseLogicDiagramDocument } from '../types/logicDiagram';
+import { useSyncTransferStore } from '../store/syncTransferStore';
 
 /**
  * External-file import for vaults. Adding documents/images/notes to a vault is
@@ -134,10 +135,26 @@ export async function importExternalFilesIntoVault(
 ): Promise<VaultImportResult> {
   const result: VaultImportResult = { imported: [], failed: [] };
   const assetImporter = client.runtime.externalAssetImport;
+  const transferId = client.kind === 'hosted' && sourcePaths.length > 0
+    ? useSyncTransferStore.getState().begin({
+        vaultId: client.id,
+        vaultName: client.name,
+        direction: 'upload',
+        label: sourcePaths.length === 1 ? `Uploading ${fileBaseName(sourcePaths[0])}` : `Uploading ${sourcePaths.length} files`,
+        detail: sourcePaths.length === 1 ? fileBaseName(sourcePaths[0]) : null,
+        total: sourcePaths.length,
+      })
+    : null;
 
-  for (const sourcePath of sourcePaths) {
+  for (const [index, sourcePath] of sourcePaths.entries()) {
     const name = fileBaseName(sourcePath);
     const category = importCategoryForName(name);
+    if (transferId) {
+      useSyncTransferStore.getState().update(transferId, {
+        completed: index,
+        detail: name,
+      });
+    }
     try {
       if (!category) {
         result.failed.push({ name, error: 'Unsupported file type. Only images, PDFs, markdown, canvas, Kanban, and logic files can be imported.' });
@@ -163,6 +180,22 @@ export async function importExternalFilesIntoVault(
       result.imported.push(await assetImporter.import(sourcePath, folder));
     } catch (error) {
       result.failed.push({ name, error: String(error) });
+    } finally {
+      if (transferId) {
+        useSyncTransferStore.getState().update(transferId, { completed: index + 1 });
+      }
+    }
+  }
+
+  if (transferId) {
+    if (result.imported.length === 0 && result.failed.length > 0) {
+      useSyncTransferStore.getState().fail(transferId, result.failed[0].error);
+    } else {
+      const suffix = result.failed.length > 0 ? `, ${result.failed.length} failed` : '';
+      useSyncTransferStore.getState().complete(
+        transferId,
+        `Uploaded ${result.imported.length} file${result.imported.length === 1 ? '' : 's'}${suffix}`,
+      );
     }
   }
 

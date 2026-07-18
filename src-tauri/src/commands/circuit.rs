@@ -460,11 +460,11 @@ mod tests {
         let diagnostic = serde_json::to_value(DcDiagnostic::NpnOutsideForwardActive {
             component: ComponentId::new("q1"),
             base_emitter_voltage: 0.7,
-            collector_emitter_voltage: 0.2,
+            collector_emitter_voltage: -0.2,
         })
         .unwrap();
         assert_eq!(diagnostic["context"]["baseEmitterVoltage"], 0.7);
-        assert_eq!(diagnostic["context"]["collectorEmitterVoltage"], 0.2);
+        assert_eq!(diagnostic["context"]["collectorEmitterVoltage"], -0.2);
 
         let error = CircuitCommandError::Compilation(CompilationError::UnknownProbeNode {
             probe_id: "p1".to_string(),
@@ -489,6 +489,16 @@ mod tests {
         assert_eq!(serialized["stage"], "simulation");
         assert_eq!(serialized["detail"]["code"], "timeLimitExceeded");
         assert_eq!(serialized["detail"]["context"]["limitMillis"], 10_000);
+
+        let error =
+            CircuitCommandError::Simulation(SimulationError::DenseSolverSizeLimitExceeded {
+                unknowns: 640,
+                max_unknowns: 512,
+            });
+        let serialized = serde_json::to_value(error).unwrap();
+        assert_eq!(serialized["detail"]["code"], "denseSolverSizeLimitExceeded");
+        assert_eq!(serialized["detail"]["context"]["unknowns"], 640);
+        assert_eq!(serialized["detail"]["context"]["maxUnknowns"], 512);
     }
 
     #[test]

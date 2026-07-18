@@ -69,6 +69,9 @@ pub struct ReplicaSummary {
     pub vault_name: String,
     pub manifest_sequence: i64,
     pub last_synced_at: Option<String>,
+    /// Set only for replicas whose active file bodies were explicitly cached.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub offline_available_at: Option<String>,
     pub status: SyncStatus,
     pub pending_count: usize,
     pub updated_at: String,

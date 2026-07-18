@@ -324,6 +324,56 @@ describe('vaultReplica', () => {
     );
   });
 
+  it('refreshes changed file bodies when applying a delta to a full offline copy', async () => {
+    vi.mocked(tauriCommands.replicaListPendingOperations).mockResolvedValue([]);
+    vi.mocked(tauriCommands.replicaReadManifest).mockResolvedValue({
+      vaultId: 'hosted-vault',
+      sequence: 9,
+      files: [{ id: 'file-1', kind: 'document', relativePath: 'Note.md', state: 'active' }],
+    });
+    vi.mocked(tauriCommands.replicaReadSyncState).mockResolvedValue({
+      manifestSequence: 9,
+      lastSyncedAt: '2026-06-17T00:00:00Z',
+      offlineAvailableAt: '2026-06-17T00:05:00Z',
+      status: 'idle',
+    });
+    vi.mocked(tauriCommands.hostedVaultRequest)
+      .mockResolvedValueOnce({
+        vaultId: 'hosted-vault',
+        baseSequence: 9,
+        sequence: 10,
+        changedFiles: [{
+          id: 'file-1',
+          kind: 'document',
+          relativePath: 'Note.md',
+          state: 'active',
+          currentRevision: { contentHash: 'updated-hash' },
+        }],
+      })
+      .mockResolvedValueOnce({ content: '# Updated on server' });
+
+    await syncReplicaManifestDelta(hostedVault);
+
+    expect(tauriCommands.replicaCachedContentStatus).toHaveBeenCalledWith(
+      hostedVault.serverUrl,
+      hostedVault.hostedVaultId,
+      'file-1',
+      'document',
+      'updated-hash',
+    );
+    expect(tauriCommands.replicaCacheDocument).toHaveBeenCalledWith(
+      hostedVault.serverUrl,
+      hostedVault.hostedVaultId,
+      'file-1',
+      '# Updated on server',
+    );
+    expect(tauriCommands.replicaWriteSyncState).toHaveBeenCalledWith(
+      hostedVault.serverUrl,
+      hostedVault.hostedVaultId,
+      expect.objectContaining({ manifestSequence: 10, offlineAvailableAt: expect.any(String) }),
+    );
+  });
+
   it('falls back to full seeding when there is no cached manifest', async () => {
     const manifest = { vaultId: 'hosted-vault', sequence: 11, files: [] };
     vi.mocked(tauriCommands.replicaListPendingOperations).mockResolvedValue([]);

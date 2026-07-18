@@ -145,6 +145,7 @@ export interface LiveSessionTarget {
 export interface VaultClient {
   readonly kind: VaultClientKind;
   readonly id: string;
+  readonly name: string;
   readonly capabilities: VaultClientCapabilities;
   readonly runtime: VaultRuntimeCapabilities;
 
@@ -594,6 +595,10 @@ export class HostedVaultClient implements VaultClient {
 
   get id() {
     return this.vault.id;
+  }
+
+  get name() {
+    return this.vault.name;
   }
 
   private path(suffix = '') {
@@ -1636,6 +1641,10 @@ export class LocalVaultClient implements VaultClient {
 
   get id() {
     return this.vault.id;
+  }
+
+  get name() {
+    return this.vault.name;
   }
 
   listFiles() {

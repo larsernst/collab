@@ -61,6 +61,13 @@ export function replicaMutationAffectsPath(event: ReplicaMutationEvent, relative
 
 export type SyncStatus = 'idle' | 'syncing' | 'offline' | 'error';
 
+export interface ReplicaSyncProgress {
+  direction: 'upload' | 'download' | 'sync';
+  completed: number;
+  total: number | null;
+  detail?: string | null;
+}
+
 export interface ReplicaSyncState {
   /** The server manifest sequence the replica last observed. */
   manifestSequence: number;
@@ -136,6 +143,8 @@ export interface ReplicaSummary {
   vaultName: string;
   manifestSequence: number;
   lastSyncedAt: string | null;
+  /** Present only after all active file bodies have been cached for offline use. */
+  offlineAvailableAt?: string | null;
   status: SyncStatus;
   pendingCount: number;
   updatedAt: string;
@@ -481,7 +490,10 @@ function replaceMappedIds<T extends { targetFileId?: string; parentId?: string |
   };
 }
 
-export async function replayPendingOperations(vault: HostedVaultMeta): Promise<void> {
+export async function replayPendingOperations(
+  vault: HostedVaultMeta,
+  onProgress?: (progress: ReplicaSyncProgress) => void,
+): Promise<void> {
   const operations = await tauriCommands.replicaListPendingOperations(vault.serverUrl, vault.hostedVaultId);
   const replayableOperations = operations.filter((operation) => operation.status !== 'failed');
   if (replayableOperations.length === 0) return;
@@ -492,7 +504,13 @@ export async function replayPendingOperations(vault: HostedVaultMeta): Promise<v
       await tauriCommands.replicaUpdateOperationStatus(vault.serverUrl, vault.hostedVaultId, operation.id, 'pending');
     }
   }
-  for (const operation of replayableOperations) {
+  for (const [operationIndex, operation] of replayableOperations.entries()) {
+    onProgress?.({
+      direction: 'upload',
+      completed: operationIndex,
+      total: replayableOperations.length,
+      detail: operation.relativePath ?? operation.fileId ?? operation.kind,
+    });
     await tauriCommands.replicaUpdateOperationStatus(vault.serverUrl, vault.hostedVaultId, operation.id, 'inflight');
     try {
       if (operation.kind === 'create') {
@@ -572,6 +590,12 @@ export async function replayPendingOperations(vault: HostedVaultMeta): Promise<v
         );
       }
       await tauriCommands.replicaRemoveOperation(vault.serverUrl, vault.hostedVaultId, operation.id);
+      onProgress?.({
+        direction: 'upload',
+        completed: operationIndex + 1,
+        total: replayableOperations.length,
+        detail: operation.relativePath ?? operation.fileId ?? operation.kind,
+      });
     } catch (error) {
       if (isLikelyConnectivityError(error)) {
         await tauriCommands.replicaUpdateOperationStatus(
@@ -659,7 +683,7 @@ async function markOfflineAvailable(vault: HostedVaultMeta, manifestSequence: nu
 async function cacheActiveFilesForOffline(
   vault: HostedVaultMeta,
   files: ReplicaManifestFile[],
-  onProgress?: (completed: number, total: number) => void,
+  onProgress?: (completed: number, total: number, detail?: string | null) => void,
 ): Promise<OfflineAvailabilityReport> {
   const cacheableFiles = files.filter(
     (file) => file.state === 'active' && (file.kind === 'document' || file.kind === 'asset'),
@@ -672,6 +696,8 @@ async function cacheActiveFilesForOffline(
   onProgress?.(completed, cacheableFiles.length);
 
   for (const file of cacheableFiles) {
+    const detail = typeof file.relativePath === 'string' ? file.relativePath : file.id;
+    onProgress?.(completed, cacheableFiles.length, detail);
     try {
       const kind = file.kind;
       if (kind !== 'document' && kind !== 'asset') {
@@ -707,7 +733,7 @@ async function cacheActiveFilesForOffline(
       skipped += 1;
     } finally {
       completed += 1;
-      onProgress?.(completed, cacheableFiles.length);
+      onProgress?.(completed, cacheableFiles.length, detail);
     }
   }
 
@@ -731,7 +757,11 @@ export async function makeHostedVaultAvailableOffline(
   const manifest = await tauriCommands.replicaReadManifest(vault.serverUrl, vault.hostedVaultId);
   if (!manifest) throw new Error('Replica manifest was not available after seeding.');
 
-  const report = await cacheActiveFilesForOffline(vault, manifest.files, onProgress);
+  const report = await cacheActiveFilesForOffline(
+    vault,
+    manifest.files,
+    (completed, total) => onProgress?.(completed, total),
+  );
   try {
     const components = await tauriCommands.hostedVaultRequest<LogicComponentDefinition[]>(
       vault.serverUrl,
@@ -749,8 +779,12 @@ export async function makeHostedVaultAvailableOffline(
   return report;
 }
 
-export async function syncReplicaManifestDelta(vault: HostedVaultMeta): Promise<ReplicaManifest> {
-  await replayPendingOperations(vault).catch((error) => {
+export async function syncReplicaManifestDelta(
+  vault: HostedVaultMeta,
+  onProgress?: (progress: ReplicaSyncProgress) => void,
+): Promise<ReplicaManifest> {
+  onProgress?.({ direction: 'sync', completed: 0, total: null, detail: 'Checking pending changes' });
+  await replayPendingOperations(vault, onProgress).catch((error) => {
     if (!isLikelyConnectivityError(error)) throw error;
   });
   const [cachedManifest, syncState] = await Promise.all([
@@ -764,7 +798,9 @@ export async function syncReplicaManifestDelta(vault: HostedVaultMeta): Promise<
     const seeded = await tauriCommands.replicaReadManifest(vault.serverUrl, vault.hostedVaultId);
     if (!seeded) throw new Error('Replica manifest was not available after seeding.');
     if (shouldMaintainOfflineCache) {
-      await cacheActiveFilesForOffline(vault, seeded.files);
+      await cacheActiveFilesForOffline(vault, seeded.files, (completed, total, detail) => {
+        onProgress?.({ direction: 'download', completed, total, detail });
+      });
       await markOfflineAvailable(vault, seeded.sequence);
       await cleanupReplicaCache(vault);
     }
@@ -781,7 +817,9 @@ export async function syncReplicaManifestDelta(vault: HostedVaultMeta): Promise<
     const seeded = await tauriCommands.replicaReadManifest(vault.serverUrl, vault.hostedVaultId);
     if (!seeded) throw new Error('Replica manifest was not available after seeding.');
     if (shouldMaintainOfflineCache) {
-      await cacheActiveFilesForOffline(vault, seeded.files);
+      await cacheActiveFilesForOffline(vault, seeded.files, (completed, total, detail) => {
+        onProgress?.({ direction: 'download', completed, total, detail });
+      });
       await markOfflineAvailable(vault, seeded.sequence);
       await cleanupReplicaCache(vault);
     }
@@ -812,7 +850,9 @@ export async function syncReplicaManifestDelta(vault: HostedVaultMeta): Promise<
     vault.capabilities ?? [],
   );
   if (shouldMaintainOfflineCache) {
-    await cacheActiveFilesForOffline(vault, delta.changedFiles);
+    await cacheActiveFilesForOffline(vault, delta.changedFiles, (completed, total, detail) => {
+      onProgress?.({ direction: 'download', completed, total, detail });
+    });
     await markOfflineAvailable(vault, delta.sequence);
     await cleanupReplicaCache(vault);
   }

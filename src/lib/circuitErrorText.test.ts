@@ -12,5 +12,9 @@ describe('circuit error text', () => {
       stage: 'simulation',
       detail: { code: 'timeLimitExceeded', context: { limitMillis: 10_000 } },
     })).toBe('The DC simulation exceeded its 10000 ms execution limit.');
+    expect(circuitErrorText({
+      stage: 'simulation',
+      detail: { code: 'denseSolverSizeLimitExceeded', context: { unknowns: 640, maxUnknowns: 512 } },
+    })).toContain('640 solver unknowns');
   });
 });

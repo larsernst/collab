@@ -14,7 +14,10 @@ The current Phase 6.0-6.4 implementation provides:
 - numeric and identity validation;
 - deterministic modified nodal analysis ordering;
 - a pivoted dense DC solver with damped Newton-Raphson iteration;
-- shared wall-clock and estimated dense-working-set limits with typed failures;
+- nonlinear-terminal voltage limiting that leaves exact linear source nodes free
+  to settle immediately across high dynamic ranges;
+- shared wall-clock, 512-unknown, and estimated dense-working-set limits with
+  typed failures;
 - node-voltage, component-current, and passive-sign-convention component-power
   operating-point results;
 - typed diagnostics when the basic NPN model enters unsupported reverse-active
@@ -41,7 +44,10 @@ returned with an explicit diagnostic instead of silently implying full
 BJT-model accuracy.
 Transient companion models are not yet implemented.
 
-The dense matrix implementation is a small-circuit correctness baseline. The
+The dense matrix implementation is a small-circuit correctness baseline. A
+representative 256-node ladder uses only about 1.17% of its dense matrix cells,
+so a reviewed sparse backend is required before the explicit 512-unknown limit
+or compiler diagram limits are raised. The
 public circuit and result types are kept independent of that backend so later
 sparse, transient, AC, and mixed-signal solvers can replace or extend
 it without changing callers.

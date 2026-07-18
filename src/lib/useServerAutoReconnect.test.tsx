@@ -6,9 +6,10 @@ const mocks = vi.hoisted(() => ({
   statuses: {} as Record<string, unknown>,
   subscribers: new Set<() => void>(),
   autoReconnect: vi.fn().mockResolvedValue('failed'),
+  loadHostedVaults: vi.fn().mockResolvedValue(undefined),
   syncAllForServer: vi.fn(),
 }));
-const { subscribers, autoReconnect, syncAllForServer } = mocks;
+const { subscribers, autoReconnect, loadHostedVaults, syncAllForServer } = mocks;
 
 vi.mock('../store/serverStore', () => ({
   isEffectivelyConnected: (status: { connected?: boolean; serverUrl?: string } | null) =>
@@ -19,6 +20,7 @@ vi.mock('../store/serverStore', () => ({
     getState: () => ({
       statusFor: (serverUrl: string) => mocks.statuses[serverUrl] ?? null,
       autoReconnect: mocks.autoReconnect,
+      loadHostedVaults: mocks.loadHostedVaults,
     }),
     subscribe: (listener: () => void) => {
       mocks.subscribers.add(listener);
@@ -97,6 +99,7 @@ describe('useServerAutoReconnect', () => {
     render(<Harness />);
     await flush();
     expect(autoReconnect).not.toHaveBeenCalled();
+    expect(loadHostedVaults).toHaveBeenCalledWith(CONNECTED.serverUrl, { quiet: true });
   });
 
   it('refreshes proactively when an effective connection is close to expiry', async () => {
@@ -142,5 +145,20 @@ describe('useServerAutoReconnect', () => {
       await Promise.resolve();
     });
     expect(autoReconnect).toHaveBeenCalledTimes(2);
+  });
+
+  it('refreshes connected server inventories on the interval', async () => {
+    vi.useFakeTimers();
+    localStorage.setItem(SAVED_KEY, CONNECTED.serverUrl);
+    setConnected();
+    render(<Harness />);
+    await act(async () => { await Promise.resolve(); });
+    expect(loadHostedVaults).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      vi.advanceTimersByTime(AUTO_RECONNECT_INTERVAL_MS);
+      await Promise.resolve();
+    });
+    expect(loadHostedVaults).toHaveBeenCalledTimes(2);
   });
 });

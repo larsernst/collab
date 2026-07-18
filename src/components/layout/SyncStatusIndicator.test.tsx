@@ -15,6 +15,7 @@ import {
   type PendingOperationRecovery,
 } from '../../lib/vaultReplica';
 import type { HostedVaultMeta, LocalVaultMeta } from '../../types/vault';
+import { useSyncTransferStore } from '../../store/syncTransferStore';
 
 const toastError = vi.fn();
 vi.mock('sonner', () => ({ toast: { error: (...args: unknown[]) => toastError(...args), success: vi.fn() } }));
@@ -86,6 +87,7 @@ function recovery(id: string): PendingOperationRecovery {
 beforeEach(() => {
   vi.clearAllMocks();
   useSyncStore.getState().clear();
+  useSyncTransferStore.getState().reset();
   useServerStore.setState({
     connections: { [hostedVault.serverUrl]: { status: { connected: true, serverUrl: hostedVault.serverUrl }, hostedVaults: [] } },
   } as never);
@@ -184,6 +186,29 @@ describe('SyncStatusIndicator', () => {
     connections: { [hostedVault.serverUrl]: { status: { connected: true, serverUrl: hostedVault.serverUrl }, hostedVaults: [] } },
   } as never);
 
-    await waitFor(() => expect(syncReplicaManifestDelta).toHaveBeenCalledWith(hostedVault));
+    await waitFor(() => expect(syncReplicaManifestDelta).toHaveBeenCalledWith(hostedVault, expect.any(Function)));
+  });
+
+  it('shows active transfer progress and recent completion in the sync menu', async () => {
+    useVaultStore.setState({ vault: hostedVault } as never);
+    const transferId = useSyncTransferStore.getState().begin({
+      vaultId: hostedVault.hostedVaultId,
+      vaultName: hostedVault.name,
+      direction: 'download',
+      label: 'Downloading changes',
+      detail: 'Notes/Plan.md',
+      completed: 2,
+      total: 4,
+    });
+    render(<SyncStatusIndicator />);
+
+    fireEvent.click(await screen.findByText('Syncing…'));
+    expect(await screen.findByText('Active transfers (1)')).not.toBeNull();
+    expect(screen.getByText('50%')).not.toBeNull();
+    expect(screen.getByText(/Team Vault · Notes\/Plan\.md/)).not.toBeNull();
+
+    useSyncTransferStore.getState().complete(transferId, 'Download complete');
+    expect(await screen.findByText('Recent')).not.toBeNull();
+    expect(screen.getByText('Download complete')).not.toBeNull();
   });
 });

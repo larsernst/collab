@@ -58,6 +58,8 @@ export function circuitErrorText(error: unknown): string {
     case 'invalidBipolarModel': return 'The transistor model contains invalid parameters.';
     case 'convergenceFailed':
       return `The nonlinear DC solution did not converge after ${String(context.iterations ?? 'the maximum number of')} iterations.`;
+    case 'denseSolverSizeLimitExceeded':
+      return `This circuit requires ${String(context.unknowns ?? '?')} solver unknowns; the bounded dense backend currently supports ${String(context.maxUnknowns ?? '?')}.`;
     case 'timeLimitExceeded':
       return `The DC simulation exceeded its ${String(context.limitMillis ?? '?')} ms execution limit.`;
     case 'matrixMemoryLimitExceeded':

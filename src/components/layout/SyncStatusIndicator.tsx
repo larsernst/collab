@@ -4,6 +4,7 @@ import {
   AlertTriangle,
   ArrowUp,
   Check,
+  Download,
   FilePlus2,
   FolderInput,
   Loader2,
@@ -28,6 +29,8 @@ import {
   PopoverTrigger,
 } from '../ui/popover';
 import { Button } from '../ui/button';
+import { Progress } from '../ui/progress';
+import { transferPercent, useSyncTransferStore, type SyncTransfer } from '../../store/syncTransferStore';
 
 const POLL_INTERVAL_MS = 5000;
 
@@ -78,6 +81,50 @@ function PendingRow({ operation }: { operation: PendingOperation }) {
   );
 }
 
+function TransferRow({ transfer }: { transfer: SyncTransfer }) {
+  const percent = transferPercent(transfer);
+  const Icon = transfer.direction === 'upload' ? Upload : transfer.direction === 'download' ? Download : RefreshCw;
+  const count = transfer.total !== null
+    ? `${Math.min(transfer.completed, transfer.total)} of ${transfer.total}`
+    : null;
+  return (
+    <li className="rounded-md border border-border/50 bg-muted/20 px-2 py-1.5">
+      <div className="flex items-center gap-2">
+        <Icon size={12} className={cn(
+          'shrink-0',
+          transfer.status === 'failed' ? 'text-destructive' : 'text-sky-500',
+          transfer.direction === 'sync' && transfer.status === 'active' && 'app-spin-soft',
+        )} />
+        <div className="min-w-0 flex-1">
+          <div className="flex items-center gap-2">
+            <span className="truncate text-[11px] font-medium text-foreground">{transfer.label}</span>
+            {transfer.status === 'completed' && <Check size={11} className="ml-auto shrink-0 text-emerald-500" />}
+            {transfer.status === 'failed' && <AlertTriangle size={11} className="ml-auto shrink-0 text-destructive" />}
+            {transfer.status === 'active' && (percent !== null || count) && (
+              <span className="ml-auto shrink-0 text-[10px] tabular-nums text-muted-foreground">
+                {percent !== null ? `${percent}%` : count}
+              </span>
+            )}
+          </div>
+          {(transfer.vaultName || transfer.detail || transfer.error) && (
+            <p className={cn(
+              'mt-0.5 truncate text-[10px] text-muted-foreground',
+              transfer.error && 'text-destructive',
+            )} title={transfer.error ?? transfer.detail ?? undefined}>
+              {transfer.error ?? [transfer.vaultName, transfer.detail].filter(Boolean).join(' · ')}
+            </p>
+          )}
+        </div>
+      </div>
+      {transfer.status === 'active' && (
+        percent !== null
+          ? <Progress value={percent} className="mt-1.5 h-1" />
+          : <div className="mt-1.5 h-1 overflow-hidden rounded-full bg-primary/20"><div className="h-full w-1/3 animate-pulse rounded-full bg-primary" /></div>
+      )}
+    </li>
+  );
+}
+
 /**
  * Live sync-status indicator for the open hosted vault. The compact status-bar
  * chip rolls up the replica's offline-sync state (synced / syncing / pending /
@@ -96,6 +143,8 @@ export default function SyncStatusIndicator() {
   const { status, lastSyncedAt, pending, failed, access, isSyncing, refresh, syncNow, retry, discard, removeReplica } =
     useSyncStore();
   const clear = useSyncStore((state) => state.clear);
+  const transfers = useSyncTransferStore((state) => state.transfers);
+  const clearFinishedTransfers = useSyncTransferStore((state) => state.clearFinished);
   const [open, setOpen] = useState(false);
   const [busyOp, setBusyOp] = useState<string | null>(null);
   const lastConflictCount = useRef(0);
@@ -188,9 +237,11 @@ export default function SyncStatusIndicator() {
   }, [failed.length]);
 
   const rollup = useMemo(
-    () => syncRollup({ isSyncing, status, pending, failed }),
-    [isSyncing, status, pending, failed],
+    () => syncRollup({ isSyncing: isSyncing || transfers.some((transfer) => transfer.status === 'active'), status, pending, failed }),
+    [isSyncing, status, pending, failed, transfers],
   );
+  const activeTransfers = transfers.filter((transfer) => transfer.status === 'active');
+  const recentTransfers = transfers.filter((transfer) => transfer.status !== 'active').slice(0, 5);
 
   if (!hostedVault) return null;
 
@@ -295,7 +346,9 @@ export default function SyncStatusIndicator() {
                 : rollup === 'conflicts'
                   ? 'Sync needs attention'
                   : rollup === 'syncing'
-                    ? 'Syncing…'
+                    ? activeTransfers.length > 0
+                      ? `${activeTransfers.length} active transfer${activeTransfers.length === 1 ? '' : 's'}`
+                      : 'Syncing…'
                     : rollup === 'pending'
                       ? `${pending.length} change${pending.length === 1 ? '' : 's'} pending`
                       : 'Up to date'}
@@ -333,6 +386,17 @@ export default function SyncStatusIndicator() {
         )}
 
         <div className="max-h-72 overflow-y-auto px-2 py-2">
+          {activeTransfers.length > 0 && (
+            <div className="mb-2">
+              <p className="mb-1 px-1 text-[10px] font-semibold uppercase tracking-widest text-muted-foreground">
+                Active transfers ({activeTransfers.length})
+              </p>
+              <ul className="flex flex-col gap-1">
+                {activeTransfers.map((transfer) => <TransferRow key={transfer.id} transfer={transfer} />)}
+              </ul>
+            </div>
+          )}
+
           {failed.length > 0 && (
             <div className="mb-2">
               <p className="mb-1 flex items-center gap-1 px-1 text-[10px] font-semibold uppercase tracking-widest text-destructive">
@@ -387,11 +451,25 @@ export default function SyncStatusIndicator() {
             </>
           ) : (
             failed.length === 0 &&
-            !accessLost && (
+            !accessLost && activeTransfers.length === 0 && recentTransfers.length === 0 && (
               <p className="px-1 py-3 text-center text-[11px] text-muted-foreground">
                 All changes are synced.
               </p>
             )
+          )}
+
+          {recentTransfers.length > 0 && (
+            <div className="mt-2 border-t border-border/50 pt-2">
+              <div className="mb-1 flex items-center justify-between px-1">
+                <p className="text-[10px] font-semibold uppercase tracking-widest text-muted-foreground">Recent</p>
+                <button className="text-[10px] text-muted-foreground hover:text-foreground" onClick={clearFinishedTransfers}>
+                  Clear
+                </button>
+              </div>
+              <ul className="flex flex-col gap-1">
+                {recentTransfers.map((transfer) => <TransferRow key={transfer.id} transfer={transfer} />)}
+              </ul>
+            </div>
           )}
         </div>
       </PopoverContent>

@@ -33,6 +33,7 @@ export function useServerAutoReconnect(): void {
     let cancelled = false;
     const wasConnected = new Map<string, boolean>();
     const reconnecting = new Set<string>();
+    const refreshingInventories = new Set<string>();
 
     const evaluate = async () => {
       if (cancelled) return;
@@ -46,6 +47,20 @@ export function useServerAutoReconnect(): void {
             void useSyncStore.getState().syncAllForServer(serverUrl);
           }
           wasConnected.set(serverUrl, connected);
+
+          // The inventory carries each vault's authoritative manifest sequence.
+          // Refreshing it drives stale full offline copies without downloading
+          // anything when the local sequence is already current.
+          if (connected && !refreshingInventories.has(serverUrl)) {
+            refreshingInventories.add(serverUrl);
+            try {
+              await useServerStore.getState().loadHostedVaults(serverUrl, { quiet: true });
+            } catch {
+              // A transient inventory failure is retried by the next heartbeat.
+            } finally {
+              refreshingInventories.delete(serverUrl);
+            }
+          }
 
           // Quiet reconnect while saved but not live. `autoReconnect` only mutates
           // the store on success, so a failed attempt does not re-trigger this via

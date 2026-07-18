@@ -1,6 +1,6 @@
 import { create } from 'zustand';
 
-import type { HostedVaultMeta } from '../types/vault';
+import { hostedVaultMeta, type HostedVaultMeta, type HostedVaultSummary } from '../types/vault';
 import {
   classifyVaultAccessError,
   deriveVaultAccess,
@@ -15,12 +15,14 @@ import {
   type PendingOperation,
   type PendingOperationRecovery,
   type ReplicaSummary,
+  type ReplicaSyncProgress,
   type SyncStatus,
   type VaultAccessState,
 } from '../lib/vaultReplica';
 import { tauriCommands } from '../lib/tauri';
 import { useVaultStore } from './vaultStore';
 import type { MemberRole } from '../types/vault';
+import { useSyncTransferStore } from './syncTransferStore';
 
 /** The coarse rollup the status-bar indicator renders. */
 export type SyncRollup = 'synced' | 'syncing' | 'pending' | 'conflicts';
@@ -57,11 +59,37 @@ interface SyncStoreState {
    * of that server's vaults — not just the open one — are pushed automatically.
    */
   syncAllForServer: (serverUrl: string) => Promise<void>;
+  /** Pull server changes into stale full offline copies for one connected server. */
+  refreshOfflineCopiesForServer: (serverUrl: string, vaults: HostedVaultSummary[]) => Promise<void>;
   clear: () => void;
 }
 
 function vaultKeyFor(vault: HostedVaultMeta): string {
   return `${vault.serverUrl}|${vault.hostedVaultId}`;
+}
+
+function beginSyncTransfer(vault: HostedVaultMeta, label = `Syncing ${vault.name}`): string {
+  return useSyncTransferStore.getState().begin({
+    vaultId: vault.hostedVaultId,
+    vaultName: vault.name,
+    direction: 'sync',
+    label,
+  });
+}
+
+function reportSyncTransfer(id: string, progress: ReplicaSyncProgress): void {
+  const action = progress.direction === 'upload'
+    ? 'Uploading changes'
+    : progress.direction === 'download'
+      ? 'Downloading changes'
+      : 'Checking for changes';
+  useSyncTransferStore.getState().update(id, {
+    direction: progress.direction,
+    label: action,
+    detail: progress.detail ?? null,
+    completed: progress.completed,
+    total: progress.total,
+  });
 }
 
 /**
@@ -120,14 +148,17 @@ export const useSyncStore = create<SyncStoreState>((set, get) => ({
 
   syncNow: async (vault) => {
     if (get().isSyncing) return;
+    const transferId = beginSyncTransfer(vault);
     set({ isSyncing: true });
     try {
       // `syncReplicaManifestDelta` replays the pending queue first, then pulls
       // the manifest delta. It emits replica-mutation events that drive a
       // refresh, but refresh once more so the snapshot is current on return.
-      await syncReplicaManifestDelta(vault);
+      await syncReplicaManifestDelta(vault, (progress) => reportSyncTransfer(transferId, progress));
       await get().refresh(vault);
+      useSyncTransferStore.getState().complete(transferId, 'Sync complete');
     } catch (error) {
+      useSyncTransferStore.getState().fail(transferId, error);
       // Refresh so the queue/failed list is current, then classify access loss
       // (covers the no-pending case where `refresh` can't derive it). A plain
       // connectivity error is left to the connection indicator; anything else is
@@ -156,11 +187,20 @@ export const useSyncStore = create<SyncStoreState>((set, get) => ({
 
   makeAvailableOffline: async (vault, onProgress) => {
     if (get().isSyncing) throw new Error('A sync is already running.');
+    const transferId = beginSyncTransfer(vault, `Downloading ${vault.name}`);
+    useSyncTransferStore.getState().update(transferId, { direction: 'download' });
     set({ isSyncing: true });
     try {
-      const report = await makeHostedVaultAvailableOffline(vault, onProgress);
+      const report = await makeHostedVaultAvailableOffline(vault, (completed, total) => {
+        onProgress?.(completed, total);
+        useSyncTransferStore.getState().update(transferId, { completed, total });
+      });
       await get().refresh(vault);
+      useSyncTransferStore.getState().complete(transferId, 'Offline copy downloaded');
       return report;
+    } catch (error) {
+      useSyncTransferStore.getState().fail(transferId, error);
+      throw error;
     } finally {
       set({ isSyncing: false });
     }
@@ -196,9 +236,12 @@ export const useSyncStore = create<SyncStoreState>((set, get) => ({
           openHosted.hostedVaultId === replica.vaultId
             ? openHosted
             : vaultMetaFromReplica(replica);
+        const transferId = beginSyncTransfer(vault);
         try {
-          await syncReplicaManifestDelta(vault);
-        } catch {
+          await syncReplicaManifestDelta(vault, (progress) => reportSyncTransfer(transferId, progress));
+          useSyncTransferStore.getState().complete(transferId, 'Background sync complete');
+        } catch (error) {
+          useSyncTransferStore.getState().fail(transferId, error);
           // Best-effort: a still-offline vault, a conflict, or lost access is
           // recorded in that replica's own queue and surfaced when it is opened.
         }
@@ -207,6 +250,57 @@ export const useSyncStore = create<SyncStoreState>((set, get) => ({
       set({ isSyncing: false });
       // Refresh the open vault's snapshot so the indicator reflects the sync.
       if (openHosted) await get().refresh(openHosted);
+    }
+  },
+
+  refreshOfflineCopiesForServer: async (serverUrl, vaults) => {
+    if (get().isSyncing) return;
+    let replicas: ReplicaSummary[];
+    try {
+      replicas = await listHostedVaultReplicas();
+    } catch {
+      return;
+    }
+
+    const serverVaults = new Map(
+      vaults
+        .filter((vault) => vault.status === 'active')
+        .map((vault) => [vault.id, vault]),
+    );
+    const targets = replicas.filter((replica) => {
+      const remote = serverVaults.get(replica.vaultId);
+      return replica.serverUrl === serverUrl
+        && !!replica.offlineAvailableAt
+        && !!remote
+        && remote.manifestSequence > replica.manifestSequence;
+    });
+    if (targets.length === 0) return;
+
+    const openVault = useVaultStore.getState().vault;
+    const openHosted = openVault && openVault.kind === 'hosted' ? openVault : null;
+    set({ isSyncing: true });
+    try {
+      for (const replica of targets) {
+        const remote = serverVaults.get(replica.vaultId);
+        if (!remote) continue;
+        const remoteVault = hostedVaultMeta(serverUrl, remote);
+        const transferId = beginSyncTransfer(remoteVault, `Updating offline copy · ${remote.name}`);
+        try {
+          // Use the latest server DTO so role and capability changes are applied
+          // before deciding whether cached file bodies may be refreshed.
+          await syncReplicaManifestDelta(remoteVault, (progress) => reportSyncTransfer(transferId, progress));
+          useSyncTransferStore.getState().complete(transferId, 'Offline copy updated');
+        } catch (error) {
+          useSyncTransferStore.getState().fail(transferId, error);
+          // Best-effort background pull. The next inventory heartbeat retries a
+          // still-stale copy without interrupting the user's current work.
+        }
+      }
+    } finally {
+      set({ isSyncing: false });
+      if (openHosted && openHosted.serverUrl === serverUrl) {
+        await get().refresh(openHosted);
+      }
     }
   },
 

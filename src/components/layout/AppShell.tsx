@@ -5,7 +5,6 @@ import Sidebar from './Sidebar';
 import TabBar from './TabBar';
 import StatusBar from './StatusBar';
 import { useVaultStore, useEditorStore, useNoteIndexStore, useUiStore } from '../../store';
-import { useServerStore } from '../../store/serverStore';
 import { createVaultClient } from '../../lib/vaultClient';
 import { onReplicaMutated } from '../../lib/vaultReplica';
 import { cn } from '../../lib/utils';
@@ -52,7 +51,6 @@ import { CircuitBoard, GitFork, Layout, LayoutDashboard, FileText, Settings as S
 
 export default function AppShell() {
   const { vault, refreshFileTree } = useVaultStore();
-  const loadHostedVaults = useServerStore((state) => state.loadHostedVaults);
   const { activeTabPath, openTabs, closeTab, setActiveTab } = useEditorStore();
   const { activeView, sidebarWidth, isSidebarOpen, setSidebarWidth, toggleSidebar, openSettings, closeSettings, isSettingsOpen, setActiveView } = useUiStore();
   const { setNotes, setIndexing } = useNoteIndexStore();
@@ -121,24 +119,6 @@ export default function AppShell() {
       unsubs.forEach((u) => u());
     };
   }, [vault?.path]);
-
-  // Hosted role/capability grants are server-authoritative and can change while
-  // the app is open. Refresh the hosted inventory periodically (and on focus) so
-  // the active vault metadata updates without requiring an app restart.
-  useEffect(() => {
-    if (!vault || vault.kind !== 'hosted') return;
-    const serverUrl = vault.serverUrl;
-    const refreshHostedAccess = () => {
-      loadHostedVaults(serverUrl).catch(() => {});
-    };
-    refreshHostedAccess();
-    const interval = window.setInterval(refreshHostedAccess, 15000);
-    window.addEventListener('focus', refreshHostedAccess);
-    return () => {
-      window.clearInterval(interval);
-      window.removeEventListener('focus', refreshHostedAccess);
-    };
-  }, [loadHostedVaults, vault?.path]);
 
   // Global keyboard shortcuts
   useEffect(() => {

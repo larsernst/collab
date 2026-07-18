@@ -42,7 +42,7 @@ Deferred until the core is stable:
 | 6.0 First-party foundation | Complete | Establish the Rust crate, typed model, deterministic behavior, and linear DC baseline. |
 | 6.1 Simulation document model | In progress | Add electrical values, probes, analyses, junctions, and source waveforms to `.logic`. |
 | 6.2 Schematic compiler | Complete | Compile validated `.logic` connectivity into deterministic electrical nets and solver systems. |
-| 6.3 DC operating point | In progress | Expand the baseline solver with diagnostics, nonlinear devices, and live overlays. |
+| 6.3 DC operating point | Complete | Expand the baseline solver with diagnostics, nonlinear devices, and live overlays. |
 | 6.4 Runtime integration | In progress | Run, cancel, and stream simulations through typed Tauri commands on desktop and Android. |
 | 6.5 Transient and DC sweep | Planned | Add dynamic elements, time integration, sweeps, and plot inspection. |
 | 6.6 AC analysis | Planned | Add small-signal magnitude/phase analysis and Bode plots. |
@@ -151,10 +151,12 @@ Implemented slice:
 - Passive-sign-convention component power, explicit component current direction, signed node/wire polarity, and iteration metadata in the typed Tauri result and desktop results panel.
 - Typed NPN operating-region diagnostics when a solved bias point enters unsupported reverse-active operation. The UI identifies the source component and reports its solved VBE/VCE values instead of silently presenting the approximation as a complete transistor model.
 - Strong-base-drive and saturation fixtures verify that the nonlinear solve remains bounded, respects the collector load limit, and no longer forces an impossible negative collector voltage.
+- Newton voltage limiting is scoped to nonlinear terminal nodes, so exact linear source nodes settle immediately instead of being throttled by junction damping. A 100 V resistor-limited diode fixture verifies convergence in fewer than 20 iterations.
+- A balanced Wheatstone bridge fixture verifies both analytic midpoint voltages and effectively zero bridge current.
 - Current direction is reported per component and through explicit branch probes. A branched electrical net does not have one well-defined wire current, so wire overlays remain voltage/polarity indicators.
 - Schematic context actions create persisted voltage probes from wires and branch-current probes from components. `circuit_solve_dc` returns typed probe values, and the results panel renders those focused readings separately from the complete operating-point tables.
 
-Remaining before Phase 6.3 is complete: broader difficult-convergence fixtures, digital bridge states, and sparse-backend evaluation.
+Phase 6.3 is complete. The sparse-backend evaluation found that a representative 256-node ladder stamps 766 nonzero entries into 65,536 possible dense cells (about 1.17% occupancy). The public model/result boundary remains backend-independent, but the current solver now enforces a 512-unknown ceiling in addition to its memory and wall-clock limits. A reviewed sparse backend is required before that ceiling or the compiler's bounded-diagram limits may be raised. Explicit digital bridge states remain scheduled for the Rust-owned mixed-signal boundary in Phase 6.7, where their thresholds, impedance, hysteresis, and event timing can be defined coherently.
 
 ## Phase 6.4: Runtime Integration
 
@@ -170,7 +172,7 @@ Implemented slice:
 - `AppState` owns a bounded native job registry with at most four active jobs and 32 retained entries. DC jobs run on named Rust worker threads instead of the webview or async runtime thread.
 - Typed Tauri commands start a job, poll its compact phase, request cancellation, and consume a terminal result exactly once. The original synchronous DC command remains available as a compatibility boundary, but the desktop editor no longer uses it.
 - Cancellation is checked before validation, throughout Newton iterations and dense elimination/back-substitution, and while assembling the result. Closing the editor requests cancellation while its poller drains the terminal result.
-- The shared DC solver enforces a 10-second wall-clock limit and a 32 MiB estimated dense working-set limit. Limit failures use typed simulation errors, and user cancellation takes priority when both conditions are observed.
+- The shared DC solver enforces a 10-second wall-clock limit, a 512-unknown dense-backend ceiling, and a 32 MiB estimated dense working-set limit. Limit failures use typed simulation errors, and user cancellation takes priority when competing conditions are observed.
 - Compact status polling reports phase, elapsed time, and queued/compiling/solving/finalizing stages. Desktop and Android share the pure TypeScript polling runner and structured-error formatter while keeping their platform controls separate.
 - Worker panics and solver failures become typed job failures. Cancelled and failed jobs never mutate the `.logic` source; failures clear the displayed operating point instead of leaving it looking current.
 - Desktop and Android expose Run DC and Cancel states and keep their UI responsive while native work is active. The Android viewer also renders solved wire polarity plus a read-only operating-point sheet for probes, voltages, currents, power, and model diagnostics.

@@ -8,6 +8,7 @@ import {
   type ServerConnection,
 } from './serverStore';
 import { useVaultStore } from './vaultStore';
+import { useSyncStore } from './syncStore';
 
 vi.mock('../lib/tauri', () => ({
   tauriCommands: {
@@ -122,6 +123,20 @@ describe('serverStore', () => {
       role: 'editor',
       capabilities: ['vault.read', 'file.write', 'kanban.card.move'],
     });
+  });
+
+  it('uses refreshed manifest sequences to schedule offline-copy updates', async () => {
+    useServerStore.setState({ connections: seed() });
+    vi.mocked(tauriCommands.hostedVaultRequest).mockResolvedValue([hostedVault]);
+    const refreshOfflineCopies = vi
+      .spyOn(useSyncStore.getState(), 'refreshOfflineCopiesForServer')
+      .mockResolvedValue(undefined);
+
+    await useServerStore.getState().loadHostedVaults(SERVER_URL, { quiet: true });
+
+    expect(refreshOfflineCopies).toHaveBeenCalledWith(SERVER_URL, [hostedVault]);
+    expect(useServerStore.getState().hostedVaultsFor(SERVER_URL)).toEqual([hostedVault]);
+    refreshOfflineCopies.mockRestore();
   });
 
   it('refuses to create a hosted vault when not connected to that server', async () => {

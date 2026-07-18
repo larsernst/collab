@@ -201,6 +201,7 @@ impl ReplicaStore {
                     vault_name: meta.vault_name,
                     manifest_sequence: sync_state.manifest_sequence,
                     last_synced_at: sync_state.last_synced_at,
+                    offline_available_at: sync_state.offline_available_at,
                     status: sync_state.status,
                     pending_count,
                     updated_at: meta.updated_at,
@@ -955,7 +956,7 @@ mod tests {
             .write_sync_state(&ReplicaSyncState {
                 manifest_sequence: 3,
                 last_synced_at: Some("2026-06-21T10:00:00Z".into()),
-                offline_available_at: None,
+                offline_available_at: Some("2026-06-21T10:05:00Z".into()),
                 status: SyncStatus::Offline,
             })
             .unwrap();
@@ -979,6 +980,10 @@ mod tests {
         assert_eq!(summaries[0].role.as_deref(), Some("editor"));
         assert_eq!(summaries[0].pending_count, 1);
         assert_eq!(summaries[0].manifest_sequence, 3);
+        assert_eq!(
+            summaries[0].offline_available_at.as_deref(),
+            Some("2026-06-21T10:05:00Z")
+        );
         assert_eq!(summaries[1].server_url, "https://b.example.test");
     }
 

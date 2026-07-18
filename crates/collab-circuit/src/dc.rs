@@ -74,6 +74,13 @@ pub enum SimulationError {
     SingularSystem { index: usize },
     #[error("the nonlinear DC solution did not converge after {iterations} iterations")]
     ConvergenceFailed { iterations: usize },
+    #[error(
+        "the dense DC solver supports at most {max_unknowns} unknowns, but this circuit requires {unknowns}"
+    )]
+    DenseSolverSizeLimitExceeded {
+        unknowns: usize,
+        max_unknowns: usize,
+    },
     #[error("the circuit simulation was cancelled")]
     Cancelled,
     #[error("the circuit simulation exceeded its {limit_millis} ms execution limit")]
@@ -99,11 +106,13 @@ const MAX_EXPONENT: f64 = 40.0;
 // to provide a configurable reverse-active transistor model.
 const NPN_REVERSE_BETA: f64 = 1.0;
 const DEFAULT_MAX_DC_DURATION: Duration = Duration::from_secs(10);
+const DEFAULT_MAX_DENSE_UNKNOWNS: usize = 512;
 const DEFAULT_MAX_DENSE_MATRIX_BYTES: usize = 32 * 1024 * 1024;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct DcSolveLimits {
     pub max_duration: Duration,
+    pub max_unknowns: usize,
     pub max_matrix_bytes: usize,
 }
 
@@ -111,6 +120,7 @@ impl Default for DcSolveLimits {
     fn default() -> Self {
         Self {
             max_duration: DEFAULT_MAX_DC_DURATION,
+            max_unknowns: DEFAULT_MAX_DENSE_UNKNOWNS,
             max_matrix_bytes: DEFAULT_MAX_DENSE_MATRIX_BYTES,
         }
     }
@@ -181,6 +191,12 @@ pub fn solve_dc_with_limits(
         .collect();
 
     let unknown_count = nodes.len() + branch_components.len();
+    if unknown_count > limits.max_unknowns {
+        return Err(SimulationError::DenseSolverSizeLimitExceeded {
+            unknowns: unknown_count,
+            max_unknowns: limits.max_unknowns,
+        });
+    }
     let required_matrix_bytes = dense_working_set_bytes(unknown_count).unwrap_or(usize::MAX);
     if required_matrix_bytes > limits.max_matrix_bytes {
         return Err(SimulationError::MatrixMemoryLimitExceeded {
@@ -195,6 +211,7 @@ pub fn solve_dc_with_limits(
             Component::Diode { .. } | Component::BipolarNpn { .. }
         )
     });
+    let limited_voltage_indices = nonlinear_voltage_indices(&components, &node_indices);
     let mut guess = vec![0.0; unknown_count];
     let mut solution = Vec::new();
     let mut iterations = 0;
@@ -220,7 +237,7 @@ pub fn solve_dc_with_limits(
             break;
         }
 
-        damp_voltage_update(&mut guess, &candidate, nodes.len());
+        damp_voltage_update(&mut guess, &candidate, &limited_voltage_indices);
     }
 
     if nonlinear && solution.is_empty() && unknown_count != 0 {
@@ -602,20 +619,43 @@ fn has_converged(previous: &[f64], next: &[f64]) -> bool {
     })
 }
 
-fn damp_voltage_update(guess: &mut [f64], candidate: &[f64], node_count: usize) {
-    let largest_voltage_step = guess
-        .iter()
-        .zip(candidate)
-        .take(node_count)
-        .map(|(previous, next)| (next - previous).abs())
-        .fold(0.0_f64, f64::max);
-    let damping = if largest_voltage_step > MAX_NEWTON_VOLTAGE_STEP {
-        MAX_NEWTON_VOLTAGE_STEP / largest_voltage_step
-    } else {
-        1.0
-    };
-    for (previous, next) in guess.iter_mut().zip(candidate) {
-        *previous += damping * (*next - *previous);
+fn nonlinear_voltage_indices(
+    components: &[&Component],
+    node_indices: &BTreeMap<NodeId, usize>,
+) -> BTreeSet<usize> {
+    let mut indices = BTreeSet::new();
+    for component in components {
+        let nonlinear_nodes: &[&NodeId] = match component {
+            Component::Diode { anode, cathode, .. } => &[anode, cathode],
+            Component::BipolarNpn {
+                base,
+                collector,
+                emitter,
+                ..
+            } => &[base, collector, emitter],
+            _ => &[],
+        };
+        for node in nonlinear_nodes {
+            if let Some(index) = node_indices.get(*node) {
+                indices.insert(*index);
+            }
+        }
+    }
+    indices
+}
+
+fn damp_voltage_update(
+    guess: &mut [f64],
+    candidate: &[f64],
+    limited_voltage_indices: &BTreeSet<usize>,
+) {
+    for (index, (previous, next)) in guess.iter_mut().zip(candidate).enumerate() {
+        let step = *next - *previous;
+        *previous += if limited_voltage_indices.contains(&index) {
+            step.clamp(-MAX_NEWTON_VOLTAGE_STEP, MAX_NEWTON_VOLTAGE_STEP)
+        } else {
+            step
+        };
     }
 }
 
@@ -937,6 +977,20 @@ mod tests {
             solve_dc_with_limits(
                 &circuit,
                 DcSolveLimits {
+                    max_unknowns: 0,
+                    ..DcSolveLimits::default()
+                },
+                || false,
+            ),
+            Err(SimulationError::DenseSolverSizeLimitExceeded {
+                unknowns: 1,
+                max_unknowns: 0,
+            })
+        );
+        assert_eq!(
+            solve_dc_with_limits(
+                &circuit,
+                DcSolveLimits {
                     max_duration: Duration::ZERO,
                     ..DcSolveLimits::default()
                 },
@@ -959,6 +1013,42 @@ mod tests {
                 max_bytes: 79,
             })
         );
+    }
+
+    #[test]
+    fn representative_ladder_system_demonstrates_sparse_backend_value() {
+        const NODE_COUNT: usize = 256;
+        let components = (0..NODE_COUNT)
+            .map(|index| Component::Resistor {
+                id: component(&format!("R{index}")),
+                positive: node(&format!("n{index}")),
+                negative: if index == 0 {
+                    node("0")
+                } else {
+                    node(&format!("n{}", index - 1))
+                },
+                resistance_ohms: 1_000.0,
+            })
+            .collect::<Vec<_>>();
+        let component_refs = components.iter().collect::<Vec<_>>();
+        let node_indices = (0..NODE_COUNT)
+            .map(|index| (node(&format!("n{index}")), index))
+            .collect::<BTreeMap<_, _>>();
+        let (matrix, _) = assemble_system(
+            &component_refs,
+            &node_indices,
+            &BTreeMap::new(),
+            &vec![0.0; NODE_COUNT],
+            NODE_COUNT,
+        );
+        let nonzero_entries = matrix
+            .iter()
+            .flatten()
+            .filter(|value| **value != 0.0)
+            .count();
+
+        assert_eq!(nonzero_entries, NODE_COUNT * 3 - 2);
+        assert!(nonzero_entries * 100 < NODE_COUNT * NODE_COUNT * 2);
     }
 
     #[test]
@@ -997,6 +1087,57 @@ mod tests {
         assert_close(result.component_powers[&component("R2")], 0.025);
         assert_close(result.component_powers[&component("V1")], -0.05);
         assert!(result.diagnostics.is_empty());
+    }
+
+    #[test]
+    fn solves_a_balanced_wheatstone_bridge_against_the_analytic_midpoint() {
+        let circuit = Circuit {
+            reference: node("0"),
+            components: vec![
+                Component::VoltageSource {
+                    id: component("V1"),
+                    positive: node("vin"),
+                    negative: node("0"),
+                    voltage_volts: 10.0,
+                },
+                Component::Resistor {
+                    id: component("R1"),
+                    positive: node("vin"),
+                    negative: node("left"),
+                    resistance_ohms: 1_000.0,
+                },
+                Component::Resistor {
+                    id: component("R2"),
+                    positive: node("left"),
+                    negative: node("0"),
+                    resistance_ohms: 1_000.0,
+                },
+                Component::Resistor {
+                    id: component("R3"),
+                    positive: node("vin"),
+                    negative: node("right"),
+                    resistance_ohms: 2_000.0,
+                },
+                Component::Resistor {
+                    id: component("R4"),
+                    positive: node("right"),
+                    negative: node("0"),
+                    resistance_ohms: 2_000.0,
+                },
+                Component::Resistor {
+                    id: component("RB"),
+                    positive: node("left"),
+                    negative: node("right"),
+                    resistance_ohms: 10_000.0,
+                },
+            ],
+        };
+
+        let result = solve_dc(&circuit).unwrap();
+        assert_close(result.node_voltages[&node("left")], 5.0);
+        assert_close(result.node_voltages[&node("right")], 5.0);
+        assert!(result.component_currents[&component("RB")].abs() < 1.0e-12);
+        assert_eq!(result.iterations, 1);
     }
 
     #[test]
@@ -1188,6 +1329,52 @@ mod tests {
             "unexpected diode current {diode_current}"
         );
         assert!(result.iterations > 1);
+    }
+
+    #[test]
+    fn converges_a_high_dynamic_range_resistor_limited_diode_bias() {
+        let circuit = Circuit {
+            reference: node("0"),
+            components: vec![
+                Component::VoltageSource {
+                    id: component("V1"),
+                    positive: node("vin"),
+                    negative: node("0"),
+                    voltage_volts: 100.0,
+                },
+                Component::Resistor {
+                    id: component("R1"),
+                    positive: node("vin"),
+                    negative: node("out"),
+                    resistance_ohms: 1_000_000.0,
+                },
+                Component::Diode {
+                    id: component("D1"),
+                    anode: node("out"),
+                    cathode: node("0"),
+                    saturation_current_amps: 1.0e-12,
+                    emission_coefficient: 1.0,
+                    thermal_voltage_volts: 0.025_852,
+                },
+            ],
+        };
+
+        let result = solve_dc(&circuit).unwrap();
+        let output = result.node_voltages[&node("out")];
+        let current = result.component_currents[&component("D1")];
+        assert!(
+            (0.45..0.52).contains(&output),
+            "unexpected diode voltage {output}"
+        );
+        assert!(
+            (99.0e-6..100.0e-6).contains(&current),
+            "unexpected diode current {current}"
+        );
+        assert!(
+            result.iterations < 20,
+            "unexpected iteration count {}",
+            result.iterations
+        );
     }
 
     #[test]

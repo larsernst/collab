@@ -8,6 +8,7 @@ import {
   upsertKnownServer,
 } from '../lib/hostedServers';
 import type { HostedVaultSummary } from '../types/vault';
+import { useSyncStore } from './syncStore';
 
 // Retained for the login form's "last used" prefill; the durable list of servers
 // to restore lives in `hostedServers` (`collab-hosted-servers`).
@@ -88,7 +89,7 @@ interface ServerState {
    */
   autoReconnect: (serverUrl: string) => Promise<RestoreSessionResult>;
   disconnect: (serverUrl: string) => Promise<void>;
-  loadHostedVaults: (serverUrl: string) => Promise<void>;
+  loadHostedVaults: (serverUrl: string, options?: { quiet?: boolean }) => Promise<void>;
   createHostedVault: (serverUrl: string, name: string) => Promise<HostedVaultSummary>;
 }
 
@@ -233,10 +234,11 @@ export const useServerStore = create<ServerState>()((set, get) => {
       set({ error: null });
     },
 
-    loadHostedVaults: async (serverUrl) => {
+    loadHostedVaults: async (serverUrl, options) => {
       const status = get().statusFor(serverUrl);
       if (!status?.connected || !status.serverUrl) return;
-      set({ isLoading: true, error: null });
+      const quiet = options?.quiet === true;
+      if (!quiet) set({ isLoading: true, error: null });
       try {
         const hostedVaults = await tauriCommands.hostedVaultRequest<HostedVaultSummary[]>(
           status.serverUrl,
@@ -245,10 +247,13 @@ export const useServerStore = create<ServerState>()((set, get) => {
         );
         useVaultStore.getState().refreshHostedVaultMetadata(status.serverUrl, hostedVaults);
         setConnection(status, hostedVaults);
-        set({ isLoading: false });
+        if (!quiet) set({ isLoading: false });
+        void useSyncStore.getState().refreshOfflineCopiesForServer(status.serverUrl, hostedVaults);
       } catch (error) {
-        setConnection(status, []);
-        set({ isLoading: false, error: String(error) });
+        if (!quiet) {
+          setConnection(status, []);
+          set({ isLoading: false, error: String(error) });
+        }
         throw error;
       }
     },

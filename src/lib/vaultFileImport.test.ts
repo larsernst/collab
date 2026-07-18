@@ -8,6 +8,7 @@ import {
 } from './vaultFileImport';
 import { tauriCommands } from './tauri';
 import type { VaultClient } from './vaultClient';
+import { useSyncTransferStore } from '../store/syncTransferStore';
 
 vi.mock('./tauri', () => ({
   tauriCommands: {
@@ -50,7 +51,10 @@ describe('vaultFileImport categorization', () => {
 });
 
 describe('importExternalFilesIntoVault', () => {
-  beforeEach(() => vi.clearAllMocks());
+  beforeEach(() => {
+    vi.clearAllMocks();
+    useSyncTransferStore.getState().reset();
+  });
 
   it('routes images to Pictures and PDFs to the vault root by default', async () => {
     const { client, importMock } = makeClient();
@@ -167,5 +171,23 @@ describe('importExternalFilesIntoVault', () => {
 
     expect(result.imported).toEqual([]);
     expect(result.failed[0]).toEqual({ name: 'cat.png', error: 'Error: upload failed' });
+  });
+
+  it('reports hosted drag-import progress in the sync transfer list', async () => {
+    const { client, importMock } = makeClient({ kind: 'hosted', id: 'vault-1', name: 'Team Vault' } as Partial<VaultClient>);
+    importMock
+      .mockResolvedValueOnce('Pictures/a.png')
+      .mockResolvedValueOnce('Pictures/b.png');
+
+    await importExternalFilesIntoVault(client, ['/x/a.png', '/x/b.png']);
+
+    expect(useSyncTransferStore.getState().transfers[0]).toMatchObject({
+      vaultId: 'vault-1',
+      direction: 'upload',
+      completed: 2,
+      total: 2,
+      label: 'Uploaded 2 files',
+      status: 'completed',
+    });
   });
 });
