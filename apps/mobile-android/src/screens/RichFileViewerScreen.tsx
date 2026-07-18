@@ -2,6 +2,7 @@ import {
   ArrowLeft,
   Calendar,
   CheckCircle2,
+  ChartLine,
   CircuitBoard,
   CircleDot,
   Diamond,
@@ -75,15 +76,21 @@ import {
 import type { HostedFileEntry } from '../mobileTauri';
 import {
   circuitCancelJob,
+  circuitDiscardJob,
   circuitJobStatus,
+  circuitReadSweepChunk,
   circuitStartDc,
+  circuitStartDcSweep,
   circuitTakeJobResult,
   type CircuitDcResult,
   type CircuitJobStatus,
+  type CircuitSweepResult,
 } from '../mobileTauri';
 import { useMobileStore } from '../state/store';
 import { runCircuitJob, type CircuitJobClient } from '../../../../src/lib/circuitJobRunner';
+import { runCircuitSweepJob, type CircuitSweepJobClient } from '../../../../src/lib/circuitSweepRunner';
 import { circuitErrorText } from '../../../../src/lib/circuitErrorText';
+import { CircuitSweepPlot } from '../../../../src/components/logic/CircuitSweepPlot';
 
 const workerUrl = new URL('pdfjs-dist/legacy/build/pdf.worker.mjs', import.meta.url).toString();
 GlobalWorkerOptions.workerSrc = workerUrl;
@@ -91,6 +98,13 @@ const MOBILE_CIRCUIT_JOB_CLIENT: CircuitJobClient = {
   start: circuitStartDc,
   status: circuitJobStatus,
   takeResult: circuitTakeJobResult,
+};
+const MOBILE_SWEEP_JOB_CLIENT: CircuitSweepJobClient = {
+  start: circuitStartDcSweep,
+  status: circuitJobStatus,
+  takeResult: circuitTakeJobResult,
+  readChunk: circuitReadSweepChunk,
+  discard: circuitDiscardJob,
 };
 const ANALOG_ACTIVE_VOLTAGE = 1e-9;
 
@@ -1659,10 +1673,14 @@ export function LogicMobileViewer({
   const [pan, setPan] = useState<TouchPoint>({ x: 0, y: 0 });
   const [inputValues, setInputValues] = useState<Record<string, boolean>>({});
   const [circuitRunning, setCircuitRunning] = useState(false);
+  const [circuitRunKind, setCircuitRunKind] = useState<'dc' | 'sweep' | null>(null);
   const [circuitStatus, setCircuitStatus] = useState<CircuitJobStatus | null>(null);
   const [circuitResult, setCircuitResult] = useState<CircuitDcResult | null>(null);
   const [circuitError, setCircuitError] = useState<string | null>(null);
   const [circuitResultsOpen, setCircuitResultsOpen] = useState(false);
+  const [sweepResult, setSweepResult] = useState<CircuitSweepResult | null>(null);
+  const [sweepError, setSweepError] = useState<string | null>(null);
+  const [sweepResultsOpen, setSweepResultsOpen] = useState(false);
   const circuitJobIdRef = useRef<string | null>(null);
   const circuitRunSequenceRef = useRef(0);
   const circuitMountedRef = useRef(true);
@@ -1684,10 +1702,14 @@ export function LogicMobileViewer({
   useEffect(() => {
     circuitMountedRef.current = true;
     setCircuitRunning(false);
+    setCircuitRunKind(null);
     setCircuitStatus(null);
     setCircuitResult(null);
     setCircuitError(null);
     setCircuitResultsOpen(false);
+    setSweepResult(null);
+    setSweepError(null);
+    setSweepResultsOpen(false);
     return () => {
       circuitMountedRef.current = false;
       circuitRunSequenceRef.current += 1;
@@ -1727,10 +1749,12 @@ export function LogicMobileViewer({
     const runSequence = ++circuitRunSequenceRef.current;
     let startedJobId: string | null = null;
     setCircuitRunning(true);
+    setCircuitRunKind('dc');
     setCircuitStatus(null);
     setCircuitResult(null);
     setCircuitError(null);
     setCircuitResultsOpen(true);
+    setSweepResultsOpen(false);
     try {
       const outcome = await runCircuitJob(MOBILE_CIRCUIT_JOB_CLIENT, logic, {
         onStarted: (jobId) => {
@@ -1763,6 +1787,59 @@ export function LogicMobileViewer({
       if (circuitMountedRef.current && circuitRunSequenceRef.current === runSequence) {
         setCircuitStatus(null);
         setCircuitRunning(false);
+        setCircuitRunKind(null);
+      }
+    }
+  }, [circuitRunning, logic]);
+
+  const runDcSweep = useCallback(async () => {
+    if (logic.diagramMode !== 'schematic' || circuitRunning || !logic.simulation?.dcSweep) return;
+    if ((logic.simulation.probes?.length ?? 0) === 0) {
+      setSweepError('This sweep has no configured voltage or current probes.');
+      setSweepResultsOpen(true);
+      return;
+    }
+    const runSequence = ++circuitRunSequenceRef.current;
+    let startedJobId: string | null = null;
+    setCircuitRunning(true);
+    setCircuitRunKind('sweep');
+    setSweepResult(null);
+    setSweepError(null);
+    setSweepResultsOpen(true);
+    setCircuitResultsOpen(false);
+    try {
+      const result = await runCircuitSweepJob(MOBILE_SWEEP_JOB_CLIENT, logic, {
+        onStarted: (jobId) => {
+          startedJobId = jobId;
+          circuitJobIdRef.current = jobId;
+          if (circuitMountedRef.current && circuitRunSequenceRef.current === runSequence) {
+            setCircuitStatus({ phase: 'queued', stage: 'queued', elapsedMillis: 0 });
+          } else {
+            void circuitCancelJob(jobId).catch(() => undefined);
+          }
+        },
+        onStatus: (status) => {
+          if (circuitMountedRef.current && circuitRunSequenceRef.current === runSequence) {
+            setCircuitStatus(status);
+          }
+        },
+      });
+      if (!circuitMountedRef.current || circuitRunSequenceRef.current !== runSequence) return;
+      if ('sourceValues' in result) {
+        setSweepResult(result);
+      } else if (result.state === 'failed') {
+        throw result.error;
+      }
+    } catch (error) {
+      if (circuitMountedRef.current && circuitRunSequenceRef.current === runSequence) {
+        setSweepError(circuitErrorText(error));
+      }
+    } finally {
+      if (startedJobId && circuitJobIdRef.current === startedJobId) circuitJobIdRef.current = null;
+      if (circuitMountedRef.current && circuitRunSequenceRef.current === runSequence) {
+        setCircuitStatus(null);
+        setCircuitRunning(false);
+        setCircuitRunKind(null);
       }
     }
   }, [circuitRunning, logic]);
@@ -1776,9 +1853,12 @@ export function LogicMobileViewer({
         setCircuitStatus((current) => current ? { ...current, phase } : current);
       }
     } catch (error) {
-      if (circuitMountedRef.current) setCircuitError(circuitErrorText(error));
+      if (circuitMountedRef.current) {
+        if (circuitRunKind === 'sweep') setSweepError(circuitErrorText(error));
+        else setCircuitError(circuitErrorText(error));
+      }
     }
-  }, []);
+  }, [circuitRunKind]);
 
   function fitToStage() {
     const stage = stageRef.current;
@@ -1916,25 +1996,57 @@ export function LogicMobileViewer({
                 <button
                   type="button"
                   className="logic-circuit-action"
-                  aria-label={circuitRunning ? 'Cancel DC simulation' : 'Run DC simulation'}
-                  disabled={circuitRunning && (!circuitStatus || circuitStatus.phase === 'cancelling')}
+                  aria-label={circuitRunning && circuitRunKind === 'dc' ? 'Cancel DC simulation' : 'Run DC simulation'}
+                  disabled={(circuitRunning && circuitRunKind !== 'dc') || (circuitRunning && (!circuitStatus || circuitStatus.phase === 'cancelling'))}
                   onTouchStart={(event) => event.stopPropagation()}
-                  onClick={() => circuitRunning ? void cancelDcSimulation() : void runDcSimulation()}
+                  onClick={() => circuitRunning && circuitRunKind === 'dc' ? void cancelDcSimulation() : void runDcSimulation()}
                 >
-                  {circuitRunning && (!circuitStatus || circuitStatus.phase === 'cancelling')
+                  {circuitRunning && circuitRunKind === 'dc' && (!circuitStatus || circuitStatus.phase === 'cancelling')
                     ? <Spinner size={14} />
-                    : circuitRunning ? <X size={14} aria-hidden /> : <Play size={14} aria-hidden />}
-                  <span>{circuitRunning ? circuitStageLabel(circuitStatus) : 'Run DC'}</span>
+                    : circuitRunning && circuitRunKind === 'dc' ? <X size={14} aria-hidden /> : <Play size={14} aria-hidden />}
+                  <span>{circuitRunning && circuitRunKind === 'dc' ? circuitStageLabel(circuitStatus) : 'Run DC'}</span>
                 </button>
+                {logic.simulation?.dcSweep ? (
+                  <button
+                    type="button"
+                    className="logic-circuit-action"
+                    aria-label={circuitRunning && circuitRunKind === 'sweep' ? 'Cancel DC sweep' : 'Run DC sweep'}
+                    disabled={(circuitRunning && circuitRunKind !== 'sweep') || (circuitRunning && (!circuitStatus || circuitStatus.phase === 'cancelling'))}
+                    onTouchStart={(event) => event.stopPropagation()}
+                    onClick={() => circuitRunning && circuitRunKind === 'sweep' ? void cancelDcSimulation() : void runDcSweep()}
+                  >
+                    {circuitRunning && circuitRunKind === 'sweep' && (!circuitStatus || circuitStatus.phase === 'cancelling')
+                      ? <Spinner size={14} />
+                      : circuitRunning && circuitRunKind === 'sweep' ? <X size={14} aria-hidden /> : <ChartLine size={14} aria-hidden />}
+                    <span>{circuitRunning && circuitRunKind === 'sweep' ? circuitStageLabel(circuitStatus) : 'Sweep'}</span>
+                  </button>
+                ) : null}
                 {!circuitResultsOpen && (circuitResult || circuitError) ? (
                   <button
                     type="button"
                     className="logic-circuit-result-button"
                     aria-label="Show DC results"
                     onTouchStart={(event) => event.stopPropagation()}
-                    onClick={() => setCircuitResultsOpen(true)}
+                    onClick={() => {
+                      setSweepResultsOpen(false);
+                      setCircuitResultsOpen(true);
+                    }}
                   >
                     <Zap size={14} aria-hidden />
+                  </button>
+                ) : null}
+                {!sweepResultsOpen && (sweepResult || sweepError) ? (
+                  <button
+                    type="button"
+                    className="logic-circuit-result-button"
+                    aria-label="Show DC sweep results"
+                    onTouchStart={(event) => event.stopPropagation()}
+                    onClick={() => {
+                      setCircuitResultsOpen(false);
+                      setSweepResultsOpen(true);
+                    }}
+                  >
+                    <ChartLine size={14} aria-hidden />
                   </button>
                 ) : null}
               </>
@@ -2030,9 +2142,74 @@ export function LogicMobileViewer({
               onClose={() => setCircuitResultsOpen(false)}
             />
           ) : null}
+          {logic.diagramMode === 'schematic' && sweepResultsOpen ? (
+            <MobileCircuitSweepResults
+              logic={logic}
+              result={sweepResult}
+              error={sweepError}
+              running={circuitRunning && circuitRunKind === 'sweep'}
+              status={circuitStatus}
+              onClose={() => setSweepResultsOpen(false)}
+            />
+          ) : null}
         </>
       )}
     </section>
+  );
+}
+
+function MobileCircuitSweepResults({
+  logic,
+  result,
+  error,
+  running,
+  status,
+  onClose,
+}: {
+  logic: LogicDiagramDocument;
+  result: CircuitSweepResult | null;
+  error: string | null;
+  running: boolean;
+  status: CircuitJobStatus | null;
+  onClose: () => void;
+}) {
+  const sourceNode = result ? logic.nodes.find((node) => node.id === result.source) : null;
+  return (
+    <aside className="mobile-circuit-results mobile-circuit-sweep-results" aria-label="DC sweep results">
+      <header>
+        <ChartLine size={16} aria-hidden />
+        <strong>DC source sweep</strong>
+        <button type="button" className="icon-button" aria-label="Close DC sweep results" onClick={onClose}>
+          <X size={15} aria-hidden />
+        </button>
+      </header>
+      <div className="mobile-circuit-results-body">
+        {running ? (
+          <div className="mobile-circuit-status">
+            <Spinner size={15} />
+            <span>{circuitStageLabel(status)}</span>
+            {status ? <small>{status.elapsedMillis} ms</small> : null}
+          </div>
+        ) : null}
+        {error && !running ? (
+          <div className="mobile-circuit-error">
+            <strong>Sweep failed</strong>
+            <span>{error}</span>
+          </div>
+        ) : null}
+        {result && !running ? (
+          <>
+            <p className="mobile-circuit-summary">
+              {result.sampleCount.toLocaleString()} samples · {result.traces.length} {result.traces.length === 1 ? 'trace' : 'traces'}
+            </p>
+            <CircuitSweepPlot
+              result={result}
+              sourceLabel={sourceNode ? logicNodeLabel(sourceNode) : result.source}
+            />
+          </>
+        ) : null}
+      </div>
+    </aside>
   );
 }
 

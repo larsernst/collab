@@ -18,14 +18,38 @@ struct OcrLanguageDefinition {
 }
 
 const OCR_LANGUAGES: &[OcrLanguageDefinition] = &[
-    OcrLanguageDefinition { code: "eng", label: "English" },
-    OcrLanguageDefinition { code: "deu", label: "German" },
-    OcrLanguageDefinition { code: "fra", label: "French" },
-    OcrLanguageDefinition { code: "spa", label: "Spanish" },
-    OcrLanguageDefinition { code: "ita", label: "Italian" },
-    OcrLanguageDefinition { code: "por", label: "Portuguese" },
-    OcrLanguageDefinition { code: "nld", label: "Dutch" },
-    OcrLanguageDefinition { code: "pol", label: "Polish" },
+    OcrLanguageDefinition {
+        code: "eng",
+        label: "English",
+    },
+    OcrLanguageDefinition {
+        code: "deu",
+        label: "German",
+    },
+    OcrLanguageDefinition {
+        code: "fra",
+        label: "French",
+    },
+    OcrLanguageDefinition {
+        code: "spa",
+        label: "Spanish",
+    },
+    OcrLanguageDefinition {
+        code: "ita",
+        label: "Italian",
+    },
+    OcrLanguageDefinition {
+        code: "por",
+        label: "Portuguese",
+    },
+    OcrLanguageDefinition {
+        code: "nld",
+        label: "Dutch",
+    },
+    OcrLanguageDefinition {
+        code: "pol",
+        label: "Polish",
+    },
 ];
 
 #[derive(Debug, Serialize)]
@@ -49,7 +73,10 @@ pub struct OcrLanguagePackData {
 }
 
 fn language_definition(code: &str) -> Option<OcrLanguageDefinition> {
-    OCR_LANGUAGES.iter().copied().find(|language| language.code == code)
+    OCR_LANGUAGES
+        .iter()
+        .copied()
+        .find(|language| language.code == code)
 }
 
 fn official_fast_url(code: &str) -> String {
@@ -57,8 +84,12 @@ fn official_fast_url(code: &str) -> String {
 }
 
 fn language_pack_dir() -> Result<PathBuf, String> {
-    let dir = app_config_dir()?.join("ocr").join("languages").join("official-fast");
-    std::fs::create_dir_all(&dir).map_err(|e| format!("Failed to create OCR language directory: {e}"))?;
+    let dir = app_config_dir()?
+        .join("ocr")
+        .join("languages")
+        .join("official-fast");
+    std::fs::create_dir_all(&dir)
+        .map_err(|e| format!("Failed to create OCR language directory: {e}"))?;
     Ok(dir)
 }
 
@@ -71,7 +102,8 @@ fn metadata_path(code: &str) -> Result<PathBuf, String> {
 }
 
 fn file_sha256(path: &PathBuf) -> Result<String, String> {
-    let bytes = std::fs::read(path).map_err(|e| format!("Failed to read OCR language pack: {e}"))?;
+    let bytes =
+        std::fs::read(path).map_err(|e| format!("Failed to read OCR language pack: {e}"))?;
     let mut hasher = Sha256::new();
     hasher.update(bytes);
     Ok(hex::encode(hasher.finalize()))
@@ -90,7 +122,12 @@ fn installed_metadata(code: &str) -> (Option<u64>, Option<String>, Option<String
         .ok()
         .and_then(|path| std::fs::read_to_string(path).ok())
         .and_then(|raw| serde_json::from_str::<serde_json::Value>(&raw).ok())
-        .and_then(|value| value.get("installedAt").and_then(|value| value.as_str()).map(str::to_string));
+        .and_then(|value| {
+            value
+                .get("installedAt")
+                .and_then(|value| value.as_str())
+                .map(str::to_string)
+        });
     (size_bytes, sha256, installed_at)
 }
 
@@ -125,7 +162,8 @@ pub fn list_ocr_language_packs() -> Result<Vec<OcrLanguagePack>, String> {
 
 #[tauri::command]
 pub async fn install_ocr_language_pack(code: String) -> Result<OcrLanguagePack, String> {
-    let language = language_definition(&code).ok_or_else(|| "Unsupported OCR language pack".to_string())?;
+    let language =
+        language_definition(&code).ok_or_else(|| "Unsupported OCR language pack".to_string())?;
     if language.code == "eng" {
         return Ok(pack_info(language));
     }
@@ -139,7 +177,10 @@ pub async fn install_ocr_language_pack(code: String) -> Result<OcrLanguagePack, 
         .map_err(|e| format!("Failed to download OCR language pack: {e}"))?;
 
     if !response.status().is_success() {
-        return Err(format!("Failed to download OCR language pack: HTTP {}", response.status()));
+        return Err(format!(
+            "Failed to download OCR language pack: HTTP {}",
+            response.status()
+        ));
     }
 
     if let Some(length) = response.content_length() {
@@ -161,8 +202,10 @@ pub async fn install_ocr_language_pack(code: String) -> Result<OcrLanguagePack, 
 
     let pack_path = language_pack_path(language.code)?;
     let temp_path = pack_path.with_extension("traineddata.part");
-    std::fs::write(&temp_path, &bytes).map_err(|e| format!("Failed to write OCR language pack: {e}"))?;
-    std::fs::rename(&temp_path, &pack_path).map_err(|e| format!("Failed to install OCR language pack: {e}"))?;
+    std::fs::write(&temp_path, &bytes)
+        .map_err(|e| format!("Failed to write OCR language pack: {e}"))?;
+    std::fs::rename(&temp_path, &pack_path)
+        .map_err(|e| format!("Failed to install OCR language pack: {e}"))?;
 
     let mut hasher = Sha256::new();
     hasher.update(&bytes);
@@ -185,18 +228,21 @@ pub async fn install_ocr_language_pack(code: String) -> Result<OcrLanguagePack, 
 
 #[tauri::command]
 pub fn remove_ocr_language_pack(code: String) -> Result<OcrLanguagePack, String> {
-    let language = language_definition(&code).ok_or_else(|| "Unsupported OCR language pack".to_string())?;
+    let language =
+        language_definition(&code).ok_or_else(|| "Unsupported OCR language pack".to_string())?;
     if language.code == "eng" {
         return Err("The bundled English OCR language pack cannot be removed".to_string());
     }
 
     let pack_path = language_pack_path(language.code)?;
     if pack_path.exists() {
-        std::fs::remove_file(&pack_path).map_err(|e| format!("Failed to remove OCR language pack: {e}"))?;
+        std::fs::remove_file(&pack_path)
+            .map_err(|e| format!("Failed to remove OCR language pack: {e}"))?;
     }
     let metadata = metadata_path(language.code)?;
     if metadata.exists() {
-        std::fs::remove_file(metadata).map_err(|e| format!("Failed to remove OCR language metadata: {e}"))?;
+        std::fs::remove_file(metadata)
+            .map_err(|e| format!("Failed to remove OCR language metadata: {e}"))?;
     }
 
     Ok(pack_info(language))
@@ -204,7 +250,8 @@ pub fn remove_ocr_language_pack(code: String) -> Result<OcrLanguagePack, String>
 
 #[tauri::command]
 pub fn read_ocr_language_pack_data(code: String) -> Result<OcrLanguagePackData, String> {
-    let language = language_definition(&code).ok_or_else(|| "Unsupported OCR language pack".to_string())?;
+    let language =
+        language_definition(&code).ok_or_else(|| "Unsupported OCR language pack".to_string())?;
     if language.code == "eng" {
         return Err("Bundled OCR language packs are loaded from application assets".to_string());
     }
@@ -214,7 +261,8 @@ pub fn read_ocr_language_pack_data(code: String) -> Result<OcrLanguagePackData, 
         return Err("OCR language pack is not installed".to_string());
     }
 
-    let bytes = std::fs::read(&pack_path).map_err(|e| format!("Failed to read OCR language pack: {e}"))?;
+    let bytes =
+        std::fs::read(&pack_path).map_err(|e| format!("Failed to read OCR language pack: {e}"))?;
     if bytes.len() > MAX_LANGUAGE_PACK_BYTES {
         return Err("OCR language pack is too large".to_string());
     }
@@ -262,7 +310,10 @@ fn normalize_ocr_language(language: Option<String>) -> Result<String, String> {
 }
 
 #[tauri::command]
-pub async fn recognize_image_data_url(data_url: String, language: Option<String>) -> Result<String, String> {
+pub async fn recognize_image_data_url(
+    data_url: String,
+    language: Option<String>,
+) -> Result<String, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let (bytes, extension) = decode_image_data_url(&data_url)?;
         let language = normalize_ocr_language(language)?;
@@ -288,15 +339,13 @@ pub async fn recognize_image_data_url(data_url: String, language: Option<String>
             command.env("TESSDATA_PREFIX", language_pack_dir()?);
         }
 
-        let output = command
-            .output()
-            .map_err(|e| {
-                if e.kind() == std::io::ErrorKind::NotFound {
-                    "OCR requires the tesseract command to be installed.".to_string()
-                } else {
-                    format!("Failed to start OCR: {e}")
-                }
-            })?;
+        let output = command.output().map_err(|e| {
+            if e.kind() == std::io::ErrorKind::NotFound {
+                "OCR requires the tesseract command to be installed.".to_string()
+            } else {
+                format!("Failed to start OCR: {e}")
+            }
+        })?;
 
         if !output.status.success() {
             let detail = String::from_utf8_lossy(&output.stderr).trim().to_string();

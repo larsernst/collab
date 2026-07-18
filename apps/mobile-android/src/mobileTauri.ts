@@ -5,6 +5,8 @@ import type {
   CircuitJobOutcome,
   CircuitJobPhase,
   CircuitJobStatus,
+  CircuitSweepChunk,
+  CircuitSweepResult,
 } from '../../../src/types/circuitRuntime';
 
 export interface ServerHealthStatus {
@@ -172,6 +174,10 @@ export function circuitStartDc(document: LogicDiagramDocument): Promise<string> 
   return invoke('circuit_start_dc', { document });
 }
 
+export function circuitStartDcSweep(document: LogicDiagramDocument): Promise<string> {
+  return invoke('circuit_start_dc_sweep', { document });
+}
+
 export function circuitJobStatus(jobId: string): Promise<CircuitJobStatus> {
   return invoke('circuit_job_status', { jobId });
 }
@@ -184,7 +190,26 @@ export function circuitTakeJobResult(jobId: string): Promise<CircuitJobOutcome |
   return invoke('circuit_take_job_result', { jobId });
 }
 
-export type { CircuitDcResult, CircuitJobOutcome, CircuitJobPhase, CircuitJobStatus };
+export function circuitReadSweepChunk(
+  jobId: string,
+  offset: number,
+  limit: number,
+): Promise<CircuitSweepChunk> {
+  return invoke('circuit_read_sweep_chunk', { jobId, offset, limit });
+}
+
+export function circuitDiscardJob(jobId: string): Promise<void> {
+  return invoke('circuit_discard_job', { jobId });
+}
+
+export type {
+  CircuitDcResult,
+  CircuitJobOutcome,
+  CircuitJobPhase,
+  CircuitJobStatus,
+  CircuitSweepChunk,
+  CircuitSweepResult,
+};
 
 function asRecord(value: unknown, message: string): Record<string, unknown> {
   if (!value || typeof value !== 'object') throw new Error(message);

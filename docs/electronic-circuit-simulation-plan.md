@@ -44,7 +44,7 @@ Deferred until the core is stable:
 | 6.2 Schematic compiler | Complete | Compile validated `.logic` connectivity into deterministic electrical nets and solver systems. |
 | 6.3 DC operating point | Complete | Expand the baseline solver with diagnostics, nonlinear devices, and live overlays. |
 | 6.4 Runtime integration | In progress | Run, cancel, and stream simulations through typed Tauri commands on desktop and Android. |
-| 6.5 Transient and DC sweep | Planned | Add dynamic elements, time integration, sweeps, and plot inspection. |
+| 6.5 Transient and DC sweep | In progress | Add dynamic elements, time integration, sweeps, and plot inspection. |
 | 6.6 AC analysis | Planned | Add small-signal magnitude/phase analysis and Bode plots. |
 | 6.7 Mixed-signal simulation | Planned | Coordinate the existing digital evaluator with analog timesteps through explicit bridges. |
 | 6.8 Offline, cache, and collaboration | Planned | Cache derived results locally while synchronizing source and configuration only. |
@@ -179,10 +179,10 @@ Implemented slice:
 
 Remaining in Phase 6.4:
 
-- Add progress channels and bounded result streaming when transient and sweep analyses produce data large enough to justify them; DC currently needs only compact stage polling and one bounded result.
-- Add sample-count and result-buffer budgets with transient and sweep analyses. DC already has component, wire, probe, matrix-memory, nonlinear-iteration, and wall-clock bounds.
+- Add progress channels when transient analysis produces long-running jobs that need finer feedback than compact stage polling.
+- Extend the sweep result-buffer and sample-count model to transient analysis once transient samples exist.
 
-The bounded DC portion of Phase 6.4 is complete on desktop and Android. The two remaining streaming/buffer items are activated by the larger result sets introduced in Phase 6.5 rather than adding unused channel machinery to a small DC operating point.
+The bounded DC portion of Phase 6.4 is complete on desktop and Android. DC sweep now uses the same worker registry and bounded native chunk reads; progress channels remain deferred until transient jobs need finer-grained progress.
 
 ## Phase 6.5: Transient And DC Sweep
 
@@ -192,6 +192,22 @@ The bounded DC portion of Phase 6.4 is complete on desktop and Android. The two 
 - Add source sweeps and bounded typed-array result buffers.
 - Add a plot drawer with synchronized cursors, units, trace visibility, pan/zoom, and CSV/SVG export.
 - Downsample only for rendering and retain the bounded source result for inspection/export.
+
+Implemented slice:
+
+- The pure Rust core linearly sweeps an independent voltage or current source and records only explicitly requested node-voltage/component-current traces. Compiled persisted probes map into deduplicated sweep outputs without losing their source-map identity.
+- Sweep requests validate source identity/type, output identity and uniqueness, finite distinct bounds, and a minimum of two samples before solving.
+- Default limits cap a sweep at 4,096 samples, 1,048,576 stored scalar values, and 30 seconds while retaining all per-operating-point DC limits and cancellation checks.
+- Results and failures have explicit serialized shapes, including the failing sample index/value when one operating point cannot be solved.
+- `.logic` schema v6 now preserves an optional linear DC sweep configuration containing the selected independent source, finite start/stop values, and a clamped 2-4,096 sample count. Invalid legacy or partial sweep data falls back to DC operating-point mode without making the document unreadable.
+- Desktop and Android expose typed sweep start, status, cancel, result-summary, chunk-read, and discard boundaries over the existing native worker registry. Completed arrays stay in Rust and each IPC read is capped at 512 aligned samples across the source axis and requested traces.
+- Sweep jobs share the four-active/32-retained registry limits. Unlike compact DC results, a completed sweep remains available after its summary is read and must be explicitly discarded after chunk consumption.
+- Desktop can configure and persist a voltage-source sweep, then run it without blocking the editor. Android preserves its viewer-only boundary and runs the same persisted configuration without introducing a second document editor.
+- Both clients use one chunk assembler and one responsive SVG plot. Native chunks are validated for continuity, trace identity, and aligned lengths before display; retained jobs are discarded even when validation fails. Trace visibility is interactive and rendering downsamples large traces without changing the retained source arrays.
+- The shared plot synchronizes a nearest-sample cursor across every visible trace, keeps voltage and current readouts unit-aware, and supports bounded button/wheel zoom plus pointer or touch panning with an explicit reset.
+- Desktop exports the exact retained samples as CSV or a standalone full-resolution SVG through the native download boundary. Android shares the inspection and navigation controls while remaining viewer-only and does not expose file-export actions.
+
+Remaining in Phase 6.5: persist transient source-waveform configuration and implement transient companion models.
 
 ## Phase 6.6: AC Analysis
 

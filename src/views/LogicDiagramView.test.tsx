@@ -24,9 +24,14 @@ const tauriMocks = vi.hoisted(() => ({
   replicaWriteLogicComponents: vi.fn(),
   circuitSolveDc: vi.fn(),
   circuitStartDc: vi.fn(),
+  circuitStartDcSweep: vi.fn(),
   circuitJobStatus: vi.fn(),
   circuitCancelJob: vi.fn(),
   circuitTakeJobResult: vi.fn(),
+  circuitReadSweepChunk: vi.fn(),
+  circuitDiscardJob: vi.fn(),
+  showDownloadDialog: vi.fn(),
+  writeDownloadedFile: vi.fn(),
 }));
 
 const liveJsonMocks = vi.hoisted(() => ({
@@ -61,9 +66,14 @@ vi.mock('../lib/tauri', () => ({
     replicaWriteLogicComponents: tauriMocks.replicaWriteLogicComponents,
     circuitSolveDc: tauriMocks.circuitSolveDc,
     circuitStartDc: tauriMocks.circuitStartDc,
+    circuitStartDcSweep: tauriMocks.circuitStartDcSweep,
     circuitJobStatus: tauriMocks.circuitJobStatus,
     circuitCancelJob: tauriMocks.circuitCancelJob,
     circuitTakeJobResult: tauriMocks.circuitTakeJobResult,
+    circuitReadSweepChunk: tauriMocks.circuitReadSweepChunk,
+    circuitDiscardJob: tauriMocks.circuitDiscardJob,
+    showDownloadDialog: tauriMocks.showDownloadDialog,
+    writeDownloadedFile: tauriMocks.writeDownloadedFile,
   },
 }));
 
@@ -181,6 +191,7 @@ describe('LogicDiagramView safe reload policy', () => {
     tauriMocks.replicaWriteLogicComponents.mockResolvedValue(undefined);
     tauriMocks.circuitSolveDc.mockReset();
     tauriMocks.circuitStartDc.mockResolvedValue('circuit-job-1');
+    tauriMocks.circuitStartDcSweep.mockResolvedValue('sweep-job-1');
     tauriMocks.circuitJobStatus.mockResolvedValue({ phase: 'completed', stage: null, elapsedMillis: 1 });
     tauriMocks.circuitCancelJob.mockResolvedValue('cancelling');
     tauriMocks.circuitTakeJobResult.mockImplementation(async () => {
@@ -190,6 +201,10 @@ describe('LogicDiagramView safe reload policy', () => {
         return { state: 'failed', error };
       }
     });
+    tauriMocks.circuitReadSweepChunk.mockReset();
+    tauriMocks.circuitDiscardJob.mockResolvedValue(undefined);
+    tauriMocks.showDownloadDialog.mockResolvedValue(null);
+    tauriMocks.writeDownloadedFile.mockResolvedValue(undefined);
     useUiStore.setState({ schematicSymbolSet: 'ansi' });
   });
 
@@ -454,6 +469,78 @@ describe('LogicDiagramView safe reload policy', () => {
 
     expect(await screen.findByText(/Results are stale/)).toBeTruthy();
     expect(container.querySelectorAll('[data-schematic-live="true"]')).toHaveLength(0);
+  });
+
+  it('persists a bounded sweep configuration and renders chunked probe traces', async () => {
+    tauriMocks.readNote.mockResolvedValueOnce({
+      content: JSON.stringify({
+        schemaVersion: 6,
+        kind: 'logic-diagram',
+        diagramMode: 'schematic',
+        nodes: [
+          { id: 'source', kind: 'voltage-source', label: 'Supply', position: { x: 0, y: 0 }, electrical: { voltageVolts: 5 } },
+          { id: 'ground', kind: 'ground', position: { x: 240, y: 0 } },
+        ],
+        wires: [],
+        simulation: {
+          analysis: 'dc-operating-point',
+          probes: [{ id: 'output', kind: 'node-voltage', nodeId: 'source', handleId: 'positive', label: 'Output' }],
+        },
+        viewport: { x: 0, y: 0, zoom: 1 },
+      }),
+      hash: 'v1',
+      modifiedAt: 1,
+    });
+    tauriMocks.circuitTakeJobResult.mockResolvedValue({
+      state: 'sweep-completed',
+      summary: {
+        source: 'source',
+        sampleCount: 3,
+        outputs: [{ kind: 'node-voltage', node: 'net1' }],
+        sourceMap: {
+          terminals: [],
+          wires: [],
+          probes: [{ probeId: 'output', label: 'Output', kind: 'node-voltage', electricalNode: 'net1' }],
+        },
+      },
+    });
+    tauriMocks.circuitReadSweepChunk.mockResolvedValue({
+      offset: 0,
+      sourceValues: [0, 5, 10],
+      traces: [{ output: { kind: 'node-voltage', node: 'net1' }, values: [0, 2.5, 5] }],
+      done: true,
+    });
+
+    render(<LogicDiagramView relativePath={PATH} />);
+    expect(await screen.findByText(/2 symbols/)).toBeTruthy();
+    fireEvent.click(screen.getByTitle('Configure DC sweep'));
+    fireEvent.change(screen.getByLabelText('Stop (V)'), { target: { value: '10' } });
+    fireEvent.change(screen.getByLabelText('Samples'), { target: { value: '3' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save sweep' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Run sweep' }));
+
+    expect(await screen.findByRole('img', { name: 'DC sweep plot' })).toBeTruthy();
+    expect(screen.getByText('3 samples')).toBeTruthy();
+    expect(screen.getByText('Output')).toBeTruthy();
+    expect(tauriMocks.circuitStartDcSweep).toHaveBeenCalledWith(expect.objectContaining({
+      simulation: {
+        analysis: 'dc-sweep',
+        probes: [expect.objectContaining({ id: 'output' })],
+        dcSweep: { sourceNodeId: 'source', start: 0, stop: 10, sampleCount: 3 },
+      },
+    }));
+    expect(tauriMocks.circuitReadSweepChunk).toHaveBeenCalledWith('sweep-job-1', 0, 512);
+    expect(tauriMocks.circuitDiscardJob).toHaveBeenCalledWith('sweep-job-1');
+
+    tauriMocks.showDownloadDialog.mockResolvedValue('/tmp/test-dc-sweep.csv');
+    fireEvent.click(screen.getByTitle('Export sweep data as CSV'));
+    await waitFor(() => expect(tauriMocks.writeDownloadedFile).toHaveBeenCalledWith(
+      '/tmp/test-dc-sweep.csv',
+      expect.any(String),
+    ));
+    const exported = atob(tauriMocks.writeDownloadedFile.mock.calls[0][1]);
+    expect(exported).toContain('Supply (source value),Output (V)');
+    expect(exported).toContain('5,2.5');
   });
 
   it('splits a schematic wire through an explicit junction', async () => {

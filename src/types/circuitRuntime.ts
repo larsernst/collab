@@ -52,7 +52,31 @@ export interface CircuitJobStatus {
   elapsedMillis: number;
 }
 
+export type CircuitSweepOutput =
+  | { kind: 'node-voltage'; node: string }
+  | { kind: 'component-current'; component: string };
+
+export interface CircuitSweepSummary {
+  source: string;
+  sampleCount: number;
+  outputs: CircuitSweepOutput[];
+  sourceMap: CircuitDcResult['sourceMap'];
+}
+
+export interface CircuitSweepChunk {
+  offset: number;
+  sourceValues: number[];
+  traces: Array<{ output: CircuitSweepOutput; values: number[] }>;
+  done: boolean;
+}
+
+export interface CircuitSweepResult extends CircuitSweepSummary {
+  sourceValues: number[];
+  traces: Array<{ output: CircuitSweepOutput; values: number[] }>;
+}
+
 export type CircuitJobOutcome =
   | { state: 'completed'; result: CircuitDcResult }
+  | { state: 'sweep-completed'; summary: CircuitSweepSummary }
   | { state: 'failed'; error: unknown }
   | { state: 'cancelled' };

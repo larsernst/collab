@@ -1,0 +1,140 @@
+.circuit-sweep-plot {
+  display: flex;
+  min-height: 0;
+  flex-direction: column;
+  gap: 10px;
+  color: var(--foreground, #e7e9ee);
+}
+
+.circuit-sweep-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 12px;
+}
+
+.circuit-sweep-legend label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  font-size: 11px;
+  color: var(--muted-foreground, #9399a8);
+}
+
+.circuit-sweep-legend input {
+  width: 14px;
+  height: 14px;
+  accent-color: var(--primary, #9b6cff);
+}
+
+.circuit-sweep-legend label > span {
+  width: 14px;
+  height: 2px;
+  flex: 0 0 auto;
+}
+
+.circuit-sweep-legend small {
+  color: var(--muted-foreground, #9399a8);
+  opacity: 0.75;
+}
+
+.circuit-sweep-tools {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 4px;
+}
+
+.circuit-sweep-tools button {
+  display: grid;
+  width: 30px;
+  height: 30px;
+  place-items: center;
+  border: 1px solid color-mix(in srgb, var(--border, #343946) 78%, transparent);
+  border-radius: 5px;
+  background: color-mix(in srgb, var(--background, #0b0e14) 84%, transparent);
+  color: var(--foreground, #e7e9ee);
+}
+
+.circuit-sweep-tools button:disabled {
+  opacity: 0.38;
+}
+
+.circuit-sweep-tools span {
+  margin-left: 5px;
+  color: var(--muted-foreground, #9399a8);
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+}
+
+.circuit-sweep-chart {
+  min-height: 180px;
+  overflow: hidden;
+  border: 1px solid color-mix(in srgb, var(--border, #343946) 75%, transparent);
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--background, #0b0e14) 88%, black);
+}
+
+.circuit-sweep-chart svg {
+  display: block;
+  width: 100%;
+  height: auto;
+  max-height: 340px;
+  cursor: crosshair;
+  touch-action: none;
+  user-select: none;
+}
+
+.circuit-sweep-grid-line {
+  stroke: color-mix(in srgb, var(--border, #343946) 66%, transparent);
+  stroke-width: 1;
+  vector-effect: non-scaling-stroke;
+}
+
+.circuit-sweep-axis-label,
+.circuit-sweep-axis-title {
+  fill: var(--muted-foreground, #9399a8);
+  font-family: var(--font-mono, monospace);
+  font-size: 10px;
+  letter-spacing: 0;
+}
+
+.circuit-sweep-cursor-line {
+  stroke: color-mix(in srgb, var(--foreground, #e7e9ee) 74%, transparent);
+  stroke-width: 1;
+  stroke-dasharray: 4 3;
+  vector-effect: non-scaling-stroke;
+}
+
+.circuit-sweep-cursor-readout {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 5px 14px;
+  padding: 8px 10px;
+  border-left: 2px solid var(--primary, #9b6cff);
+  background: color-mix(in srgb, var(--background, #0b0e14) 78%, transparent);
+  font-size: 11px;
+}
+
+.circuit-sweep-cursor-readout strong {
+  grid-column: 1 / -1;
+}
+
+.circuit-sweep-cursor-readout span {
+  display: flex;
+  min-width: 0;
+  justify-content: space-between;
+  gap: 10px;
+  color: var(--muted-foreground, #9399a8);
+}
+
+.circuit-sweep-cursor-readout code {
+  flex: 0 0 auto;
+  color: var(--foreground, #e7e9ee);
+  font-family: var(--font-mono, monospace);
+}
+
+.circuit-sweep-axis-title {
+  font-family: var(--font-sans, sans-serif);
+  font-size: 11px;
+}

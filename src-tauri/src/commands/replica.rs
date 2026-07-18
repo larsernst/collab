@@ -130,7 +130,8 @@ fn write_replica_key_encoded(
 #[cfg(target_os = "android")]
 fn delete_replica_key(server_url: &str, vault_id: &str) {
     let account = replica_account(server_url, vault_id);
-    let _ = crate::android_jni::call_static_string(REPLICA_KEY_STORE_CLASS, "deleteKey", &[&account]);
+    let _ =
+        crate::android_jni::call_static_string(REPLICA_KEY_STORE_CLASS, "deleteKey", &[&account]);
 }
 
 #[cfg(target_os = "ios")]

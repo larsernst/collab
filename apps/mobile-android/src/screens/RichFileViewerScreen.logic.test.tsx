@@ -5,16 +5,22 @@ import type { LogicDiagramDocument } from '../../../../src/types/logicDiagram';
 
 const circuitMocks = vi.hoisted(() => ({
   start: vi.fn(),
+  sweepStart: vi.fn(),
   status: vi.fn(),
   cancel: vi.fn(),
   take: vi.fn(),
+  readSweep: vi.fn(),
+  discard: vi.fn(),
 }));
 
 vi.mock('../mobileTauri', () => ({
   circuitStartDc: circuitMocks.start,
+  circuitStartDcSweep: circuitMocks.sweepStart,
   circuitJobStatus: circuitMocks.status,
   circuitCancelJob: circuitMocks.cancel,
   circuitTakeJobResult: circuitMocks.take,
+  circuitReadSweepChunk: circuitMocks.readSweep,
+  circuitDiscardJob: circuitMocks.discard,
 }));
 
 vi.mock('pdfjs-dist/legacy/build/pdf.mjs', () => ({
@@ -80,9 +86,12 @@ const RESULT = {
 describe('mobile schematic simulation', () => {
   beforeEach(() => {
     circuitMocks.start.mockResolvedValue('job-1');
+    circuitMocks.sweepStart.mockResolvedValue('sweep-1');
     circuitMocks.status.mockResolvedValue({ phase: 'completed', stage: null, elapsedMillis: 2 });
     circuitMocks.cancel.mockResolvedValue('cancelling');
     circuitMocks.take.mockResolvedValue({ state: 'completed', result: RESULT });
+    circuitMocks.readSweep.mockReset();
+    circuitMocks.discard.mockResolvedValue(undefined);
   });
 
   it('runs DC, renders the result sheet, and highlights solved wires', async () => {
@@ -104,6 +113,55 @@ describe('mobile schematic simulation', () => {
     expect(container.querySelector('[data-circuit-polarity="positive"]')).toBeTruthy();
     expect(circuitMocks.start).toHaveBeenCalledWith(LOGIC);
     expect(circuitMocks.take).toHaveBeenCalledWith('job-1');
+  });
+
+  it('runs a persisted sweep and renders the chunked trace viewer', async () => {
+    const logic: LogicDiagramDocument = {
+      ...LOGIC,
+      simulation: {
+        analysis: 'dc-sweep',
+        probes: [{ id: 'output', kind: 'node-voltage', nodeId: 'v1', handleId: 'positive', label: 'Output' }],
+        dcSweep: { sourceNodeId: 'v1', start: 0, stop: 5, sampleCount: 3 },
+      },
+    };
+    circuitMocks.take.mockResolvedValue({
+      state: 'sweep-completed',
+      summary: {
+        source: 'v1',
+        sampleCount: 3,
+        outputs: [{ kind: 'node-voltage', node: 'net1' }],
+        sourceMap: {
+          terminals: [],
+          wires: [],
+          probes: [{ probeId: 'output', label: 'Output', kind: 'node-voltage', electricalNode: 'net1' }],
+        },
+      },
+    });
+    circuitMocks.readSweep.mockResolvedValue({
+      offset: 0,
+      sourceValues: [0, 2.5, 5],
+      traces: [{ output: { kind: 'node-voltage', node: 'net1' }, values: [0, 2.5, 5] }],
+      done: true,
+    });
+
+    render(
+      <LogicMobileViewer
+        logic={logic}
+        zoom={1}
+        setZoom={vi.fn()}
+        resetToken={0}
+        onWheel={vi.fn()}
+        schematicSymbolSet="ansi"
+      />,
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Run DC sweep' }));
+
+    expect(await screen.findByRole('img', { name: 'DC sweep plot' })).toBeTruthy();
+    expect(screen.getByText('3 samples · 1 trace')).toBeTruthy();
+    expect(screen.getByText('Output')).toBeTruthy();
+    expect(circuitMocks.sweepStart).toHaveBeenCalledWith(logic);
+    expect(circuitMocks.readSweep).toHaveBeenCalledWith('sweep-1', 0, 512);
+    expect(circuitMocks.discard).toHaveBeenCalledWith('sweep-1');
   });
 
   it('routes schematic wires from the actual rotated terminal sides', () => {

@@ -59,9 +59,17 @@ export interface LogicCircuitProbe {
   label?: string;
 }
 
+export interface LogicDcSweepConfig {
+  sourceNodeId: string;
+  start: number;
+  stop: number;
+  sampleCount: number;
+}
+
 export interface LogicSimulationConfig {
-  analysis: 'dc-operating-point';
+  analysis: 'dc-operating-point' | 'dc-sweep';
   probes: LogicCircuitProbe[];
+  dcSweep?: LogicDcSweepConfig;
 }
 
 export interface LogicComponentPort {
@@ -334,12 +342,32 @@ function normalizeCircuitProbe(value: unknown): LogicCircuitProbe | null {
 
 function normalizeSimulationConfig(value: unknown): LogicSimulationConfig | undefined {
   const record = asRecord(value);
-  if (!record || record.analysis !== 'dc-operating-point') return undefined;
+  if (!record || (record.analysis !== 'dc-operating-point' && record.analysis !== 'dc-sweep')) {
+    return undefined;
+  }
+  const sweep = asRecord(record.dcSweep);
+  const sourceNodeId = optionalString(sweep?.sourceNodeId);
+  const start = sweep?.start;
+  const stop = sweep?.stop;
+  const sampleCount = sweep?.sampleCount;
+  const dcSweep = sourceNodeId
+    && typeof start === 'number' && Number.isFinite(start)
+    && typeof stop === 'number' && Number.isFinite(stop)
+    && start !== stop
+    && typeof sampleCount === 'number' && Number.isFinite(sampleCount)
+    ? {
+        sourceNodeId,
+        start,
+        stop,
+        sampleCount: Math.min(4096, Math.max(2, Math.floor(sampleCount))),
+      }
+    : undefined;
   return {
-    analysis: 'dc-operating-point',
+    analysis: record.analysis === 'dc-sweep' && dcSweep ? 'dc-sweep' : 'dc-operating-point',
     probes: Array.isArray(record.probes)
       ? record.probes.map(normalizeCircuitProbe).filter((probe): probe is LogicCircuitProbe => Boolean(probe))
       : [],
+    dcSweep,
   };
 }
 

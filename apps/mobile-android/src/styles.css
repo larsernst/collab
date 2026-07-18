@@ -1218,6 +1218,12 @@ p {
   box-shadow: 0 16px 42px rgb(0 0 0 / 36%);
   backdrop-filter: blur(12px);
 }
+.mobile-circuit-sweep-results {
+  max-height: min(68%, 580px);
+}
+.mobile-circuit-sweep-results .circuit-sweep-chart {
+  min-height: 150px;
+}
 .mobile-circuit-results > header {
   display: flex;
   min-height: 42px;
@@ -3190,5 +3196,13 @@ p {
 
   .screen-header {
     padding-top: 0;
+  }
+
+  .mobile-circuit-sweep-results {
+    right: 14px;
+    bottom: 14px;
+    left: auto;
+    width: min(680px, calc(100% - 28px));
+    max-height: calc(100% - 28px);
   }
 }

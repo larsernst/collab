@@ -110,6 +110,17 @@ pub struct SchematicProbe {
 pub struct SchematicSimulationConfig {
     #[serde(default)]
     pub probes: Vec<SchematicProbe>,
+    #[serde(default)]
+    pub dc_sweep: Option<SchematicDcSweepConfig>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SchematicDcSweepConfig {
+    pub source_node_id: String,
+    pub start: f64,
+    pub stop: f64,
+    pub sample_count: usize,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -1089,6 +1100,7 @@ mod tests {
                     label: Some("Load current".to_string()),
                 },
             ],
+            dc_sweep: None,
         });
 
         let compiled = compile_schematic(&document).unwrap();
@@ -1118,6 +1130,7 @@ mod tests {
                 handle_id: None,
                 label: None,
             }],
+            dc_sweep: None,
         });
         assert_eq!(
             compile_schematic(&document),

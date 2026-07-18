@@ -170,7 +170,9 @@ mod tests {
     fn decodes_image_overlay_sidecar_to_source_path() {
         let encoded = encode("Pictures/demo.png");
         assert_eq!(
-            source_path_from_sidecar_relative_path(&format!(".collab/image-overlays/{encoded}.json")),
+            source_path_from_sidecar_relative_path(&format!(
+                ".collab/image-overlays/{encoded}.json"
+            )),
             Some("Pictures/demo.png".to_string()),
         );
     }

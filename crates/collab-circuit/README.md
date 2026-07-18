@@ -32,7 +32,9 @@ The current Phase 6.0-6.4 implementation provides:
   generated branch/order/rotation invariants; and
 - a synchronous compatibility solve boundary plus a cancellable solver callback
   used by the bounded, stage-reporting Tauri worker runtime shared by desktop
-  and Android builds.
+  and Android builds; and
+- a deterministic linear DC source-sweep core with explicit requested traces,
+  cancellation, per-sample error context, and sample/result/time budgets.
 
 Capacitors are open circuits and inductors are ideal shorts for DC operating
 point analysis. The built-in NPN model uses exponential base-emitter and

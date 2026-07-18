@@ -24,7 +24,13 @@ import type { NoteSnippet, NoteSnippetDraft, NoteSnippetScope } from '../types/n
 import type { PdfSidecarState } from '../types/pdf';
 import type { UpdateInfo } from '../store/updateStore';
 import type { LogicDiagramDocument } from '../types/logicDiagram';
-import type { CircuitDcResult, CircuitJobOutcome, CircuitJobPhase, CircuitJobStatus } from '../types/circuitRuntime';
+import type {
+  CircuitDcResult,
+  CircuitJobOutcome,
+  CircuitJobPhase,
+  CircuitJobStatus,
+  CircuitSweepChunk,
+} from '../types/circuitRuntime';
 import type {
   CacheCleanupReport,
   CachedContentStatus,
@@ -46,6 +52,10 @@ export type {
   CircuitJobStage,
   CircuitJobStatus,
   CircuitProbeValue,
+  CircuitSweepChunk,
+  CircuitSweepOutput,
+  CircuitSweepResult,
+  CircuitSweepSummary,
   CircuitTerminalNet,
   CircuitWireNet,
 } from '../types/circuitRuntime';
@@ -376,12 +386,18 @@ export const tauriCommands = {
     invoke<CircuitDcResult>('circuit_solve_dc', { document }),
   circuitStartDc: (document: LogicDiagramDocument) =>
     invoke<string>('circuit_start_dc', { document }),
+  circuitStartDcSweep: (document: LogicDiagramDocument) =>
+    invoke<string>('circuit_start_dc_sweep', { document }),
   circuitJobStatus: (jobId: string) =>
     invoke<CircuitJobStatus>('circuit_job_status', { jobId }),
   circuitCancelJob: (jobId: string) =>
     invoke<CircuitJobPhase>('circuit_cancel_job', { jobId }),
   circuitTakeJobResult: (jobId: string) =>
     invoke<CircuitJobOutcome | null>('circuit_take_job_result', { jobId }),
+  circuitReadSweepChunk: (jobId: string, offset: number, limit: number) =>
+    invoke<CircuitSweepChunk>('circuit_read_sweep_chunk', { jobId, offset, limit }),
+  circuitDiscardJob: (jobId: string) =>
+    invoke<void>('circuit_discard_job', { jobId }),
 
   // UI
   setUiZoom: (zoom: number) => invoke<void>('set_ui_zoom', { zoom }),

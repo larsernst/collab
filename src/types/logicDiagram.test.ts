@@ -145,6 +145,51 @@ describe('logic diagram document helpers', () => {
     });
   });
 
+  it('normalizes bounded DC sweep configuration without breaking DC-only documents', () => {
+    const document = normalizeLogicDiagramDocument({
+      kind: 'logic-diagram',
+      diagramMode: 'schematic',
+      nodes: [],
+      wires: [],
+      simulation: {
+        analysis: 'dc-sweep',
+        probes: [],
+        dcSweep: {
+          sourceNodeId: 'source',
+          start: -5,
+          stop: 5,
+          sampleCount: 10_000.8,
+        },
+      },
+    });
+
+    expect(document.simulation).toEqual({
+      analysis: 'dc-sweep',
+      probes: [],
+      dcSweep: {
+        sourceNodeId: 'source',
+        start: -5,
+        stop: 5,
+        sampleCount: 4096,
+      },
+    });
+
+    expect(normalizeLogicDiagramDocument({
+      kind: 'logic-diagram',
+      nodes: [],
+      wires: [],
+      simulation: {
+        analysis: 'dc-sweep',
+        probes: [],
+        dcSweep: { sourceNodeId: '', start: 1, stop: 1, sampleCount: 1 },
+      },
+    }).simulation).toEqual({
+      analysis: 'dc-operating-point',
+      probes: [],
+      dcSweep: undefined,
+    });
+  });
+
   it('provides explicit electrical defaults only for newly inserted symbols', () => {
     expect(defaultSchematicElectricalParameters('resistor')).toEqual({ resistanceOhms: 1000 });
     expect(defaultSchematicElectricalParameters('voltage-source')).toEqual({ voltageVolts: 5 });

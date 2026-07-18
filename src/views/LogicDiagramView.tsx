@@ -2,6 +2,8 @@ import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, 
 import { getSmoothStepPath, type Connection, type Viewport } from '@xyflow/react';
 import {
   CircuitBoard,
+  ChartLine,
+  Download,
   Group,
   Image,
   Loader2,
@@ -17,6 +19,7 @@ import {
   RotateCw,
   Save,
   Shapes,
+  SlidersHorizontal,
   Table2,
   Trash2,
   Ungroup,
@@ -104,9 +107,16 @@ import { useLiveDocumentStatus } from '../lib/useLiveDocumentStatus';
 import { getMarkdownImageTarget } from '../lib/noteAssets';
 import { buildLogicDiagramSvg } from '../lib/logicDiagramExport';
 import { flattenVaultFiles } from '../lib/vaultLinks';
-import { tauriCommands, type CircuitDcResult, type CircuitJobStatus } from '../lib/tauri';
+import { tauriCommands, type CircuitDcResult, type CircuitJobStatus, type CircuitSweepResult } from '../lib/tauri';
 import { runCircuitJob, type CircuitJobClient } from '../lib/circuitJobRunner';
+import { runCircuitSweepJob, type CircuitSweepJobClient } from '../lib/circuitSweepRunner';
 import { circuitErrorText } from '../lib/circuitErrorText';
+import { CircuitSweepPlot } from '../components/logic/CircuitSweepPlot';
+import {
+  buildCircuitSweepCsv,
+  buildCircuitSweepSvg,
+  utf8ToBase64,
+} from '../lib/circuitSweepExport';
 import {
   createEmptyLogicDiagram,
   defaultSchematicElectricalParameters,
@@ -170,6 +180,13 @@ const DESKTOP_CIRCUIT_JOB_CLIENT: CircuitJobClient = {
   start: tauriCommands.circuitStartDc,
   status: tauriCommands.circuitJobStatus,
   takeResult: tauriCommands.circuitTakeJobResult,
+};
+const DESKTOP_SWEEP_JOB_CLIENT: CircuitSweepJobClient = {
+  start: tauriCommands.circuitStartDcSweep,
+  status: tauriCommands.circuitJobStatus,
+  takeResult: tauriCommands.circuitTakeJobResult,
+  readChunk: tauriCommands.circuitReadSweepChunk,
+  discard: tauriCommands.circuitDiscardJob,
 };
 const LOGIC_SIGNAL_ON = 'color-mix(in oklch, var(--primary) 82%, white 18%)';
 const LOGIC_SIGNAL_OFF = 'color-mix(in oklch, var(--muted-foreground) 72%, transparent)';
@@ -987,6 +1004,7 @@ function LogicDiagramEditor({ relativePath }: Props) {
   const [schematicValueInput, setSchematicValueInput] = useState('');
   const [schematicSwitchClosed, setSchematicSwitchClosed] = useState(false);
   const [circuitRunning, setCircuitRunning] = useState(false);
+  const [circuitRunKind, setCircuitRunKind] = useState<'dc' | 'sweep' | null>(null);
   const [circuitJobId, setCircuitJobId] = useState<string | null>(null);
   const [circuitJobStatus, setCircuitJobStatus] = useState<CircuitJobStatus | null>(null);
   const circuitJobIdRef = useRef<string | null>(null);
@@ -996,6 +1014,15 @@ function LogicDiagramEditor({ relativePath }: Props) {
   const [circuitError, setCircuitError] = useState<string | null>(null);
   const [circuitResultSignature, setCircuitResultSignature] = useState<string | null>(null);
   const [circuitResultsOpen, setCircuitResultsOpen] = useState(false);
+  const [sweepConfigOpen, setSweepConfigOpen] = useState(false);
+  const [sweepSourceInput, setSweepSourceInput] = useState('');
+  const [sweepStartInput, setSweepStartInput] = useState('0');
+  const [sweepStopInput, setSweepStopInput] = useState('5');
+  const [sweepSamplesInput, setSweepSamplesInput] = useState('101');
+  const [sweepResult, setSweepResult] = useState<CircuitSweepResult | null>(null);
+  const [sweepResultSignature, setSweepResultSignature] = useState<string | null>(null);
+  const [sweepError, setSweepError] = useState<string | null>(null);
+  const [sweepResultsOpen, setSweepResultsOpen] = useState(false);
   const clockStartedAtRef = useRef(Date.now());
   const [logicComponents, setLogicComponents] = useState<LogicComponentDefinition[]>([]);
   const [loadingComponents, setLoadingComponents] = useState(false);
@@ -1116,6 +1143,16 @@ function LogicDiagramEditor({ relativePath }: Props) {
   const circuitResultStale = Boolean(
     circuitResult && circuitResultSignature && circuitResultSignature !== circuitInputSignature,
   );
+  const sweepResultStale = Boolean(
+    sweepResult && sweepResultSignature && sweepResultSignature !== circuitInputSignature,
+  );
+  const sweepSourceChoices = useMemo(() => nodes
+    .filter((node) => node.data.kind === 'voltage-source')
+    .map((node) => ({
+      id: node.id,
+      label: logicNodeLabel({ kind: node.data.kind, label: node.data.label }),
+    }))
+    .sort((left, right) => left.label.localeCompare(right.label)), [nodes]);
   const activeCircuitResult = circuitResultStale ? null : circuitResult;
   const evaluation = useMemo(() => {
     if (diagram.diagramMode === 'schematic') {
@@ -2228,8 +2265,10 @@ function LogicDiagramEditor({ relativePath }: Props) {
     const runSequence = ++circuitRunSequenceRef.current;
     const document = fromFlowGraph(diagram, nodes, edges, viewport);
     setCircuitRunning(true);
+    setCircuitRunKind('dc');
     setCircuitError(null);
     setCircuitResultsOpen(true);
+    setSweepResultsOpen(false);
     try {
       const outcome = await runCircuitJob(DESKTOP_CIRCUIT_JOB_CLIENT, document, {
         onStarted: (jobId) => {
@@ -2266,9 +2305,112 @@ function LogicDiagramEditor({ relativePath }: Props) {
         setCircuitJobId(null);
         setCircuitJobStatus(null);
         setCircuitRunning(false);
+        setCircuitRunKind(null);
       }
     }
   }, [circuitInputSignature, circuitRunning, diagram, edges, nodes, viewport]);
+
+  const openSweepConfiguration = useCallback(() => {
+    const config = diagram.simulation?.dcSweep;
+    setSweepSourceInput(config?.sourceNodeId ?? sweepSourceChoices[0]?.id ?? '');
+    setSweepStartInput(String(config?.start ?? 0));
+    setSweepStopInput(String(config?.stop ?? 5));
+    setSweepSamplesInput(String(config?.sampleCount ?? 101));
+    setSweepConfigOpen(true);
+  }, [diagram.simulation?.dcSweep, sweepSourceChoices]);
+
+  const saveSweepConfiguration = useCallback(() => {
+    if (readOnly) return;
+    const start = Number(sweepStartInput);
+    const stop = Number(sweepStopInput);
+    const sampleCount = Number(sweepSamplesInput);
+    if (!sweepSourceChoices.some((source) => source.id === sweepSourceInput)) {
+      toast.error('Select an independent voltage source.');
+      return;
+    }
+    if (!Number.isFinite(start) || !Number.isFinite(stop) || start === stop) {
+      toast.error('Sweep start and stop must be different finite values.');
+      return;
+    }
+    if (!Number.isInteger(sampleCount) || sampleCount < 2 || sampleCount > 4096) {
+      toast.error('Sweep samples must be a whole number from 2 to 4096.');
+      return;
+    }
+    setDiagram((current) => ({
+      ...current,
+      simulation: {
+        ...current.simulation,
+        analysis: 'dc-sweep',
+        probes: current.simulation?.probes ?? [],
+        dcSweep: {
+          sourceNodeId: sweepSourceInput,
+          start,
+          stop,
+          sampleCount,
+        },
+      },
+    }));
+    markChanged();
+    setSweepConfigOpen(false);
+  }, [markChanged, readOnly, sweepSamplesInput, sweepSourceChoices, sweepSourceInput, sweepStartInput, sweepStopInput]);
+
+  const runDcSweep = useCallback(async () => {
+    if (diagram.diagramMode !== 'schematic' || circuitRunning) return;
+    if (!diagram.simulation?.dcSweep) {
+      openSweepConfiguration();
+      return;
+    }
+    if ((diagram.simulation.probes?.length ?? 0) === 0) {
+      toast.error('Add at least one voltage or current probe before running a sweep.');
+      return;
+    }
+    const runSequence = ++circuitRunSequenceRef.current;
+    const document = fromFlowGraph(diagram, nodes, edges, viewport);
+    setCircuitRunning(true);
+    setCircuitRunKind('sweep');
+    setSweepError(null);
+    setSweepResultsOpen(true);
+    setCircuitResultsOpen(false);
+    try {
+      const result = await runCircuitSweepJob(DESKTOP_SWEEP_JOB_CLIENT, document, {
+        onStarted: (jobId) => {
+          circuitJobIdRef.current = jobId;
+          if (circuitMountedRef.current && circuitRunSequenceRef.current === runSequence) {
+            setCircuitJobId(jobId);
+            setCircuitJobStatus({ phase: 'queued', stage: 'queued', elapsedMillis: 0 });
+          } else {
+            void tauriCommands.circuitCancelJob(jobId).catch(() => undefined);
+          }
+        },
+        onStatus: (status) => {
+          if (circuitMountedRef.current && circuitRunSequenceRef.current === runSequence) {
+            setCircuitJobStatus(status);
+          }
+        },
+      });
+      if (!circuitMountedRef.current || circuitRunSequenceRef.current !== runSequence) return;
+      if ('sourceValues' in result) {
+        setSweepResult(result);
+        setSweepResultSignature(circuitInputSignature);
+      } else if (result.state === 'failed') {
+        throw result.error;
+      }
+    } catch (error) {
+      if (circuitMountedRef.current && circuitRunSequenceRef.current === runSequence) {
+        setSweepResult(null);
+        setSweepResultSignature(null);
+        setSweepError(circuitErrorText(error));
+      }
+    } finally {
+      if (circuitJobIdRef.current) circuitJobIdRef.current = null;
+      if (circuitMountedRef.current && circuitRunSequenceRef.current === runSequence) {
+        setCircuitJobId(null);
+        setCircuitJobStatus(null);
+        setCircuitRunning(false);
+        setCircuitRunKind(null);
+      }
+    }
+  }, [circuitInputSignature, circuitRunning, diagram, edges, nodes, openSweepConfiguration, viewport]);
 
   const cancelDcSimulation = useCallback(async () => {
     const activeJobId = circuitJobIdRef.current;
@@ -2289,6 +2431,26 @@ function LogicDiagramEditor({ relativePath }: Props) {
     setCircuitError(null);
     setCircuitResultsOpen(false);
   }, []);
+
+  const resetSweepResults = useCallback(() => {
+    setSweepResult(null);
+    setSweepResultSignature(null);
+    setSweepError(null);
+    setSweepResultsOpen(false);
+  }, []);
+
+  const exportSweepResult = useCallback(async (format: 'csv' | 'svg') => {
+    if (!sweepResult) return;
+    const sourceLabel = sweepSourceChoices.find((source) => source.id === sweepResult.source)?.label;
+    const baseName = getDocumentBaseName(relativePath, 'circuit').replace(/\.logic$/i, '');
+    const destination = await tauriCommands.showDownloadDialog(`${baseName}-dc-sweep.${format}`);
+    if (!destination) return;
+    const content = format === 'csv'
+      ? buildCircuitSweepCsv(sweepResult, sourceLabel)
+      : buildCircuitSweepSvg(sweepResult, sourceLabel);
+    await tauriCommands.writeDownloadedFile(destination, utf8ToBase64(content));
+    toast.success(`DC sweep exported as ${format.toUpperCase()}.`);
+  }, [relativePath, sweepResult, sweepSourceChoices]);
 
   const startClocks = useCallback(() => {
     clockStartedAtRef.current = Date.now() - clockElapsedMs;
@@ -2345,8 +2507,19 @@ function LogicDiagramEditor({ relativePath }: Props) {
     )));
     setDiagram((current) => {
       const probes = current.simulation?.probes.filter((probe) => !nodeIds.has(probe.nodeId)) ?? [];
-      if (probes.length === (current.simulation?.probes.length ?? 0)) return current;
-      return { ...current, simulation: { analysis: 'dc-operating-point', probes } };
+      const removesSweepSource = current.simulation?.dcSweep
+        ? nodeIds.has(current.simulation.dcSweep.sourceNodeId)
+        : false;
+      if (probes.length === (current.simulation?.probes.length ?? 0) && !removesSweepSource) return current;
+      return {
+        ...current,
+        simulation: {
+          ...current.simulation,
+          analysis: removesSweepSource ? 'dc-operating-point' : current.simulation?.analysis ?? 'dc-operating-point',
+          probes,
+          dcSweep: removesSweepSource ? undefined : current.simulation?.dcSweep,
+        },
+      };
     });
     markChanged();
   }, [edges, markChanged, nodes, readOnly, selectedEdgeIds, selectedNodeIds, setEdges, setNodes]);
@@ -2387,7 +2560,8 @@ function LogicDiagramEditor({ relativePath }: Props) {
     setDiagram((current) => ({
       ...current,
       simulation: {
-        analysis: 'dc-operating-point',
+        ...current.simulation,
+        analysis: current.simulation?.analysis ?? 'dc-operating-point',
         probes: [...(current.simulation?.probes ?? []), probe],
       },
     }));
@@ -2414,7 +2588,8 @@ function LogicDiagramEditor({ relativePath }: Props) {
     setDiagram((current) => ({
       ...current,
       simulation: {
-        analysis: 'dc-operating-point',
+        ...current.simulation,
+        analysis: current.simulation?.analysis ?? 'dc-operating-point',
         probes: [...(current.simulation?.probes ?? []), probe],
       },
     }));
@@ -2427,7 +2602,8 @@ function LogicDiagramEditor({ relativePath }: Props) {
     setDiagram((current) => ({
       ...current,
       simulation: {
-        analysis: 'dc-operating-point',
+        ...current.simulation,
+        analysis: current.simulation?.analysis ?? 'dc-operating-point',
         probes: current.simulation?.probes.filter((probe) => probe.id !== probeId) ?? [],
       },
     }));
@@ -3103,15 +3279,15 @@ function LogicDiagramEditor({ relativePath }: Props) {
           <RotateCw size={14} />
         </DocumentTopBarIconButton>
         <DocumentTopBarButton
-          onClick={() => circuitRunning ? void cancelDcSimulation() : void runDcSimulation()}
-          disabled={loading || (!circuitRunning && nodes.length === 0) || (circuitRunning && (!circuitJobId || circuitJobStatus?.phase === 'cancelling'))}
-          title={circuitRunning ? 'Cancel the active circuit simulation' : 'Compile and solve the DC operating point locally'}
+          onClick={() => circuitRunning && circuitRunKind === 'dc' ? void cancelDcSimulation() : void runDcSimulation()}
+          disabled={loading || (circuitRunning && circuitRunKind !== 'dc') || (!circuitRunning && nodes.length === 0) || (circuitRunning && (!circuitJobId || circuitJobStatus?.phase === 'cancelling'))}
+          title={circuitRunning && circuitRunKind === 'dc' ? 'Cancel the active DC simulation' : 'Compile and solve the DC operating point locally'}
           className="min-w-[132px]"
         >
-          {circuitRunning && (!circuitJobId || circuitJobStatus?.phase === 'cancelling')
+          {circuitRunning && circuitRunKind === 'dc' && (!circuitJobId || circuitJobStatus?.phase === 'cancelling')
             ? <Loader2 size={14} className="animate-spin" />
-            : circuitRunning ? <X size={14} /> : <Play size={14} />}
-          {circuitRunning
+            : circuitRunning && circuitRunKind === 'dc' ? <X size={14} /> : <Play size={14} />}
+          {circuitRunning && circuitRunKind === 'dc'
             ? circuitJobStatus?.phase === 'cancelling'
               ? 'Cancelling'
               : circuitJobStatus?.stage
@@ -3119,12 +3295,49 @@ function LogicDiagramEditor({ relativePath }: Props) {
                 : 'Starting'
             : 'Run DC'}
         </DocumentTopBarButton>
+        <DocumentTopBarButton
+          onClick={() => circuitRunning && circuitRunKind === 'sweep' ? void cancelDcSimulation() : void runDcSweep()}
+          disabled={loading || (circuitRunning && circuitRunKind !== 'sweep') || (!circuitRunning && nodes.length === 0) || (circuitRunning && (!circuitJobId || circuitJobStatus?.phase === 'cancelling'))}
+          title={circuitRunning && circuitRunKind === 'sweep' ? 'Cancel the active DC sweep' : 'Run the persisted DC source sweep locally'}
+          className="min-w-[112px]"
+        >
+          {circuitRunning && circuitRunKind === 'sweep' && (!circuitJobId || circuitJobStatus?.phase === 'cancelling')
+            ? <Loader2 size={14} className="animate-spin" />
+            : circuitRunning && circuitRunKind === 'sweep' ? <X size={14} /> : <ChartLine size={14} />}
+          {circuitRunning && circuitRunKind === 'sweep'
+            ? circuitJobStatus?.phase === 'cancelling'
+              ? 'Cancelling'
+              : circuitJobStatus?.stage
+                ? `Cancel: ${circuitJobStatus.stage[0].toUpperCase()}${circuitJobStatus.stage.slice(1)}`
+                : 'Starting'
+            : 'Run sweep'}
+        </DocumentTopBarButton>
+        <DocumentTopBarIconButton
+          title="Configure DC sweep"
+          onClick={openSweepConfiguration}
+          disabled={readOnly || sweepSourceChoices.length === 0 || circuitRunning}
+        >
+          <SlidersHorizontal size={14} />
+        </DocumentTopBarIconButton>
         <DocumentTopBarIconButton
           title={circuitResultsOpen ? 'Hide DC results' : 'Show DC results'}
-          onClick={() => setCircuitResultsOpen((open) => !open)}
+          onClick={() => {
+            setSweepResultsOpen(false);
+            setCircuitResultsOpen((open) => !open);
+          }}
           disabled={!circuitResult && !circuitError}
         >
           <Zap size={14} />
+        </DocumentTopBarIconButton>
+        <DocumentTopBarIconButton
+          title={sweepResultsOpen ? 'Hide sweep results' : 'Show sweep results'}
+          onClick={() => {
+            setCircuitResultsOpen(false);
+            setSweepResultsOpen((open) => !open);
+          }}
+          disabled={!sweepResult && !sweepError}
+        >
+          <ChartLine size={14} />
         </DocumentTopBarIconButton>
       </div>
       )}
@@ -3349,7 +3562,7 @@ function LogicDiagramEditor({ relativePath }: Props) {
       <LivePeers peers={livePeers} />
       <div className="rounded-full border border-border/60 px-2 py-1 text-[11px] text-muted-foreground">
         {diagram.diagramMode === 'schematic'
-          ? `${counts.schematicCount} symbols · ${counts.groupCount} groups · ${edges.length} wires · ${circuitRunning ? 'solving' : circuitResultStale ? 'DC stale' : circuitResult ? 'DC result' : 'DC ready'}`
+          ? `${counts.schematicCount} symbols · ${counts.groupCount} groups · ${edges.length} wires · ${circuitRunning ? circuitRunKind === 'sweep' ? 'sweeping' : 'solving' : sweepResultStale ? 'sweep stale' : sweepResult ? 'sweep result' : circuitResultStale ? 'DC stale' : circuitResult ? 'DC result' : 'DC ready'}`
           : `${counts.gateCount} gates · ${counts.componentCount} components · ${counts.groupCount} groups · ${edges.length} wires`}
       </div>
     </div>
@@ -3499,6 +3712,77 @@ function LogicDiagramEditor({ relativePath }: Props) {
                       ))}
                     </div>
                   </section>
+                </div>
+              )}
+            </div>
+          </aside>
+        )}
+        {diagram.diagramMode === 'schematic' && sweepResultsOpen && (
+          <aside className="absolute bottom-3 right-3 z-20 flex max-h-[min(72vh,620px)] w-[min(680px,calc(100%-24px))] flex-col overflow-hidden rounded-md border border-border/70 bg-popover/96 text-popover-foreground shadow-xl backdrop-blur-xs-webkit">
+            <div className="flex h-10 shrink-0 items-center gap-2 border-b border-border/60 px-3">
+              {circuitRunning && circuitRunKind === 'sweep'
+                ? <Loader2 size={15} className="animate-spin text-primary" />
+                : <ChartLine size={15} className="text-primary" />}
+              <div className="min-w-0 flex-1 truncate text-sm font-semibold">DC source sweep</div>
+              {sweepResult && !(circuitRunning && circuitRunKind === 'sweep') ? (
+                <>
+                  <button
+                    type="button"
+                    title="Export sweep data as CSV"
+                    className="flex h-7 items-center gap-1 rounded px-2 text-[11px] text-muted-foreground hover:bg-accent hover:text-accent-foreground"
+                    onClick={() => void exportSweepResult('csv')}
+                  >
+                    <Download size={12} /> CSV
+                  </button>
+                  <button
+                    type="button"
+                    title="Export sweep plot as SVG"
+                    className="flex h-7 items-center gap-1 rounded px-2 text-[11px] text-muted-foreground hover:bg-accent hover:text-accent-foreground"
+                    onClick={() => void exportSweepResult('svg')}
+                  >
+                    <Download size={12} /> SVG
+                  </button>
+                </>
+              ) : null}
+              <button
+                type="button"
+                title="Clear sweep results"
+                aria-label="Clear sweep results"
+                className="grid size-7 place-items-center rounded text-muted-foreground hover:bg-accent hover:text-accent-foreground"
+                onClick={resetSweepResults}
+              >
+                <X size={14} />
+              </button>
+            </div>
+            <div className="min-h-0 overflow-y-auto px-3 py-3 text-xs">
+              {circuitRunning && circuitRunKind === 'sweep' && (
+                <div className="flex items-center gap-2 py-6 text-muted-foreground">
+                  <Loader2 size={14} className="animate-spin" />
+                  {circuitJobStatus?.stage === 'solving' ? 'Solving sweep samples locally...' : 'Preparing sweep...'}
+                </div>
+              )}
+              {sweepError && !(circuitRunning && circuitRunKind === 'sweep') && (
+                <div className="border-l-2 border-destructive pl-3 text-destructive">
+                  <div className="font-semibold">Sweep failed</div>
+                  <div className="mt-1 leading-relaxed text-foreground/80">{sweepError}</div>
+                </div>
+              )}
+              {sweepResultStale && sweepResult && (
+                <div className="mb-3 border-l-2 border-amber-500 pl-3 text-amber-600 dark:text-amber-400">
+                  Results are stale. Run the sweep again to update the traces.
+                </div>
+              )}
+              {sweepResult && !(circuitRunning && circuitRunKind === 'sweep') && (
+                <div className={cn('space-y-2', sweepResultStale && 'opacity-55')}>
+                  <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-muted-foreground">
+                    <span>{sweepResult.sampleCount.toLocaleString()} samples</span>
+                    <span>{sweepResult.traces.length} {sweepResult.traces.length === 1 ? 'trace' : 'traces'}</span>
+                    <span>{formatEngineering(sweepResult.sourceValues[0] ?? 0, 'V')} to {formatEngineering(sweepResult.sourceValues[sweepResult.sourceValues.length - 1] ?? 0, 'V')}</span>
+                  </div>
+                  <CircuitSweepPlot
+                    result={sweepResult}
+                    sourceLabel={sweepSourceChoices.find((source) => source.id === sweepResult.source)?.label}
+                  />
                 </div>
               )}
             </div>
@@ -4222,6 +4506,55 @@ function LogicDiagramEditor({ relativePath }: Props) {
             <DialogFooter className="border-none bg-transparent -mx-0 -mb-0 px-0 pb-0">
               <Button type="button" variant="outline" onClick={() => setSchematicSettingsNodeId(null)}>Cancel</Button>
               <Button type="submit" disabled={readOnly}>Apply</Button>
+            </DialogFooter>
+          </form>
+        </DialogContent>
+      </Dialog>
+      <Dialog open={sweepConfigOpen} onOpenChange={setSweepConfigOpen}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>DC source sweep</DialogTitle>
+            <DialogDescription>
+              Sweep one independent voltage source and record the configured voltage and current probes.
+            </DialogDescription>
+          </DialogHeader>
+          <form
+            className="space-y-4"
+            onSubmit={(event) => {
+              event.preventDefault();
+              saveSweepConfiguration();
+            }}
+          >
+            <label className="block space-y-1.5 text-xs font-medium text-muted-foreground">
+              Source
+              <Select value={sweepSourceInput} onValueChange={setSweepSourceInput}>
+                <SelectTrigger className="w-full">
+                  <SelectValue placeholder="Select voltage source" />
+                </SelectTrigger>
+                <SelectContent>
+                  {sweepSourceChoices.map((source) => (
+                    <SelectItem key={source.id} value={source.id}>{source.label}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </label>
+            <div className="grid grid-cols-2 gap-3">
+              <label className="block space-y-1.5 text-xs font-medium text-muted-foreground">
+                Start (V)
+                <Input type="number" inputMode="decimal" step="any" value={sweepStartInput} onChange={(event) => setSweepStartInput(event.target.value)} />
+              </label>
+              <label className="block space-y-1.5 text-xs font-medium text-muted-foreground">
+                Stop (V)
+                <Input type="number" inputMode="decimal" step="any" value={sweepStopInput} onChange={(event) => setSweepStopInput(event.target.value)} />
+              </label>
+            </div>
+            <label className="block space-y-1.5 text-xs font-medium text-muted-foreground">
+              Samples
+              <Input type="number" inputMode="numeric" min={2} max={4096} step={1} value={sweepSamplesInput} onChange={(event) => setSweepSamplesInput(event.target.value)} />
+            </label>
+            <DialogFooter className="border-none bg-transparent -mx-0 -mb-0 px-0 pb-0">
+              <Button type="button" variant="outline" onClick={() => setSweepConfigOpen(false)}>Cancel</Button>
+              <Button type="submit" disabled={readOnly || sweepSourceChoices.length === 0}>Save sweep</Button>
             </DialogFooter>
           </form>
         </DialogContent>

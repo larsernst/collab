@@ -419,4 +419,3 @@ fn status_from_session(
         access_expires_at: Some(session.access_expires_at.clone()),
     }
 }
-

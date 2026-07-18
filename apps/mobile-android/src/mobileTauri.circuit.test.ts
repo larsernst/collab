@@ -9,8 +9,11 @@ vi.mock('@tauri-apps/api/core', () => ({
 
 import {
   circuitCancelJob,
+  circuitDiscardJob,
   circuitJobStatus,
+  circuitReadSweepChunk,
   circuitStartDc,
+  circuitStartDcSweep,
   circuitTakeJobResult,
 } from './mobileTauri';
 
@@ -42,6 +45,36 @@ describe('mobile circuit commands', () => {
       ['circuit_job_status', { jobId: 'job-1' }],
       ['circuit_cancel_job', { jobId: 'job-1' }],
       ['circuit_take_job_result', { jobId: 'job-1' }],
+    ]);
+  });
+
+  it('starts, reads, and discards bounded sweep jobs', async () => {
+    const document: LogicDiagramDocument = {
+      schemaVersion: 6,
+      kind: 'logic-diagram',
+      diagramMode: 'schematic',
+      nodes: [],
+      wires: [],
+      simulation: {
+        analysis: 'dc-sweep',
+        probes: [],
+        dcSweep: { sourceNodeId: 'source', start: 0, stop: 5, sampleCount: 11 },
+      },
+      viewport: { x: 0, y: 0, zoom: 1 },
+    };
+    invoke
+      .mockResolvedValueOnce('sweep-1')
+      .mockResolvedValueOnce({ offset: 0, sourceValues: [], traces: [], done: true })
+      .mockResolvedValueOnce(undefined);
+
+    await circuitStartDcSweep(document);
+    await circuitReadSweepChunk('sweep-1', 0, 256);
+    await circuitDiscardJob('sweep-1');
+
+    expect(invoke.mock.calls).toEqual([
+      ['circuit_start_dc_sweep', { document }],
+      ['circuit_read_sweep_chunk', { jobId: 'sweep-1', offset: 0, limit: 256 }],
+      ['circuit_discard_job', { jobId: 'sweep-1' }],
     ]);
   });
 });
